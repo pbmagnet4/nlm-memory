@@ -141,6 +141,7 @@ program
       classifier,
       sources,
       providers,
+      ingest: { classifier, embedder, store, factStore: facts },
       embedderInfo: { provider: "ollama", model: "nomic-embed-text", dims: 768 },
       ...(existsSync(UI_DIST) ? { uiDist: UI_DIST } : {}),
     });

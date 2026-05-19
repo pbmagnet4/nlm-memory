@@ -13,6 +13,7 @@
  * See docs/plans/desktop-product.md (Phase 0).
  */
 
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +29,10 @@ export interface SourceRow {
   readonly runtimeLabel: string;
   readonly parseConfig: Record<string, unknown>;
   readonly enabled: boolean;
+  /** Only populated on the response from `insert()` for webhook sources.
+   *  Always `null` from `list()` / `get()`. Use `getToken()` inside the daemon. */
+  readonly token: string | null;
+  readonly hasToken: boolean;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -57,11 +62,12 @@ interface SourceDbRow {
   runtime_label: string;
   parse_config: string;
   enabled: number;
+  token: string | null;
   created_at: string;
   updated_at: string;
 }
 
-function rowFromDb(r: SourceDbRow): SourceRow {
+function rowFromDb(r: SourceDbRow, revealedToken: string | null = null): SourceRow {
   let parsed: Record<string, unknown> = {};
   try {
     parsed = r.parse_config ? (JSON.parse(r.parse_config) as Record<string, unknown>) : {};
@@ -76,9 +82,15 @@ function rowFromDb(r: SourceDbRow): SourceRow {
     runtimeLabel: r.runtime_label,
     parseConfig: parsed,
     enabled: r.enabled === 1,
+    token: revealedToken,
+    hasToken: r.token !== null && r.token.length > 0,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
+}
+
+function mintToken(): string {
+  return `nlm_${randomBytes(24).toString("hex")}`;
 }
 
 export class SourceRegistry {
@@ -88,7 +100,7 @@ export class SourceRegistry {
     const rows = this.db.prepare<[], SourceDbRow>(
       `SELECT * FROM sources ORDER BY id ASC`,
     ).all();
-    return rows.map(rowFromDb);
+    return rows.map((r) => rowFromDb(r));
   }
 
   get(id: number): SourceRow | null {
@@ -106,9 +118,10 @@ export class SourceRegistry {
   }
 
   insert(input: SourceInsert): SourceRow {
+    const token = input.kind === "webhook" ? mintToken() : null;
     const stmt = this.db.prepare(`
-      INSERT INTO sources (kind, name, path_or_url, runtime_label, parse_config, enabled)
-      VALUES (@kind, @name, @path_or_url, @runtime_label, @parse_config, @enabled)
+      INSERT INTO sources (kind, name, path_or_url, runtime_label, parse_config, enabled, token)
+      VALUES (@kind, @name, @path_or_url, @runtime_label, @parse_config, @enabled, @token)
     `);
     const result = stmt.run({
       kind: input.kind,
@@ -117,11 +130,43 @@ export class SourceRegistry {
       runtime_label: input.runtimeLabel,
       parse_config: JSON.stringify(input.parseConfig ?? {}),
       enabled: input.enabled === false ? 0 : 1,
+      token,
     });
     const id = Number(result.lastInsertRowid);
-    const row = this.get(id);
-    if (!row) throw new Error(`SourceRegistry.insert: row ${id} not found after insert`);
-    return row;
+    const dbRow = this.db.prepare<[number], SourceDbRow>(
+      `SELECT * FROM sources WHERE id = ?`,
+    ).get(id);
+    if (!dbRow) throw new Error(`SourceRegistry.insert: row ${id} not found after insert`);
+    // Reveal the token on the insert response only — this is the user's
+    // one chance to copy it. Subsequent list/get redact.
+    return rowFromDb(dbRow, token);
+  }
+
+  /** Daemon-internal: resolve a bearer token to its owning source. */
+  findByToken(token: string): SourceRow | null {
+    if (!token) return null;
+    const row = this.db.prepare<[string], SourceDbRow>(
+      `SELECT * FROM sources WHERE token = ?`,
+    ).get(token);
+    return row ? rowFromDb(row) : null;
+  }
+
+  /** Daemon-internal: returns the raw token. Never echo to HTTP responses. */
+  getToken(id: number): string | null {
+    const row = this.db.prepare<[number], SourceDbRow>(
+      `SELECT token FROM sources WHERE id = ?`,
+    ).get(id);
+    return row?.token ?? null;
+  }
+
+  /** Mint a fresh token, invalidating any previous one. */
+  regenerateToken(id: number): string | null {
+    const current = this.get(id);
+    if (!current || current.kind !== "webhook") return null;
+    const token = mintToken();
+    this.db.prepare(`UPDATE sources SET token = ?, updated_at = datetime('now') WHERE id = ?`)
+      .run(token, id);
+    return token;
   }
 
   update(id: number, patch: SourceUpdate): SourceRow | null {

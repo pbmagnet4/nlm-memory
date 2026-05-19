@@ -30,6 +30,7 @@ import {
   type ProviderUpdate,
 } from "@core/providers/provider-registry.js";
 import { listModels } from "@core/providers/provider-models.js";
+import { ingestSession, deriveSessionId, type IngestDeps } from "@core/ingest/ingest-session.js";
 import {
   listActions,
   undoAction,
@@ -59,6 +60,8 @@ export interface HttpDeps {
   readonly sources?: SourceRegistry;
   /** Providers registry — exposes /api/providers CRUD for the desktop UI. */
   readonly providers?: ProviderRegistry;
+  /** Wire to enable POST /api/ingest. When omitted, push ingest is disabled. */
+  readonly ingest?: IngestDeps;
   /** Static embedder info — embeddings are always Ollama in this build (DeepSeek has no /embed). */
   readonly embedderInfo?: { provider: string; model: string; dims: number };
   /** Directory containing the built UI (dist/ui). When set, /ui/* serves the SPA. */
@@ -303,6 +306,57 @@ export function createApp(deps: HttpDeps): Hono {
     const ok = deps.sources.delete(id);
     if (!ok) return c.json({ error: `source ${id} not found` }, 404);
     return c.json({ deleted: id });
+  });
+
+  app.post("/api/sources/:id/regenerate-token", (c) => {
+    if (!deps.sources) return c.json({ error: "sources registry unavailable" }, 503);
+    const id = Number.parseInt(c.req.param("id"), 10);
+    if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
+    const token = deps.sources.regenerateToken(id);
+    if (!token) return c.json({ error: "regenerate-token only applies to webhook sources" }, 400);
+    return c.json({ token });
+  });
+
+  // Ingest (webhook push). Auth: Bearer token tied to a webhook source.
+  // Classification runs async so callers get a fast 202.
+  app.post("/api/ingest", async (c) => {
+    if (!deps.ingest || !deps.sources) {
+      return c.json({ error: "ingest pipeline not wired" }, 503);
+    }
+    const auth = c.req.header("authorization") ?? "";
+    const match = /^Bearer\s+(\S+)$/i.exec(auth);
+    if (!match || !match[1]) return c.json({ error: "missing or malformed bearer token" }, 401);
+    const source = deps.sources.findByToken(match[1]);
+    if (!source || source.kind !== "webhook") return c.json({ error: "invalid token" }, 401);
+    if (!source.enabled) return c.json({ error: "source is disabled" }, 403);
+
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!body || typeof body["text"] !== "string" || (body["text"] as string).length === 0) {
+      return c.json({ error: "body must include `text` string" }, 400);
+    }
+    const text = body["text"] as string;
+    const startedAt = typeof body["startedAt"] === "string" ? (body["startedAt"] as string) : new Date().toISOString();
+    const suppliedId = typeof body["id"] === "string" ? (body["id"] as string) : null;
+    const id = suppliedId ?? deriveSessionId(source.runtimeLabel, startedAt, text);
+
+    const input = {
+      id,
+      runtime: source.runtimeLabel,
+      runtimeSessionId: typeof body["runtimeSessionId"] === "string" ? (body["runtimeSessionId"] as string) : null,
+      text,
+      startedAt,
+      endedAt: typeof body["endedAt"] === "string" ? (body["endedAt"] as string) : null,
+      transcriptPath: typeof body["transcriptPath"] === "string" ? (body["transcriptPath"] as string) : null,
+      sourceId: source.id,
+    };
+
+    const ingest = deps.ingest;
+    void ingestSession(input, ingest).catch((e) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[ingest] background failure for ${id}: ${msg}`);
+    });
+
+    return c.json({ id, status: "accepted", source: source.name }, 202);
   });
 
   // ── Providers registry ──────────────────────────────────────────
