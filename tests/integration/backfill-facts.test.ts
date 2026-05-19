@@ -198,12 +198,15 @@ describe("backfillFacts", () => {
     expect(r2.total).toBe(0);
 
     // With reprocess, eligibility drops the NOT-EXISTS clause; the state
-    // file is what keeps a resumed run from re-classifying done ids.
+    // file is what keeps a resumed run from re-classifying done ids. Under
+    // the post-fix semantics, state-file ids are filtered out BEFORE the
+    // work queue is built, so `total` is 0 (empty work queue) and
+    // `skippedAlreadyDone` reports the pre-filter count.
     const r3 = await backfillFacts({
       store, factStore, classifier: new ScriptedClassifier(new Map()), statePath,
       reprocess: true,
     });
-    expect(r3.total).toBe(2);
+    expect(r3.total).toBe(0);
     expect(r3.skippedAlreadyDone).toBe(2);
     expect(r3.processed).toBe(0);
   });
@@ -246,6 +249,40 @@ describe("backfillFacts", () => {
     expect(report.total).toBe(2);
     expect(report.processed).toBe(2);
     expect(classifier.calls).toHaveLength(2);
+  });
+
+  it("limit counts processable sessions, not raw SQL rows (filters state-file done BEFORE limit)", async () => {
+    // 5 sessions in the corpus. 3 are already done in the state file (e.g.
+    // previously hit low-confidence). With --limit 2, the OLD behavior would
+    // slice the first 2 SQL rows (both done) and process 0; the NEW behavior
+    // filters out the 3 done ids and then processes the next 2 untouched
+    // sessions — actually doing 2 sessions worth of work as the operator
+    // expects.
+    for (let i = 0; i < 5; i++) {
+      store.insertSessionForTest(makeSession({
+        id: `sess_${i}`, body: `BODY-${i}`, startedAt: `2026-05-17T10:0${i}:00Z`,
+      }));
+    }
+    // Pre-populate state file as if sess_0, sess_1, sess_2 already done
+    // (e.g. via prior low-confidence runs).
+    const fs = await import("node:fs");
+    fs.writeFileSync(statePath, JSON.stringify({ done: ["sess_0", "sess_1", "sess_2"] }));
+
+    const classifier = new ScriptedClassifier(new Map([
+      ["BODY-3", classifyResult([
+        { kind: "decision", subject: "s3", predicate: "framework", value: "v" },
+      ])],
+      ["BODY-4", classifyResult([
+        { kind: "decision", subject: "s4", predicate: "framework", value: "v" },
+      ])],
+    ]));
+    const report = await backfillFacts({
+      store, factStore, classifier, statePath, limit: 2,
+    });
+    expect(report.skippedAlreadyDone).toBe(3); // pre-filter count
+    expect(report.total).toBe(2);              // work queue after pre-filter
+    expect(report.processed).toBe(2);          // both processed
+    expect(classifier.calls.sort()).toEqual(["BODY-3", "BODY-4"]);
   });
 
   it("low-confidence sessions get marked done so a re-run doesn't re-classify them", async () => {
