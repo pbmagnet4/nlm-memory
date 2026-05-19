@@ -30,7 +30,12 @@ import { autoloadEnv } from "../llm/env-autoload.js";
 import { runParity } from "./classify-parity.js";
 import { reembedCorpus } from "../core/embedding/embed-backfill.js";
 import { normalizeEmbeddings } from "../core/embedding/embed-normalize.js";
+import { ScanScheduler } from "../core/scheduler/scheduler.js";
+import { ClaudeCodeAdapter } from "../core/adapters/claude-code.js";
+import { HermesAdapter } from "../core/adapters/hermes.js";
+import { PiAdapter } from "../core/adapters/pi.js";
 import type { LLMClient } from "../ports/llm-client.js";
+import type { TranscriptAdapter } from "../ports/transcript-adapter.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -67,6 +72,22 @@ function buildClassifier(): LLMClient {
   return new DeepSeekClient();
 }
 
+function buildAdapters(): TranscriptAdapter[] {
+  // Honor adapter detection — only register adapters whose data dir exists.
+  // The user can force-enable via NLE_ADAPTERS=claude-code,hermes,pi.
+  const explicit = process.env["NLE_ADAPTERS"];
+  const all: TranscriptAdapter[] = [
+    new ClaudeCodeAdapter(),
+    new HermesAdapter(),
+    new PiAdapter(),
+  ];
+  if (explicit) {
+    const names = new Set(explicit.split(",").map((s) => s.trim()));
+    return all.filter((a) => names.has(a.name));
+  }
+  return all.filter((a) => a.detect().enabled);
+}
+
 function buildStack() {
   const store = new SqliteSessionStore({
     dbPath: dbPath(),
@@ -88,9 +109,11 @@ program
 
 program
   .command("start")
-  .description("Boot the HTTP server")
-  .action(() => {
-    const { store, recall } = buildStack();
+  .description("Boot the HTTP server + ingest scheduler")
+  .option("--no-scheduler", "HTTP only; skip the ingest tick loop")
+  .option("--interval-min <n>", "scheduler tick interval (min, default 30)", (v) => Number.parseInt(v, 10), 30)
+  .action((opts) => {
+    const { store, recall, embedder, classifier } = buildStack();
     const app = createApp({ recall, store });
     const p = port();
     serve({ fetch: app.fetch, port: p }, (info) => {
@@ -98,6 +121,32 @@ program
       console.error(`  db:     ${dbPath()}`);
       console.error(`  ollama: ${ollamaUrl()}`);
     });
+
+    if (opts.scheduler !== false) {
+      const adapters = buildAdapters();
+      if (adapters.length === 0) {
+        console.error("  scheduler: no adapters detected (set NLE_ADAPTERS to force-enable)");
+      } else {
+        const scheduler = new ScanScheduler({
+          store,
+          adapters,
+          classifier,
+          embedder,
+          intervalMs: opts.intervalMin * 60_000,
+        });
+        scheduler.start();
+        console.error(
+          `  scheduler: ${adapters.map((a) => a.name).join(", ")} every ${opts.intervalMin}m`,
+        );
+        const shutdown = () => {
+          scheduler.stop();
+          store.close();
+          process.exit(0);
+        };
+        process.on("SIGINT", shutdown);
+        process.on("SIGTERM", shutdown);
+      }
+    }
   });
 
 program

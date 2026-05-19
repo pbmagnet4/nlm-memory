@@ -34,6 +34,27 @@ export interface SqliteSessionStoreOptions {
   readonly readonly?: boolean;
 }
 
+/** Full ingest payload for SqliteSessionStore.insertSession. */
+export interface IngestRecord {
+  readonly id: string;
+  readonly runtime: string;
+  readonly runtimeSessionId: string | null;
+  readonly startedAt: string;
+  readonly endedAt: string | null;
+  readonly durationMin: number | null;
+  readonly label: string;
+  readonly summary: string;
+  readonly body: string | null;
+  readonly status: SessionStatus;
+  readonly transcriptKind: string | null;
+  readonly transcriptPath: string | null;
+  readonly transcriptOffset: number | null;
+  readonly transcriptLength: number | null;
+  readonly entities: ReadonlyArray<string>;
+  readonly decisions: ReadonlyArray<string>;
+  readonly openQuestions: ReadonlyArray<string>;
+}
+
 type SessionRow = {
   id: string;
   runtime: string;
@@ -74,6 +95,125 @@ export class SqliteSessionStore implements SessionStore {
 
   close(): void {
     this.db.close();
+  }
+
+  /** Raw db handle for ingest helpers (Scheduler, scanOnce). Avoid using
+   *  directly from the recall path — it bypasses the SessionStore port. */
+  rawDb(): Database.Database {
+    return this.db;
+  }
+
+  /**
+   * Atomic ingest: writes the session row, markers, entity rows + links,
+   * supersedes edge (if any), and the embedding (best-effort) in one
+   * transaction. Idempotent on re-ingest — ON CONFLICT updates the session
+   * in place; markers are deleted and rewritten; entity links use INSERT OR
+   * IGNORE; embedding row is DELETE+INSERT (vec0 doesn't UPDATE).
+   *
+   * Mirrors Python's SQLiteStore.insert_session. Markdown projection is not
+   * yet ported and skipped here.
+   */
+  async insertSession(
+    record: IngestRecord,
+    embedder: import("@ports/llm-client.js").LLMClient | null = null,
+    supersedes: string | null = null,
+  ): Promise<void> {
+    const db = this.db;
+    const txn = db.transaction(() => {
+      db.prepare(`
+        INSERT INTO sessions (
+          id, runtime, runtime_session_id, started_at, ended_at, duration_min,
+          label, summary, body, status,
+          transcript_kind, transcript_path, transcript_offset, transcript_length
+        ) VALUES (@id, @runtime, @runtimeSessionId, @startedAt, @endedAt, @durationMin,
+          @label, @summary, @body, @status,
+          @transcriptKind, @transcriptPath, @transcriptOffset, @transcriptLength)
+        ON CONFLICT(id) DO UPDATE SET
+          ended_at = excluded.ended_at,
+          duration_min = excluded.duration_min,
+          label = excluded.label,
+          summary = excluded.summary,
+          body = excluded.body,
+          status = excluded.status,
+          updated_at = datetime('now')
+      `).run({
+        id: record.id,
+        runtime: record.runtime,
+        runtimeSessionId: record.runtimeSessionId,
+        startedAt: record.startedAt,
+        endedAt: record.endedAt,
+        durationMin: record.durationMin,
+        label: record.label,
+        summary: record.summary,
+        body: record.body,
+        status: record.status === "idle" ? "active" : record.status,
+        transcriptKind: record.transcriptKind,
+        transcriptPath: record.transcriptPath,
+        transcriptOffset: record.transcriptOffset,
+        transcriptLength: record.transcriptLength,
+      });
+
+      db.prepare("DELETE FROM markers WHERE session_id = ?").run(record.id);
+      const markerStmt = db.prepare(
+        "INSERT INTO markers (session_id, kind, text, position) VALUES (?, ?, ?, ?)",
+      );
+      record.decisions.forEach((d, i) => markerStmt.run(record.id, "decision", d.trim(), i));
+      record.openQuestions.forEach((q, i) => markerStmt.run(record.id, "open", q.trim(), i));
+
+      const insertEnt = db.prepare(`
+        INSERT OR IGNORE INTO entities
+          (canonical, type, status, source, first_seen_session, last_seen_session, session_count)
+        VALUES (?, 'candidate', 'candidate', 'auto-detected', ?, ?, 0)
+      `);
+      const touchEnt = db.prepare(`
+        UPDATE entities
+        SET last_seen_session = ?, session_count = session_count + 1, updated_at = datetime('now')
+        WHERE canonical = ?
+      `);
+      const linkEnt = db.prepare(
+        "INSERT OR IGNORE INTO session_entities (session_id, entity_canonical) VALUES (?, ?)",
+      );
+      for (const raw of record.entities) {
+        const name = raw.trim();
+        if (!name) continue;
+        insertEnt.run(name, record.id, record.id);
+        touchEnt.run(record.id, name);
+        linkEnt.run(record.id, name);
+      }
+
+      if (supersedes) {
+        db.prepare(
+          `INSERT OR IGNORE INTO session_edges (from_session, to_session, kind)
+           VALUES (?, ?, 'supersedes')`,
+        ).run(record.id, supersedes);
+        db.prepare(
+          "UPDATE sessions SET status = 'superseded', updated_at = datetime('now') WHERE id = ?",
+        ).run(supersedes);
+      }
+    });
+    txn();
+
+    // Embedding is best-effort and lives outside the txn so a slow Ollama
+    // doesn't block the row commit.
+    if (embedder) {
+      const text = [
+        record.label,
+        record.summary,
+        (record.body ?? "").slice(0, 4_000),
+      ].filter((s) => s && s.length > 0).join(" ").trim();
+      if (text) {
+        try {
+          const { vector } = await embedder.embed(text, "document");
+          const blob = Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
+          db.prepare("DELETE FROM session_embeddings WHERE session_id = ?").run(record.id);
+          db.prepare(
+            "INSERT INTO session_embeddings (session_id, embedding) VALUES (?, ?)",
+          ).run(record.id, blob);
+        } catch {
+          // Embedder failure must not roll the ingest back.
+        }
+      }
+    }
   }
 
   async list(filter?: SessionFilter): Promise<ReadonlyArray<Session>> {
