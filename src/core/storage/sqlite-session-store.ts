@@ -238,14 +238,52 @@ export class SqliteSessionStore implements SessionStore {
       }
 
       // Facts ingest is part of the session txn — either both commit or both
-      // roll back. Phase B.4 will add deterministic supersedence here; for
-      // B.2 it's a straight insertMany. On re-ingest (ON CONFLICT updates the
-      // session above), we delete prior facts for this source_session_id
-      // before re-inserting so the row count matches the latest classifier
-      // output. Without this, re-ingest accumulates duplicates.
+      // roll back. On re-ingest (ON CONFLICT updates the session above), we
+      // delete prior facts for this source_session_id before re-inserting so
+      // the row count matches the latest classifier output. Without this,
+      // re-ingest accumulates duplicates.
+      //
+      // Phase B.4 — deterministic supersedence on (subject, predicate)
+      // collision. For each new fact, after insert, look up any OTHER
+      // non-superseded fact with the same (subject, predicate). Mark the
+      // older one as superseded by the new fact's id. Always-supersede
+      // policy applies even when value is unchanged — same-value re-assertion
+      // carries new provenance (new source_session_id) and is informative
+      // history. See Section 2 of factstore-design.md.
+      //
+      // Ordering note: insertManyInTxn FIRST so the new fact id exists in
+      // facts(id) before any UPDATE sets superseded_by = newId (the FK
+      // would reject otherwise). The DELETE above plus the CASCADE-SET-NULL
+      // on superseded_by means re-ingest naturally repairs chains: if an
+      // earlier ingest of this session superseded a fact from another
+      // session, deleting our prior fact unlinks the chain; the loop below
+      // re-establishes it with the freshly-inserted row.
       if (factSink !== null) {
         db.prepare("DELETE FROM facts WHERE source_session_id = ?").run(record.id);
         factSink.factStore.insertManyInTxn(factSink.facts);
+
+        if (factSink.facts.length > 0) {
+          const findCollisionStmt = db.prepare<
+            [string, string, string],
+            { id: string }
+          >(`
+            SELECT id
+            FROM facts
+            WHERE subject = ?
+              AND predicate = ?
+              AND superseded_by IS NULL
+              AND id != ?
+            ORDER BY created_at DESC
+            LIMIT 1
+          `);
+          const markSupersededStmt = db.prepare(
+            "UPDATE facts SET superseded_by = ? WHERE id = ?",
+          );
+          for (const fact of factSink.facts) {
+            const prior = findCollisionStmt.get(fact.subject, fact.predicate, fact.id);
+            if (prior) markSupersededStmt.run(fact.id, prior.id);
+          }
+        }
       }
     });
     txn();
