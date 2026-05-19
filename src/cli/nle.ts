@@ -28,6 +28,8 @@ import { DeepSeekClient } from "../llm/deepseek-client.js";
 import { OllamaClient } from "../llm/ollama-client.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
 import { runParity } from "./classify-parity.js";
+import { reembedCorpus } from "../core/embedding/embed-backfill.js";
+import { normalizeEmbeddings } from "../core/embedding/embed-normalize.js";
 import type { LLMClient } from "../ports/llm-client.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -153,6 +155,48 @@ program
       classifyModel: opts.model ?? defaultModel,
       provider,
       verbose: Boolean(opts.verbose),
+    });
+    process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+  });
+
+program
+  .command("embed-backfill")
+  .description("Re-embed every session in canonical.sqlite with the document prefix")
+  .option("-l, --limit <n>", "session cap (default: all)", (v) => Number.parseInt(v, 10))
+  .option("--body-chars <n>", "body truncation (default 4000)", (v) => Number.parseInt(v, 10), 4_000)
+  .option("--state <path>", "resume state file (default ~/.nle/embed_reembed.state)")
+  .option("-v, --verbose", "per-session progress on stderr")
+  .action(async (opts) => {
+    const embedder = new OllamaClient({ baseUrl: ollamaUrl() });
+    const report = await reembedCorpus({
+      dbPath: dbPath(),
+      embedder,
+      ...(opts.state ? { statePath: opts.state } : {}),
+      ...(opts.limit ? { limit: opts.limit } : {}),
+      bodyChars: opts.bodyChars,
+      ...(opts.verbose
+        ? {
+            onProgress: (i: number, n: number, sid: string, status: string) => {
+              process.stderr.write(`  [${i}/${n}] ${sid}  ${status}\n`);
+            },
+          }
+        : {}),
+    });
+    process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+  });
+
+program
+  .command("embed-normalize")
+  .description("L2-normalize every row in session_embeddings (idempotent)")
+  .option("--dim <n>", "vector dimension (default 768)", (v) => Number.parseInt(v, 10), 768)
+  .option("--batch <n>", "rows per commit batch (default 100)", (v) => Number.parseInt(v, 10), 100)
+  .option("--dry-run", "report what would change without writing")
+  .action((opts) => {
+    const report = normalizeEmbeddings({
+      dbPath: dbPath(),
+      dim: opts.dim,
+      batchSize: opts.batch,
+      dryRun: Boolean(opts.dryRun),
     });
     process.stdout.write(JSON.stringify(report, null, 2) + "\n");
   });

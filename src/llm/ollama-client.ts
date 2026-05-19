@@ -29,6 +29,28 @@ import {
 
 export type FetchImpl = typeof fetch;
 
+const MAX_EMBED_CHARS = 8_000;
+
+const EMBED_PREFIXES: Record<EmbeddingKind, string> = {
+  query: "search_query: ",
+  document: "search_document: ",
+};
+
+export function l2Normalize(vec: Float32Array): Float32Array {
+  let sumSq = 0;
+  for (let i = 0; i < vec.length; i++) {
+    const v = vec[i] ?? 0;
+    sumSq += v * v;
+  }
+  if (sumSq === 0) return vec;
+  const norm = Math.sqrt(sumSq);
+  const out = new Float32Array(vec.length);
+  for (let i = 0; i < vec.length; i++) {
+    out[i] = (vec[i] ?? 0) / norm;
+  }
+  return out;
+}
+
 export interface OllamaClientOptions {
   readonly baseUrl?: string;
   readonly embedModel?: string;
@@ -64,14 +86,21 @@ export class OllamaClient implements LLMClient {
     this.fetchImpl = opts.fetchImpl ?? fetch;
   }
 
-  async embed(text: string, _kind: EmbeddingKind): Promise<EmbedResult> {
+  async embed(text: string, kind: EmbeddingKind): Promise<EmbedResult> {
+    // nomic-embed-text v1.5 is an asymmetric retrieval model. The
+    // search_query:/search_document: prefix is part of the training
+    // contract; omitting it or using the wrong one degrades retrieval
+    // quality measurably. MAX_EMBED_CHARS matches the Python ceiling.
+    const truncated = text.slice(0, MAX_EMBED_CHARS);
+    const prompt = `${EMBED_PREFIXES[kind]}${truncated}`;
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       const res = await this.fetchImpl(`${this.baseUrl}/api/embeddings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: this.embedModel, prompt: text }),
+        body: JSON.stringify({ model: this.embedModel, prompt }),
         signal: controller.signal,
       });
       if (!res.ok) {
@@ -81,7 +110,8 @@ export class OllamaClient implements LLMClient {
       if (!data.embedding || data.embedding.length === 0) {
         throw new LLMUnreachableError("ollama", "empty embedding");
       }
-      return { vector: new Float32Array(data.embedding), model: this.embedModel };
+      const raw = new Float32Array(data.embedding);
+      return { vector: l2Normalize(raw), model: this.embedModel };
     } catch (e) {
       if (e instanceof LLMUnreachableError) throw e;
       throw new LLMUnreachableError("ollama", e);
