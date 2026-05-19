@@ -4,7 +4,7 @@
  * the cached result. Optional polling for live refresh.
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export interface DatasetSession {
   id: string;
@@ -70,38 +70,49 @@ export interface DatasetState {
   data: Dataset | null;
   loading: boolean;
   error: string | null;
+  refetch: () => Promise<void>;
+}
+
+interface DatasetInternal {
+  data: Dataset | null;
+  loading: boolean;
+  error: string | null;
 }
 
 export function useDataset(pollMs?: number): DatasetState {
-  const [state, setState] = useState<DatasetState>({ data: null, loading: true, error: null });
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const res = await fetch("/api/dataset");
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = (await res.json()) as Dataset;
-        if (!cancelled) setState({ data, loading: false, error: null });
-      } catch (e) {
-        if (!cancelled) {
-          const msg = e instanceof Error ? e.message : String(e);
-          setState((prev) => ({ data: prev.data, loading: false, error: msg }));
-        }
+  const [state, setState] = useState<DatasetInternal>({ data: null, loading: true, error: null });
+  const cancelledRef = useRef(false);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch("/api/dataset");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as Dataset;
+      if (!cancelledRef.current) setState({ data, loading: false, error: null });
+    } catch (e) {
+      if (!cancelledRef.current) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setState((prev) => ({ data: prev.data, loading: false, error: msg }));
       }
-    };
+    }
+  }, []);
+
+  useEffect(() => {
+    cancelledRef.current = false;
     void load();
     if (pollMs && pollMs > 0) {
       const id = setInterval(load, pollMs);
       return () => {
-        cancelled = true;
+        cancelledRef.current = true;
         clearInterval(id);
       };
     }
     return () => {
-      cancelled = true;
+      cancelledRef.current = true;
     };
-  }, [pollMs]);
-  return state;
+  }, [pollMs, load]);
+
+  return { ...state, refetch: load };
 }
 
 export function relativeAge(iso: string | null | undefined): string {

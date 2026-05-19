@@ -1,9 +1,26 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useDataset, relativeAge } from "../lib/dataset.js";
+import { postAction } from "../lib/actions.js";
 
 export function PulsePage() {
-  const { data, loading, error } = useDataset();
+  const { data, loading, error, refetch } = useDataset();
+
+  const dismissAlert = async (alertId: string) => {
+    await postAction({ kind: "dismiss", subject_type: "alert", subject_id: alertId });
+    await refetch();
+  };
+  const snoozeAlert = async (alertId: string, days: number) => {
+    const until = new Date(Date.now() + days * 86_400_000).toISOString();
+    await postAction({
+      kind: "snooze",
+      subject_type: "alert",
+      subject_id: alertId,
+      payload: { snoozed_until: until },
+    });
+    await refetch();
+  };
+
   const recent = useMemo(() => {
     if (!data) return [];
     return [...data.sessions]
@@ -43,6 +60,10 @@ export function PulsePage() {
                 <span className={`chip-inline severity-${a.severity}`}>{a.severity}</span>
                 <Link to={`/thread?entity=${encodeURIComponent(a.entity)}`} className="alert-entity">{a.entity}</Link>
                 <span className="alert-summary">{a.summary}</span>
+                <div className="alert-actions">
+                  <button type="button" className="chip" onClick={() => void snoozeAlert(a.id, 7)}>snooze 7d</button>
+                  <button type="button" className="chip" onClick={() => void dismissAlert(a.id)}>dismiss</button>
+                </div>
               </li>
             ))}
             {data.alerts.length === 0 && <li className="muted">No stale alerts.</li>}

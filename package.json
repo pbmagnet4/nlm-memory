@@ -14,7 +14,7 @@
   "scripts": {
     "dev": "tsx watch src/cli/nle.ts start",
     "start": "node dist/cli/nle.js start",
-    "build:server": "tsc -p tsconfig.json",
+    "build:server": "tsc -p tsconfig.json && tsc-alias -p tsconfig.json",
     "build:ui": "vite build --config src/ui/vite.config.ts",
     "build": "npm run build:server && npm run build:ui",
     "ui:dev": "vite --config src/ui/vite.config.ts",
@@ -43,6 +43,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.30.3",
+    "tsc-alias": "^1.8.17",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vite": "^5.4.21",

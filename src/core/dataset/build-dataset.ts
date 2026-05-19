@@ -228,6 +228,15 @@ function projectFromDb(db: Database.Database, dbPath: string): DatasetResponse {
     `)
     .all();
 
+  const overlay = loadActionOverlay(db);
+
+  for (const e of entityRows) {
+    if (overlay.retiredEntities.has(e.canonical)) e.status = "retired";
+    else if (overlay.snoozedEntities.has(e.canonical)) e.status = "snoozed";
+    const newType = overlay.labeledEntities.get(e.canonical);
+    if (newType) e.type = newType;
+  }
+
   const entityColors: Record<string, string> = {};
   const entityType: Record<string, string> = {};
   const entityStatus: Record<string, string> = {};
@@ -238,7 +247,7 @@ function projectFromDb(db: Database.Database, dbPath: string): DatasetResponse {
   }
 
   const metrics = computeMetrics(sessions, entityRows);
-  const alerts = computeStaleAlerts(sessions, entityRows);
+  const alerts = computeStaleAlerts(sessions, entityRows, overlay);
 
   return {
     meta: {
@@ -298,9 +307,73 @@ function computeMetrics(
   return { this_week: thisWeek, last_week: lastWeek, sparkline, healthy, sparse, stale, closed_decisions: closedDecisions };
 }
 
+interface ActionOverlay {
+  readonly dismissedAlerts: Set<string>;
+  readonly snoozedAlerts: Map<string, string>; // alert id → snoozed_until ISO
+  readonly retiredEntities: Set<string>;
+  readonly snoozedEntities: Map<string, string>; // canonical → snoozed_until ISO
+  readonly labeledEntities: Map<string, string>; // canonical → new type
+}
+
+interface ActionRow {
+  kind: string;
+  subject_type: string;
+  subject_id: string;
+  payload: string | null;
+}
+
+function loadActionOverlay(db: Database.Database): ActionOverlay {
+  const overlay: ActionOverlay = {
+    dismissedAlerts: new Set(),
+    snoozedAlerts: new Map(),
+    retiredEntities: new Set(),
+    snoozedEntities: new Map(),
+    labeledEntities: new Map(),
+  };
+  const hasActions = db
+    .prepare<[], { name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='actions'")
+    .get();
+  if (!hasActions) return overlay;
+
+  const rows = db
+    .prepare<[], ActionRow>(`
+      SELECT kind, subject_type, subject_id, payload
+      FROM actions
+      WHERE reverted_by IS NULL
+    `)
+    .all();
+
+  const now = new Date().toISOString();
+  for (const r of rows) {
+    const payload = r.payload ? (safeParse(r.payload) as Record<string, unknown> | null) : null;
+    if (r.kind === "dismiss" && r.subject_type === "alert") overlay.dismissedAlerts.add(r.subject_id);
+    else if (r.kind === "snooze" && r.subject_type === "alert") {
+      const until = typeof payload?.["snoozed_until"] === "string" ? payload["snoozed_until"] : "";
+      if (until > now) overlay.snoozedAlerts.set(r.subject_id, until);
+    } else if (r.kind === "retire_entity" && r.subject_type === "entity") overlay.retiredEntities.add(r.subject_id);
+    else if (r.kind === "snooze" && r.subject_type === "entity") {
+      const until = typeof payload?.["snoozed_until"] === "string" ? payload["snoozed_until"] : "";
+      if (until > now) overlay.snoozedEntities.set(r.subject_id, until);
+    } else if (r.kind === "label_entity" && r.subject_type === "entity") {
+      const newType = typeof payload?.["new_type"] === "string" ? payload["new_type"] : null;
+      if (newType) overlay.labeledEntities.set(r.subject_id, newType);
+    }
+  }
+  return overlay;
+}
+
+function safeParse(s: string): unknown {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
 function computeStaleAlerts(
   sessions: ReadonlyArray<DatasetSession>,
   entityRows: ReadonlyArray<EntityCatalogRow>,
+  overlay: ActionOverlay,
 ): DatasetResponse["alerts"] {
   const now = Date.now();
   const sessionsById = new Map(sessions.map((s) => [s.id, s]));
@@ -312,6 +385,10 @@ function computeStaleAlerts(
     if (!Number.isFinite(lastT)) continue;
     const ageDays = Math.floor((now - lastT) / 86_400_000);
     if (ageDays <= 30) continue;
+
+    const alertId = `stale_${e.canonical.replace(/[^A-Za-z0-9]/g, "_")}`;
+    if (overlay.dismissedAlerts.has(alertId) || overlay.snoozedAlerts.has(alertId)) continue;
+
     const openOnEntity = sessions
       .filter((s) => s.entities.includes(e.canonical))
       .flatMap((s) => s.open)
@@ -323,7 +400,7 @@ function computeStaleAlerts(
       summary += ` · ${n} unresolved open ${label}: "${openOnEntity[0]!.slice(0, 80)}"`;
     }
     alerts.push({
-      id: `stale_${e.canonical.replace(/[^A-Za-z0-9]/g, "_")}`,
+      id: alertId,
       type: "stale",
       severity: ageDays > 60 ? "high" : "medium",
       entity: e.canonical,

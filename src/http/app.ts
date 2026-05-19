@@ -16,6 +16,12 @@ import type { RecallService } from "@core/recall/recall-service.js";
 import { logQuery, recallStats } from "@core/recall/query-log.js";
 import { recentQueryLog } from "@core/recall/recent-log.js";
 import { buildDataset } from "@core/dataset/build-dataset.js";
+import {
+  listActions,
+  undoAction,
+  writeAction,
+  writeActionsBatch,
+} from "@core/actions/actions-log.js";
 import type { SessionStore } from "@ports/session-store.js";
 import type { SqliteSessionStore } from "@core/storage/sqlite-session-store.js";
 import type {
@@ -153,6 +159,53 @@ export function createApp(deps: HttpDeps): Hono {
     return c.json(buildDataset(deps.dbPath));
   });
 
+  // ── Actions API ────────────────────────────────────────────────
+  // Append-only event log: dismiss/snooze/retire/label/merge all land here.
+  // Mutations are projected into the dataset at read time, never applied to
+  // the underlying sessions/entities/markers tables.
+
+  app.post("/api/action", async (c) => {
+    if (!deps.liveStore) return c.json({ error: "actions require liveStore" }, 503);
+    const body = await c.req.json().catch(() => null);
+    const parsed = parseActionInput(body);
+    if (!parsed) return c.json({ error: "invalid action payload" }, 400);
+    const id = writeAction(deps.liveStore.rawDb(), parsed);
+    return c.json({ id, timestamp: new Date().toISOString() });
+  });
+
+  app.post("/api/action/batch", async (c) => {
+    if (!deps.liveStore) return c.json({ error: "actions require liveStore" }, 503);
+    const body = (await c.req.json().catch(() => null)) as { actions?: unknown[] } | null;
+    if (!body || !Array.isArray(body.actions)) return c.json({ error: "missing actions array" }, 400);
+    const inputs = body.actions
+      .map(parseActionInput)
+      .filter((x): x is NonNullable<ReturnType<typeof parseActionInput>> => x !== null);
+    if (inputs.length === 0) return c.json({ accepted: 0, ids: [] });
+    const ids = writeActionsBatch(deps.liveStore.rawDb(), inputs);
+    return c.json({ accepted: ids.length, ids });
+  });
+
+  app.post("/api/action/:id/undo", (c) => {
+    if (!deps.liveStore) return c.json({ error: "actions require liveStore" }, 503);
+    const result = undoAction(deps.liveStore.rawDb(), c.req.param("id"));
+    if (!result) return c.json({ error: "action not found or already undone" }, 404);
+    return c.json({ id: result.undoId, timestamp: new Date().toISOString() });
+  });
+
+  app.get("/api/actions", (c) => {
+    if (!deps.liveStore) return c.json({ actions: [] });
+    const limitRaw = c.req.query("limit");
+    const subjectId = c.req.query("subject_id");
+    const kind = c.req.query("kind");
+    const limit = limitRaw ? Math.max(1, Math.min(500, Number.parseInt(limitRaw, 10))) : 100;
+    const rows = listActions(deps.liveStore.rawDb(), {
+      limit,
+      ...(subjectId ? { subjectId } : {}),
+      ...(kind ? { kind } : {}),
+    });
+    return c.json({ actions: rows });
+  });
+
   app.get("/api/classifier/info", (c) => {
     const provider = deps.classifierInfo?.provider ?? "deepseek";
     const model = deps.classifierInfo?.model ?? "deepseek-v4-flash";
@@ -185,6 +238,32 @@ export function createApp(deps: HttpDeps): Hono {
   }
 
   return app;
+}
+
+function parseActionInput(raw: unknown): {
+  kind: string;
+  subjectType: string;
+  subjectId: string;
+  payload?: Record<string, unknown>;
+  actor?: string;
+  runtime?: string;
+} | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const kind = typeof r["kind"] === "string" ? r["kind"] : null;
+  const subjectType = typeof r["subject_type"] === "string" ? r["subject_type"] : null;
+  const subjectId = typeof r["subject_id"] === "string" ? r["subject_id"] : null;
+  if (!kind || !subjectType || !subjectId) return null;
+  return {
+    kind,
+    subjectType,
+    subjectId,
+    ...(r["payload"] && typeof r["payload"] === "object" && !Array.isArray(r["payload"])
+      ? { payload: r["payload"] as Record<string, unknown> }
+      : {}),
+    ...(typeof r["actor"] === "string" ? { actor: r["actor"] } : {}),
+    ...(typeof r["runtime"] === "string" ? { runtime: r["runtime"] } : {}),
+  };
 }
 
 function mountSpa(app: Hono, dist: string): void {
