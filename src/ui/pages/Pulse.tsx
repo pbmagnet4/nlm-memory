@@ -52,35 +52,39 @@ export function PulsePage() {
           </div>
         </section>
 
-        <section className="card">
+        <section className="card pulse-scroll-card">
           <header className="card-head"><h3>Stale alerts</h3><span className="muted small">{data.alerts.length}</span></header>
-          <ul className="alert-list">
-            {data.alerts.slice(0, 8).map((a) => (
-              <li key={a.id} className="alert-row">
-                <span className={`chip-inline severity-${a.severity}`}>{a.severity}</span>
-                <Link to={`/thread?entity=${encodeURIComponent(a.entity)}`} className="alert-entity">{a.entity}</Link>
-                <span className="alert-summary">{a.summary}</span>
-                <div className="alert-actions">
-                  <button type="button" className="chip" onClick={() => void snoozeAlert(a.id, 7)}>snooze 7d</button>
-                  <button type="button" className="chip" onClick={() => void dismissAlert(a.id)}>dismiss</button>
-                </div>
-              </li>
-            ))}
-            {data.alerts.length === 0 && <li className="muted">No stale alerts.</li>}
-          </ul>
+          <div className="pulse-scroll-body">
+            <ul className="alert-list">
+              {data.alerts.map((a) => (
+                <li key={a.id} className="alert-row">
+                  <span className={`chip-inline severity-${a.severity}`}>{a.severity}</span>
+                  <Link to={`/thread?entity=${encodeURIComponent(a.entity)}`} className="alert-entity">{a.entity}</Link>
+                  <span className="alert-summary">{a.summary}</span>
+                  <div className="alert-actions">
+                    <button type="button" className="chip" onClick={() => void snoozeAlert(a.id, 7)}>snooze 7d</button>
+                    <button type="button" className="chip" onClick={() => void dismissAlert(a.id)}>dismiss</button>
+                  </div>
+                </li>
+              ))}
+              {data.alerts.length === 0 && <li className="muted alert-row-empty">No stale alerts.</li>}
+            </ul>
+          </div>
         </section>
 
-        <section className="card pulse-recent">
+        <section className="card pulse-recent pulse-scroll-card">
           <header className="card-head"><h3>Recent sessions</h3></header>
-          <ul className="session-list">
-            {recent.map((s) => (
-              <li key={s.id} className="session-row">
-                <span className={`chip-inline status-${s.status}`}>{s.status}</span>
-                <span className="session-label">{s.label}</span>
-                <span className="session-meta">{relativeAge(s.started_at)} · {s.entities.slice(0, 3).join(", ")}{s.entities.length > 3 ? ` +${s.entities.length - 3}` : ""}</span>
-              </li>
-            ))}
-          </ul>
+          <div className="pulse-scroll-body">
+            <ul className="session-list">
+              {recent.map((s) => (
+                <li key={s.id} className="session-row">
+                  <span className={`chip-inline status-${s.status}`}>{s.status}</span>
+                  <span className="session-label">{s.label}</span>
+                  <span className="session-meta">{relativeAge(s.started_at)} · {s.entities.slice(0, 3).join(", ")}{s.entities.length > 3 ? ` +${s.entities.length - 3}` : ""}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
         </section>
       </div>
     </div>

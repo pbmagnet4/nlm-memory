@@ -864,6 +864,27 @@ code, .code-block {
   grid-template-columns: 1fr 1fr 1fr;
   gap: 12px;
   margin-top: 6px;
+  /* Bound the row to viewport-minus-chrome so cards have a real bounding box
+     and their bodies scroll instead of stretching the page. */
+  height: calc(100vh - 280px);
+  min-height: 360px;
+}
+
+/* Scroll containers (Stale alerts, Recent sessions). Card lays out as a
+   flex column with header fixed and body filling the remainder. */
+.pulse-scroll-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pulse-scroll-card .card-head { flex-shrink: 0; }
+
+.pulse-scroll-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .card-head {
@@ -892,7 +913,8 @@ code, .code-block {
 .bar-fill.tone-danger { background: var(--danger); }
 .bar-value { font-size: var(--text-sm); color: var(--text-1); min-width: 40px; text-align: right; }
 
-.alert-list { list-style: none; padding: 4px 0; max-height: 280px; overflow-y: auto; }
+.alert-list { list-style: none; padding: 4px 0; }
+.alert-row-empty { padding: 16px 14px; }
 
 .alert-row {
   display: grid;
@@ -949,8 +971,13 @@ a.session-label:hover { color: var(--accent); }
 .pulse-recent { grid-column: span 1; }
 
 @media (max-width: 1100px) {
-  .pulse-grid { grid-template-columns: 1fr 1fr; }
+  .pulse-grid {
+    grid-template-columns: 1fr 1fr;
+    height: auto;
+    min-height: 0;
+  }
   .pulse-recent { grid-column: span 2; }
+  .pulse-scroll-body { max-height: 360px; }
 }
 
 @media (max-width: 700px) {
