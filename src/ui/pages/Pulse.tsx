@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useDataset, relativeAge } from "../lib/dataset.js";
-import type { DatasetAlert, DatasetEntity, DatasetSession } from "../lib/dataset.js";
+import type { DatasetAlert, DatasetEntity, DatasetRuntime, DatasetSession } from "../lib/dataset.js";
 import { postAction } from "../lib/actions.js";
 import { SessionDrawer } from "../components/SessionDrawer.js";
 import { PromoteOpenButton } from "../components/PromoteOpenButton.js";
@@ -65,6 +65,11 @@ export function PulsePage() {
         <section className="card">
           <header className="card-head"><h3>Coherence</h3></header>
           <CoherenceBars metrics={data.metrics} />
+        </section>
+
+        <section className="card">
+          <header className="card-head"><h3>Runtimes</h3></header>
+          <RuntimesPanel runtimes={data.runtimes} />
         </section>
 
         <section className="card pulse-scroll-card">
@@ -368,6 +373,26 @@ function CoherenceBars({ metrics }: { metrics: { healthy: number; sparse: number
       <Bar tone="warn"   label="Sparse"  value={metrics.sparse}  pct={pct(metrics.sparse)} />
       <Bar tone="danger" label="Stale"   value={metrics.stale}   pct={pct(metrics.stale)} />
     </div>
+  );
+}
+
+function RuntimesPanel({ runtimes }: { runtimes: DatasetRuntime[] }) {
+  if (runtimes.length === 0) {
+    return <div className="muted small" style={{ padding: "8px 12px" }}>No runtime activity yet.</div>;
+  }
+  return (
+    <ul className="runtime-list">
+      {runtimes.map((r) => (
+        <li key={r.name} className="runtime-row">
+          <span className={`runtime-dot runtime-${r.status}`} title={r.status} />
+          <span className="runtime-name mono">{r.name}</span>
+          <span className="runtime-counts muted small">
+            {r.this_week}<span className="runtime-counts-sep">·</span><span className="runtime-counts-prev">{r.last_week} prev</span>
+          </span>
+          <span className="muted small mono runtime-age">{relativeAge(r.last_session_at)}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 

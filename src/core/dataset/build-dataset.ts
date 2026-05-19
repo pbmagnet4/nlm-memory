@@ -74,6 +74,16 @@ export interface DatasetResponse {
     readonly age_days: number;
     readonly last_touch_at: string | null;
   }>;
+  readonly runtimes: ReadonlyArray<DatasetRuntime>;
+}
+
+export interface DatasetRuntime {
+  readonly name: string;
+  readonly status: "active" | "idle" | "dormant";
+  readonly sessions_total: number;
+  readonly this_week: number;
+  readonly last_week: number;
+  readonly last_session_at: string | null;
 }
 
 interface SessionRow {
@@ -129,6 +139,7 @@ const EMPTY_DATASET = (dbPath: string, present: boolean): DatasetResponse => ({
   entity_status: {},
   metrics: { this_week: 0, last_week: 0, sparkline: [0, 0, 0, 0, 0, 0, 0], healthy: 0, sparse: 0, stale: 0, closed_decisions: 0 },
   alerts: [],
+  runtimes: [],
 });
 
 export interface BuildDatasetOptions {
@@ -289,6 +300,7 @@ function projectFromDb(db: Database.Database, dbPath: string, includePaths: bool
 
   const metrics = computeMetrics(sessions, entityRows);
   const alerts = computeStaleAlerts(sessions, entityRows, overlay);
+  const runtimes = computeRuntimes(sessions);
 
   return {
     meta: {
@@ -305,7 +317,56 @@ function projectFromDb(db: Database.Database, dbPath: string, includePaths: bool
     entity_status: entityStatus,
     metrics,
     alerts,
+    runtimes,
   };
+}
+
+function computeRuntimes(sessions: ReadonlyArray<DatasetSession>): DatasetRuntime[] {
+  const now = Date.now();
+  const day = 86_400_000;
+  const week = now - 7 * day;
+  const prev = now - 14 * day;
+  const groups = new Map<string, {
+    total: number;
+    thisWeek: number;
+    lastWeek: number;
+    lastAt: number;
+    lastAtIso: string | null;
+  }>();
+  for (const s of sessions) {
+    const name = (s.runtime ?? "").trim() || "unknown";
+    const g = groups.get(name) ?? { total: 0, thisWeek: 0, lastWeek: 0, lastAt: 0, lastAtIso: null };
+    g.total += 1;
+    if (s.started_at) {
+      const t = Date.parse(s.started_at);
+      if (Number.isFinite(t)) {
+        if (t >= week) g.thisWeek += 1;
+        else if (t >= prev) g.lastWeek += 1;
+        if (t > g.lastAt) {
+          g.lastAt = t;
+          g.lastAtIso = s.started_at;
+        }
+      }
+    }
+    groups.set(name, g);
+  }
+  const hour = 3_600_000;
+  const out: DatasetRuntime[] = [];
+  for (const [name, g] of groups) {
+    const age = g.lastAt ? now - g.lastAt : Infinity;
+    const status: DatasetRuntime["status"] =
+      age <= hour ? "active" : age <= day ? "idle" : "dormant";
+    out.push({
+      name,
+      status,
+      sessions_total: g.total,
+      this_week: g.thisWeek,
+      last_week: g.lastWeek,
+      last_session_at: g.lastAtIso,
+    });
+  }
+  out.sort((a, b) => (Date.parse(b.last_session_at ?? "0") || 0) - (Date.parse(a.last_session_at ?? "0") || 0));
+  return out;
 }
 
 function computeMetrics(

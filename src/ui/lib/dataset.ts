@@ -66,6 +66,16 @@ export interface Dataset {
     closed_decisions: number;
   };
   alerts: DatasetAlert[];
+  runtimes: DatasetRuntime[];
+}
+
+export interface DatasetRuntime {
+  name: string;
+  status: "active" | "idle" | "dormant";
+  sessions_total: number;
+  this_week: number;
+  last_week: number;
+  last_session_at: string | null;
 }
 
 export interface DatasetState {

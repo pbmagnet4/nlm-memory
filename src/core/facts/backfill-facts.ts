@@ -140,13 +140,22 @@ export async function backfillFacts(
     ? db.prepare<[string, string], CandidateRow>(sql).all(startedAtCutoff, opts.from)
     : db.prepare<[string], CandidateRow>(sql).all(startedAtCutoff);
 
-  const limit = opts.limit ?? rows.length;
-  const work = rows.slice(0, limit);
+  // Filter state-file-known done ids BEFORE applying limit. Without this,
+  // a dense cluster of previously-skipped (low-confidence) sessions would
+  // burn the batch's --limit on no-op skips. With it, --limit N means
+  // "N actually-processable sessions" — much more useful UX for repeated
+  // small batches that walk forward through the corpus. The pre-filter
+  // count gets reported as `skippedAlreadyDone` so the operator still sees
+  // how big the skip region was.
+  const skippedByStateFile = rows.filter((r) => done.has(r.id)).length;
+  const candidates = rows.filter((r) => !done.has(r.id));
+  const limit = opts.limit ?? candidates.length;
+  const work = candidates.slice(0, limit);
   const total = work.length;
 
   let processed = 0;
   let factsWritten = 0;
-  let skippedAlreadyDone = 0;
+  let skippedAlreadyDone = skippedByStateFile;
   let skippedExistingFacts = 0;
   let skippedNoBody = 0;
   let skippedLowConfidence = 0;
@@ -157,11 +166,8 @@ export async function backfillFacts(
     const row = work[i]!;
     const sid = row.id;
 
-    if (done.has(sid)) {
-      skippedAlreadyDone += 1;
-      opts.onProgress?.(i + 1, total, sid, "skipped_done");
-      continue;
-    }
+    // No per-iteration `done` check needed — `work` is already filtered
+    // against the state file above.
 
     if (!row.body || row.body.length === 0) {
       skippedNoBody += 1;

@@ -964,6 +964,31 @@ code, .code-block {
 .bar-value { font-size: var(--text-sm); color: var(--text-1); min-width: 96px; text-align: right; white-space: nowrap; }
 .bar-pct { margin-left: 2px; }
 
+/* Runtimes panel (Pulse) */
+.runtime-list { list-style: none; padding: 4px 0; margin: 0; }
+.runtime-row {
+  display: grid;
+  grid-template-columns: 12px 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-1);
+}
+.runtime-row:last-child { border-bottom: none; }
+.runtime-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--text-3);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.04);
+}
+.runtime-dot.runtime-active  { background: var(--accent); box-shadow: 0 0 6px rgba(232,255,110,0.6); }
+.runtime-dot.runtime-idle    { background: var(--warn); }
+.runtime-dot.runtime-dormant { background: var(--text-3); opacity: 0.5; }
+.runtime-name { color: var(--text-1); font-size: var(--text-sm); }
+.runtime-counts { white-space: nowrap; }
+.runtime-counts-sep { margin: 0 6px; opacity: 0.5; }
+.runtime-counts-prev { opacity: 0.7; }
+.runtime-age { min-width: 60px; text-align: right; }
+
 .alert-list { list-style: none; padding: 4px 0; }
 .alert-row-empty { padding: 16px 14px; }
 
