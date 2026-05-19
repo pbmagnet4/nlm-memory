@@ -297,33 +297,31 @@ function KpiSparkline({ values }: { values: number[] }) {
 }
 
 function CoherenceBars({ metrics }: { metrics: { healthy: number; sparse: number; stale: number } }) {
-  const max = Math.max(1, metrics.healthy, metrics.sparse, metrics.stale);
   const total = metrics.healthy + metrics.sparse + metrics.stale;
-  const pct = (v: number) => (total > 0 ? Math.round((v / total) * 100) : 0);
+  const pct = (v: number) => (total > 0 ? (v / total) * 100 : 0);
   return (
     <div className="bar-stack">
-      <Bar tone="active" label="Healthy" value={metrics.healthy} max={max} pct={pct(metrics.healthy)} />
-      <Bar tone="warn"   label="Sparse"  value={metrics.sparse}  max={max} pct={pct(metrics.sparse)} />
-      <Bar tone="danger" label="Stale"   value={metrics.stale}   max={max} pct={pct(metrics.stale)} />
+      <Bar tone="active" label="Healthy" value={metrics.healthy} pct={pct(metrics.healthy)} />
+      <Bar tone="warn"   label="Sparse"  value={metrics.sparse}  pct={pct(metrics.sparse)} />
+      <Bar tone="danger" label="Stale"   value={metrics.stale}   pct={pct(metrics.stale)} />
     </div>
   );
 }
 
-function Bar({ tone, label, value, max, pct }: {
+function Bar({ tone, label, value, pct }: {
   tone: "active" | "warn" | "danger";
   label: string;
   value: number;
-  max: number;
   pct: number;
 }) {
-  const width = max > 0 ? (value / max) * 100 : 0;
+  const rounded = Math.round(pct);
   return (
     <div className="bar-item">
       <span className="bar-label">{label}</span>
-      <div className="bar-track" title={`${value} entit${value === 1 ? "y" : "ies"} (${pct}% of total)`}>
-        <div className={`bar-fill tone-${tone}`} style={{ width: `${width}%` }} />
+      <div className="bar-track" title={`${value.toLocaleString()} entit${value === 1 ? "y" : "ies"} · ${rounded}% of total`}>
+        <div className={`bar-fill tone-${tone}`} style={{ width: `${pct}%` }} />
       </div>
-      <span className="bar-value mono">{value.toLocaleString()}<span className="bar-pct muted small"> · {pct}%</span></span>
+      <span className="bar-value mono">{value.toLocaleString()}<span className="bar-pct muted small"> · {rounded}%</span></span>
     </div>
   );
 }
