@@ -88,9 +88,16 @@ export function RiverPage() {
       setDragRange(null);
       return;
     }
-    // Identify which dates fall inside the drag range. Each cell is 14px wide with 2px gap.
-    const cellSize = 14; // 12px cell + 2px gap
-    const labelOffset = 206; // 200px lane label + 6px gap
+    // Cells live in a CSS grid with repeat(N, 1fr); compute the cell-area
+    // width by measuring the rendered grid minus the fixed label column.
+    const grid = gridRef.current;
+    const labelEl = grid?.querySelector(".river-lane-label") as HTMLElement | null;
+    const labelWidth = labelEl?.offsetWidth ?? 0;
+    const gridWidth = grid?.offsetWidth ?? 0;
+    const cellArea = Math.max(1, gridWidth - labelWidth);
+    const cellSize = cellArea / view.dates.length;
+    const labelOffset = labelWidth + 12; // grid padding + gap
+
     const startIdx = Math.max(0, Math.floor((dragRange.from - labelOffset) / cellSize));
     const endIdx = Math.min(view.dates.length - 1, Math.floor((dragRange.to - labelOffset) / cellSize));
     if (endIdx <= startIdx) {
@@ -101,7 +108,6 @@ export function RiverPage() {
     const startDate = view.dates[startIdx];
     const endDate = view.dates[endIdx];
     if (startDate && endDate) {
-      // Compute new span as days between the two dates
       const days = Math.max(1, Math.ceil((Date.parse(endDate) - Date.parse(startDate)) / 86_400_000));
       setSpan(days <= 7 ? "7d" : days <= 30 ? "30d" : days <= 90 ? "90d" : "all");
     }
@@ -136,6 +142,7 @@ export function RiverPage() {
         onMouseMove={onMouseMove}
         onMouseUp={onMouseUp}
         onMouseLeave={() => { dragRef.current = null; setDragRange(null); setHover(null); }}
+        style={{ ["--cells" as string]: view.dates.length }}
       >
         {dragRange && (
           <div
@@ -143,13 +150,16 @@ export function RiverPage() {
             style={{ left: `${dragRange.from}px`, width: `${dragRange.to - dragRange.from}px` }}
           />
         )}
-        <div className="river-dates">
-          {view.dates.map((d) => (
-            <div key={d} className="river-date-cell" title={d}>{d.slice(5)}</div>
-          ))}
+        <div className="river-row river-row-dates">
+          <div className="river-lane-label river-lane-label--header" aria-hidden="true" />
+          <div className="river-cells">
+            {view.dates.map((d) => (
+              <div key={d} className="river-date-cell" title={d}>{d.slice(5)}</div>
+            ))}
+          </div>
         </div>
         {view.laneRows.map(({ entity, perDate, total }) => (
-          <div key={entity} className="river-lane">
+          <div key={entity} className="river-row">
             <button
               type="button"
               className="river-lane-label"

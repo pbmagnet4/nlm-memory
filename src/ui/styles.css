@@ -1094,40 +1094,34 @@ a.session-label:hover { color: var(--accent); }
 .river-toolbar .page-title { margin-bottom: 0; font-size: var(--text-lg); }
 
 .river-grid {
+  --river-label-w: 200px;
+  --river-row-gap: 3px;
+  --river-cell-gap: 2px;
+  --river-cell-h: 16px;
   padding: 12px;
-  overflow-x: auto;
-}
-
-.river-dates {
+  width: 100%;
   display: flex;
-  gap: 2px;
-  margin-left: 200px;
-  font-size: 9px;
-  color: var(--text-4);
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-  margin-bottom: 6px;
+  flex-direction: column;
+  gap: var(--river-row-gap);
 }
 
-.river-date-cell {
-  width: 12px;
-  text-align: center;
-  flex-shrink: 0;
-}
-
-.river-lane {
-  display: flex;
-  align-items: center;
+.river-row {
+  display: grid;
+  grid-template-columns: var(--river-label-w) 1fr;
   gap: 6px;
-  margin-bottom: 3px;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+}
+
+.river-row-dates {
+  margin-bottom: 2px;
 }
 
 .river-lane-label {
   display: flex;
   align-items: center;
   gap: 6px;
-  width: 200px;
-  flex-shrink: 0;
   padding: 2px 6px;
   border-radius: var(--r-sm);
   text-decoration: none;
@@ -1135,22 +1129,41 @@ a.session-label:hover { color: var(--accent); }
   font-size: var(--text-sm);
   white-space: nowrap;
   overflow: hidden;
+  width: 100%;
+  min-width: 0;
 }
 .river-lane-label:hover { background: var(--surface-2); color: var(--text-1); }
 
-.river-lane-name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.river-lane-label--header {
+  padding: 0;
+  background: none;
+}
+
+.river-lane-name { flex: 1; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
 .river-cells {
-  display: flex;
-  gap: 2px;
+  display: grid;
+  grid-template-columns: repeat(var(--cells, 1), minmax(0, 1fr));
+  gap: var(--river-cell-gap);
+  width: 100%;
+  min-width: 0;
+}
+
+.river-date-cell {
+  font-size: 9px;
+  color: var(--text-4);
+  letter-spacing: 0.04em;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .river-cell {
-  width: 12px;
-  height: 14px;
+  height: var(--river-cell-h);
   border-radius: 2px;
   background: var(--surface-2);
-  flex-shrink: 0;
+  min-width: 0;
 }
 
 .river-cell.tier-1 { background: rgba(232,255,110,0.20); }
