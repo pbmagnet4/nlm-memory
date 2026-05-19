@@ -1,0 +1,39 @@
+{
+  "name": "nle-memory",
+  "version": "0.2.0-dev",
+  "description": "Local-first memory operating system for AI operators. Treats AI reasoning as a non-linear editing problem.",
+  "type": "module",
+  "private": true,
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "bin": {
+    "nle": "./dist/cli/nle.js"
+  },
+  "scripts": {
+    "dev": "tsx watch src/cli/nle.ts start",
+    "start": "node dist/cli/nle.js start",
+    "build": "tsc -p tsconfig.json && vite build --config src/ui/vite.config.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "lint": "eslint src tests"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.5.0",
+    "commander": "^12.1.0",
+    "hono": "^4.6.0",
+    "sqlite-vec": "^0.1.6",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}
