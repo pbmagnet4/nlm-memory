@@ -155,6 +155,15 @@ body {
 .btn-primary:hover  { background: #d4eb5e; border-color: #d4eb5e; color: #080808; }
 .btn-accent         { color: var(--accent); border-color: rgba(232,255,110,0.25); }
 .btn-accent:hover   { background: var(--accent-glow); border-color: rgba(232,255,110,0.4); }
+
+.form-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 12px 0;
+}
+.form-row .form-label { color: var(--text-3); font-size: var(--text-xs); }
 .btn-danger:hover   { border-color: var(--danger); color: var(--danger); }
 
 /* ── Chip ────────────────────────────────────────────────────────────────── */
@@ -619,8 +628,17 @@ body {
 .page-header {
   display: flex;
   align-items: center;
-  gap: 16px;
-  margin-bottom: 16px;
+  gap: 24px;
+  margin-bottom: 24px;
+  padding-top: 8px;
+}
+
+.subnav + .page-header,
+.subnav + .page-title {
+  gap: 28px;
+  margin-top: 28px;
+  margin-bottom: 28px;
+  padding-top: 0;
 }
 
 .page-header .page-title { margin-bottom: 0; }
@@ -759,11 +777,7 @@ code, .code-block {
 
 .data-table tr:hover td { background: var(--surface-1); }
 
-.canonical {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
+.canonical .dot { margin-right: 8px; vertical-align: middle; }
 
 .dot {
   display: inline-block;

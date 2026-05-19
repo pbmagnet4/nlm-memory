@@ -16,6 +16,7 @@ import type { RecallService } from "@core/recall/recall-service.js";
 import { logQuery, recallStats } from "@core/recall/query-log.js";
 import { recentQueryLog } from "@core/recall/recent-log.js";
 import { buildDataset } from "@core/dataset/build-dataset.js";
+import { ClassifierBox, type ClassifierProvider } from "../llm/classifier-box.js";
 import {
   listActions,
   undoAction,
@@ -39,8 +40,10 @@ export interface HttpDeps {
   readonly queryLogPath?: string;
   /** Path to canonical.sqlite for the /api/dataset endpoint. */
   readonly dbPath?: string;
-  /** Active classifier provider + model for /api/classifier/info. */
-  readonly classifierInfo?: { provider: string; model: string };
+  /** Mutable classifier — read by /api/classifier/info, swapped by POST /api/classifier. */
+  readonly classifier?: ClassifierBox;
+  /** Static embedder info — embeddings are always Ollama in this build (DeepSeek has no /embed). */
+  readonly embedderInfo?: { provider: string; model: string; dims: number };
   /** Directory containing the built UI (dist/ui). When set, /ui/* serves the SPA. */
   readonly uiDist?: string;
 }
@@ -208,21 +211,40 @@ export function createApp(deps: HttpDeps): Hono {
   });
 
   app.get("/api/classifier/info", (c) => {
-    const provider = deps.classifierInfo?.provider ?? "deepseek";
-    const model = deps.classifierInfo?.model ?? "deepseek-v4-flash";
+    const provider = deps.classifier?.provider ?? "deepseek";
+    const model = deps.classifier?.model ?? "deepseek-v4-flash";
     return c.json({
       provider,
       model,
-      available_providers: ["deepseek", "ollama"],
+      available_providers: ["deepseek", "ollama"] as const,
       env_present: {
         deepseek: Boolean(process.env["DEEPSEEK_API_KEY"]),
         ollama: true,
       },
       default_models: {
-        deepseek: ["deepseek-v4-flash", "deepseek-v4-pro"],
-        ollama: ["phi4-mini:latest", "qwen2.5:3b-instruct"],
+        deepseek: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat"],
+        ollama: ["phi4-mini:latest", "qwen2.5:3b-instruct", "llama3.2:3b", "mistral:7b"],
       },
+      embedder: deps.embedderInfo ?? { provider: "ollama", model: "nomic-embed-text", dims: 768 },
     });
+  });
+
+  app.post("/api/classifier", async (c) => {
+    if (!deps.classifier) return c.json({ error: "classifier swap requires classifier box" }, 503);
+    const body = (await c.req.json().catch(() => null)) as { provider?: string; model?: string } | null;
+    const provider = body?.provider;
+    const model = body?.model;
+    if (provider !== "deepseek" && provider !== "ollama") {
+      return c.json({ error: "provider must be 'deepseek' or 'ollama'" }, 400);
+    }
+    if (!model || typeof model !== "string" || model.length === 0) {
+      return c.json({ error: "model is required" }, 400);
+    }
+    if (provider === "deepseek" && !process.env["DEEPSEEK_API_KEY"]) {
+      return c.json({ error: "DEEPSEEK_API_KEY not set — cannot swap to deepseek" }, 400);
+    }
+    deps.classifier.swap(provider as ClassifierProvider, model);
+    return c.json({ provider: deps.classifier.provider, model: deps.classifier.model });
   });
 
   app.get("/api/session/:id", async (c) => {

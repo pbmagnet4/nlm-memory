@@ -26,6 +26,7 @@ import { SqliteFactStore } from "../core/storage/sqlite-fact-store.js";
 import { SqliteSessionStore } from "../core/storage/sqlite-session-store.js";
 import { createApp } from "../http/app.js";
 import { createMcpServer } from "../mcp/server.js";
+import { ClassifierBox, type ClassifierProvider } from "../llm/classifier-box.js";
 import { DeepSeekClient } from "../llm/deepseek-client.js";
 import { OllamaClient } from "../llm/ollama-client.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
@@ -37,7 +38,6 @@ import { ScanScheduler } from "../core/scheduler/scheduler.js";
 import { ClaudeCodeAdapter } from "../core/adapters/claude-code.js";
 import { HermesAdapter } from "../core/adapters/hermes.js";
 import { PiAdapter } from "../core/adapters/pi.js";
-import type { LLMClient } from "../ports/llm-client.js";
 import type { TranscriptAdapter } from "../ports/transcript-adapter.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -63,17 +63,16 @@ function ollamaUrl(): string {
   return process.env["NLE_OLLAMA_URL"] ?? "http://localhost:11434";
 }
 
-function buildClassifier(): LLMClient {
+function buildClassifier(): ClassifierBox {
   // DeepSeek V4 Flash is the default for the ingest classifier per the
   // 2026-05-19 parity run: ~5s/session, 90% first-try success vs Ollama
   // phi4-mini's 0% on the same first three sessions. Override with
   // NLE_CLASSIFIER=ollama if you need offline-only operation.
-  const provider = (process.env["NLE_CLASSIFIER"] ?? "deepseek").toLowerCase();
-  if (provider === "ollama") {
-    return new OllamaClient({ baseUrl: ollamaUrl() });
-  }
-  autoloadEnv();
-  return new DeepSeekClient();
+  const provider = ((process.env["NLE_CLASSIFIER"] ?? "deepseek").toLowerCase() as ClassifierProvider);
+  if (provider !== "ollama") autoloadEnv();
+  const model = process.env["NLE_CLASSIFIER_MODEL"]
+    ?? (provider === "ollama" ? "phi4-mini:latest" : "deepseek-v4-flash");
+  return new ClassifierBox({ provider, model, ollamaUrl: ollamaUrl() });
 }
 
 function buildAdapters(): TranscriptAdapter[] {
@@ -123,16 +122,13 @@ program
   .action(async (opts) => {
     const { store, facts, recall, embedder, classifier } = buildStack();
     const { existsSync } = await import("node:fs");
-    const classifierProvider = (process.env["NLE_CLASSIFIER"] ?? "deepseek").toLowerCase();
     const app = createApp({
       recall,
       store,
       liveStore: store,
       dbPath: dbPath(),
-      classifierInfo: {
-        provider: classifierProvider,
-        model: classifierProvider === "ollama" ? "phi4-mini:latest" : "deepseek-v4-flash",
-      },
+      classifier,
+      embedderInfo: { provider: "ollama", model: "nomic-embed-text", dims: 768 },
       ...(existsSync(UI_DIST) ? { uiDist: UI_DIST } : {}),
     });
     const p = port();
