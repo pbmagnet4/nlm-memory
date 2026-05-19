@@ -1,6 +1,14 @@
-# nle-memory desktop product — phased plan
+# NLM desktop product — phased plan
 
-**Goal.** Ship nle-memory as a local-first desktop app others can install and use. Single-user-per-instance. SQLite on the user's disk. No SaaS infra, no auth, no multi-tenancy.
+**Product name.** NLM (Non-Linear Memory). The repo / package / internal modules keep their current `nle-memory` codename — renaming code is a separate, invasive task that doesn't block the product. User-facing strings (window title, installer, landing page, README hero) use NLM.
+
+**License.** MIT. Free on GitHub, anyone can fork or vendor.
+
+**Distribution.** GitHub Releases. Skipping app stores for now (review overhead, Apple's 30%, slower iteration).
+
+**Pricing.** Free forever. Open source.
+
+**Goal.** Ship NLM as a local-first desktop app others can install and use. Single-user-per-instance. SQLite on the user's disk. No SaaS infra, no auth, no multi-tenancy.
 
 **Why desktop.** Privacy story is the product (transcripts never leave the machine). Sidesteps the entire SaaS infra tax (hosting, billing, auth, compliance). Architecture leaves a multi-tenant door open if we ever want it.
 
@@ -56,11 +64,6 @@ Things you can ship without, but probably shouldn't.
 
 ---
 
-## Open questions to resolve before Phase 0
+## Decisions log
 
-These are blockers; rest of the plan flexes around the answers.
-
-1. **License.** MIT (anyone can fork, including commercial competitors) vs AGPL (cloud forks must open-source their changes). If you ever plan to host a SaaS version yourself, AGPL is the safer moat.
-2. **Distribution.** Ship as `.dmg`/`.msi` on GitHub Releases (free, technical audience) vs Mac App Store + Microsoft Store (broader reach, but they review every build and Apple takes 30%).
-3. **Branding.** Is this called "nle-memory"? It's a great internal name but not a great consumer one. "NLE" doesn't mean anything to someone who hasn't read the architecture doc.
-4. **Pricing model later.** Free + open source forever? Free desktop + paid cloud sync? Paid desktop ($X one-time)? Doesn't block Phase 0–1, but it shapes the Phase 3 landing page and license decision.
+- **2026-05-19** — Name: NLM (Non-Linear Memory). License: MIT. Distribution: GitHub Releases. Pricing: free forever.
