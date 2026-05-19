@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useDataset, relativeAge } from "../lib/dataset.js";
+import type { DatasetSession } from "../lib/dataset.js";
 
 interface SessionDetail {
   id: string;
@@ -130,10 +131,98 @@ export function ThreadPage() {
         </section>
       </div>
 
-      <h3 className="section-title">Sessions</h3>
+      <ThreadSessionList thread={thread} onOpenSession={openSession} />
+
+      {drawerSid && (
+        <SessionDrawer sessionId={drawerSid} onClose={closeSession} entityColor={entityColor} />
+      )}
+    </div>
+  );
+}
+
+type StatusFilter = "all" | "active" | "idle" | "closed" | "superseded";
+type MarkerFilter = "all" | "decisions" | "open";
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100] as const;
+
+function ThreadSessionList({
+  thread,
+  onOpenSession,
+}: {
+  thread: DatasetSession[];
+  onOpenSession: (id: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState<StatusFilter>("all");
+  const [markers, setMarkers] = useState<MarkerFilter>("all");
+  const [pageSize, setPageSize] = useState<number>(25);
+  const [page, setPage] = useState(0);
+
+  const filtered = useMemo(() => {
+    const q = query.toLowerCase().trim();
+    return thread.filter((s) => {
+      if (status !== "all" && s.status !== status) return false;
+      if (markers === "decisions" && s.decisions.length === 0) return false;
+      if (markers === "open" && s.open_questions.length === 0) return false;
+      if (!q) return true;
+      return (
+        s.label.toLowerCase().includes(q) ||
+        s.summary.toLowerCase().includes(q) ||
+        s.decisions.some((d) => d.toLowerCase().includes(q)) ||
+        s.open.some((o) => o.toLowerCase().includes(q))
+      );
+    });
+  }, [thread, query, status, markers]);
+
+  // Reset page when filter inputs change
+  useEffect(() => { setPage(0); }, [query, status, markers, pageSize]);
+
+  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const currentPage = Math.min(page, pageCount - 1);
+  const start = currentPage * pageSize;
+  const slice = filtered.slice(start, start + pageSize);
+
+  return (
+    <>
+      <div className="thread-sessions-head">
+        <h3 className="section-title thread-sessions-title">Sessions</h3>
+        <input
+          className="search-input"
+          placeholder="search label, summary, decisions, open…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </div>
+
+      <div className="thread-filters">
+        <div className="filter-group" role="group" aria-label="Status filter">
+          {(["all", "active", "idle", "closed", "superseded"] as const).map((s) => (
+            <button
+              key={s}
+              type="button"
+              className={`chip${status === s ? " active" : ""}`}
+              data-status={s === "all" ? undefined : s}
+              onClick={() => setStatus(s)}
+            >{s}</button>
+          ))}
+        </div>
+        <div className="filter-group" role="group" aria-label="Marker filter">
+          {(["all", "decisions", "open"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              className={`chip${markers === m ? " active" : ""}`}
+              data-marker={m === "all" ? undefined : m}
+              onClick={() => setMarkers(m)}
+            >{m === "all" ? "all markers" : m}</button>
+          ))}
+        </div>
+        <span className="header-spacer" />
+        <span className="muted small">{filtered.length} match{filtered.length === 1 ? "" : "es"}</span>
+      </div>
+
       <ul className="session-list">
-        {thread.map((s) => (
-          <li key={s.id} className="session-row session-row-detail clickable" onClick={() => openSession(s.id)}>
+        {slice.map((s) => (
+          <li key={s.id} className="session-row session-row-detail clickable" onClick={() => onOpenSession(s.id)}>
             <span className={`chip-inline status-${s.status}`}>{s.status}</span>
             <div className="session-row-main">
               <span className="session-label">{s.label}</span>
@@ -142,12 +231,39 @@ export function ThreadPage() {
             <span className="muted small mono">{relativeAge(s.started_at)}</span>
           </li>
         ))}
+        {slice.length === 0 && (
+          <li className="muted small empty-row">
+            {thread.length === 0 ? "No sessions yet." : "No sessions match the current filters."}
+          </li>
+        )}
       </ul>
 
-      {drawerSid && (
-        <SessionDrawer sessionId={drawerSid} onClose={closeSession} entityColor={entityColor} />
+      {filtered.length > 0 && (
+        <div className="pagination">
+          <div className="page-size">
+            <label className="form-label">Per page</label>
+            <select
+              className="form-input form-input-inline"
+              value={pageSize}
+              onChange={(e) => setPageSize(Number.parseInt(e.target.value, 10))}
+            >
+              {PAGE_SIZE_OPTIONS.map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
+          <span className="header-spacer" />
+          <span className="muted small">
+            {start + 1}–{Math.min(start + pageSize, filtered.length)} of {filtered.length}
+          </span>
+          <div className="page-nav">
+            <button type="button" className="chip" disabled={currentPage === 0} onClick={() => setPage(0)}>« first</button>
+            <button type="button" className="chip" disabled={currentPage === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>‹ prev</button>
+            <span className="page-indicator mono">{currentPage + 1} / {pageCount}</span>
+            <button type="button" className="chip" disabled={currentPage >= pageCount - 1} onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}>next ›</button>
+            <button type="button" className="chip" disabled={currentPage >= pageCount - 1} onClick={() => setPage(pageCount - 1)}>last »</button>
+          </div>
+        </div>
       )}
-    </div>
+    </>
   );
 }
 

@@ -1405,3 +1405,62 @@ a.session-label:hover { color: var(--accent); }
   font-size: var(--text-xs);
   padding: 2px 8px;
 }
+
+/* ── Thread sessions: search + filters + pagination ──────────────────── */
+.thread-sessions-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 24px 0 8px;
+}
+
+.thread-sessions-title { margin: 0; flex-shrink: 0; }
+
+.thread-sessions-head .search-input { flex: 1; }
+
+.thread-filters {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.thread-filters .filter-group { flex-wrap: wrap; }
+
+.empty-row { padding: 16px 14px; }
+
+.pagination {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 14px 0 4px;
+  border-top: 1px solid var(--border-1);
+  margin-top: 4px;
+}
+
+.page-size {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.page-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.page-nav .chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.page-indicator {
+  font-size: var(--text-sm);
+  color: var(--text-2);
+  padding: 0 8px;
+  min-width: 60px;
+  text-align: center;
+}
