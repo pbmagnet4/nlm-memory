@@ -40,6 +40,7 @@ import type { TranscriptAdapter } from "../ports/transcript-adapter.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
+const UI_DIST = resolve(__dirname, "../../dist/ui");
 const DEFAULT_DB_PATH = resolve(homedir(), ".nle/canonical.sqlite");
 const DEFAULT_PORT = 3940;
 
@@ -112,9 +113,15 @@ program
   .description("Boot the HTTP server + ingest scheduler")
   .option("--no-scheduler", "HTTP only; skip the ingest tick loop")
   .option("--interval-min <n>", "scheduler tick interval (min, default 30)", (v) => Number.parseInt(v, 10), 30)
-  .action((opts) => {
+  .action(async (opts) => {
     const { store, recall, embedder, classifier } = buildStack();
-    const app = createApp({ recall, store });
+    const { existsSync } = await import("node:fs");
+    const app = createApp({
+      recall,
+      store,
+      liveStore: store,
+      ...(existsSync(UI_DIST) ? { uiDist: UI_DIST } : {}),
+    });
     const p = port();
     serve({ fetch: app.fetch, port: p }, (info) => {
       console.error(`nle-memory http listening on http://localhost:${info.port}`);

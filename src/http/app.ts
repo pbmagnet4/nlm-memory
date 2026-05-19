@@ -9,10 +9,14 @@
  * one-way.
  */
 
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { extname, join, normalize, sep } from "node:path";
 import { Hono } from "hono";
 import type { RecallService } from "@core/recall/recall-service.js";
 import { logQuery, recallStats } from "@core/recall/query-log.js";
+import { recentQueryLog } from "@core/recall/recent-log.js";
 import type { SessionStore } from "@ports/session-store.js";
+import type { SqliteSessionStore } from "@core/storage/sqlite-session-store.js";
 import type {
   RecallKindFilter,
   RecallMode,
@@ -22,8 +26,31 @@ import type {
 export interface HttpDeps {
   readonly recall: RecallService;
   readonly store: SessionStore;
+  /** Pass the concrete store when /live endpoints (recent-writes / recent-markers) should be served. */
+  readonly liveStore?: SqliteSessionStore;
   /** Optional override for the query log path. Defaults to ~/.nle/query_log.jsonl or $NLE_QUERY_LOG. */
   readonly queryLogPath?: string;
+  /** Directory containing the built UI (dist/ui). When set, /ui/* serves the SPA. */
+  readonly uiDist?: string;
+}
+
+const MIME_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".mjs": "application/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
+  ".json": "application/json; charset=utf-8",
+  ".map": "application/json; charset=utf-8",
+};
+
+function parseLimit(raw: string | undefined, fallback: number, max: number): number {
+  if (raw === undefined) return fallback;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1) return fallback;
+  return Math.min(max, n);
 }
 
 const VALID_MODES: ReadonlyArray<RecallMode> = ["keyword", "semantic", "hybrid"];
@@ -95,6 +122,27 @@ export function createApp(deps: HttpDeps): Hono {
     return c.json(stats);
   });
 
+  app.get("/api/recall/recent", (c) => {
+    const limit = parseLimit(c.req.query("limit"), 50, 200);
+    const entries = recentQueryLog(
+      limit,
+      ...(deps.queryLogPath !== undefined ? [deps.queryLogPath] : []),
+    );
+    return c.json({ entries });
+  });
+
+  app.get("/api/live/recent-writes", (c) => {
+    if (!deps.liveStore) return c.json({ writes: [] });
+    const limit = parseLimit(c.req.query("limit"), 50, 200);
+    return c.json({ writes: deps.liveStore.recentWrites(limit) });
+  });
+
+  app.get("/api/live/recent-markers", (c) => {
+    if (!deps.liveStore) return c.json({ markers: [] });
+    const limit = parseLimit(c.req.query("limit"), 50, 200);
+    return c.json({ markers: deps.liveStore.recentMarkers(limit) });
+  });
+
   app.get("/api/session/:id", async (c) => {
     const id = c.req.param("id");
     const session = await deps.store.getById(id);
@@ -104,5 +152,31 @@ export function createApp(deps: HttpDeps): Hono {
     return c.json(session);
   });
 
+  if (deps.uiDist) {
+    mountSpa(app, deps.uiDist);
+  }
+
   return app;
+}
+
+function mountSpa(app: Hono, dist: string): void {
+  const indexHtml = join(dist, "index.html");
+  if (!existsSync(indexHtml)) return;
+
+  app.get("/ui/*", (c) => {
+    const rel = c.req.path.replace(/^\/ui\/?/, "");
+    if (rel) {
+      const safe = normalize(rel);
+      if (!safe.startsWith("..") && !safe.startsWith(sep)) {
+        const candidate = join(dist, safe);
+        if (existsSync(candidate) && statSync(candidate).isFile()) {
+          const mime = MIME_TYPES[extname(candidate)] ?? "application/octet-stream";
+          return c.body(readFileSync(candidate), 200, { "content-type": mime });
+        }
+      }
+    }
+    return c.html(readFileSync(indexHtml, "utf8"));
+  });
+
+  app.get("/ui", (c) => c.redirect("/ui/"));
 }

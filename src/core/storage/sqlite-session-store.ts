@@ -74,6 +74,22 @@ type EntityRow = { session_id: string; entity_canonical: string };
 type MarkerRow = { session_id: string; kind: "decision" | "open"; text: string };
 type NeighborRow = { session_id: string; distance: number };
 
+export interface RecentWrite {
+  id: string;
+  runtime: string;
+  label: string;
+  summary: string;
+  createdAt: string;
+}
+
+export interface RecentMarker {
+  sessionId: string;
+  kind: "decision" | "open";
+  text: string;
+  label: string;
+  createdAt: string;
+}
+
 export class SqliteSessionStore implements SessionStore {
   private readonly db: Database.Database;
 
@@ -101,6 +117,31 @@ export class SqliteSessionStore implements SessionStore {
    *  directly from the recall path — it bypasses the SessionStore port. */
   rawDb(): Database.Database {
     return this.db;
+  }
+
+  /** Recently-written sessions ordered by created_at desc. Powers /live Writes column. */
+  recentWrites(limit: number): RecentWrite[] {
+    return this.db
+      .prepare<[number], RecentWrite>(
+        `SELECT id, runtime, label, summary, created_at AS createdAt
+         FROM sessions
+         ORDER BY created_at DESC
+         LIMIT ?`,
+      )
+      .all(limit);
+  }
+
+  /** Recently-extracted markers ordered by session created_at desc. Powers /live Decisions column. */
+  recentMarkers(limit: number): RecentMarker[] {
+    return this.db
+      .prepare<[number], RecentMarker>(
+        `SELECT m.session_id AS sessionId, m.kind, m.text, s.label, s.created_at AS createdAt
+         FROM markers m
+         JOIN sessions s ON s.id = m.session_id
+         ORDER BY s.created_at DESC, m.position ASC
+         LIMIT ?`,
+      )
+      .all(limit);
   }
 
   /**

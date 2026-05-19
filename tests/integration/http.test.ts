@@ -82,7 +82,7 @@ describe("HTTP adapter", () => {
       llm: new FixedEmbedder(unit([0, 1, 0])),
     });
     queryLogPath = join(tmp, "query_log.jsonl");
-    app = createApp({ recall, store, queryLogPath });
+    app = createApp({ recall, store, liveStore: store, queryLogPath });
   });
 
   afterEach(() => {
@@ -183,5 +183,36 @@ describe("HTTP adapter", () => {
     expect(body.with_results).toBeGreaterThanOrEqual(1);
     expect(body.by_source["test-source"]).toBe(1);
     expect(body.by_source["http"]).toBe(1);
+  });
+
+  it("GET /api/live/recent-writes returns persisted sessions ordered by recency", async () => {
+    const res = await app.request("/api/live/recent-writes?limit=10");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { writes: { id: string; label: string }[] };
+    expect(body.writes.length).toBeGreaterThanOrEqual(2);
+    expect(body.writes.map((w) => w.id)).toEqual(
+      expect.arrayContaining(["sess_a", "sess_b"]),
+    );
+  });
+
+  it("GET /api/live/recent-markers returns decision + open markers", async () => {
+    const res = await app.request("/api/live/recent-markers?limit=10");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      markers: { kind: string; text: string; sessionId: string }[];
+    };
+    expect(body.markers.length).toBeGreaterThanOrEqual(2);
+    expect(body.markers.some((m) => m.kind === "decision")).toBe(true);
+    expect(body.markers.some((m) => m.kind === "open")).toBe(true);
+  });
+
+  it("GET /api/recall/recent returns tailed log entries", async () => {
+    await app.request("/api/recall?q=pgvector&mode=keyword");
+    await new Promise((r) => setTimeout(r, 50));
+    const res = await app.request("/api/recall/recent?limit=5");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { entries: { source: string; query: string }[] };
+    expect(body.entries.length).toBeGreaterThanOrEqual(1);
+    expect(body.entries[0]?.query).toBe("pgvector");
   });
 });
