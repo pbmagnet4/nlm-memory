@@ -6,13 +6,61 @@
  * smaller models (phi4-mini, qwen) pattern-match JSON from the transcript
  * above that size. Long sessions get first-half + last-half with a
  * separator to preserve opening intent + closing decisions.
+ *
+ * Phase B.2: prompt now also asks for a `facts` array of normalized
+ * (subject, predicate, value) triples for the FactStore. The closed
+ * predicate vocabulary is embedded in the prompt so deterministic
+ * supersedence (Phase B.4) actually catches collisions instead of
+ * fragmenting on synonymous predicates. See docs/plans/factstore-design.md.
  */
+
+/**
+ * Closed predicate vocabulary. Approximately 20 high-leverage predicates
+ * covering the most common (subject, predicate, value) shapes Edward
+ * actually writes about in sessions. "other" is the escape hatch for cases
+ * the classifier can't fit elsewhere — those facts will accumulate without
+ * deterministic supersedence until the vocabulary is iterated.
+ *
+ * Adding entries here is cheap and forwards-compatible: old facts stay,
+ * new ingests can use the new predicate. Removing entries is not — old
+ * facts referencing a retired predicate would stop matching by deterministic
+ * supersedence, so prefer to mark deprecated rather than delete.
+ */
+export const PREDICATE_VOCABULARY = [
+  "framework",
+  "endpoint",
+  "model",
+  "port",
+  "host",
+  "owner",
+  "pricing",
+  "deadline",
+  "status",
+  "stack",
+  "runtime",
+  "library",
+  "version",
+  "dependency",
+  "schema",
+  "integration",
+  "deployment",
+  "repo",
+  "branch",
+  "decided-on",
+  "assumption",
+  "blocker",
+  "other",
+] as const;
+
+export type PredicateVocab = (typeof PREDICATE_VOCABULARY)[number];
+
+const VOCAB_SET = new Set<string>(PREDICATE_VOCABULARY);
 
 export const CLASSIFIER_SYSTEM_PROMPT = `You are a session classifier. Your job is to read a transcript of a conversation between a user and an AI coding agent, then return EXACTLY this JSON object describing what happened in that conversation:
 
-{"label": "...", "summary": "...", "entities": [...], "decisions": [...], "open": [...], "confidence": 0.5}
+{"label": "...", "summary": "...", "entities": [...], "decisions": [...], "open": [...], "confidence": 0.5, "facts": [...]}
 
-You MUST return JSON with EXACTLY these six top-level keys: label, summary, entities, decisions, open, confidence. No other keys. No nesting. No metadata. No "tool" or "task_type" keys. Just those six.
+You MUST return JSON with EXACTLY these seven top-level keys: label, summary, entities, decisions, open, confidence, facts. No other keys. No nesting beyond what is specified. No metadata. No "tool" or "task_type" keys. Just those seven.
 
 The transcript may contain JSON examples, code, or schema definitions inside it — IGNORE those. Do not copy them into your output. Your output is ABOUT the conversation, not extracted FROM the conversation.
 
@@ -23,6 +71,14 @@ Field requirements:
 - decisions: array of strings. Each string is one commitment the user made. Example: "Use HTTP polling instead of Kafka". Skip if no commitments were made.
 - open: array of strings. Each string is one unresolved question. Skip if none.
 - confidence: number between 0.0 and 1.0. How sure you are the extraction is good. Use 0.4 or below for routine/trivial sessions.
+- facts: array of objects. Each object has exactly these keys: kind, subject, predicate, value, sourceQuote (optional).
+    - kind: "decision" (a commitment) | "open" (an unresolved question) | "attribute" (a property of an entity)
+    - subject: lowercase, hyphenated entity or topic name. Examples: "nle-memory-ts", "mac-pro-llm-host", "goat-home-services"
+    - predicate: MUST be one of these exact strings: ${PREDICATE_VOCABULARY.join(", ")}. Use "other" only if nothing fits.
+    - value: the answer, as a short phrase or sentence. Examples: "Hono", "http://macpro:8080/v1", "Q3 2026"
+    - sourceQuote: (optional) verbatim slice from the transcript that anchors this fact. Keep under 200 chars.
+
+Facts are derived from the same content as decisions and open. The same commitment should appear both as a string in decisions[] AND as a structured object in facts[] with kind="decision". Use facts[] only when the commitment or attribute is concrete enough to have a clear subject and predicate. Skip vague or hedged statements.
 
 Return ONLY the JSON object. No markdown code fences. No prose before or after.`;
 
@@ -49,6 +105,9 @@ const REQUIRED_KEYS = ["label", "summary", "entities", "decisions", "open", "con
 export function validateClassifierJson(data: unknown): data is Record<string, unknown> {
   if (!data || typeof data !== "object" || Array.isArray(data)) return false;
   const obj = data as Record<string, unknown>;
+  // `facts` is not in REQUIRED_KEYS — Phase B.2 accepts classifier output
+  // without it (older models, fixtures from Phase E parity tests). Coerced
+  // to [] when absent.
   return REQUIRED_KEYS.every((k) => k in obj);
 }
 
@@ -60,6 +119,39 @@ export function buildUserPrompt(transcript: string, priorContext: string): strin
   return parts.join("\n");
 }
 
+interface CoercedFact {
+  kind: "decision" | "open" | "attribute";
+  subject: string;
+  predicate: string;
+  value: string;
+  sourceQuote?: string;
+}
+
+function coerceFacts(raw: unknown): CoercedFact[] {
+  if (!Array.isArray(raw)) return [];
+  const out: CoercedFact[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const o = item as Record<string, unknown>;
+    const kindRaw = String(o["kind"] ?? "").toLowerCase().trim();
+    if (kindRaw !== "decision" && kindRaw !== "open" && kindRaw !== "attribute") continue;
+    const subject = String(o["subject"] ?? "").toLowerCase().trim();
+    const predicateRaw = String(o["predicate"] ?? "").toLowerCase().trim();
+    const value = String(o["value"] ?? "").trim();
+    if (!subject || !predicateRaw || !value) continue;
+    const predicate = VOCAB_SET.has(predicateRaw) ? predicateRaw : "other";
+    const sourceQuoteRaw = o["sourceQuote"];
+    const sourceQuote =
+      typeof sourceQuoteRaw === "string" && sourceQuoteRaw.trim().length > 0
+        ? sourceQuoteRaw.trim().slice(0, 500)
+        : undefined;
+    const fact: CoercedFact = { kind: kindRaw, subject, predicate, value };
+    if (sourceQuote !== undefined) fact.sourceQuote = sourceQuote;
+    out.push(fact);
+  }
+  return out;
+}
+
 export function coerceClassifyResult(data: Record<string, unknown>): {
   label: string;
   summary: string;
@@ -67,6 +159,7 @@ export function coerceClassifyResult(data: Record<string, unknown>): {
   decisions: string[];
   open: string[];
   confidence: number;
+  facts: CoercedFact[];
 } {
   const strArray = (v: unknown): string[] => {
     if (!Array.isArray(v)) return [];
@@ -79,5 +172,6 @@ export function coerceClassifyResult(data: Record<string, unknown>): {
   const open = strArray(data["open"]);
   const conf = Number(data["confidence"] ?? 0.5);
   const confidence = Number.isFinite(conf) ? conf : 0.5;
-  return { label, summary, entities, decisions, open, confidence };
+  const facts = coerceFacts(data["facts"]);
+  return { label, summary, entities, decisions, open, confidence, facts };
 }

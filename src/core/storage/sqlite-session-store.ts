@@ -26,7 +26,11 @@ import type {
   SessionStatus,
 } from "@shared/types.js";
 import { liveSessionStatus } from "./live-status.js";
+import { loadActionOverlay, openQuestionId } from "@core/actions/overlay.js";
+import type { ActionOverlay } from "@core/actions/overlay.js";
+import type { Fact } from "@shared/types.js";
 import { runMigrations } from "./migrate.js";
+import type { SqliteFactStore } from "./sqlite-fact-store.js";
 
 export interface SqliteSessionStoreOptions {
   readonly dbPath: string;
@@ -158,6 +162,7 @@ export class SqliteSessionStore implements SessionStore {
     record: IngestRecord,
     embedder: import("@ports/llm-client.js").LLMClient | null = null,
     supersedes: string | null = null,
+    factSink: { factStore: SqliteFactStore; facts: ReadonlyArray<Fact> } | null = null,
   ): Promise<void> {
     const db = this.db;
     const txn = db.transaction(() => {
@@ -231,6 +236,17 @@ export class SqliteSessionStore implements SessionStore {
           "UPDATE sessions SET status = 'superseded', updated_at = datetime('now') WHERE id = ?",
         ).run(supersedes);
       }
+
+      // Facts ingest is part of the session txn — either both commit or both
+      // roll back. Phase B.4 will add deterministic supersedence here; for
+      // B.2 it's a straight insertMany. On re-ingest (ON CONFLICT updates the
+      // session above), we delete prior facts for this source_session_id
+      // before re-inserting so the row count matches the latest classifier
+      // output. Without this, re-ingest accumulates duplicates.
+      if (factSink !== null) {
+        db.prepare("DELETE FROM facts WHERE source_session_id = ?").run(record.id);
+        factSink.factStore.insertManyInTxn(factSink.facts);
+      }
     });
     txn();
 
@@ -272,8 +288,9 @@ export class SqliteSessionStore implements SessionStore {
     const ids = rows.map((r) => r.id);
     const entitiesByIdMap = this.loadEntities(ids);
     const markersByIdMap = this.loadMarkers(ids);
+    const overlay = loadActionOverlay(this.db);
 
-    const sessions = rows.map((r) => this.rowToSession(r, entitiesByIdMap, markersByIdMap));
+    const sessions = rows.map((r) => this.rowToSession(r, entitiesByIdMap, markersByIdMap, overlay));
 
     if (!filter) return sessions;
     return sessions.filter((s) => {
@@ -299,7 +316,8 @@ export class SqliteSessionStore implements SessionStore {
     if (!row) return null;
     const entities = this.loadEntities([sessionId]);
     const markers = this.loadMarkers([sessionId]);
-    return this.rowToSession(row, entities, markers);
+    const overlay = loadActionOverlay(this.db);
+    return this.rowToSession(row, entities, markers, overlay);
   }
 
   async semanticSearch(
@@ -444,8 +462,23 @@ export class SqliteSessionStore implements SessionStore {
     row: SessionRow,
     entitiesById: Map<string, string[]>,
     markersById: Map<string, { decisions: string[]; open: string[] }>,
+    overlay: ActionOverlay,
   ): Session {
     const m = markersById.get(row.id);
+    const rawDecisions = m?.decisions ?? [];
+    const rawOpen = m?.open ?? [];
+    const activeOpen: string[] = [];
+    const promotedDecisions: string[] = [];
+    for (const text of rawOpen) {
+      const id = openQuestionId(row.id, text);
+      if (overlay.resolvedOpens.has(id)) continue;
+      const resolution = overlay.promotedOpens.get(id);
+      if (resolution !== undefined) {
+        promotedDecisions.push(resolution);
+        continue;
+      }
+      activeOpen.push(text);
+    }
     return {
       id: row.id,
       runtime: row.runtime,
@@ -460,8 +493,8 @@ export class SqliteSessionStore implements SessionStore {
       transcriptPath: row.transcript_path,
       body: row.body ?? "",
       entities: entitiesById.get(row.id) ?? [],
-      decisions: m?.decisions ?? [],
-      open: m?.open ?? [],
+      decisions: [...rawDecisions, ...promotedDecisions],
+      open: activeOpen,
     };
   }
 }

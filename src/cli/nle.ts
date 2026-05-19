@@ -118,7 +118,7 @@ program
   .option("--no-scheduler", "HTTP only; skip the ingest tick loop")
   .option("--interval-min <n>", "scheduler tick interval (min, default 30)", (v) => Number.parseInt(v, 10), 30)
   .action(async (opts) => {
-    const { store, recall, embedder, classifier } = buildStack();
+    const { store, facts, recall, embedder, classifier } = buildStack();
     const { existsSync } = await import("node:fs");
     const classifierProvider = (process.env["NLE_CLASSIFIER"] ?? "deepseek").toLowerCase();
     const app = createApp({
@@ -149,6 +149,7 @@ program
           adapters,
           classifier,
           embedder,
+          factStore: facts,
           intervalMs: opts.intervalMin * 60_000,
         });
         scheduler.start();

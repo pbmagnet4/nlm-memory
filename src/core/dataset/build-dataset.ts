@@ -12,6 +12,8 @@ import { existsSync } from "node:fs";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 import { liveSessionStatus } from "@core/storage/live-status.js";
+import { loadActionOverlay, openQuestionId } from "@core/actions/overlay.js";
+import type { ActionOverlay } from "@core/actions/overlay.js";
 import type { SessionStatus } from "@shared/types.js";
 
 export interface DatasetSession {
@@ -201,7 +203,7 @@ function projectFromDb(db: Database.Database, dbPath: string, includePaths: bool
       if (list) list.push(r.text);
       else decisionsBySession.set(r.session_id, [r.text]);
     } else {
-      const id = `${r.session_id}::${stableHash12(r.text)}`;
+      const id = openQuestionId(r.session_id, r.text);
       const list = openBySession.get(r.session_id);
       if (list) list.push({ id, text: r.text });
       else openBySession.set(r.session_id, [{ id, text: r.text }]);
@@ -244,10 +246,16 @@ function projectFromDb(db: Database.Database, dbPath: string, includePaths: bool
 
   const sessions: DatasetSession[] = sessionRows.map((s) => {
     const status = liveSessionStatus(s.transcript_path, s.status);
-    const open = openBySession.get(s.id) ?? [];
+    const rawOpen = openBySession.get(s.id) ?? [];
     const supersedes = supersedesBy.get(s.id);
     const supersededBy = supersededByBy.get(s.id);
     const rawEntities = entitiesBySession.get(s.id) ?? [];
+    const activeOpen = rawOpen.filter(
+      (o) => !overlay.resolvedOpens.has(o.id) && !overlay.promotedOpens.has(o.id),
+    );
+    const promotedDecisions = rawOpen
+      .filter((o) => overlay.promotedOpens.has(o.id))
+      .map((o) => overlay.promotedOpens.get(o.id)!);
     return {
       id: s.id,
       date: (s.started_at ?? "").slice(0, 10),
@@ -256,9 +264,9 @@ function projectFromDb(db: Database.Database, dbPath: string, includePaths: bool
       label: s.label,
       summary: s.summary,
       entities: includePaths ? rawEntities : rawEntities.filter((name) => keptEntities.has(name)),
-      decisions: decisionsBySession.get(s.id) ?? [],
-      open: open.map((o) => o.text),
-      open_questions: open.map((o) => ({ id: o.id, text: o.text, resolved: false as const })),
+      decisions: [...(decisionsBySession.get(s.id) ?? []), ...promotedDecisions],
+      open: activeOpen.map((o) => o.text),
+      open_questions: activeOpen.map((o) => ({ id: o.id, text: o.text, resolved: false as const })),
       status,
       duration_min: s.duration_min ?? 0,
       runtime: s.runtime,
@@ -340,69 +348,6 @@ function computeMetrics(
   return { this_week: thisWeek, last_week: lastWeek, sparkline, healthy, sparse, stale, closed_decisions: closedDecisions };
 }
 
-interface ActionOverlay {
-  readonly dismissedAlerts: Set<string>;
-  readonly snoozedAlerts: Map<string, string>; // alert id → snoozed_until ISO
-  readonly retiredEntities: Set<string>;
-  readonly snoozedEntities: Map<string, string>; // canonical → snoozed_until ISO
-  readonly labeledEntities: Map<string, string>; // canonical → new type
-}
-
-interface ActionRow {
-  kind: string;
-  subject_type: string;
-  subject_id: string;
-  payload: string | null;
-}
-
-function loadActionOverlay(db: Database.Database): ActionOverlay {
-  const overlay: ActionOverlay = {
-    dismissedAlerts: new Set(),
-    snoozedAlerts: new Map(),
-    retiredEntities: new Set(),
-    snoozedEntities: new Map(),
-    labeledEntities: new Map(),
-  };
-  const hasActions = db
-    .prepare<[], { name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='actions'")
-    .get();
-  if (!hasActions) return overlay;
-
-  const rows = db
-    .prepare<[], ActionRow>(`
-      SELECT kind, subject_type, subject_id, payload
-      FROM actions
-      WHERE reverted_by IS NULL
-    `)
-    .all();
-
-  const now = new Date().toISOString();
-  for (const r of rows) {
-    const payload = r.payload ? (safeParse(r.payload) as Record<string, unknown> | null) : null;
-    if (r.kind === "dismiss" && r.subject_type === "alert") overlay.dismissedAlerts.add(r.subject_id);
-    else if (r.kind === "snooze" && r.subject_type === "alert") {
-      const until = typeof payload?.["snoozed_until"] === "string" ? payload["snoozed_until"] : "";
-      if (until > now) overlay.snoozedAlerts.set(r.subject_id, until);
-    } else if (r.kind === "retire_entity" && r.subject_type === "entity") overlay.retiredEntities.add(r.subject_id);
-    else if (r.kind === "snooze" && r.subject_type === "entity") {
-      const until = typeof payload?.["snoozed_until"] === "string" ? payload["snoozed_until"] : "";
-      if (until > now) overlay.snoozedEntities.set(r.subject_id, until);
-    } else if (r.kind === "label_entity" && r.subject_type === "entity") {
-      const newType = typeof payload?.["new_type"] === "string" ? payload["new_type"] : null;
-      if (newType) overlay.labeledEntities.set(r.subject_id, newType);
-    }
-  }
-  return overlay;
-}
-
-function safeParse(s: string): unknown {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return null;
-  }
-}
-
 function computeStaleAlerts(
   sessions: ReadonlyArray<DatasetSession>,
   entityRows: ReadonlyArray<EntityCatalogRow>,
@@ -445,15 +390,6 @@ function computeStaleAlerts(
   }
   alerts.sort((a, b) => (a.severity === "high" ? 0 : 1) - (b.severity === "high" ? 0 : 1));
   return alerts;
-}
-
-function stableHash12(text: string): string {
-  let h = 0xcbf29ce484222325n;
-  for (let i = 0; i < text.length; i++) {
-    h ^= BigInt(text.charCodeAt(i));
-    h = BigInt.asUintN(64, h * 0x100000001b3n);
-  }
-  return h.toString(16).padStart(16, "0").slice(0, 12);
 }
 
 const HUES = [200, 270, 320, 30, 90, 150, 220, 290, 340, 50, 110, 170] as const;

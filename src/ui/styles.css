@@ -1465,3 +1465,42 @@ a.session-label:hover { color: var(--accent); }
   min-width: 60px;
   text-align: center;
 }
+
+/* ── Promote-open inline control ───────────────────────────────────────── */
+.marker-row-promotable {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.marker-row-promotable .marker-actions {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.promote-chip {
+  font-size: var(--text-xs);
+  padding: 2px 8px;
+  color: var(--accent);
+  border-color: rgba(232,255,110,0.3);
+  background: var(--accent-glow);
+}
+.promote-chip:hover {
+  border-color: rgba(232,255,110,0.55);
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.promote-editor {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 280px;
+}
+
+.promote-input {
+  flex: 1;
+  min-width: 200px;
+}

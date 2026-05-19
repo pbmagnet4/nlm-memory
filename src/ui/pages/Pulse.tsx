@@ -4,6 +4,7 @@ import { useDataset, relativeAge } from "../lib/dataset.js";
 import type { DatasetAlert, DatasetEntity, DatasetSession } from "../lib/dataset.js";
 import { postAction } from "../lib/actions.js";
 import { SessionDrawer } from "../components/SessionDrawer.js";
+import { PromoteOpenButton } from "../components/PromoteOpenButton.js";
 
 type SeverityFilter = "all" | "high" | "medium";
 type AlertSort = "oldest" | "recent";
@@ -152,6 +153,7 @@ export function PulsePage() {
           onClose={() => setDetailId(null)}
           onDismiss={async () => { await dismissAlert(detailAlert.id); setDetailId(null); }}
           onSnooze={async (days) => { await snoozeAlert(detailAlert.id, days); setDetailId(null); }}
+          onPromoted={refetch}
         />
       )}
 
@@ -178,9 +180,10 @@ interface AlertDrawerProps {
   onClose: () => void;
   onDismiss: () => Promise<void> | void;
   onSnooze: (days: number) => Promise<void> | void;
+  onPromoted: () => Promise<void> | void;
 }
 
-function AlertDrawer({ alert, entity, entityColor, sessions, onClose, onDismiss, onSnooze }: AlertDrawerProps) {
+function AlertDrawer({ alert, entity, entityColor, sessions, onClose, onDismiss, onSnooze, onPromoted }: AlertDrawerProps) {
   const navigate = useNavigate();
   const related = useMemo(() => {
     return sessions
@@ -189,7 +192,7 @@ function AlertDrawer({ alert, entity, entityColor, sessions, onClose, onDismiss,
   }, [sessions, alert.entity]);
 
   const openQuestions = useMemo(
-    () => related.flatMap((s) => s.open_questions.map((q) => ({ text: q.text, sid: s.id, when: s.started_at }))),
+    () => related.flatMap((s) => s.open_questions.map((q) => ({ id: q.id, text: q.text, sid: s.id, when: s.started_at }))),
     [related],
   );
 
@@ -246,9 +249,10 @@ function AlertDrawer({ alert, entity, entityColor, sessions, onClose, onDismiss,
               <h4 className="drawer-section">Open questions ({openQuestions.length})</h4>
               <ul className="drawer-list">
                 {openQuestions.slice(0, 12).map((q, i) => (
-                  <li key={`${q.sid}-${i}`}>
+                  <li key={`${q.id}-${i}`} className="marker-row-promotable">
                     <span className="live-tag" data-kind="open">open</span>
                     <span className="marker-text">{q.text}</span>
+                    <PromoteOpenButton openId={q.id} defaultText={q.text} onPromoted={onPromoted} />
                     <span className="muted small">{relativeAge(q.when)}</span>
                   </li>
                 ))}

@@ -46,6 +46,18 @@ export class SqliteFactStore implements FactStore {
     txn(facts.map((f) => this.toRow(f)));
   }
 
+  /**
+   * Insert facts inside an already-open transaction (no own txn opened).
+   * Callable only from code that has already begun a transaction on the same
+   * connection — currently SqliteSessionStore.insertSession. Phase B.2: this
+   * is how session+facts ingest commits atomically (Section 5 of the plan).
+   */
+  insertManyInTxn(facts: ReadonlyArray<Fact>): void {
+    if (facts.length === 0) return;
+    const stmt = this.insertStmt();
+    for (const f of facts) stmt.run(this.toRow(f));
+  }
+
   async getById(id: string): Promise<Fact | null> {
     const row = this.db
       .prepare<[string], FactRow>(

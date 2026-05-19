@@ -3,9 +3,10 @@ import { Link, useSearchParams } from "react-router-dom";
 import { useDataset, relativeAge } from "../lib/dataset.js";
 import type { DatasetSession } from "../lib/dataset.js";
 import { SessionDrawer } from "../components/SessionDrawer.js";
+import { PromoteOpenButton } from "../components/PromoteOpenButton.js";
 
 export function ThreadPage() {
-  const { data, loading, error } = useDataset();
+  const { data, loading, error, refetch } = useDataset();
   const [params, setParams] = useSearchParams();
   const entity = params.get("entity") ?? "";
   const drawerSid = params.get("session");
@@ -72,7 +73,9 @@ export function ThreadPage() {
   }
 
   const decisions = thread.flatMap((s) => s.decisions.map((d) => ({ d, sid: s.id, when: s.started_at })));
-  const open = thread.flatMap((s) => s.open_questions.map((q) => ({ q: q.text, sid: s.id, when: s.started_at })));
+  const open = thread.flatMap((s) =>
+    s.open_questions.map((q) => ({ id: q.id, q: q.text, sid: s.id, when: s.started_at })),
+  );
 
   return (
     <div className="page-pad">
@@ -106,10 +109,13 @@ export function ThreadPage() {
           <header className="card-head"><h3>Open questions</h3><span className="muted small">{open.length}</span></header>
           <ul className="marker-list">
             {open.slice(0, 30).map((o, i) => (
-              <li key={i} className="marker-row">
+              <li key={`${o.id}-${i}`} className="marker-row marker-row-promotable">
                 <span className="live-tag" data-kind="open">open</span>
                 <span className="marker-text">{o.q}</span>
-                <button type="button" className="link-button" onClick={() => openSession(o.sid)}>{relativeAge(o.when)}</button>
+                <div className="marker-actions">
+                  <PromoteOpenButton openId={o.id} defaultText={o.q} onPromoted={refetch} />
+                  <button type="button" className="link-button" onClick={() => openSession(o.sid)}>{relativeAge(o.when)}</button>
+                </div>
               </li>
             ))}
             {open.length === 0 && <li className="muted small">No open questions.</li>}

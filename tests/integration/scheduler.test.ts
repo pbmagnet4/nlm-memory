@@ -10,6 +10,7 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
+import { SqliteFactStore } from "../../src/core/storage/sqlite-fact-store.js";
 import { SqliteSessionStore } from "../../src/core/storage/sqlite-session-store.js";
 import { ClaudeCodeAdapter } from "../../src/core/adapters/claude-code.js";
 import { ScanScheduler } from "../../src/core/scheduler/scheduler.js";
@@ -42,6 +43,7 @@ class StubClassifier implements LLMClient {
       decisions: ["chose Hono"],
       open: [],
       confidence: 0.9,
+      facts: [],
     },
     private readonly throwError: boolean = false,
   ) {}
@@ -161,7 +163,7 @@ describe("ScanScheduler.tick", () => {
   it("skips chunks below the confidence floor", async () => {
     const adapter = new ClaudeCodeAdapter({ projectsPath: projects, idleMinutes: 15 });
     const classifier = new StubClassifier({
-      label: "x", summary: "y", entities: [], decisions: [], open: [], confidence: 0.1,
+      label: "x", summary: "y", entities: [], decisions: [], open: [], confidence: 0.1, facts: [],
     });
     const scheduler = new ScanScheduler({
       store, adapters: [adapter], classifier, embedder: null, logger: () => {},
@@ -239,6 +241,83 @@ describe("ScanScheduler.tick", () => {
     expect(second.inserted).toBe(1);
     const count = store.rawDb()
       .prepare<[], { c: number }>("SELECT COUNT(*) AS c FROM sessions").get();
+    expect(count?.c).toBe(1);
+  });
+
+  it("writes facts atomically with the session row when a FactStore is configured (B.2)", async () => {
+    const adapter = new ClaudeCodeAdapter({ projectsPath: projects, idleMinutes: 15 });
+    const classifier = new StubClassifier({
+      label: "Stub label",
+      summary: "Stub summary",
+      entities: ["NLE Memory"],
+      decisions: ["chose Hono"],
+      open: [],
+      confidence: 0.9,
+      facts: [
+        { kind: "decision", subject: "nle-memory-ts", predicate: "framework", value: "Hono" },
+        {
+          kind: "attribute",
+          subject: "mac-pro-llm-host",
+          predicate: "endpoint",
+          value: "http://macpro:8080/v1",
+        },
+      ],
+    });
+    const factStore = new SqliteFactStore(store.rawDb());
+    const scheduler = new ScanScheduler({
+      store, adapters: [adapter], classifier, embedder: null, factStore, logger: () => {},
+    });
+    const report = await scheduler.tick();
+    expect(report.inserted).toBe(1);
+
+    const sessId = store.rawDb()
+      .prepare<[], { session_id: string }>(
+        "SELECT session_id FROM adapter_state WHERE adapter_name = 'claude-code'",
+      ).get()!.session_id;
+    const facts = await factStore.listBySession(sessId);
+    expect(facts).toHaveLength(2);
+    expect(facts.map((f) => `${f.subject}:${f.predicate}:${f.value}`).sort()).toEqual([
+      "mac-pro-llm-host:endpoint:http://macpro:8080/v1",
+      "nle-memory-ts:framework:Hono",
+    ]);
+    for (const f of facts) {
+      expect(f.sourceSessionId).toBe(sessId);
+      expect(f.confidence).toBe(0.9);
+      expect(f.supersededBy).toBeNull();
+    }
+  });
+
+  it("does not write facts when FactStore is not provided (backwards compat)", async () => {
+    const adapter = new ClaudeCodeAdapter({ projectsPath: projects, idleMinutes: 15 });
+    const classifier = new StubClassifier({
+      label: "L", summary: "S", entities: [], decisions: [], open: [], confidence: 0.9,
+      facts: [{ kind: "decision", subject: "x", predicate: "framework", value: "y" }],
+    });
+    const scheduler = new ScanScheduler({
+      store, adapters: [adapter], classifier, embedder: null, logger: () => {},
+    });
+    await scheduler.tick();
+    const count = store.rawDb()
+      .prepare<[], { c: number }>("SELECT COUNT(*) AS c FROM facts").get();
+    expect(count?.c).toBe(0);
+  });
+
+  it("re-ingest replaces facts (no duplicate fact rows across ticks)", async () => {
+    const adapter = new ClaudeCodeAdapter({ projectsPath: projects, idleMinutes: 15 });
+    const classifier = new StubClassifier({
+      label: "L", summary: "S", entities: [], decisions: [], open: [], confidence: 0.9,
+      facts: [{ kind: "decision", subject: "nle-memory-ts", predicate: "framework", value: "Hono" }],
+    });
+    const factStore = new SqliteFactStore(store.rawDb());
+    const scheduler = new ScanScheduler({
+      store, adapters: [adapter], classifier, embedder: null, factStore, logger: () => {},
+    });
+    await scheduler.tick();
+    store.rawDb().prepare("DELETE FROM adapter_state").run();
+    await scheduler.tick();
+
+    const count = store.rawDb()
+      .prepare<[], { c: number }>("SELECT COUNT(*) AS c FROM facts").get();
     expect(count?.c).toBe(1);
   });
 });

@@ -19,6 +19,8 @@
 
 import type { LLMClient } from "@ports/llm-client.js";
 import type { TranscriptAdapter } from "@ports/transcript-adapter.js";
+import { extractFacts } from "@core/facts/extract-facts.js";
+import type { SqliteFactStore } from "@core/storage/sqlite-fact-store.js";
 import type {
   IngestRecord,
   SqliteSessionStore,
@@ -36,6 +38,14 @@ export interface SchedulerOptions {
   readonly adapters: ReadonlyArray<TranscriptAdapter>;
   readonly classifier: LLMClient;
   readonly embedder?: LLMClient | null;
+  /**
+   * FactStore for Phase B.2 fact ingest. When provided, the scheduler
+   * extracts facts from each classify result and persists them atomically
+   * with the session row. Optional — when null, sessions ingest as before
+   * with no facts written (backwards-compatible default for tests not yet
+   * updated, and for any future caller that wants facts off).
+   */
+  readonly factStore?: SqliteFactStore | null;
   readonly intervalMs?: number;
   readonly classifyTimeoutMs?: number;
   readonly confidenceFloor?: number;
@@ -53,8 +63,9 @@ export interface TickReport {
 }
 
 export class ScanScheduler {
-  private readonly opts: Required<Omit<SchedulerOptions, "embedder">> & {
+  private readonly opts: Required<Omit<SchedulerOptions, "embedder" | "factStore">> & {
     readonly embedder: LLMClient | null;
+    readonly factStore: SqliteFactStore | null;
   };
   private stopped = true;
   private timer: NodeJS.Timeout | null = null;
@@ -65,6 +76,7 @@ export class ScanScheduler {
       adapters: opts.adapters,
       classifier: opts.classifier,
       embedder: opts.embedder ?? null,
+      factStore: opts.factStore ?? null,
       intervalMs: opts.intervalMs ?? DEFAULT_INTERVAL_MS,
       classifyTimeoutMs: opts.classifyTimeoutMs ?? DEFAULT_CLASSIFY_TIMEOUT_MS,
       confidenceFloor: opts.confidenceFloor ?? DEFAULT_CONFIDENCE_FLOOR,
@@ -154,8 +166,20 @@ export class ScanScheduler {
           openQuestions: classification.open,
         };
 
+        const factSink = this.opts.factStore
+          ? {
+              factStore: this.opts.factStore,
+              facts: extractFacts(classification, chunk.id, chunk.startedAt),
+            }
+          : null;
+
         try {
-          await this.opts.store.insertSession(record, this.opts.embedder, supersedes);
+          await this.opts.store.insertSession(
+            record,
+            this.opts.embedder,
+            supersedes,
+            factSink,
+          );
           recordClassified(
             this.opts.store.rawDb(),
             adapter.name,
