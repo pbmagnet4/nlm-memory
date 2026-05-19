@@ -156,7 +156,8 @@ export function createApp(deps: HttpDeps): Hono {
 
   app.get("/api/dataset", (c) => {
     if (!deps.dbPath) return c.json({ error: "dataset endpoint requires dbPath" }, 503);
-    return c.json(buildDataset(deps.dbPath));
+    const includePaths = c.req.query("include_paths") === "true";
+    return c.json(buildDataset(deps.dbPath, { includePaths }));
   });
 
   // ── Actions API ────────────────────────────────────────────────

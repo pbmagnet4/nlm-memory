@@ -129,7 +129,13 @@ const EMPTY_DATASET = (dbPath: string, present: boolean): DatasetResponse => ({
   alerts: [],
 });
 
-export function buildDataset(dbPath: string): DatasetResponse {
+export interface BuildDatasetOptions {
+  /** Include path-shaped entities (filesystem leaks from the classifier).
+   *  Default false — they pollute the catalog without adding signal. */
+  readonly includePaths?: boolean;
+}
+
+export function buildDataset(dbPath: string, options: BuildDatasetOptions = {}): DatasetResponse {
   if (!existsSync(dbPath)) return EMPTY_DATASET(dbPath, false);
   const db = new Database(dbPath, { readonly: true });
   try {
@@ -138,13 +144,33 @@ export function buildDataset(dbPath: string): DatasetResponse {
     // vec extension only required for semantic search; tolerable here.
   }
   try {
-    return projectFromDb(db, dbPath);
+    return projectFromDb(db, dbPath, options.includePaths ?? false);
   } finally {
     db.close();
   }
 }
 
-function projectFromDb(db: Database.Database, dbPath: string): DatasetResponse {
+/**
+ * Heuristic for "this entity is actually a filesystem path the classifier
+ * leaked into the catalog". Catches things like ".claude/agents/",
+ * "bridge/server.js", "deploy.sh", "nle-memory-spec.md" while leaving
+ * real entities like "n8n", "Node.js", "NocoDB", "personal-workspace" alone.
+ */
+const CODE_FILE_EXT_RE =
+  /\.(?:md|markdown|txt|ts|tsx|js|jsx|mjs|cjs|py|pyi|json|yaml|yml|toml|sh|bash|zsh|css|html|sql|xml|env|ini|cfg|conf|lock)$/i;
+
+export function isPathShapedEntity(canonical: string): boolean {
+  if (!canonical) return false;
+  // Any slash → looks like a path (forward or back).
+  if (canonical.includes("/") || canonical.includes("\\")) return true;
+  // Hidden-file prefix only when it's clearly a dotfile (e.g. ".env", ".mcp.json").
+  if (canonical.startsWith(".") && canonical.length > 1 && canonical !== "...") return true;
+  // Common source-code file extensions.
+  if (CODE_FILE_EXT_RE.test(canonical)) return true;
+  return false;
+}
+
+function projectFromDb(db: Database.Database, dbPath: string, includePaths: boolean): DatasetResponse {
   const sessionRows = db
     .prepare<[], SessionRow>(`
       SELECT id, started_at, ended_at, duration_min, label, summary,
@@ -196,11 +222,32 @@ function projectFromDb(db: Database.Database, dbPath: string): DatasetResponse {
     }
   }
 
+  const allEntityRows = db
+    .prepare<[], EntityCatalogRow>(`
+      SELECT canonical, type, status, session_count, last_seen_session
+      FROM entities ORDER BY session_count DESC
+    `)
+    .all();
+
+  const overlay = loadActionOverlay(db);
+  for (const e of allEntityRows) {
+    if (overlay.retiredEntities.has(e.canonical)) e.status = "retired";
+    else if (overlay.snoozedEntities.has(e.canonical)) e.status = "snoozed";
+    const newType = overlay.labeledEntities.get(e.canonical);
+    if (newType) e.type = newType;
+  }
+
+  const entityRows = includePaths
+    ? allEntityRows
+    : allEntityRows.filter((e) => !isPathShapedEntity(e.canonical));
+  const keptEntities = new Set(entityRows.map((e) => e.canonical));
+
   const sessions: DatasetSession[] = sessionRows.map((s) => {
     const status = liveSessionStatus(s.transcript_path, s.status);
     const open = openBySession.get(s.id) ?? [];
     const supersedes = supersedesBy.get(s.id);
     const supersededBy = supersededByBy.get(s.id);
+    const rawEntities = entitiesBySession.get(s.id) ?? [];
     return {
       id: s.id,
       date: (s.started_at ?? "").slice(0, 10),
@@ -208,7 +255,7 @@ function projectFromDb(db: Database.Database, dbPath: string): DatasetResponse {
       ended_at: s.ended_at,
       label: s.label,
       summary: s.summary,
-      entities: entitiesBySession.get(s.id) ?? [],
+      entities: includePaths ? rawEntities : rawEntities.filter((name) => keptEntities.has(name)),
       decisions: decisionsBySession.get(s.id) ?? [],
       open: open.map((o) => o.text),
       open_questions: open.map((o) => ({ id: o.id, text: o.text, resolved: false as const })),
@@ -222,22 +269,6 @@ function projectFromDb(db: Database.Database, dbPath: string): DatasetResponse {
 
   // continuesBy is in the dataset shape but unused by current UI; reserved for thread view.
   void continuesBy;
-
-  const entityRows = db
-    .prepare<[], EntityCatalogRow>(`
-      SELECT canonical, type, status, session_count, last_seen_session
-      FROM entities ORDER BY session_count DESC
-    `)
-    .all();
-
-  const overlay = loadActionOverlay(db);
-
-  for (const e of entityRows) {
-    if (overlay.retiredEntities.has(e.canonical)) e.status = "retired";
-    else if (overlay.snoozedEntities.has(e.canonical)) e.status = "snoozed";
-    const newType = overlay.labeledEntities.get(e.canonical);
-    if (newType) e.type = newType;
-  }
 
   const entityColors: Record<string, string> = {};
   const entityType: Record<string, string> = {};

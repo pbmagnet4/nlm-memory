@@ -72,3 +72,36 @@ export interface RecallResult {
   readonly results: ReadonlyArray<RecallHit>;
   readonly modeUnavailable?: "ollama_unreachable";
 }
+
+/**
+ * Fact — a single normalized claim derived from a session.
+ *
+ * The product treats sessions as the unit of operator recall. Facts are the
+ * agent-facing projection: queryable by (subject, predicate), supersedence-
+ * aware, with provenance back to the session they came from. See
+ * docs/plans/factstore-design.md for the full design rationale.
+ *
+ * `kind` mirrors the marker taxonomy plus a third category for entity
+ * attributes ("mac-pro-llm-host" + "endpoint" + "http://macpro:8080/v1").
+ *
+ * `subject` and `predicate` are normalized (lowercased, trimmed) at extraction
+ * time so the deterministic supersedence path can do exact-match collision
+ * detection without per-query normalization.
+ *
+ * `supersededBy` is a tombstone pointer — when a newer fact replaces this one
+ * the old row stays and gets pointed at the new id. Never deleted.
+ */
+export type FactKind = "decision" | "open" | "attribute";
+
+export interface Fact {
+  readonly id: string;
+  readonly kind: FactKind;
+  readonly subject: string;
+  readonly predicate: string;
+  readonly value: string;
+  readonly sourceSessionId: string;
+  readonly sourceQuote: string | null;
+  readonly createdAt: string;
+  readonly supersededBy: string | null;
+  readonly confidence: number;
+}
