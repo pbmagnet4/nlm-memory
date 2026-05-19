@@ -14,7 +14,9 @@
   "scripts": {
     "dev": "tsx watch src/cli/nle.ts start",
     "start": "node dist/cli/nle.js start",
-    "build": "tsc -p tsconfig.json && vite build --config src/ui/vite.config.ts",
+    "build:server": "tsc -p tsconfig.json",
+    "build:ui": "vite build --config src/ui/vite.config.ts",
+    "build": "npm run build:server",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:unit": "vitest run tests/unit",
