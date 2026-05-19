@@ -1150,8 +1150,8 @@ a.session-label:hover { color: var(--accent); }
 }
 
 .river-date-cell {
-  font-size: 9px;
-  color: var(--text-4);
+  font-size: var(--text-xs);
+  color: var(--text-2);
   letter-spacing: 0.04em;
   text-align: center;
   overflow: hidden;
