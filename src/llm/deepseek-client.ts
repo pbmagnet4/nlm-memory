@@ -108,7 +108,15 @@ export class DeepSeekClient implements LLMClient {
           ],
           response_format: { type: "json_object" },
           temperature: 0.1,
-          max_tokens: 1024,
+          // 8192 covers reasoning + JSON output. deepseek-v4-flash is a
+          // reasoning model — its hidden chain-of-thought counts against
+          // max_tokens but never reaches `content`. At 1024 the reasoning
+          // consumed the entire budget and the JSON output came back empty
+          // (finish_reason: length, content: ""). Backfill verified ~72% of
+          // real claude-code sessions hit that mode at 1024. Real-world
+          // observed reasoning_tokens: ~900-1100; JSON body adds 200-1000
+          // depending on facts/entity counts. 8192 leaves headroom.
+          max_tokens: 8192,
           stream: false,
         }),
         signal: controller.signal,
