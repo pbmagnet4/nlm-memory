@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useDataset, relativeAge } from "../lib/dataset.js";
 import type { DatasetAlert, DatasetEntity, DatasetSession } from "../lib/dataset.js";
 import { postAction } from "../lib/actions.js";
+import { SessionDrawer } from "../components/SessionDrawer.js";
 
 type SeverityFilter = "all" | "high" | "medium";
 type AlertSort = "oldest" | "recent";
@@ -12,6 +13,7 @@ export function PulsePage() {
   const [severity, setSeverity] = useState<SeverityFilter>("all");
   const [sort, setSort] = useState<AlertSort>("oldest");
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
 
   const filteredAlerts = useMemo(() => {
     if (!data) return [];
@@ -123,7 +125,14 @@ export function PulsePage() {
           <div className="pulse-scroll-body">
             <ul className="session-list">
               {recent.map((s) => (
-                <li key={s.id} className="session-row">
+                <li
+                  key={s.id}
+                  className="session-row clickable"
+                  onClick={() => setSessionId(s.id)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSessionId(s.id); } }}
+                >
                   <span className={`chip-inline status-${s.status}`}>{s.status}</span>
                   <span className="session-label">{s.label}</span>
                   <span className="session-meta">{relativeAge(s.started_at)} · {s.entities.slice(0, 3).join(", ")}{s.entities.length > 3 ? ` +${s.entities.length - 3}` : ""}</span>
@@ -143,6 +152,18 @@ export function PulsePage() {
           onClose={() => setDetailId(null)}
           onDismiss={async () => { await dismissAlert(detailAlert.id); setDetailId(null); }}
           onSnooze={async (days) => { await snoozeAlert(detailAlert.id, days); setDetailId(null); }}
+        />
+      )}
+
+      {sessionId && (
+        <SessionDrawer
+          sessionId={sessionId}
+          onClose={() => setSessionId(null)}
+          entityColor={(() => {
+            const s = data.sessions.find((x) => x.id === sessionId);
+            const e = s?.entities[0];
+            return e ? data.entity_colors[e] : undefined;
+          })()}
         />
       )}
     </div>
