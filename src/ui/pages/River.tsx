@@ -1,6 +1,8 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useDataset } from "../lib/dataset.js";
+import { useDataset, relativeAge } from "../lib/dataset.js";
+import type { DatasetSession } from "../lib/dataset.js";
+import { SessionDrawer } from "../components/SessionDrawer.js";
 
 type Span = "7d" | "30d" | "90d" | "all";
 const SPAN_DAYS: Record<Span, number | null> = { "7d": 7, "30d": 30, "90d": 90, all: null };
@@ -18,10 +20,18 @@ interface DragState {
   rect: DOMRect;
 }
 
+interface CellDrawerState {
+  entity: string;
+  date: string;
+  sessions: DatasetSession[];
+}
+
 export function RiverPage() {
   const { data, loading, error } = useDataset();
   const [span, setSpan] = useState<Span>("30d");
   const [hover, setHover] = useState<HoverState | null>(null);
+  const [cellDrawer, setCellDrawer] = useState<CellDrawerState | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const navigate = useNavigate();
   const gridRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
@@ -60,8 +70,16 @@ export function RiverPage() {
   }, [data, span]);
 
   const onCellClick = (entity: string, date: string) => {
-    // jump to thread filtered by entity; thread page sorts by recency.
-    navigate(`/thread?entity=${encodeURIComponent(entity)}&date=${date}`);
+    if (!data) return;
+    const matches = data.sessions
+      .filter((s) => (s.started_at ?? "").slice(0, 10) === date && s.entities.includes(entity))
+      .sort((a, b) => (b.started_at ?? "").localeCompare(a.started_at ?? ""));
+    if (matches.length === 0) return;
+    if (matches.length === 1) {
+      setSessionId(matches[0]!.id);
+      return;
+    }
+    setCellDrawer({ entity, date, sessions: matches });
   };
 
   const onMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -198,7 +216,84 @@ export function RiverPage() {
           <span className="muted small">{hover.date} · {hover.count} session{hover.count === 1 ? "" : "s"}</span>
         </div>
       )}
+
+      {cellDrawer && (
+        <CellPicker
+          state={cellDrawer}
+          entityColor={data.entity_colors[cellDrawer.entity] ?? "#666"}
+          onClose={() => setCellDrawer(null)}
+          onPick={(sid) => { setCellDrawer(null); setSessionId(sid); }}
+          onOpenThread={() => navigate(`/thread?entity=${encodeURIComponent(cellDrawer.entity)}`)}
+        />
+      )}
+
+      {sessionId && (
+        <SessionDrawer
+          sessionId={sessionId}
+          onClose={() => setSessionId(null)}
+          entityColor={(() => {
+            const s = data.sessions.find((x) => x.id === sessionId);
+            const e = s?.entities[0];
+            return e ? data.entity_colors[e] : undefined;
+          })()}
+        />
+      )}
     </div>
+  );
+}
+
+interface CellPickerProps {
+  state: CellDrawerState;
+  entityColor: string;
+  onClose: () => void;
+  onPick: (sessionId: string) => void;
+  onOpenThread: () => void;
+}
+
+function CellPicker({ state, entityColor, onClose, onPick, onOpenThread }: CellPickerProps) {
+  useEffect(() => {
+    const onEsc = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onEsc);
+    return () => window.removeEventListener("keydown", onEsc);
+  }, [onClose]);
+
+  return (
+    <>
+      <div className="drawer-backdrop" onClick={onClose} />
+      <aside className="session-drawer" role="dialog" aria-modal="true" aria-label={`Sessions on ${state.date}`}>
+        <header className="drawer-head">
+          <span className="dot lg" style={{ background: entityColor }} />
+          <h3 className="drawer-title">{state.entity}</h3>
+          <span className="muted small">{state.date}</span>
+          <button type="button" className="drawer-close" onClick={onClose} aria-label="Close">×</button>
+        </header>
+        <div className="drawer-body">
+          <p className="muted small">{state.sessions.length} sessions on this day. Pick one to inspect.</p>
+          <div className="drawer-actions">
+            <button type="button" className="btn btn-accent" onClick={onOpenThread}>Open thread</button>
+          </div>
+          <ul className="session-list">
+            {state.sessions.map((s) => (
+              <li
+                key={s.id}
+                className="session-row session-row-detail clickable"
+                onClick={() => onPick(s.id)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPick(s.id); } }}
+              >
+                <span className={`chip-inline status-${s.status}`}>{s.status}</span>
+                <div className="session-row-main">
+                  <span className="session-label">{s.label}</span>
+                  <span className="session-meta">{s.summary}</span>
+                </div>
+                <span className="muted small mono">{relativeAge(s.started_at)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </aside>
+    </>
   );
 }
 
