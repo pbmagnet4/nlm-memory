@@ -7,13 +7,14 @@
  */
 import { LLMUnreachableError } from "../../ports/llm-client.js";
 import { applyFilter } from "./filter.js";
-import { scoreKeyword } from "./score-keyword.js";
+import { keywordMatchFields } from "./match-fields.js";
 import { tokenSet } from "./tokenize.js";
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
 const HYBRID_KW_WEIGHT = 0.4;
 const HYBRID_SEM_WEIGHT = 0.6;
 const SEMANTIC_OVERFETCH = 3;
+const KEYWORD_OVERFETCH = 3;
 export class RecallService {
     deps;
     constructor(deps) {
@@ -44,8 +45,8 @@ export class RecallService {
         const filtered = applyFilter(allSessions, filterArgs);
         const byId = new Map(filtered.map((s) => [s.id, s]));
         const queryTokens = input.query ? new Set(tokenSet(input.query)) : new Set();
-        const kwHits = mode === "keyword" || mode === "hybrid"
-            ? scoreAll(filtered, queryTokens)
+        const kwHits = (mode === "keyword" || mode === "hybrid") && input.query
+            ? await this.runKeyword(input.query, byId, queryTokens, limit * KEYWORD_OVERFETCH)
             : [];
         let semHits = [];
         let semError = null;
@@ -88,18 +89,21 @@ export class RecallService {
         }
         return hits;
     }
-}
-function scoreAll(sessions, queryTokens) {
-    if (queryTokens.size === 0)
-        return [];
-    const hits = [];
-    for (const s of sessions) {
-        const { score, matchedIn } = scoreKeyword(s, queryTokens);
-        if (score > 0)
-            hits.push({ session: s, score, matchedIn });
+    async runKeyword(query, byId, queryTokens, fetchLimit) {
+        const neighbors = await this.deps.store.keywordSearch(query, fetchLimit);
+        const hits = [];
+        for (const n of neighbors) {
+            const session = byId.get(n.sessionId);
+            if (!session)
+                continue;
+            hits.push({
+                session,
+                score: n.score,
+                matchedIn: keywordMatchFields(session, queryTokens),
+            });
+        }
+        return hits;
     }
-    hits.sort((a, b) => b.score - a.score);
-    return hits;
 }
 function mergeHybrid(kwHits, semHits, byId) {
     const maxKw = Math.max(1, ...kwHits.map((h) => h.score));

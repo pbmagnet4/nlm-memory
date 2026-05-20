@@ -12,7 +12,7 @@
  * status verbatim.
  */
 import Database from "better-sqlite3";
-import type { SemanticNeighbor, SessionFilter, SessionStore } from "../../ports/session-store.js";
+import type { KeywordNeighbor, SemanticNeighbor, SessionFilter, SessionStore } from "../../ports/session-store.js";
 import type { Session, SessionStatus } from "../../shared/types.js";
 import type { Fact } from "../../shared/types.js";
 import type { SqliteFactStore } from "./sqlite-fact-store.js";
@@ -118,6 +118,14 @@ export declare class SqliteSessionStore implements SessionStore {
     list(filter?: SessionFilter): Promise<ReadonlyArray<Session>>;
     getById(sessionId: string): Promise<Session | null>;
     semanticSearch(queryVector: Float32Array, limit: number): Promise<ReadonlyArray<SemanticNeighbor>>;
+    /**
+     * Lexical recall via the sessions_fts FTS5 index. BM25 column weights
+     * favour label over summary over body. Returns sessions ranked best-first
+     * with a positive score (the negated bm25() value — bm25 is more negative
+     * for better matches). User input is tokenized and rebuilt into a quoted
+     * OR query so FTS5 metacharacters cannot reach the MATCH parser.
+     */
+    keywordSearch(query: string, limit: number): Promise<ReadonlyArray<KeywordNeighbor>>;
     updateStatus(sessionId: string, status: SessionStatus): Promise<void>;
     insertSessionForTest(session: Session): void;
     insertEmbeddingForTest(sessionId: string, vector: Float32Array): void;
