@@ -1,9 +1,8 @@
 {
   "name": "nle-memory",
-  "version": "0.2.0-dev",
+  "version": "0.2.0",
   "description": "Local-first memory operating system for AI operators. Treats AI reasoning as a non-linear editing problem.",
   "type": "module",
-  "private": true,
   "license": "Apache-2.0",
   "engines": {
     "node": ">=20.0.0"
@@ -12,6 +11,7 @@
     "nle": "./dist/cli/nle.js"
   },
   "scripts": {
+    "prepare": "npm run build",
     "dev": "tsx watch src/cli/nle.ts start",
     "start": "node dist/cli/nle.js start",
     "build:server": "tsc -p tsconfig.json && tsc-alias -p tsconfig.json",

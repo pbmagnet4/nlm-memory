@@ -12,11 +12,15 @@
  *   nle migrate  — run pending migrations against the canonical SQLite
  *   nle recall   — one-shot recall query from the shell (debugging)
  *   nle mcp      — run as an MCP stdio server (for ~/.mcp.json wiring)
+ *   nle install  — install the macOS LaunchAgent (auto-start on login)
+ *   nle uninstall — remove the macOS LaunchAgent
  */
 
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, join } from "node:path";
 import { homedir } from "node:os";
+import { mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { Command } from "commander";
 import { serve } from "@hono/node-server";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -337,6 +341,101 @@ program
     const server = createMcpServer({ recall, store, factStore: facts, factRecall });
     const transport = new StdioServerTransport();
     await server.connect(transport);
+  });
+
+const LAUNCH_AGENT_LABEL = "io.whtnxt.nle-memory";
+const LAUNCH_AGENT_PLIST = join(
+  homedir(), "Library", "LaunchAgents", `${LAUNCH_AGENT_LABEL}.plist`,
+);
+
+function buildPlist(nodeExec: string, nleJs: string): string {
+  const logDir = join(homedir(), ".nle", "logs");
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${LAUNCH_AGENT_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${nodeExec}</string>
+    <string>${nleJs}</string>
+    <string>start</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${homedir()}</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>Crashed</key>
+    <true/>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>${logDir}/daemon-out.log</string>
+  <key>StandardErrorPath</key>
+  <string>${logDir}/daemon-err.log</string>
+</dict>
+</plist>
+`;
+}
+
+program
+  .command("install")
+  .description("Install the macOS LaunchAgent so nle-memory auto-starts on login")
+  .action(() => {
+    if (process.platform !== "darwin") {
+      console.error("nle install: only macOS is supported. On Linux, add `nle start` to your init system manually.");
+      process.exit(1);
+    }
+    const uid = process.getuid?.();
+    if (uid === undefined) {
+      console.error("nle install: could not determine UID");
+      process.exit(1);
+    }
+    mkdirSync(join(homedir(), ".nle", "logs"), { recursive: true });
+    writeFileSync(LAUNCH_AGENT_PLIST, buildPlist(process.execPath, __filename), "utf8");
+    console.error(`nle: wrote ${LAUNCH_AGENT_PLIST}`);
+    try {
+      execFileSync("launchctl", ["bootout", `gui/${uid}`, LAUNCH_AGENT_LABEL], { stdio: "ignore" });
+    } catch {
+      // not loaded yet — expected on first install
+    }
+    execFileSync("launchctl", ["bootstrap", `gui/${uid}`, LAUNCH_AGENT_PLIST]);
+    console.error("nle: daemon installed and started.");
+    console.error(`  UI:       http://localhost:${port()}/ui`);
+    console.error("  To stop:  launchctl stop io.whtnxt.nle-memory");
+    console.error("  To remove: nle uninstall");
+  });
+
+program
+  .command("uninstall")
+  .description("Remove the macOS LaunchAgent")
+  .action(() => {
+    if (process.platform !== "darwin") {
+      console.error("nle uninstall: only macOS is supported.");
+      process.exit(1);
+    }
+    const uid = process.getuid?.();
+    if (uid === undefined) {
+      console.error("nle uninstall: could not determine UID");
+      process.exit(1);
+    }
+    try {
+      execFileSync("launchctl", ["bootout", `gui/${uid}`, LAUNCH_AGENT_LABEL], { stdio: "pipe" });
+      console.error("nle: daemon stopped.");
+    } catch {
+      // wasn't running
+    }
+    if (existsSync(LAUNCH_AGENT_PLIST)) {
+      rmSync(LAUNCH_AGENT_PLIST);
+      console.error(`nle: removed ${LAUNCH_AGENT_PLIST}`);
+    }
+    console.error("nle: uninstalled. Run `nle install` to reinstall.");
   });
 
 program.parseAsync().catch((e) => {
