@@ -440,6 +440,34 @@ export class SqliteSessionStore implements SessionStore {
     return this.rowToSession(row, entities, markers, overlay);
   }
 
+  /**
+   * Batched session fetch for the recall path. Deliberately omits the
+   * `body` column — body is ~48KB/row of session markdown that recall
+   * never reads, and SELECTing it for the corpus is what wedged the
+   * daemon. Resolved sessions carry `body: ""`.
+   */
+  async getByIds(ids: ReadonlyArray<string>): Promise<ReadonlyArray<Session>> {
+    if (ids.length === 0) return [];
+    const placeholders = ids.map(() => "?").join(",");
+    const rows = this.db
+      .prepare<string[], Omit<SessionRow, "body">>(`
+        SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
+               label, summary, status, transcript_kind, transcript_path
+        FROM sessions
+        WHERE id IN (${placeholders})
+      `)
+      .all(...ids);
+
+    if (rows.length === 0) return [];
+    const foundIds = rows.map((r) => r.id);
+    const entitiesByIdMap = this.loadEntities(foundIds);
+    const markersByIdMap = this.loadMarkers(foundIds);
+    const overlay = loadActionOverlay(this.db);
+    return rows.map((r) =>
+      this.rowToSession({ ...r, body: null }, entitiesByIdMap, markersByIdMap, overlay),
+    );
+  }
+
   async semanticSearch(
     queryVector: Float32Array,
     limit: number,

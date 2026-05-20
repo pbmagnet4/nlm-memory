@@ -25,6 +25,9 @@ class InMemoryStore implements SessionStore {
   async getById(id: string): Promise<Session | null> {
     return this.sessions.find((s) => s.id === id) ?? null;
   }
+  async getByIds(ids: ReadonlyArray<string>): Promise<ReadonlyArray<Session>> {
+    return this.sessions.filter((s) => ids.includes(s.id));
+  }
   async semanticSearch(): Promise<ReadonlyArray<SemanticNeighbor>> {
     return this.neighbors;
   }
