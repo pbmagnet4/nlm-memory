@@ -5,6 +5,8 @@
  *
  * Path defaults to ~/.nlm/hook-log.jsonl, overridable via NLM_HOOK_LOG.
  * appendHookLog swallows its own errors — telemetry must never break the hook.
+ * Uses synchronous I/O: the hook is a short-lived per-prompt process, and an
+ * async write could be lost if the process exits before it flushes.
  */
 
 import { appendFileSync, mkdirSync } from "node:fs";
@@ -31,6 +33,7 @@ export function appendHookLog(entry: HookLogEntry): void {
   try {
     const path = logPath();
     mkdirSync(dirname(path), { recursive: true });
+    // Sync I/O: hook is a short-lived process — async write could be lost on exit.
     appendFileSync(path, `${JSON.stringify(entry)}\n`, "utf8");
   } catch {
     // Telemetry failure must never break the hook.
