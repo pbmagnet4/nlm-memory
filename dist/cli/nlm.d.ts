@@ -14,5 +14,7 @@
  *   nlm mcp      — run as an MCP stdio server (for ~/.mcp.json wiring)
  *   nlm install  — install the macOS LaunchAgent (auto-start on login)
  *   nlm uninstall — remove the macOS LaunchAgent
+ *   nlm hook install   — add the recall hook to Claude Code (shadow mode)
+ *   nlm hook uninstall — remove the recall hook from Claude Code
  */
 export {};
