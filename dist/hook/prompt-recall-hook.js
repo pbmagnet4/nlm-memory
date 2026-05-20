@@ -15,11 +15,15 @@ import { appendHookLog } from "../core/hook/hook-log.js";
 import { loadSurfaced, recordSurfaced } from "../core/hook/memo.js";
 import { formatPointerBlock } from "../core/hook/pointer-block.js";
 import { selectHits } from "../core/hook/select.js";
-const SCORE_THRESHOLD = 0.5; // conservative start; calibrated in shadow mode
+// Keyword recall returns raw BM25 scores (unbounded, not the 0..1 hybrid
+// scale). FTS5 MATCH already gates relevance — only lexically-matching
+// sessions come back — so the floor starts at 0 and a real cutoff is
+// calibrated from the shadow log's score distribution.
+const SCORE_THRESHOLD = 0;
 const PER_FIRE_CAP = 3;
 const PER_CONVERSATION_CAP = 10;
 const RECALL_LIMIT = 5; // fetch more than PER_FIRE_CAP to absorb score-filter + dedup
-const RECALL_TIMEOUT_MS = 1000;
+const RECALL_TIMEOUT_MS = 2000; // keyword recall is ~400ms warm, ~1.4s cold
 const PROMPT_PREVIEW_CHARS = 200;
 /** Orchestration. Returns the text to emit on stdout ("" for nothing). */
 export async function runHook(input, deps) {
@@ -82,8 +86,10 @@ function readStdin() {
 }
 async function recallOverHttp(prompt) {
     const portValue = process.env["NLM_PORT"] ?? "3940";
+    // keyword (FTS5) not hybrid: hybrid's Ollama embedding round-trip takes
+    // ~5s, far too slow for a hook that blocks prompt submission.
     const url = `http://localhost:${portValue}/api/recall` +
-        `?q=${encodeURIComponent(prompt)}&mode=hybrid&limit=${RECALL_LIMIT}`;
+        `?q=${encodeURIComponent(prompt)}&mode=keyword&limit=${RECALL_LIMIT}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), RECALL_TIMEOUT_MS);
     try {
