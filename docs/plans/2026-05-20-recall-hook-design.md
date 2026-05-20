@@ -54,7 +54,7 @@ Rationale for the asymmetry: a false `evaluate` is cheap — recall returns weak
 1. Claude Code fires `UserPromptSubmit` → runs `node dist/hook/prompt-recall-hook.js`, passing the hook payload as JSON on stdin (includes the user `prompt` and the conversation `session_id`).
 2. The hook parses stdin and runs `classifyPrompt`.
    - `generative` → shadow: write a log line; live: nothing. Emit nothing. Exit 0.
-   - `evaluate` → `GET http://localhost:3940/api/recall?q=<prompt>&mode=hybrid&limit=5` with header `x-recall-source: hook`.
+   - `evaluate` → `GET http://localhost:3940/api/recall?q=<prompt>&mode=keyword&limit=5` with header `x-recall-source: hook`. (Keyword/FTS5, not hybrid: hybrid's Ollama embedding round-trip is ~5s, too slow for a hook that blocks prompt submission.)
 3. Filter the returned hits to those with score ≥ the relevance threshold.
 4. Load the per-conversation memo; drop hits whose session id was already surfaced.
 5. Apply the per-conversation cap (see Token discipline).
