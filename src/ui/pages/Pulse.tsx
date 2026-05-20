@@ -62,17 +62,39 @@ export function PulsePage() {
       </div>
 
       <div className="pulse-grid">
-        <section className="card">
+        <section className="card pulse-area-coherence">
           <header className="card-head"><h3>Coherence</h3></header>
           <CoherenceBars metrics={data.metrics} />
         </section>
 
-        <section className="card">
+        <section className="card pulse-area-runtimes">
           <header className="card-head"><h3>Runtimes</h3></header>
           <RuntimesPanel runtimes={data.runtimes} />
         </section>
 
-        <section className="card pulse-scroll-card">
+        <section className="card pulse-scroll-card pulse-area-recent">
+          <header className="card-head"><h3>Recent sessions</h3></header>
+          <div className="pulse-scroll-body">
+            <ul className="session-list">
+              {recent.map((s) => (
+                <li
+                  key={s.id}
+                  className="session-row clickable"
+                  onClick={() => setSessionId(s.id)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSessionId(s.id); } }}
+                >
+                  <span className={`chip-inline status-${s.status}`}>{s.status}</span>
+                  <span className="session-label">{s.label}</span>
+                  <span className="session-meta">{relativeAge(s.started_at)} · {s.entities.slice(0, 3).join(", ")}{s.entities.length > 3 ? ` +${s.entities.length - 3}` : ""}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </section>
+
+        <section className="card pulse-scroll-card pulse-area-stale">
           <header className="card-head card-head-stack">
             <div className="card-head-row">
               <h3>Stale alerts</h3>
@@ -123,28 +145,6 @@ export function PulsePage() {
                   {data.alerts.length === 0 ? "No stale alerts." : "No alerts match the current filters."}
                 </li>
               )}
-            </ul>
-          </div>
-        </section>
-
-        <section className="card pulse-recent pulse-scroll-card">
-          <header className="card-head"><h3>Recent sessions</h3></header>
-          <div className="pulse-scroll-body">
-            <ul className="session-list">
-              {recent.map((s) => (
-                <li
-                  key={s.id}
-                  className="session-row clickable"
-                  onClick={() => setSessionId(s.id)}
-                  role="button"
-                  tabIndex={0}
-                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSessionId(s.id); } }}
-                >
-                  <span className={`chip-inline status-${s.status}`}>{s.status}</span>
-                  <span className="session-label">{s.label}</span>
-                  <span className="session-meta">{relativeAge(s.started_at)} · {s.entities.slice(0, 3).join(", ")}{s.entities.length > 3 ? ` +${s.entities.length - 3}` : ""}</span>
-                </li>
-              ))}
             </ul>
           </div>
         </section>

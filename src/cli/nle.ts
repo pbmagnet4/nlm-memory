@@ -26,6 +26,7 @@ import { SqliteFactStore } from "../core/storage/sqlite-fact-store.js";
 import { ProviderRegistry } from "../core/providers/provider-registry.js";
 import { SourceRegistry } from "../core/sources/source-registry.js";
 import { SqliteSessionStore } from "../core/storage/sqlite-session-store.js";
+import { applyPendingRestore } from "../core/storage/db-restore.js";
 import { createApp } from "../http/app.js";
 import { createMcpServer } from "../mcp/server.js";
 import { ClassifierBox, type ClassifierProvider } from "../llm/classifier-box.js";
@@ -99,6 +100,13 @@ function buildStack() {
   // (DEEPSEEK_API_KEY today; OPENAI_API_KEY etc. tomorrow) bridge into
   // the providers table on first boot under launchd.
   autoloadEnv();
+  // A restore staged via POST /api/data/restore is promoted here, before
+  // the store opens — the daemon can't swap a DB file it already holds.
+  const restored = applyPendingRestore(dbPath());
+  if (restored.applied) {
+    console.error(`nle-memory: restored database from staged backup`);
+    if (restored.archivedTo) console.error(`  previous db archived at ${restored.archivedTo}`);
+  }
   const store = new SqliteSessionStore({
     dbPath: dbPath(),
     migrationsDir: MIGRATIONS_DIR,

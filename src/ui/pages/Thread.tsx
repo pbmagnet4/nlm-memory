@@ -5,6 +5,7 @@ import type { DatasetSession } from "../lib/dataset.js";
 import { SessionDrawer } from "../components/SessionDrawer.js";
 import { PromoteOpenButton } from "../components/PromoteOpenButton.js";
 import { SessionListSkeleton, Skeleton } from "../components/Skeleton.js";
+import { readViewSettings, type ThreadSort } from "../lib/view-settings.js";
 
 export function ThreadPage() {
   const { data, loading, error, refetch } = useDataset();
@@ -12,13 +13,7 @@ export function ThreadPage() {
   const entity = params.get("entity") ?? "";
   const drawerSid = params.get("session");
 
-  const [sort, setSort] = useState<"recent" | "oldest">(() => {
-    try {
-      const raw = window.localStorage.getItem("nle.settings.views");
-      if (raw) return (JSON.parse(raw) as { threadSort?: "recent" | "oldest" }).threadSort ?? "recent";
-    } catch { /* ignore */ }
-    return "recent";
-  });
+  const [sort, setSort] = useState<ThreadSort>(() => readViewSettings().threadSort);
 
   const thread = useMemo(() => {
     if (!data || !entity) return [];

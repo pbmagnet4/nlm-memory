@@ -9,9 +9,14 @@
  * one-way.
  */
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { extname, join, normalize, sep } from "node:path";
 import { Hono } from "hono";
+import {
+  snapshotScratchPath,
+  stageRestore,
+  vacuumSnapshot,
+} from "@core/storage/db-restore.js";
 import type { RecallService } from "@core/recall/recall-service.js";
 import { logQuery, recallStats } from "@core/recall/query-log.js";
 import { recentQueryLog } from "@core/recall/recent-log.js";
@@ -79,6 +84,20 @@ const MIME_TYPES: Record<string, string> = {
   ".json": "application/json; charset=utf-8",
   ".map": "application/json; charset=utf-8",
 };
+
+/** Tables surfaced on the Settings → Data page, in display order. */
+const DATA_STAT_TABLES = [
+  "sessions",
+  "entities",
+  "markers",
+  "facts",
+  "session_embeddings",
+  "fact_embeddings",
+  "actions",
+  "session_edges",
+  "sources",
+  "providers",
+] as const;
 
 function parseLimit(raw: string | undefined, fallback: number, max: number): number {
   if (raw === undefined) return fallback;
@@ -181,6 +200,102 @@ export function createApp(deps: HttpDeps): Hono {
     if (!deps.dbPath) return c.json({ error: "dataset endpoint requires dbPath" }, 503);
     const includePaths = c.req.query("include_paths") === "true";
     return c.json(buildDataset(deps.dbPath, { includePaths }));
+  });
+
+  // ── Data management ─────────────────────────────────────────────
+  // Storage stats, live-safe backup snapshot, and staged restore.
+
+  app.get("/api/data/stats", (c) => {
+    if (!deps.liveStore || !deps.dbPath) {
+      return c.json({ error: "data stats require liveStore + dbPath" }, 503);
+    }
+    const db = deps.liveStore.rawDb();
+    const countOf = (table: string): number => {
+      try {
+        const row = db.prepare<[], { n: number }>(`SELECT COUNT(*) AS n FROM ${table}`).get();
+        return row?.n ?? 0;
+      } catch {
+        return 0;
+      }
+    };
+    const tables = DATA_STAT_TABLES.map((name) => ({ name, rows: countOf(name) }));
+
+    const migrations = db
+      .prepare<[], { version: number; name: string; applied_at: string }>(
+        "SELECT version, name, applied_at FROM schema_migrations ORDER BY version",
+      )
+      .all();
+
+    const runtimes = db
+      .prepare<[], { runtime: string; n: number }>(
+        "SELECT runtime, COUNT(*) AS n FROM sessions GROUP BY runtime ORDER BY n DESC",
+      )
+      .all();
+
+    let dbBytes = 0;
+    let dbPresent = false;
+    try {
+      dbBytes = statSync(deps.dbPath).size;
+      dbPresent = true;
+    } catch { /* file absent */ }
+    for (const sidecar of [`${deps.dbPath}-wal`, `${deps.dbPath}-shm`]) {
+      try { dbBytes += statSync(sidecar).size; } catch { /* no sidecar */ }
+    }
+
+    return c.json({
+      dbPath: deps.dbPath,
+      dbBytes,
+      dbPresent,
+      schemaVersion: migrations.length > 0 ? migrations[migrations.length - 1]!.version : null,
+      migrations,
+      tables,
+      runtimes,
+    });
+  });
+
+  app.get("/api/data/backup", (c) => {
+    if (!deps.liveStore || !deps.dbPath) {
+      return c.json({ error: "backup requires liveStore + dbPath" }, 503);
+    }
+    const scratch = snapshotScratchPath(deps.dbPath);
+    try {
+      vacuumSnapshot(deps.liveStore.rawDb(), scratch);
+      const bytes = readFileSync(scratch);
+      const stamp = new Date().toISOString().slice(0, 10);
+      c.header("Content-Type", "application/x-sqlite3");
+      c.header("Content-Disposition", `attachment; filename="nle-memory-backup-${stamp}.sqlite"`);
+      return c.body(bytes);
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    } finally {
+      rmSync(scratch, { force: true });
+    }
+  });
+
+  app.post("/api/data/restore", async (c) => {
+    if (!deps.dbPath) return c.json({ error: "restore requires dbPath" }, 503);
+    const form = await c.req.parseBody().catch(() => null);
+    const file = form?.["file"];
+    if (!(file instanceof File)) {
+      return c.json({ error: "multipart body must include a `file` field" }, 400);
+    }
+    const scratch = snapshotScratchPath(deps.dbPath);
+    try {
+      writeFileSync(scratch, Buffer.from(await file.arrayBuffer()));
+      const result = stageRestore(deps.dbPath, scratch);
+      if (!result.ok) {
+        return c.json({ error: `rejected: ${result.error}` }, 400);
+      }
+      return c.json({
+        staged: true,
+        restartRequired: true,
+        sessions: result.sessions,
+        schemaVersion: result.schemaVersion,
+      });
+    } catch (e) {
+      rmSync(scratch, { force: true });
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    }
   });
 
   // ── Actions API ────────────────────────────────────────────────

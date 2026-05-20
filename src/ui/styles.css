@@ -187,6 +187,42 @@ body {
 .form-row .form-label { color: var(--text-3); font-size: var(--text-xs); }
 .btn-danger:hover   { border-color: var(--danger); color: var(--danger); }
 
+/* File input — restyle the native picker button to match .btn; the
+   filename text stays native but tuned to the app's muted mono. */
+input[type="file"].file-input {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  max-width: 24rem;
+}
+input[type="file"].file-input::file-selector-button {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 5px 12px;
+  margin-right: 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border-3);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: border-color var(--ease), color var(--ease), background var(--ease);
+}
+input[type="file"].file-input::file-selector-button:hover {
+  border-color: var(--border-4);
+  color: var(--text-1);
+}
+input[type="file"].file-input:disabled {
+  cursor: not-allowed;
+}
+input[type="file"].file-input:disabled::file-selector-button {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ── Chip ────────────────────────────────────────────────────────────────── */
 /* Filter / state toggles. Lowercase, smaller presence than .btn.           */
 .chip {
@@ -523,8 +559,46 @@ body {
 .sidenav-data { font-size: 10px; }
 
 /* ── Live page — three-column board ───────────────────────────────────── */
+.live-page {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.live-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px var(--page-x) 4px;
+}
+
+.live-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.live-status-live {
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+.live-status-connecting { background: var(--text-3); }
+.live-status-reconnecting {
+  background: var(--warn);
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+
+.live-status-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
 .live-board {
-  padding: 16px var(--page-x) 0;
+  padding: 4px var(--page-x) 0;
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 16px;
@@ -573,6 +647,24 @@ body {
 }
 
 .live-row:last-child { border-bottom: none; }
+
+.live-row.clickable {
+  cursor: pointer;
+  transition: background var(--ease);
+}
+.live-row.clickable:hover { background: var(--surface-2); }
+.live-row.clickable:focus-visible {
+  outline: 1px solid rgba(255, 255, 255, 0.5);
+  outline-offset: -1px;
+}
+
+/* Newly arrived rows flash once so the feed reads as live. */
+.live-row.is-new { animation: fadeSlideIn 200ms ease-out, liveFlash 1200ms ease-out; }
+
+@keyframes liveFlash {
+  0%   { background: var(--accent-glow); }
+  100% { background: transparent; }
+}
 
 .live-row .label { color: var(--text-1); font-size: var(--text-base); line-height: var(--lh-tight); }
 .live-row .body  { color: var(--text-3); font-size: var(--text-sm); margin-top: 3px; line-height: var(--lh-tight); }
@@ -897,13 +989,22 @@ code, .code-block {
 .pulse-grid {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  grid-template-areas:
+    "coherence recent stale"
+    "runtimes  recent stale";
   gap: 12px;
   margin-top: 6px;
-  /* Bound the row to viewport-minus-chrome so cards have a real bounding box
+  /* Bound the grid to viewport-minus-chrome so cards have a real bounding box
      and their bodies scroll instead of stretching the page. */
   height: calc(100vh - 280px);
   min-height: 360px;
 }
+
+.pulse-area-coherence { grid-area: coherence; }
+.pulse-area-runtimes  { grid-area: runtimes; }
+.pulse-area-recent    { grid-area: recent; }
+.pulse-area-stale     { grid-area: stale; }
 
 /* Scroll containers (Stale alerts, Recent sessions). Card lays out as a
    flex column with header fixed and body filling the remainder. */
@@ -1067,21 +1168,29 @@ a.session-label:hover { color: var(--accent); }
   letter-spacing: 0.04em;
 }
 
-.pulse-recent { grid-column: span 1; }
-
 @media (max-width: 1100px) {
   .pulse-grid {
     grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto;
+    grid-template-areas:
+      "coherence runtimes"
+      "recent    recent"
+      "stale     stale";
     height: auto;
     min-height: 0;
   }
-  .pulse-recent { grid-column: span 2; }
   .pulse-scroll-body { max-height: 360px; }
 }
 
 @media (max-width: 700px) {
-  .pulse-grid { grid-template-columns: 1fr; }
-  .pulse-recent { grid-column: span 1; }
+  .pulse-grid {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "coherence"
+      "runtimes"
+      "recent"
+      "stale";
+  }
 }
 
 /* ── Search ─────────────────────────────────────────────────────────────── */
@@ -1178,6 +1287,19 @@ a.session-label:hover { color: var(--accent); }
   display: flex;
   flex-direction: column;
   gap: var(--river-row-gap);
+}
+
+/* Density tiers — Settings → Views. Comfortable matches the base values
+   above; compact and spacious retune row gap, cell gap, and cell height. */
+.river-grid.river-density-compact {
+  --river-row-gap: 1px;
+  --river-cell-gap: 1px;
+  --river-cell-h: 10px;
+}
+.river-grid.river-density-spacious {
+  --river-row-gap: 6px;
+  --river-cell-gap: 4px;
+  --river-cell-h: 24px;
 }
 
 .river-row {

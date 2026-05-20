@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useDataset, relativeAge } from "../lib/dataset.js";
 import type { DatasetSession } from "../lib/dataset.js";
 import { SessionDrawer } from "../components/SessionDrawer.js";
+import { readViewSettings } from "../lib/view-settings.js";
 
 type Span = "7d" | "30d" | "90d" | "all";
 const SPAN_DAYS: Record<Span, number | null> = { "7d": 7, "30d": 30, "90d": 90, all: null };
@@ -33,6 +34,7 @@ export function RiverPage() {
   const [cellDrawer, setCellDrawer] = useState<CellDrawerState | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const navigate = useNavigate();
+  const [density] = useState(() => readViewSettings().riverDensity);
   const gridRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const [dragRange, setDragRange] = useState<{ from: number; to: number } | null>(null);
@@ -154,7 +156,7 @@ export function RiverPage() {
       </div>
 
       <div
-        className="river-grid card"
+        className={`river-grid card river-density-${density}`}
         ref={gridRef}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}

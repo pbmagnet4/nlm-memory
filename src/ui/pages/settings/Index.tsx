@@ -10,6 +10,16 @@ interface Card {
 
 const CARDS: Card[] = [
   {
+    to: "/settings/sources",
+    title: "Sources",
+    body: () => "Transcript origins the daemon scans. Add Claude Code, Hermes, pi.dev, custom JSONL directories, or webhook ingest.",
+  },
+  {
+    to: "/settings/providers",
+    title: "Providers",
+    body: () => "LLM endpoints (DeepSeek, Ollama, OpenAI, Anthropic, OpenRouter, custom). Manage keys and test connections.",
+  },
+  {
     to: "/settings/labels",
     title: "Labels",
     body: ({ entities }) => `${entities} entities catalogued. Promote candidates and edit types.`,

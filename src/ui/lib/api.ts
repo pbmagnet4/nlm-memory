@@ -30,16 +30,42 @@ async function fetchJson<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export function usePolledEndpoint<T>(path: string, intervalMs: number, initial: T): T {
-  const [data, setData] = useState<T>(initial);
+export interface PolledResult<T> {
+  /** Most recent successful payload, or `initial` until the first fetch lands. */
+  data: T;
+  /** Message from the latest failed tick; cleared on the next success. */
+  error: string | null;
+  /** Epoch ms of the last successful fetch, or null before the first. */
+  lastUpdated: number | null;
+  /** True until the first tick resolves (success or failure). */
+  loading: boolean;
+}
+
+export function usePolledEndpoint<T>(path: string, intervalMs: number, initial: T): PolledResult<T> {
+  const [state, setState] = useState<PolledResult<T>>({
+    data: initial,
+    error: null,
+    lastUpdated: null,
+    loading: true,
+  });
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
       try {
         const next = await fetchJson<T>(path);
-        if (!cancelled) setData(next);
-      } catch {
-        // Keep prior data on transient failure; the next tick retries.
+        if (!cancelled) {
+          setState({ data: next, error: null, lastUpdated: Date.now(), loading: false });
+        }
+      } catch (e) {
+        // Keep prior data on transient failure; surface the error so the
+        // UI can flag staleness. The next tick retries.
+        if (!cancelled) {
+          setState((prev) => ({
+            ...prev,
+            error: e instanceof Error ? e.message : String(e),
+            loading: false,
+          }));
+        }
       }
     };
     void tick();
@@ -49,7 +75,7 @@ export function usePolledEndpoint<T>(path: string, intervalMs: number, initial: 
       clearInterval(id);
     };
   }, [path, intervalMs]);
-  return data;
+  return state;
 }
 
 export function relativeTime(iso: string): string {

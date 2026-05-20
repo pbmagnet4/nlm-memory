@@ -216,3 +216,87 @@ describe("HTTP adapter", () => {
     expect(body.entries[0]?.query).toBe("pgvector");
   });
 });
+
+describe("HTTP adapter — data management", () => {
+  let tmp: string;
+  let dbPath: string;
+  let store: SqliteSessionStore;
+  let app: Hono;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "nle-http-data-"));
+    dbPath = join(tmp, "canonical.sqlite");
+    store = new SqliteSessionStore({ dbPath, migrationsDir: MIGRATIONS_DIR });
+    for (const { session, embedding } of seed) {
+      store.insertSessionForTest(session);
+      store.insertEmbeddingForTest(session.id, embedding);
+    }
+    const recall = new RecallService({ store, llm: new FixedEmbedder(unit([0, 1, 0])) });
+    app = createApp({ recall, store, liveStore: store, dbPath });
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("GET /api/data/stats reports table counts, runtimes, and schema version", async () => {
+    const res = await app.request("/api/data/stats");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      dbPath: string;
+      dbBytes: number;
+      schemaVersion: number;
+      tables: { name: string; rows: number }[];
+      runtimes: { runtime: string; n: number }[];
+    };
+    expect(body.dbPath).toBe(dbPath);
+    expect(body.dbBytes).toBeGreaterThan(0);
+    expect(body.schemaVersion).toBeGreaterThanOrEqual(0);
+    expect(body.tables.find((t) => t.name === "sessions")?.rows).toBe(2);
+    expect(body.runtimes.reduce((sum, r) => sum + r.n, 0)).toBe(2);
+  });
+
+  it("GET /api/data/stats 503s without dbPath", async () => {
+    const recall = new RecallService({ store, llm: new FixedEmbedder(unit([0, 1, 0])) });
+    const noPath = createApp({ recall, store, liveStore: store });
+    const res = await noPath.request("/api/data/stats");
+    expect(res.status).toBe(503);
+  });
+
+  it("GET /api/data/backup streams a restorable SQLite snapshot", async () => {
+    const res = await app.request("/api/data/backup");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-disposition")).toMatch(/nle-memory-backup-.*\.sqlite/);
+    const bytes = Buffer.from(await res.arrayBuffer());
+    // SQLite files start with the "SQLite format 3\0" magic header.
+    expect(bytes.subarray(0, 15).toString("latin1")).toBe("SQLite format 3");
+    expect(bytes.length).toBeGreaterThan(0);
+  });
+
+  it("POST /api/data/restore stages a valid backup and reports restartRequired", async () => {
+    const backup = Buffer.from(await (await app.request("/api/data/backup")).arrayBuffer());
+    const fd = new FormData();
+    fd.append("file", new Blob([backup]), "backup.sqlite");
+    const res = await app.request("/api/data/restore", { method: "POST", body: fd });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { staged: boolean; restartRequired: boolean; sessions: number };
+    expect(body.staged).toBe(true);
+    expect(body.restartRequired).toBe(true);
+    expect(body.sessions).toBe(2);
+  });
+
+  it("POST /api/data/restore rejects a non-SQLite upload", async () => {
+    const fd = new FormData();
+    fd.append("file", new Blob(["not a database"]), "junk.sqlite");
+    const res = await app.request("/api/data/restore", { method: "POST", body: fd });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/rejected/);
+  });
+
+  it("POST /api/data/restore 400s when no file field is present", async () => {
+    const res = await app.request("/api/data/restore", { method: "POST", body: new FormData() });
+    expect(res.status).toBe(400);
+  });
+});

@@ -2,8 +2,10 @@ import { NavLink } from "react-router-dom";
 
 const ITEMS = [
   { to: "/settings",            label: "Overview" },
-  { to: "/settings/labels",     label: "Labels" },
+  { to: "/settings/sources",    label: "Sources" },
+  { to: "/settings/providers",  label: "Providers" },
   { to: "/settings/classifier", label: "Classifier" },
+  { to: "/settings/labels",     label: "Labels" },
   { to: "/settings/data",       label: "Data" },
   { to: "/settings/views",      label: "Views" },
 ];
