@@ -83,7 +83,7 @@ Field requirements:
 - confidence: number between 0.0 and 1.0. How sure you are the extraction is good. Use 0.4 or below for routine/trivial sessions.
 - facts: array of objects. Each object has exactly these keys: kind, subject, predicate, value, sourceQuote (optional).
     - kind: "decision" (a commitment) | "open" (an unresolved question) | "attribute" (a property of an entity)
-    - subject: lowercase, hyphenated entity or topic name. Examples: "nle-memory-ts", "mac-pro-llm-host", "goat-home-services"
+    - subject: lowercase, hyphenated entity or topic name. Examples: "nlm-memory-ts", "mac-pro-llm-host", "goat-home-services"
     - predicate: MUST be one of these exact strings: ${PREDICATE_VOCABULARY.join(", ")}.
     - value: the answer, as a short phrase or sentence. Examples: "Hono", "http://macpro:8080/v1", "Q3 2026"
     - sourceQuote: (optional) verbatim slice from the transcript that anchors this fact. Keep under 200 chars.

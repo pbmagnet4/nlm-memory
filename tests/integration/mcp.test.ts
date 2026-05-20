@@ -53,7 +53,7 @@ const seed: ReadonlyArray<{ session: Session; embedding: Float32Array }> = [
     session: makeSession({
       id: "sess_a",
       label: "Hono router setup",
-      entities: ["NLE Memory"],
+      entities: ["NLM"],
       decisions: ["chose Hono"],
     }),
     embedding: unit([1, 0, 0]),
@@ -62,7 +62,7 @@ const seed: ReadonlyArray<{ session: Session; embedding: Float32Array }> = [
     session: makeSession({
       id: "sess_b",
       label: "pgvector migration plan",
-      entities: ["NLE Memory", "Postgres"],
+      entities: ["NLM", "Postgres"],
       open: ["cutover timing"],
     }),
     embedding: unit([0, 1, 0]),
@@ -86,7 +86,7 @@ describe("MCP adapter", () => {
   let recall: RecallService;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "nle-mcp-"));
+    tmp = mkdtempSync(join(tmpdir(), "nlm-mcp-"));
     store = new SqliteSessionStore({
       dbPath: join(tmp, "canonical.sqlite"),
       migrationsDir: MIGRATIONS_DIR,
@@ -127,14 +127,14 @@ describe("MCP adapter", () => {
   it("recall_sessions threads entity + kind filters into RecallService", async () => {
     const result = await recallSessionsHandler(
       { recall, store },
-      { query: "pgvector", entity: "NLE Memory", kind: "open" },
+      { query: "pgvector", entity: "NLM", kind: "open" },
     );
     const body = parsePayload(result) as {
       entity: string;
       kind: string;
       results: { id: string }[];
     };
-    expect(body.entity).toBe("NLE Memory");
+    expect(body.entity).toBe("NLM");
     expect(body.kind).toBe("open");
     expect(body.results.every((r) => r.id === "sess_b")).toBe(true);
   });
@@ -144,7 +144,7 @@ describe("MCP adapter", () => {
     expect(result.isError).toBeUndefined();
     const body = parsePayload(result) as { id: string; entities: string[] };
     expect(body.id).toBe("sess_a");
-    expect(body.entities).toContain("NLE Memory");
+    expect(body.entities).toContain("NLM");
   });
 
   it("get_session returns an error tool result on missing id", async () => {
@@ -174,7 +174,7 @@ describe("MCP adapter", () => {
       await factStore.insertMany([
         makeFact({
           id: "f_hono",
-          subject: "nle-memory-ts",
+          subject: "nlm-memory-ts",
           predicate: "framework",
           value: "Hono",
           confidence: 0.9,
@@ -195,7 +195,7 @@ describe("MCP adapter", () => {
     it("recall_facts returns the current fact for an exact subject+predicate", async () => {
       const result = await recallFactsHandler(
         { recall, store, factRecall, factStore },
-        { subject: "nle-memory-ts", predicate: "framework" },
+        { subject: "nlm-memory-ts", predicate: "framework" },
       );
       expect(result.isError).toBeUndefined();
       const body = parsePayload(result) as {
@@ -219,7 +219,7 @@ describe("MCP adapter", () => {
       await factStore.insertMany([
         makeFact({
           id: "f_old",
-          subject: "nle-memory-ts",
+          subject: "nlm-memory-ts",
           predicate: "framework",
           value: "Fastify",
           createdAt: "2026-05-18T00:00:00Z",
@@ -231,7 +231,7 @@ describe("MCP adapter", () => {
 
       const result = await getFactHistoryHandler(
         { recall, store, factRecall, factStore },
-        { subject: "nle-memory-ts", predicate: "framework" },
+        { subject: "nlm-memory-ts", predicate: "framework" },
       );
       const body = parsePayload(result) as {
         chains: { history: { id: string }[] }[];

@@ -8,7 +8,7 @@
  * so the next tick is incremental.
  *
  * Single-process: the scheduler runs alongside the HTTP server (Phase D
- * wires it into `nle start`). No worker thread; Node's event loop is
+ * wires it into `nlm start`). No worker thread; Node's event loop is
  * enough — adapter discovery is filesystem-bound and the per-chunk
  * classify call is async-awaited with a wall-clock timeout to keep the
  * tick loop responsive.

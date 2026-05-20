@@ -18,7 +18,7 @@ describe("SourceRegistry", () => {
   let registry: SourceRegistry;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "nle-sources-"));
+    tmp = mkdtempSync(join(tmpdir(), "nlm-sources-"));
     store = new SqliteSessionStore({
       dbPath: join(tmp, "canonical.sqlite"),
       migrationsDir: MIGRATIONS_DIR,

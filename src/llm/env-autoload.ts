@@ -11,7 +11,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 
 const DEFAULT_SEARCH_PATHS = [
-  "~/.nle/.env",
+  "~/.nlm/.env",
   "./.env",
   "../.env",
   "../../.env",

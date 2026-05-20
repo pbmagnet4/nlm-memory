@@ -1,4 +1,4 @@
-/* NLE Memory — Design system v2
+/* NLM — Design system v2
    Single source of truth for all tokens, surfaces, and shared components.
    All pages import this via BaseLayout. No :global() needed — .css is always global. */
 

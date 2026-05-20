@@ -20,7 +20,7 @@ describe("JsonlGenericAdapter", () => {
   let dir: string;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "nle-jsonl-"));
+    dir = mkdtempSync(join(tmpdir(), "nlm-jsonl-"));
   });
 
   afterEach(() => {

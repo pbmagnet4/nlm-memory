@@ -37,11 +37,11 @@ describe("coerceClassifyResult — facts", () => {
     const out = coerceClassifyResult({
       ...baseFields(),
       facts: [
-        { kind: "decision", subject: "NLE-Memory-TS", predicate: "Framework", value: "  Hono  " },
+        { kind: "decision", subject: "NLM-Memory-TS", predicate: "Framework", value: "  Hono  " },
       ],
     });
     expect(out.facts).toEqual([
-      { kind: "decision", subject: "nle-memory-ts", predicate: "framework", value: "Hono" },
+      { kind: "decision", subject: "nlm-memory-ts", predicate: "framework", value: "Hono" },
     ]);
   });
 

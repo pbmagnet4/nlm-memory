@@ -1,7 +1,7 @@
 /**
- * `nle classify-parity` — Phase C parity verification harness.
+ * `nlm classify-parity` — Phase C parity verification harness.
  *
- * Reads N sessions from ~/.nle/canonical.sqlite (read-only by default),
+ * Reads N sessions from ~/.nlm/canonical.sqlite (read-only by default),
  * runs the TS OllamaClient.classify on each body, diffs the result
  * against the persisted Python classifier output, and prints aggregate
  * metrics: Jaccard similarity on entities/decisions/open sets, label
@@ -86,9 +86,9 @@ function parseArgs(argv: string[]): CliOptions {
   return {
     limit: Number.isFinite(limit) && limit > 0 ? limit : 10,
     dbPath:
-      flag("--db", process.env["NLE_DB_PATH"] ?? resolve(homedir(), ".nle/canonical.sqlite")) ??
-      resolve(homedir(), ".nle/canonical.sqlite"),
-    ollamaUrl: flag("--ollama", process.env["NLE_OLLAMA_URL"] ?? "http://localhost:11434") ?? "http://localhost:11434",
+      flag("--db", process.env["NLM_DB_PATH"] ?? resolve(homedir(), ".nlm/canonical.sqlite")) ??
+      resolve(homedir(), ".nlm/canonical.sqlite"),
+    ollamaUrl: flag("--ollama", process.env["NLM_OLLAMA_URL"] ?? "http://localhost:11434") ?? "http://localhost:11434",
     classifyModel: flag("--model", defaultModel) ?? defaultModel,
     provider,
     verbose: argv.includes("--verbose"),
@@ -230,7 +230,7 @@ export async function runParity(opts: CliOptions): Promise<ParityReport> {
 
 export async function main(): Promise<void> {
   const opts = parseArgs(process.argv.slice(2));
-  console.error(`nle classify-parity: ${opts.limit} sessions from ${opts.dbPath}`);
+  console.error(`nlm classify-parity: ${opts.limit} sessions from ${opts.dbPath}`);
   console.error(
     `  provider: ${opts.provider}  model: ${opts.classifyModel}` +
       (opts.provider === "ollama" ? `  ollama: ${opts.ollamaUrl}` : ""),

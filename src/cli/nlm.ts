@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * nle — CLI entry point. Composition root for the whole stack.
+ * nlm — CLI entry point. Composition root for the whole stack.
  *
  * This is the one file that knows about every concrete implementation:
  * SqliteSessionStore (storage), OllamaClient (LLM), Hono (HTTP),
@@ -8,12 +8,12 @@
  * backend means editing this file, not anything inside core/.
  *
  * Subcommands:
- *   nle start    — boot HTTP server on $NLE_PORT (default 3940)
- *   nle migrate  — run pending migrations against the canonical SQLite
- *   nle recall   — one-shot recall query from the shell (debugging)
- *   nle mcp      — run as an MCP stdio server (for ~/.mcp.json wiring)
- *   nle install  — install the macOS LaunchAgent (auto-start on login)
- *   nle uninstall — remove the macOS LaunchAgent
+ *   nlm start    — boot HTTP server on $NLM_PORT (default 3940)
+ *   nlm migrate  — run pending migrations against the canonical SQLite
+ *   nlm recall   — one-shot recall query from the shell (debugging)
+ *   nlm mcp      — run as an MCP stdio server (for ~/.mcp.json wiring)
+ *   nlm install  — install the macOS LaunchAgent (auto-start on login)
+ *   nlm uninstall — remove the macOS LaunchAgent
  */
 
 import { fileURLToPath } from "node:url";
@@ -49,15 +49,15 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 const UI_DIST = resolve(__dirname, "../../dist/ui");
-const DEFAULT_DB_PATH = resolve(homedir(), ".nle/canonical.sqlite");
+const DEFAULT_DB_PATH = resolve(homedir(), ".nlm/canonical.sqlite");
 const DEFAULT_PORT = 3940;
 
 function dbPath(): string {
-  return process.env["NLE_DB_PATH"] ?? DEFAULT_DB_PATH;
+  return process.env["NLM_DB_PATH"] ?? DEFAULT_DB_PATH;
 }
 
 function port(): number {
-  const raw = process.env["NLE_PORT"];
+  const raw = process.env["NLM_PORT"];
   if (!raw) return DEFAULT_PORT;
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n) || n < 1 || n > 65_535) return DEFAULT_PORT;
@@ -65,17 +65,17 @@ function port(): number {
 }
 
 function ollamaUrl(): string {
-  return process.env["NLE_OLLAMA_URL"] ?? "http://localhost:11434";
+  return process.env["NLM_OLLAMA_URL"] ?? "http://localhost:11434";
 }
 
 function buildClassifier(): ClassifierBox {
   // DeepSeek V4 Flash is the default for the ingest classifier per the
   // 2026-05-19 parity run: ~5s/session, 90% first-try success vs Ollama
   // phi4-mini's 0% on the same first three sessions. Override with
-  // NLE_CLASSIFIER=ollama if you need offline-only operation.
-  const provider = ((process.env["NLE_CLASSIFIER"] ?? "deepseek").toLowerCase() as ClassifierProvider);
+  // NLM_CLASSIFIER=ollama if you need offline-only operation.
+  const provider = ((process.env["NLM_CLASSIFIER"] ?? "deepseek").toLowerCase() as ClassifierProvider);
   if (provider !== "ollama") autoloadEnv();
-  const model = process.env["NLE_CLASSIFIER_MODEL"]
+  const model = process.env["NLM_CLASSIFIER_MODEL"]
     ?? (provider === "ollama" ? "phi4-mini:latest" : "deepseek-v4-flash");
   return new ClassifierBox({ provider, model, ollamaUrl: ollamaUrl() });
 }
@@ -83,9 +83,9 @@ function buildClassifier(): ClassifierBox {
 function buildAdapters(sources: SourceRegistry): TranscriptAdapter[] {
   // Sources table is the source of truth. Each enabled row maps to one
   // adapter via adapterFromSource(). Detection still gates registration —
-  // a row pointing at a missing dir won't poll. NLE_ADAPTERS keeps working
+  // a row pointing at a missing dir won't poll. NLM_ADAPTERS keeps working
   // as a name-based filter for forcing a subset during dev.
-  const explicit = process.env["NLE_ADAPTERS"];
+  const explicit = process.env["NLM_ADAPTERS"];
   const allowed = explicit ? new Set(explicit.split(",").map((s) => s.trim())) : null;
   const out: TranscriptAdapter[] = [];
   for (const row of sources.list()) {
@@ -108,7 +108,7 @@ function buildStack() {
   // the store opens — the daemon can't swap a DB file it already holds.
   const restored = applyPendingRestore(dbPath());
   if (restored.applied) {
-    console.error(`nle-memory: restored database from staged backup`);
+    console.error(`nlm-memory: restored database from staged backup`);
     if (restored.archivedTo) console.error(`  previous db archived at ${restored.archivedTo}`);
   }
   const store = new SqliteSessionStore({
@@ -133,7 +133,7 @@ function buildStack() {
 
 const program = new Command();
 program
-  .name("nle")
+  .name("nlm")
   .description("Local-first memory operating system for AI operators")
   .version("0.2.0-dev");
 
@@ -161,7 +161,7 @@ program
     });
     const p = port();
     serve({ fetch: app.fetch, port: p }, (info) => {
-      console.error(`nle-memory http listening on http://localhost:${info.port}`);
+      console.error(`nlm-memory http listening on http://localhost:${info.port}`);
       console.error(`  db:     ${dbPath()}`);
       console.error(`  ollama: ${ollamaUrl()}`);
     });
@@ -169,7 +169,7 @@ program
     if (opts.scheduler !== false) {
       const adapters = buildAdapters(sources);
       if (adapters.length === 0) {
-        console.error("  scheduler: no adapters detected (set NLE_ADAPTERS to force-enable)");
+        console.error("  scheduler: no adapters detected (set NLM_ADAPTERS to force-enable)");
       } else {
         const scheduler = new ScanScheduler({
           store,
@@ -205,7 +205,7 @@ program
       migrationsDir: MIGRATIONS_DIR,
     });
     store.close();
-    console.error(`nle-memory: migrations applied at ${dbPath()}`);
+    console.error(`nlm-memory: migrations applied at ${dbPath()}`);
   });
 
 program
@@ -234,7 +234,7 @@ program
 
 program
   .command("classify-parity")
-  .description("Run TS classifier against ~/.nle/canonical.sqlite and diff vs persisted Python output")
+  .description("Run TS classifier against ~/.nlm/canonical.sqlite and diff vs persisted Python output")
   .option("-l, --limit <n>", "sessions to sample", (v) => Number.parseInt(v, 10), 10)
   .option("-p, --provider <name>", "deepseek | ollama", "deepseek")
   .option("-m, --model <name>", "model tag (default: deepseek-v4-flash for deepseek, phi4-mini:latest for ollama)")
@@ -258,7 +258,7 @@ program
   .description("Re-embed every session in canonical.sqlite with the document prefix")
   .option("-l, --limit <n>", "session cap (default: all)", (v) => Number.parseInt(v, 10))
   .option("--body-chars <n>", "body truncation (default 4000)", (v) => Number.parseInt(v, 10), 4_000)
-  .option("--state <path>", "resume state file (default ~/.nle/embed_reembed.state)")
+  .option("--state <path>", "resume state file (default ~/.nlm/embed_reembed.state)")
   .option("-v, --verbose", "per-session progress on stderr")
   .action(async (opts) => {
     const embedder = new OllamaClient({ baseUrl: ollamaUrl() });
@@ -284,7 +284,7 @@ program
   .description("One-shot: classify historical sessions and populate the FactStore (Phase B.5)")
   .option("-l, --limit <n>", "max sessions to process this run", (v) => Number.parseInt(v, 10))
   .option("--from <session-id>", "skip sessions with id <= this value (operator-resume)")
-  .option("--state <path>", "resume state file (default ~/.nle/backfill_facts.state)")
+  .option("--state <path>", "resume state file (default ~/.nlm/backfill_facts.state)")
   .option("--dry-run", "count what would happen without writing facts")
   .option("--reprocess", "re-classify sessions that already have facts")
   .option("--no-embed", "skip per-fact embedding (faster but disables semantic recall)")
@@ -343,13 +343,13 @@ program
     await server.connect(transport);
   });
 
-const LAUNCH_AGENT_LABEL = "io.whtnxt.nle-memory";
+const LAUNCH_AGENT_LABEL = "io.whtnxt.nlm-memory";
 const LAUNCH_AGENT_PLIST = join(
   homedir(), "Library", "LaunchAgents", `${LAUNCH_AGENT_LABEL}.plist`,
 );
 
-function buildPlist(nodeExec: string, nleJs: string): string {
-  const logDir = join(homedir(), ".nle", "logs");
+function buildPlist(nodeExec: string, nlmJs: string): string {
+  const logDir = join(homedir(), ".nlm", "logs");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -359,7 +359,7 @@ function buildPlist(nodeExec: string, nleJs: string): string {
   <key>ProgramArguments</key>
   <array>
     <string>${nodeExec}</string>
-    <string>${nleJs}</string>
+    <string>${nlmJs}</string>
     <string>start</string>
   </array>
   <key>WorkingDirectory</key>
@@ -386,30 +386,30 @@ function buildPlist(nodeExec: string, nleJs: string): string {
 
 program
   .command("install")
-  .description("Install the macOS LaunchAgent so nle-memory auto-starts on login")
+  .description("Install the macOS LaunchAgent so nlm-memory auto-starts on login")
   .action(() => {
     if (process.platform !== "darwin") {
-      console.error("nle install: only macOS is supported. On Linux, add `nle start` to your init system manually.");
+      console.error("nlm install: only macOS is supported. On Linux, add `nlm start` to your init system manually.");
       process.exit(1);
     }
     const uid = process.getuid?.();
     if (uid === undefined) {
-      console.error("nle install: could not determine UID");
+      console.error("nlm install: could not determine UID");
       process.exit(1);
     }
-    mkdirSync(join(homedir(), ".nle", "logs"), { recursive: true });
+    mkdirSync(join(homedir(), ".nlm", "logs"), { recursive: true });
     writeFileSync(LAUNCH_AGENT_PLIST, buildPlist(process.execPath, __filename), "utf8");
-    console.error(`nle: wrote ${LAUNCH_AGENT_PLIST}`);
+    console.error(`nlm: wrote ${LAUNCH_AGENT_PLIST}`);
     try {
       execFileSync("launchctl", ["bootout", `gui/${uid}`, LAUNCH_AGENT_LABEL], { stdio: "ignore" });
     } catch {
       // not loaded yet — expected on first install
     }
     execFileSync("launchctl", ["bootstrap", `gui/${uid}`, LAUNCH_AGENT_PLIST]);
-    console.error("nle: daemon installed and started.");
+    console.error("nlm: daemon installed and started.");
     console.error(`  UI:       http://localhost:${port()}/ui`);
-    console.error("  To stop:  launchctl stop io.whtnxt.nle-memory");
-    console.error("  To remove: nle uninstall");
+    console.error("  To stop:  launchctl stop io.whtnxt.nlm-memory");
+    console.error("  To remove: nlm uninstall");
   });
 
 program
@@ -417,28 +417,28 @@ program
   .description("Remove the macOS LaunchAgent")
   .action(() => {
     if (process.platform !== "darwin") {
-      console.error("nle uninstall: only macOS is supported.");
+      console.error("nlm uninstall: only macOS is supported.");
       process.exit(1);
     }
     const uid = process.getuid?.();
     if (uid === undefined) {
-      console.error("nle uninstall: could not determine UID");
+      console.error("nlm uninstall: could not determine UID");
       process.exit(1);
     }
     try {
       execFileSync("launchctl", ["bootout", `gui/${uid}`, LAUNCH_AGENT_LABEL], { stdio: "pipe" });
-      console.error("nle: daemon stopped.");
+      console.error("nlm: daemon stopped.");
     } catch {
       // wasn't running
     }
     if (existsSync(LAUNCH_AGENT_PLIST)) {
       rmSync(LAUNCH_AGENT_PLIST);
-      console.error(`nle: removed ${LAUNCH_AGENT_PLIST}`);
+      console.error(`nlm: removed ${LAUNCH_AGENT_PLIST}`);
     }
-    console.error("nle: uninstalled. Run `nle install` to reinstall.");
+    console.error("nlm: uninstalled. Run `nlm install` to reinstall.");
   });
 
 program.parseAsync().catch((e) => {
-  console.error("nle: fatal", e);
+  console.error("nlm: fatal", e);
   process.exit(1);
 });

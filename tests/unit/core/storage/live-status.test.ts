@@ -14,7 +14,7 @@ describe("liveSessionStatus", () => {
   let tmp: string;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "nle-status-"));
+    tmp = mkdtempSync(join(tmpdir(), "nlm-status-"));
   });
 
   afterEach(() => {

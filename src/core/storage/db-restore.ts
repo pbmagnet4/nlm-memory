@@ -46,7 +46,7 @@ export function validateRestoreCandidate(filePath: string): RestoreValidation {
       .all()
       .map((r) => r.name);
     if (!tables.includes("sessions") || !tables.includes("schema_migrations")) {
-      return { ok: false, error: "not an nle-memory database (missing sessions/schema_migrations)" };
+      return { ok: false, error: "not an nlm-memory database (missing sessions/schema_migrations)" };
     }
     const sessions = db
       .prepare<[], { n: number }>("SELECT COUNT(*) AS n FROM sessions")

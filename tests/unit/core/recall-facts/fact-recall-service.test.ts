@@ -73,7 +73,7 @@ const corpus: Fact[] = [
   makeFact({
     id: "f_hono",
     kind: "decision",
-    subject: "nle-memory-ts",
+    subject: "nlm-memory-ts",
     predicate: "framework",
     value: "Hono",
     confidence: 0.9,
@@ -105,7 +105,7 @@ const corpus: Fact[] = [
   makeFact({
     id: "f_superseded",
     kind: "decision",
-    subject: "nle-memory-ts",
+    subject: "nlm-memory-ts",
     predicate: "framework",
     value: "Fastify",
     confidence: 0.9,
@@ -130,7 +130,7 @@ describe("FactRecallService.search (keyword)", () => {
       llm: new StubEmbedder(),
     });
     const result = await svc.search({
-      subject: "nle-memory-ts",
+      subject: "nlm-memory-ts",
       predicate: "framework",
     });
     expect(result.total).toBe(1);
@@ -143,7 +143,7 @@ describe("FactRecallService.search (keyword)", () => {
       factStore: new InMemoryFactStore(corpus),
       llm: new StubEmbedder(),
     });
-    const result = await svc.search({ subject: "nle-memory-ts" });
+    const result = await svc.search({ subject: "nlm-memory-ts" });
     expect(result.results.map((r) => r.id)).toEqual(["f_hono"]);
   });
 
@@ -153,7 +153,7 @@ describe("FactRecallService.search (keyword)", () => {
       llm: new StubEmbedder(),
     });
     const result = await svc.search({
-      subject: "nle-memory-ts",
+      subject: "nlm-memory-ts",
       includeSuperseded: true,
     });
     expect(result.results.map((r) => r.id).sort()).toEqual(["f_hono", "f_superseded"]);

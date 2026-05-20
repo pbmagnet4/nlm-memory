@@ -52,7 +52,7 @@ function AppHeader() {
       <span className="wordmark-page">{page}</span>
       <span className="header-spacer" />
       <span className="status-dot" aria-hidden="true" />
-      <span className="header-info">nle-memory · :3940</span>
+      <span className="header-info">nlm-memory · :3940</span>
     </header>
   );
 }

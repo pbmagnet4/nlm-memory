@@ -4,7 +4,7 @@ export function makeFact(overrides: Partial<Fact> = {}): Fact {
   const base: Fact = {
     id: "fact_test_1",
     kind: "decision",
-    subject: "nle-memory-ts",
+    subject: "nlm-memory-ts",
     predicate: "framework",
     value: "Hono",
     sourceSessionId: "cc_test_1",

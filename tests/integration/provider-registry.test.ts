@@ -19,7 +19,7 @@ describe("ProviderRegistry", () => {
   let savedKey: string | undefined;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "nle-providers-"));
+    tmp = mkdtempSync(join(tmpdir(), "nlm-providers-"));
     store = new SqliteSessionStore({
       dbPath: join(tmp, "canonical.sqlite"),
       migrationsDir: MIGRATIONS_DIR,

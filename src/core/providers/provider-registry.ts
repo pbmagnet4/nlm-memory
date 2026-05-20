@@ -182,7 +182,7 @@ export class ProviderRegistry {
     this.insert({
       kind: "ollama",
       name: "Ollama (local)",
-      baseUrl: process.env["NLE_OLLAMA_URL"] ?? "http://localhost:11434",
+      baseUrl: process.env["NLM_OLLAMA_URL"] ?? "http://localhost:11434",
     });
 
     const deepseekKey = process.env["DEEPSEEK_API_KEY"];

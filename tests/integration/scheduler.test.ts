@@ -39,7 +39,7 @@ class StubClassifier implements LLMClient {
     private readonly result: ClassifyResult = {
       label: "Stub label",
       summary: "Stub summary",
-      entities: ["NLE Memory"],
+      entities: ["NLM"],
       decisions: ["chose Hono"],
       open: [],
       confidence: 0.9,
@@ -77,7 +77,7 @@ describe("ScanScheduler.tick", () => {
   let store: SqliteSessionStore;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "nle-sched-"));
+    tmp = mkdtempSync(join(tmpdir(), "nlm-sched-"));
     dbPath = join(tmp, "canonical.sqlite");
     projects = join(tmp, "projects");
     mkdirSync(join(projects, "project_a"), { recursive: true });
@@ -131,7 +131,7 @@ describe("ScanScheduler.tick", () => {
     const ent = db.prepare<[string], { entity_canonical: string }>(
       "SELECT entity_canonical FROM session_entities WHERE session_id = ?",
     ).all(sess[0]!.id);
-    expect(ent[0]?.entity_canonical).toBe("NLE Memory");
+    expect(ent[0]?.entity_canonical).toBe("NLM");
 
     const emb = db.prepare<[string], { c: number }>(
       "SELECT COUNT(*) AS c FROM session_embeddings WHERE session_id = ?",
@@ -249,12 +249,12 @@ describe("ScanScheduler.tick", () => {
     const classifier = new StubClassifier({
       label: "Stub label",
       summary: "Stub summary",
-      entities: ["NLE Memory"],
+      entities: ["NLM"],
       decisions: ["chose Hono"],
       open: [],
       confidence: 0.9,
       facts: [
-        { kind: "decision", subject: "nle-memory-ts", predicate: "framework", value: "Hono" },
+        { kind: "decision", subject: "nlm-memory-ts", predicate: "framework", value: "Hono" },
         {
           kind: "attribute",
           subject: "mac-pro-llm-host",
@@ -278,7 +278,7 @@ describe("ScanScheduler.tick", () => {
     expect(facts).toHaveLength(2);
     expect(facts.map((f) => `${f.subject}:${f.predicate}:${f.value}`).sort()).toEqual([
       "mac-pro-llm-host:endpoint:http://macpro:8080/v1",
-      "nle-memory-ts:framework:Hono",
+      "nlm-memory-ts:framework:Hono",
     ]);
     for (const f of facts) {
       expect(f.sourceSessionId).toBe(sessId);
@@ -307,7 +307,7 @@ describe("ScanScheduler.tick", () => {
     const classifier = new StubClassifier({
       label: "L", summary: "S", entities: [], decisions: [], open: [], confidence: 0.9,
       facts: [
-        { kind: "decision", subject: "nle-memory-ts", predicate: "framework", value: "Hono" },
+        { kind: "decision", subject: "nlm-memory-ts", predicate: "framework", value: "Hono" },
         { kind: "attribute", subject: "mac-pro", predicate: "endpoint", value: "http://macpro:8080/v1" },
       ],
     });
@@ -328,7 +328,7 @@ describe("ScanScheduler.tick", () => {
     const adapter = new ClaudeCodeAdapter({ projectsPath: projects, idleMinutes: 15 });
     const classifier = new StubClassifier({
       label: "L", summary: "S", entities: [], decisions: [], open: [], confidence: 0.9,
-      facts: [{ kind: "decision", subject: "nle-memory-ts", predicate: "framework", value: "Hono" }],
+      facts: [{ kind: "decision", subject: "nlm-memory-ts", predicate: "framework", value: "Hono" }],
     });
     const factStore = new SqliteFactStore(store.rawDb());
     const scheduler = new ScanScheduler({

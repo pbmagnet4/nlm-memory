@@ -65,7 +65,7 @@ describe("backfillFacts", () => {
   let statePath: string;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "nle-b5-"));
+    tmp = mkdtempSync(join(tmpdir(), "nlm-b5-"));
     store = new SqliteSessionStore({
       dbPath: join(tmp, "canonical.sqlite"),
       migrationsDir: MIGRATIONS_DIR,
@@ -99,7 +99,7 @@ describe("backfillFacts", () => {
 
     const classifier = new ScriptedClassifier(new Map([
       ["BODY-OLD-1", classifyResult([
-        { kind: "decision", subject: "nle-memory-ts", predicate: "framework", value: "Hono" },
+        { kind: "decision", subject: "nlm-memory-ts", predicate: "framework", value: "Hono" },
       ])],
       ["BODY-OLD-2", classifyResult([
         { kind: "attribute", subject: "mac-pro", predicate: "endpoint", value: ":8080" },

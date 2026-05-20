@@ -8,8 +8,8 @@
  * and replaces the old vector via DELETE + INSERT (vec0 doesn't support
  * UPDATE on the vector column).
  *
- * Resumable via a JSON state file at $NLE_EMBED_STATE (default
- * ~/.nle/embed_reembed.state). Interrupting + rerunning skips already-done
+ * Resumable via a JSON state file at $NLM_EMBED_STATE (default
+ * ~/.nlm/embed_reembed.state). Interrupting + rerunning skips already-done
  * session ids.
  *
  * Layering: depends on the LLMClient port. SQLite touched directly via
@@ -26,7 +26,7 @@ import type { LLMClient } from "@ports/llm-client.js";
 import { LLMUnreachableError } from "@ports/llm-client.js";
 
 const DEFAULT_BODY_CHARS = 4_000;
-const DEFAULT_STATE_PATH = join(homedir(), ".nle", "embed_reembed.state");
+const DEFAULT_STATE_PATH = join(homedir(), ".nlm", "embed_reembed.state");
 const SAVE_EVERY = 25;
 
 export interface BackfillOptions {

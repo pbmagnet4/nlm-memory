@@ -16,7 +16,7 @@ export interface ViewSettings {
   threadSort: ThreadSort;
 }
 
-export const VIEW_SETTINGS_KEY = "nle.settings.views";
+export const VIEW_SETTINGS_KEY = "nlm.settings.views";
 
 export const VIEW_SETTINGS_DEFAULT: ViewSettings = {
   landing: "live",

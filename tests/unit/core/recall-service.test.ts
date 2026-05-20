@@ -41,13 +41,13 @@ const corpus: Session[] = [
   makeSession({
     id: "a",
     label: "Hono router setup",
-    entities: ["NLE Memory"],
+    entities: ["NLM"],
     decisions: ["chose Hono over Express"],
   }),
   makeSession({
     id: "b",
     label: "pgvector migration plan",
-    entities: ["NLE Memory", "Postgres"],
+    entities: ["NLM", "Postgres"],
     open: ["timing of cutover"],
   }),
   makeSession({
@@ -87,9 +87,9 @@ describe("RecallService.search", () => {
     const result = await svc.search({
       query: "session",
       mode: "keyword",
-      entity: "NLE Memory",
+      entity: "NLM",
     });
-    expect(result.results.every((r) => r.entities.includes("NLE Memory"))).toBe(true);
+    expect(result.results.every((r) => r.entities.includes("NLM"))).toBe(true);
   });
 
   it("semantic mode returns ollama_unreachable when the embedder fails", async () => {

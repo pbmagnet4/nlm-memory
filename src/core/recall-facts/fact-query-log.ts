@@ -5,7 +5,7 @@
  * stats reads it back.
  *
  * Telemetry path — never raises. File format: one JSON object per line at
- * $NLE_FACT_QUERY_LOG or ~/.nle/fact_query_log.jsonl. Append-only.
+ * $NLM_FACT_QUERY_LOG or ~/.nlm/fact_query_log.jsonl. Append-only.
  *
  * Without this, the FactStore is a write-only system: facts go in via
  * ingest + backfill, but there's no signal on whether anything reads them.
@@ -40,7 +40,7 @@ export interface FactStatsResult {
 }
 
 function defaultLogPath(): string {
-  return process.env["NLE_FACT_QUERY_LOG"] ?? join(homedir(), ".nle", "fact_query_log.jsonl");
+  return process.env["NLM_FACT_QUERY_LOG"] ?? join(homedir(), ".nlm", "fact_query_log.jsonl");
 }
 
 export async function logFactQuery(
