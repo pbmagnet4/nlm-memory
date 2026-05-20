@@ -3,16 +3,21 @@ import { RecallService } from "../../../src/core/recall/recall-service.js";
 import type { LLMClient, EmbedResult } from "../../../src/ports/llm-client.js";
 import { LLMUnreachableError } from "../../../src/ports/llm-client.js";
 import type {
+  KeywordNeighbor,
   SessionStore,
   SemanticNeighbor,
 } from "../../../src/ports/session-store.js";
 import type { Session } from "../../../src/shared/types.js";
 import { makeSession } from "../../fixtures/sessions.js";
 
+// Fake store: keyword and semantic hits are pre-baked. Unit tests here cover
+// RecallService orchestration (filter, merge, limit, error handling) — not
+// keyword ranking quality, which is covered by the FTS integration tests.
 class InMemoryStore implements SessionStore {
   constructor(
     private readonly sessions: Session[],
     private readonly neighbors: SemanticNeighbor[] = [],
+    private readonly keywordHits: KeywordNeighbor[] = [],
   ) {}
   async list(): Promise<ReadonlyArray<Session>> {
     return this.sessions;
@@ -22,6 +27,9 @@ class InMemoryStore implements SessionStore {
   }
   async semanticSearch(): Promise<ReadonlyArray<SemanticNeighbor>> {
     return this.neighbors;
+  }
+  async keywordSearch(): Promise<ReadonlyArray<KeywordNeighbor>> {
+    return this.keywordHits;
   }
   async updateStatus(): Promise<void> {}
 }
@@ -68,28 +76,33 @@ describe("RecallService.search", () => {
     expect(result.results).toEqual([]);
   });
 
-  it("keyword mode ranks higher-weighted field matches first", async () => {
-    const svc = new RecallService({
-      store: new InMemoryStore(corpus),
-      llm: new StubEmbedder(),
-    });
+  it("keyword mode surfaces store keyword hits ranked by store score", async () => {
+    const store = new InMemoryStore(corpus, [], [
+      { sessionId: "b", score: 9.2 },
+      { sessionId: "a", score: 2.1 },
+    ]);
+    const svc = new RecallService({ store, llm: new StubEmbedder() });
     const result = await svc.search({ query: "pgvector", mode: "keyword" });
-    expect(result.total).toBe(1);
-    expect(result.results[0]?.id).toBe("b");
-    expect(result.results[0]?.matchScore).toBe(3); // label weight
+    expect(result.results.map((r) => r.id)).toEqual(["b", "a"]);
+    expect(result.results[0]?.matchScore).toBe(9.2);
   });
 
-  it("entity filter restricts the search corpus", async () => {
-    const svc = new RecallService({
-      store: new InMemoryStore(corpus),
-      llm: new StubEmbedder(),
-    });
-    const result = await svc.search({
-      query: "session",
-      mode: "keyword",
-      entity: "NLM",
-    });
+  it("keyword mode populates matchedIn from the resolved session", async () => {
+    const store = new InMemoryStore(corpus, [], [{ sessionId: "b", score: 5 }]);
+    const svc = new RecallService({ store, llm: new StubEmbedder() });
+    const result = await svc.search({ query: "pgvector", mode: "keyword" });
+    expect(result.results[0]?.matchedIn).toEqual(["label"]);
+  });
+
+  it("entity filter restricts the keyword corpus", async () => {
+    const store = new InMemoryStore(corpus, [], [
+      { sessionId: "b", score: 5 },
+      { sessionId: "c", score: 4 },
+    ]);
+    const svc = new RecallService({ store, llm: new StubEmbedder() });
+    const result = await svc.search({ query: "session", mode: "keyword", entity: "NLM" });
     expect(result.results.every((r) => r.entities.includes("NLM"))).toBe(true);
+    expect(result.results.map((r) => r.id)).not.toContain("c");
   });
 
   it("semantic mode returns ollama_unreachable when the embedder fails", async () => {
@@ -103,10 +116,8 @@ describe("RecallService.search", () => {
   });
 
   it("hybrid mode degrades to keyword scores when semantic is unavailable", async () => {
-    const svc = new RecallService({
-      store: new InMemoryStore(corpus),
-      llm: new StubEmbedder(true),
-    });
+    const store = new InMemoryStore(corpus, [], [{ sessionId: "b", score: 7 }]);
+    const svc = new RecallService({ store, llm: new StubEmbedder(true) });
     const result = await svc.search({ query: "pgvector", mode: "hybrid" });
     expect(result.modeUnavailable).toBe("ollama_unreachable");
     expect(result.results).toHaveLength(1);
@@ -117,27 +128,28 @@ describe("RecallService.search", () => {
     const store = new InMemoryStore(corpus, [{ sessionId: "a", distance: 0 }]);
     const svc = new RecallService({ store, llm: new StubEmbedder() });
     const result = await svc.search({ query: "anything", mode: "semantic" });
-    // distance 0 => perfect match => cos sim 1.0
     expect(result.results[0]?.matchScore).toBe(1);
   });
 
-  it("hybrid mode blends 0.4 * kw + 0.6 * sem after per-field normalization", async () => {
-    const store = new InMemoryStore(corpus, [{ sessionId: "b", distance: 0 }]);
+  it("hybrid mode blends 0.4 * kw + 0.6 * sem after per-leg normalization", async () => {
+    const store = new InMemoryStore(
+      corpus,
+      [{ sessionId: "b", distance: 0 }],
+      [{ sessionId: "b", score: 9.2 }],
+    );
     const svc = new RecallService({ store, llm: new StubEmbedder() });
     const result = await svc.search({ query: "pgvector", mode: "hybrid" });
     const top = result.results[0];
     expect(top?.id).toBe("b");
-    // kwNorm = 1 (only hit), semNorm = 1 (distance 0) => 0.4 + 0.6 = 1
+    // kwNorm = 1 (only hit / its own max), semNorm = 1 (distance 0) => 0.4 + 0.6 = 1
     expect(top?.matchScore).toBeCloseTo(1, 4);
     expect(top?.keywordScore).toBe(1);
     expect(top?.semanticScore).toBe(1);
   });
 
   it("clamps limit to MAX_LIMIT (100) and at least 1", async () => {
-    const svc = new RecallService({
-      store: new InMemoryStore(corpus),
-      llm: new StubEmbedder(),
-    });
+    const store = new InMemoryStore(corpus, [], [{ sessionId: "b", score: 5 }]);
+    const svc = new RecallService({ store, llm: new StubEmbedder() });
     const big = await svc.search({ query: "session", mode: "keyword", limit: 9999 });
     expect(big.limit).toBe(100);
     const small = await svc.search({ query: "session", mode: "keyword", limit: 0 });

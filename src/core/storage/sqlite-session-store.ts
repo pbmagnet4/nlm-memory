@@ -17,6 +17,7 @@ import { dirname, resolve } from "node:path";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 import type {
+  KeywordNeighbor,
   SemanticNeighbor,
   SessionFilter,
   SessionStore,
@@ -31,6 +32,7 @@ import type { ActionOverlay } from "@core/actions/overlay.js";
 import type { Fact } from "@shared/types.js";
 import { runMigrations } from "./migrate.js";
 import type { SqliteFactStore } from "./sqlite-fact-store.js";
+import { tokenize } from "@core/recall/tokenize.js";
 
 export interface SqliteSessionStoreOptions {
   readonly dbPath: string;
@@ -77,6 +79,7 @@ type SessionRow = {
 type EntityRow = { session_id: string; entity_canonical: string };
 type MarkerRow = { session_id: string; kind: "decision" | "open"; text: string };
 type NeighborRow = { session_id: string; distance: number };
+type KeywordRow = { session_id: string; score: number };
 
 export interface RecentWrite {
   id: string;
@@ -460,6 +463,34 @@ export class SqliteSessionStore implements SessionStore {
     return rows.map((r) => ({ sessionId: r.session_id, distance: r.distance }));
   }
 
+  /**
+   * Lexical recall via the sessions_fts FTS5 index. BM25 column weights
+   * favour label over summary over body. Returns sessions ranked best-first
+   * with a positive score (the negated bm25() value — bm25 is more negative
+   * for better matches). User input is tokenized and rebuilt into a quoted
+   * OR query so FTS5 metacharacters cannot reach the MATCH parser.
+   */
+  async keywordSearch(
+    query: string,
+    limit: number,
+  ): Promise<ReadonlyArray<KeywordNeighbor>> {
+    const matchExpr = toMatchExpression(query);
+    if (!matchExpr) return [];
+    const k = Math.max(1, Math.trunc(limit));
+    const rows = this.db
+      .prepare<[string, number], KeywordRow>(`
+        SELECT s.id AS session_id,
+               -bm25(sessions_fts, 10.0, 4.0, 1.0) AS score
+        FROM sessions_fts
+        JOIN sessions s ON s.rowid = sessions_fts.rowid
+        WHERE sessions_fts MATCH ?
+        ORDER BY score DESC
+        LIMIT ?
+      `)
+      .all(matchExpr, k);
+    return rows.map((r) => ({ sessionId: r.session_id, score: r.score }));
+  }
+
   async updateStatus(sessionId: string, status: SessionStatus): Promise<void> {
     if (status === "idle") {
       throw new Error("Cannot persist derived status 'idle' — only active/closed/superseded");
@@ -614,4 +645,16 @@ export class SqliteSessionStore implements SessionStore {
       open: activeOpen,
     };
   }
+}
+
+/**
+ * Builds a safe FTS5 MATCH expression from raw user input. Each indexable
+ * token becomes a double-quoted string literal; literals are OR-joined.
+ * Quoting neutralizes FTS5 operators (AND, OR, NEAR, *, parentheses, colon).
+ * Returns null when the query has no indexable tokens.
+ */
+function toMatchExpression(query: string): string | null {
+  const terms = tokenize(query);
+  if (terms.length === 0) return null;
+  return terms.map((t) => `"${t.replace(/"/g, '""')}"`).join(" OR ");
 }

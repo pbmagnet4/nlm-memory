@@ -18,7 +18,7 @@ import type {
   Session,
 } from "@shared/types.js";
 import { applyFilter } from "./filter.js";
-import { scoreKeyword } from "./score-keyword.js";
+import { keywordMatchFields } from "./match-fields.js";
 import { tokenSet } from "./tokenize.js";
 
 const DEFAULT_LIMIT = 20;
@@ -26,6 +26,7 @@ const MAX_LIMIT = 100;
 const HYBRID_KW_WEIGHT = 0.4;
 const HYBRID_SEM_WEIGHT = 0.6;
 const SEMANTIC_OVERFETCH = 3;
+const KEYWORD_OVERFETCH = 3;
 
 export interface RecallServiceDeps {
   readonly store: SessionStore;
@@ -63,8 +64,13 @@ export class RecallService {
     const queryTokens = input.query ? new Set(tokenSet(input.query)) : new Set<string>();
 
     const kwHits =
-      mode === "keyword" || mode === "hybrid"
-        ? scoreAll(filtered, queryTokens)
+      (mode === "keyword" || mode === "hybrid") && input.query
+        ? await this.runKeyword(
+            input.query,
+            byId,
+            queryTokens,
+            limit * KEYWORD_OVERFETCH,
+          )
         : [];
 
     let semHits: ReadonlyArray<SemanticHit> = [];
@@ -114,6 +120,26 @@ export class RecallService {
     }
     return hits;
   }
+
+  private async runKeyword(
+    query: string,
+    byId: ReadonlyMap<string, Session>,
+    queryTokens: ReadonlySet<string>,
+    fetchLimit: number,
+  ): Promise<ReadonlyArray<KeywordHit>> {
+    const neighbors = await this.deps.store.keywordSearch(query, fetchLimit);
+    const hits: KeywordHit[] = [];
+    for (const n of neighbors) {
+      const session = byId.get(n.sessionId);
+      if (!session) continue;
+      hits.push({
+        session,
+        score: n.score,
+        matchedIn: keywordMatchFields(session, queryTokens),
+      });
+    }
+    return hits;
+  }
 }
 
 interface KeywordHit {
@@ -125,20 +151,6 @@ interface KeywordHit {
 interface SemanticHit {
   readonly session: Session;
   readonly similarity: number;
-}
-
-function scoreAll(
-  sessions: ReadonlyArray<Session>,
-  queryTokens: ReadonlySet<string>,
-): ReadonlyArray<KeywordHit> {
-  if (queryTokens.size === 0) return [];
-  const hits: KeywordHit[] = [];
-  for (const s of sessions) {
-    const { score, matchedIn } = scoreKeyword(s, queryTokens);
-    if (score > 0) hits.push({ session: s, score, matchedIn });
-  }
-  hits.sort((a, b) => b.score - a.score);
-  return hits;
 }
 
 function mergeHybrid(

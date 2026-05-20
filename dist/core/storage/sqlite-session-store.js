@@ -18,6 +18,7 @@ import * as sqliteVec from "sqlite-vec";
 import { liveSessionStatus } from "./live-status.js";
 import { loadActionOverlay, openQuestionId } from "../actions/overlay.js";
 import { runMigrations } from "./migrate.js";
+import { tokenize } from "../recall/tokenize.js";
 export class SqliteSessionStore {
     db;
     constructor(opts) {
@@ -323,6 +324,31 @@ export class SqliteSessionStore {
             .all(blob, k);
         return rows.map((r) => ({ sessionId: r.session_id, distance: r.distance }));
     }
+    /**
+     * Lexical recall via the sessions_fts FTS5 index. BM25 column weights
+     * favour label over summary over body. Returns sessions ranked best-first
+     * with a positive score (the negated bm25() value — bm25 is more negative
+     * for better matches). User input is tokenized and rebuilt into a quoted
+     * OR query so FTS5 metacharacters cannot reach the MATCH parser.
+     */
+    async keywordSearch(query, limit) {
+        const matchExpr = toMatchExpression(query);
+        if (!matchExpr)
+            return [];
+        const k = Math.max(1, Math.trunc(limit));
+        const rows = this.db
+            .prepare(`
+        SELECT s.id AS session_id,
+               -bm25(sessions_fts, 10.0, 4.0, 1.0) AS score
+        FROM sessions_fts
+        JOIN sessions s ON s.rowid = sessions_fts.rowid
+        WHERE sessions_fts MATCH ?
+        ORDER BY score DESC
+        LIMIT ?
+      `)
+            .all(matchExpr, k);
+        return rows.map((r) => ({ sessionId: r.session_id, score: r.score }));
+    }
     async updateStatus(sessionId, status) {
         if (status === "idle") {
             throw new Error("Cannot persist derived status 'idle' — only active/closed/superseded");
@@ -460,5 +486,17 @@ export class SqliteSessionStore {
             open: activeOpen,
         };
     }
+}
+/**
+ * Builds a safe FTS5 MATCH expression from raw user input. Each indexable
+ * token becomes a double-quoted string literal; literals are OR-joined.
+ * Quoting neutralizes FTS5 operators (AND, OR, NEAR, *, parentheses, colon).
+ * Returns null when the query has no indexable tokens.
+ */
+function toMatchExpression(query) {
+    const terms = tokenize(query);
+    if (terms.length === 0)
+        return null;
+    return terms.map((t) => `"${t.replace(/"/g, '""')}"`).join(" OR ");
 }
 //# sourceMappingURL=sqlite-session-store.js.map
