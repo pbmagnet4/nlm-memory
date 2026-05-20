@@ -19,6 +19,11 @@ export interface SemanticNeighbor {
   readonly distance: number;
 }
 
+export interface KeywordNeighbor {
+  readonly sessionId: string;
+  readonly score: number;
+}
+
 export interface SessionStore {
   list(filter?: SessionFilter): Promise<ReadonlyArray<Session>>;
 
@@ -28,6 +33,11 @@ export interface SessionStore {
     queryVector: Float32Array,
     limit: number,
   ): Promise<ReadonlyArray<SemanticNeighbor>>;
+
+  keywordSearch(
+    query: string,
+    limit: number,
+  ): Promise<ReadonlyArray<KeywordNeighbor>>;
 
   updateStatus(sessionId: string, status: SessionStatus): Promise<void>;
 }

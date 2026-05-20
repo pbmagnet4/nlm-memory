@@ -3,6 +3,7 @@ import { RecallService } from "../../../src/core/recall/recall-service.js";
 import type { LLMClient, EmbedResult } from "../../../src/ports/llm-client.js";
 import { LLMUnreachableError } from "../../../src/ports/llm-client.js";
 import type {
+  KeywordNeighbor,
   SessionStore,
   SemanticNeighbor,
 } from "../../../src/ports/session-store.js";
@@ -22,6 +23,9 @@ class InMemoryStore implements SessionStore {
   }
   async semanticSearch(): Promise<ReadonlyArray<SemanticNeighbor>> {
     return this.neighbors;
+  }
+  async keywordSearch(): Promise<ReadonlyArray<KeywordNeighbor>> {
+    return [];
   }
   async updateStatus(): Promise<void> {}
 }
