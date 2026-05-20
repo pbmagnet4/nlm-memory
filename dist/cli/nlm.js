@@ -14,6 +14,8 @@
  *   nlm mcp      — run as an MCP stdio server (for ~/.mcp.json wiring)
  *   nlm install  — install the macOS LaunchAgent (auto-start on login)
  *   nlm uninstall — remove the macOS LaunchAgent
+ *   nlm hook install   — add the recall hook to Claude Code (shadow mode)
+ *   nlm hook uninstall — remove the recall hook from Claude Code
  */
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
@@ -36,6 +38,7 @@ import { ClassifierBox } from "../llm/classifier-box.js";
 import { DeepSeekClient } from "../llm/deepseek-client.js";
 import { OllamaClient } from "../llm/ollama-client.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
+import { addHook, removeHook } from "../core/hook/claude-settings.js";
 import { runParity } from "./classify-parity.js";
 import { reembedCorpus } from "../core/embedding/embed-backfill.js";
 import { backfillFacts } from "../core/facts/backfill-facts.js";
@@ -422,6 +425,33 @@ program
         console.error(`nlm: removed ${LAUNCH_AGENT_PLIST}`);
     }
     console.error("nlm: uninstalled. Run `nlm install` to reinstall.");
+});
+const HOOK_JS = resolve(__dirname, "../hook/prompt-recall-hook.js");
+function claudeSettingsPath() {
+    return process.env["NLM_CLAUDE_SETTINGS"] ?? join(homedir(), ".claude", "settings.json");
+}
+const hook = program
+    .command("hook")
+    .description("Manage the Claude Code recall hook");
+hook
+    .command("install")
+    .description("Add the recall hook to ~/.claude/settings.json (shadow mode)")
+    .action(() => {
+    const path = claudeSettingsPath();
+    const command = `NLM_HOOK_MODE=shadow node ${HOOK_JS}`;
+    addHook(path, command);
+    console.error(`nlm: recall hook installed in ${path} (shadow mode).`);
+    console.error("  It logs to ~/.nlm/hook-log.jsonl and injects nothing.");
+    console.error("  To go live later: change NLM_HOOK_MODE=shadow to live in that file.");
+    console.error("  To remove: nlm hook uninstall");
+});
+hook
+    .command("uninstall")
+    .description("Remove the recall hook from ~/.claude/settings.json")
+    .action(() => {
+    const path = claudeSettingsPath();
+    removeHook(path);
+    console.error(`nlm: recall hook removed from ${path}.`);
 });
 program.parseAsync().catch((e) => {
     console.error("nlm: fatal", e);
