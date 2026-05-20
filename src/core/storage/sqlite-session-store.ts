@@ -120,6 +120,16 @@ export class SqliteSessionStore implements SessionStore {
     this.db.close();
   }
 
+  /**
+   * Drains the WAL into the main database and truncates the -wal file.
+   * WAL mode is on but nothing else checkpoints, so the file grows
+   * unbounded under continuous readers. The daemon calls this on an
+   * interval. Synchronous — keep the WAL small so each call is cheap.
+   */
+  checkpoint(): void {
+    this.db.pragma("wal_checkpoint(TRUNCATE)");
+  }
+
   /** Raw db handle for ingest helpers (Scheduler, scanOnce). Avoid using
    *  directly from the recall path — it bypasses the SessionStore port. */
   rawDb(): Database.Database {
