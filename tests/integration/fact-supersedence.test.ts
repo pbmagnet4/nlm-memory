@@ -58,7 +58,7 @@ describe("Phase B.4 — supersedence-on-ingest", () => {
   let factStore: SqliteFactStore;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "nle-b4-"));
+    tmp = mkdtempSync(join(tmpdir(), "nlm-b4-"));
     store = new SqliteSessionStore({
       dbPath: join(tmp, "canonical.sqlite"),
       migrationsDir: MIGRATIONS_DIR,
@@ -75,7 +75,7 @@ describe("Phase B.4 — supersedence-on-ingest", () => {
     // Session A asserts framework=Fastify
     const factA = fact({
       id: "f_A",
-      subject: "nle-memory-ts",
+      subject: "nlm-memory-ts",
       predicate: "framework",
       value: "Fastify",
       sourceSessionId: "sess_A",
@@ -91,7 +91,7 @@ describe("Phase B.4 — supersedence-on-ingest", () => {
     // Session B asserts framework=Hono
     const factB = fact({
       id: "f_B",
-      subject: "nle-memory-ts",
+      subject: "nlm-memory-ts",
       predicate: "framework",
       value: "Hono",
       sourceSessionId: "sess_B",
@@ -109,7 +109,7 @@ describe("Phase B.4 — supersedence-on-ingest", () => {
     expect(fetchedA?.supersededBy).toBe("f_B");
     expect(fetchedB?.supersededBy).toBeNull();
 
-    const current = await factStore.findCurrent("nle-memory-ts", "framework");
+    const current = await factStore.findCurrent("nlm-memory-ts", "framework");
     expect(current?.id).toBe("f_B");
     expect(current?.value).toBe("Hono");
   });

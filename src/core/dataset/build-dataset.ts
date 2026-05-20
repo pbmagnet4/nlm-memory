@@ -166,7 +166,7 @@ export function buildDataset(dbPath: string, options: BuildDatasetOptions = {}):
 /**
  * Heuristic for "this entity is actually a filesystem path the classifier
  * leaked into the catalog". Catches things like ".claude/agents/",
- * "bridge/server.js", "deploy.sh", "nle-memory-spec.md" while leaving
+ * "bridge/server.js", "deploy.sh", "nlm-memory-spec.md" while leaving
  * real entities like "n8n", "Node.js", "NocoDB", "personal-workspace" alone.
  */
 const CODE_FILE_EXT_RE =

@@ -4,11 +4,11 @@ import { makeSession } from "../../fixtures/sessions.js";
 
 describe("applyFilter", () => {
   const noDecisionsNoOpen = makeSession({ id: "a", entities: ["Whtnxt"] });
-  const onlyDecisions = makeSession({ id: "b", entities: ["NLE Memory"], decisions: ["picked Hono"] });
-  const onlyOpen = makeSession({ id: "c", entities: ["NLE Memory"], open: ["pgvector later"] });
+  const onlyDecisions = makeSession({ id: "b", entities: ["NLM"], decisions: ["picked Hono"] });
+  const onlyOpen = makeSession({ id: "c", entities: ["NLM"], open: ["pgvector later"] });
   const both = makeSession({
     id: "d",
-    entities: ["NLE Memory", "Whtnxt"],
+    entities: ["NLM", "Whtnxt"],
     decisions: ["use SQLite + sqlite-vec"],
     open: ["Tauri or Electron"],
   });
@@ -19,7 +19,7 @@ describe("applyFilter", () => {
   });
 
   it("filters by entity tag", () => {
-    const result = applyFilter(corpus, { entity: "NLE Memory" });
+    const result = applyFilter(corpus, { entity: "NLM" });
     expect(result.map((s) => s.id)).toEqual(["b", "c", "d"]);
   });
 

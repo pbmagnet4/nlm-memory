@@ -28,7 +28,7 @@ function makeFetch(reply: (req: { url: string; body: unknown }) => Response | Pr
 const VALID_PAYLOAD = {
   label: "Phase C classifier port",
   summary: "Built OllamaClient.classify with JSON-mode and schema validation against the shared prompt module.",
-  entities: ["NLE Memory", "Ollama", "OllamaClient"],
+  entities: ["NLM", "Ollama", "OllamaClient"],
   decisions: ["Map schema-invalid output to a typed ClassifierSchemaError instead of returning null"],
   open: ["Whether to retry once on schema failure or send to inbox immediately"],
   confidence: 0.85,

@@ -45,7 +45,7 @@ const seed: ReadonlyArray<{ session: Session; embedding: Float32Array }> = [
       id: "sess_a",
       label: "Hono router setup",
       summary: "Wired Hono onto port 3940 with sqlite session store",
-      entities: ["NLE Memory"],
+      entities: ["NLM"],
       decisions: ["chose Hono over Express for routing"],
     }),
     embedding: unit([1, 0, 0]),
@@ -55,7 +55,7 @@ const seed: ReadonlyArray<{ session: Session; embedding: Float32Array }> = [
       id: "sess_b",
       label: "pgvector migration plan",
       summary: "Sketched eventual Postgres mirror via PostgresSessionStore port",
-      entities: ["NLE Memory", "Postgres"],
+      entities: ["NLM", "Postgres"],
       open: ["timing of cutover from SQLite to Postgres"],
     }),
     embedding: unit([0, 1, 0]),
@@ -76,7 +76,7 @@ describe("RecallService against SqliteSessionStore (integration)", () => {
   let store: SqliteSessionStore;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "nle-mem-"));
+    tmp = mkdtempSync(join(tmpdir(), "nlm-mem-"));
     store = new SqliteSessionStore({
       dbPath: join(tmp, "canonical.sqlite"),
       migrationsDir: MIGRATIONS_DIR,
@@ -96,7 +96,7 @@ describe("RecallService against SqliteSessionStore (integration)", () => {
     const all = await store.list();
     expect(all).toHaveLength(3);
     const b = all.find((s) => s.id === "sess_b");
-    expect(b?.entities).toEqual(["NLE Memory", "Postgres"]);
+    expect(b?.entities).toEqual(["NLM", "Postgres"]);
     expect(b?.open).toEqual(["timing of cutover from SQLite to Postgres"]);
   });
 
@@ -147,7 +147,7 @@ describe("RecallService against SqliteSessionStore (integration)", () => {
     const result = await svc.search({
       query: "scraper",
       mode: "keyword",
-      entity: "NLE Memory",
+      entity: "NLM",
     });
     expect(result.results).toHaveLength(0);
   });

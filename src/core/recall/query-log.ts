@@ -5,8 +5,8 @@
  * after each /api/recall response; /api/recall/stats reads the same file
  * back to drive the Pulse agent-recall observability panel.
  *
- * File format: one JSON object per line at $NLE_QUERY_LOG or
- * ~/.nle/query_log.jsonl. Append-only.
+ * File format: one JSON object per line at $NLM_QUERY_LOG or
+ * ~/.nlm/query_log.jsonl. Append-only.
  */
 
 import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
@@ -36,7 +36,7 @@ export interface StatsResult {
 }
 
 function defaultLogPath(): string {
-  return process.env["NLE_QUERY_LOG"] ?? join(homedir(), ".nle", "query_log.jsonl");
+  return process.env["NLM_QUERY_LOG"] ?? join(homedir(), ".nlm", "query_log.jsonl");
 }
 
 export async function logQuery(

@@ -22,7 +22,7 @@ describe("SqliteFactStore (integration)", () => {
   let factStore: SqliteFactStore;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "nle-facts-"));
+    tmp = mkdtempSync(join(tmpdir(), "nlm-facts-"));
     sessionStore = new SqliteSessionStore({
       dbPath: join(tmp, "canonical.sqlite"),
       migrationsDir: MIGRATIONS_DIR,
@@ -77,7 +77,7 @@ describe("SqliteFactStore (integration)", () => {
     await factStore.insert(
       makeFact({
         id: "fact_old",
-        subject: "nle-memory-ts",
+        subject: "nlm-memory-ts",
         predicate: "framework",
         value: "Fastify",
         sourceSessionId: "sess_parent",
@@ -87,7 +87,7 @@ describe("SqliteFactStore (integration)", () => {
     await factStore.insert(
       makeFact({
         id: "fact_new",
-        subject: "nle-memory-ts",
+        subject: "nlm-memory-ts",
         predicate: "framework",
         value: "Hono",
         sourceSessionId: "sess_parent",
@@ -96,13 +96,13 @@ describe("SqliteFactStore (integration)", () => {
     );
     await factStore.markSuperseded("fact_old", "fact_new");
 
-    const current = await factStore.findCurrent("nle-memory-ts", "framework");
+    const current = await factStore.findCurrent("nlm-memory-ts", "framework");
     expect(current?.id).toBe("fact_new");
     expect(current?.value).toBe("Hono");
   });
 
   it("findCurrent returns null when no current fact exists", async () => {
-    expect(await factStore.findCurrent("nle-memory-ts", "framework")).toBeNull();
+    expect(await factStore.findCurrent("nlm-memory-ts", "framework")).toBeNull();
   });
 
   it("list filters by subject and excludes superseded by default", async () => {
@@ -216,7 +216,7 @@ describe("SqliteFactStore (integration)", () => {
     beforeEach(async () => {
       await factStore.insertMany([
         makeFact({
-          id: "f_hono", subject: "nle-memory-ts", predicate: "framework",
+          id: "f_hono", subject: "nlm-memory-ts", predicate: "framework",
           value: "Hono", confidence: 0.9, sourceSessionId: "sess_parent",
         }),
         makeFact({
@@ -228,7 +228,7 @@ describe("SqliteFactStore (integration)", () => {
           confidence: 0.5, sourceSessionId: "sess_parent",
         }),
         makeFact({
-          id: "f_fastify", subject: "nle-memory-ts", predicate: "framework",
+          id: "f_fastify", subject: "nlm-memory-ts", predicate: "framework",
           value: "Fastify", confidence: 0.9, sourceSessionId: "sess_parent",
         }),
       ]);
@@ -237,7 +237,7 @@ describe("SqliteFactStore (integration)", () => {
 
     it("filters by subject + predicate, excluding superseded by default", async () => {
       const out = await factStore.listForRecall({
-        subject: "nle-memory-ts",
+        subject: "nlm-memory-ts",
         predicate: "framework",
       });
       expect(out.map((f) => f.id)).toEqual(["f_hono"]);

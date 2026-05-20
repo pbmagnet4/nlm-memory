@@ -20,7 +20,7 @@ export interface RecentLogEntry {
 }
 
 function defaultLogPath(): string {
-  return process.env["NLE_QUERY_LOG"] ?? join(homedir(), ".nle", "query_log.jsonl");
+  return process.env["NLM_QUERY_LOG"] ?? join(homedir(), ".nlm", "query_log.jsonl");
 }
 
 const TAIL_BYTES = 256 * 1024;

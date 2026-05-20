@@ -9,7 +9,7 @@
  *
  * Resumable via a JSON state file (mirrors core/embedding/embed-backfill).
  * Interrupting and rerunning skips already-processed sessions. State path
- * defaults to ~/.nle/backfill_facts.state.
+ * defaults to ~/.nlm/backfill_facts.state.
  *
  * Layering: depends on the LLMClient + FactStore ports through the
  * SqliteSessionStore + SqliteFactStore composition. Lives under core/ but
@@ -25,7 +25,7 @@ import type { SqliteSessionStore } from "@core/storage/sqlite-session-store.js";
 import type { LLMClient } from "@ports/llm-client.js";
 import { LLMUnreachableError } from "@ports/llm-client.js";
 
-const DEFAULT_STATE_PATH = join(homedir(), ".nle", "backfill_facts.state");
+const DEFAULT_STATE_PATH = join(homedir(), ".nlm", "backfill_facts.state");
 const SAVE_EVERY = 25;
 
 export interface BackfillFactsOptions {

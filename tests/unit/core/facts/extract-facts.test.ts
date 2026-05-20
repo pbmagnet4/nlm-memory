@@ -31,7 +31,7 @@ describe("extractFacts", () => {
     const result = classifyResult({
       confidence: 0.85,
       facts: [
-        { kind: "decision", subject: "nle-memory-ts", predicate: "framework", value: "Hono" },
+        { kind: "decision", subject: "nlm-memory-ts", predicate: "framework", value: "Hono" },
         {
           kind: "attribute",
           subject: "mac-pro",
@@ -48,7 +48,7 @@ describe("extractFacts", () => {
       {
         id: "fact_1",
         kind: "decision",
-        subject: "nle-memory-ts",
+        subject: "nlm-memory-ts",
         predicate: "framework",
         value: "Hono",
         sourceSessionId: "sess_1",

@@ -32,7 +32,7 @@ describe("db-restore", () => {
   let dbPath: string;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "nle-restore-"));
+    tmp = mkdtempSync(join(tmpdir(), "nlm-restore-"));
     dbPath = join(tmp, "canonical.sqlite");
   });
 
@@ -64,7 +64,7 @@ describe("db-restore", () => {
     expect(result.error).toBeTruthy();
   });
 
-  it("validateRestoreCandidate rejects a SQLite file lacking nle tables", () => {
+  it("validateRestoreCandidate rejects a SQLite file lacking nlm tables", () => {
     const bare = join(tmp, "bare.sqlite");
     const store = freshStore(bare);
     store.rawDb().prepare("DROP TABLE sessions").run();

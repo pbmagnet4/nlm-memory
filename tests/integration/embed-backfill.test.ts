@@ -54,7 +54,7 @@ describe("reembedCorpus", () => {
   let statePath: string;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "nle-emb-"));
+    tmp = mkdtempSync(join(tmpdir(), "nlm-emb-"));
     dbPath = join(tmp, "canonical.sqlite");
     statePath = join(tmp, "state.json");
     const store = new SqliteSessionStore({ dbPath, migrationsDir: MIGRATIONS_DIR });
@@ -103,7 +103,7 @@ describe("normalizeEmbeddings", () => {
   let dbPath: string;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "nle-norm-"));
+    tmp = mkdtempSync(join(tmpdir(), "nlm-norm-"));
     dbPath = join(tmp, "canonical.sqlite");
     const store = new SqliteSessionStore({ dbPath, migrationsDir: MIGRATIONS_DIR });
     store.insertSessionForTest(makeSession({ id: "raw" }));

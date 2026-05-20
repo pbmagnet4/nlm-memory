@@ -3,7 +3,7 @@
  * to RecallService and SessionStore — no HTTP hop, no localhost loopback.
  *
  * The Python daemon's MCP server proxied through HTTP. This server runs in
- * the same process as the rest of nle-memory, so a tool call is a function
+ * the same process as the rest of nlm-memory, so a tool call is a function
  * call. Lower latency, simpler stack traces, one fewer thing to keep alive.
  *
  * Layering: this module knows about the inner ring (RecallService,
@@ -26,7 +26,7 @@ import type {
 
 const CHARACTER_LIMIT = 25_000;
 const DEFAULT_LIMIT = 10;
-const SERVER_NAME = "nle-memory-mcp-server";
+const SERVER_NAME = "nlm-memory-mcp-server";
 const SERVER_VERSION = "0.2.0-dev";
 
 export interface McpDeps {
@@ -169,7 +169,7 @@ export async function getFactHistoryHandler(
   }
 }
 
-const RECALL_DESCRIPTION = `Search prior AI sessions from the local nle-memory canonical store.
+const RECALL_DESCRIPTION = `Search prior AI sessions from the local nlm-memory canonical store.
 Use this whenever the user's question references past work, prior decisions,
 unresolved questions, or anything that might already be answered in earlier
 Claude Code, Hermes, or pi.dev sessions. Examples:
@@ -191,14 +191,14 @@ Args:
   - mode: "keyword" (default), "semantic", or "hybrid". Optional.
   - limit: max results (1-100, default 10).`;
 
-const GET_SESSION_DESCRIPTION = `Fetch one session from nle-memory by its canonical ID, including
+const GET_SESSION_DESCRIPTION = `Fetch one session from nlm-memory by its canonical ID, including
 the full body text. Use this when a recall_sessions result looks relevant
 and you need the conversational context to answer accurately.
 
 Args:
   - id: Canonical session ID (e.g. "sess_pgvector", "sess_abc123").`;
 
-const RECALL_FACTS_DESCRIPTION = `Search the local nle-memory FactStore for normalized
+const RECALL_FACTS_DESCRIPTION = `Search the local nlm-memory FactStore for normalized
 (subject, predicate, value) triples derived from prior sessions. Use this
 when you need a single concrete fact rather than the prose of a whole
 session — model aliases, framework choices, endpoints, ports, dates.
@@ -206,8 +206,8 @@ session — model aliases, framework choices, endpoints, ports, dates.
 Examples:
   - "what model alias does the Mac Pro endpoint expose?"
     → recall_facts(subject="mac-pro-llm-host", predicate="model")
-  - "what framework did we pick for nle-memory-ts?"
-    → recall_facts(subject="nle-memory-ts", predicate="framework")
+  - "what framework did we pick for nlm-memory-ts?"
+    → recall_facts(subject="nlm-memory-ts", predicate="framework")
   - "anything we know about the GOAT engagement?"
     → recall_facts(subject="goat-home-services")
   - "decisions about routing in the last week?"
@@ -256,7 +256,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
   server.registerTool(
     "recall_sessions",
     {
-      title: "Recall Sessions from NLE Memory",
+      title: "Recall Sessions from NLM",
       description: RECALL_DESCRIPTION,
       inputSchema: {
         query: z
@@ -296,7 +296,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
   server.registerTool(
     "get_session",
     {
-      title: "Get Full NLE Memory Session",
+      title: "Get Full NLM Session",
       description: GET_SESSION_DESCRIPTION,
       inputSchema: {
         id: z.string().min(1).describe("Canonical session ID."),
@@ -315,7 +315,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
     server.registerTool(
       "recall_facts",
       {
-        title: "Recall Facts from NLE Memory",
+        title: "Recall Facts from NLM",
         description: RECALL_FACTS_DESCRIPTION,
         inputSchema: {
           query: z

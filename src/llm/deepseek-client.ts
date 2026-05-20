@@ -61,7 +61,7 @@ export class DeepSeekClient implements LLMClient {
     const key = opts.apiKey ?? process.env["DEEPSEEK_API_KEY"];
     if (!key) {
       throw new Error(
-        "DEEPSEEK_API_KEY not set. Export it, place it in ~/.nle/.env, or pass apiKey explicitly.",
+        "DEEPSEEK_API_KEY not set. Export it, place it in ~/.nlm/.env, or pass apiKey explicitly.",
       );
     }
     this.apiKey = key;

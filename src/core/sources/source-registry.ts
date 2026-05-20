@@ -197,9 +197,9 @@ export class SourceRegistry {
     const count = this.db.prepare<[], { c: number }>(`SELECT COUNT(*) AS c FROM sources`).get();
     if ((count?.c ?? 0) > 0) return;
 
-    const claudePath = process.env["NLE_CLAUDE_PROJECTS_PATH"]
+    const claudePath = process.env["NLM_CLAUDE_PROJECTS_PATH"]
       ?? join(homedir(), ".claude", "projects");
-    const hermesPath = process.env["NLE_HERMES_SESSIONS_PATH"]
+    const hermesPath = process.env["NLM_HERMES_SESSIONS_PATH"]
       ?? join(homedir(), ".hermes", "sessions");
     const piPath = process.env["PI_SESSIONS_PATH"]
       ?? join(homedir(), ".pi", "agent", "sessions");

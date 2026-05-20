@@ -48,7 +48,7 @@ const seed: ReadonlyArray<{ session: Session; embedding: Float32Array }> = [
       id: "sess_a",
       label: "Hono router setup",
       summary: "Wired Hono routes to RecallService",
-      entities: ["NLE Memory"],
+      entities: ["NLM"],
       decisions: ["chose Hono"],
     }),
     embedding: unit([1, 0, 0]),
@@ -57,7 +57,7 @@ const seed: ReadonlyArray<{ session: Session; embedding: Float32Array }> = [
     session: makeSession({
       id: "sess_b",
       label: "pgvector migration plan",
-      entities: ["NLE Memory", "Postgres"],
+      entities: ["NLM", "Postgres"],
       open: ["cutover timing"],
     }),
     embedding: unit([0, 1, 0]),
@@ -71,7 +71,7 @@ describe("HTTP adapter", () => {
   let queryLogPath: string;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "nle-http-"));
+    tmp = mkdtempSync(join(tmpdir(), "nlm-http-"));
     store = new SqliteSessionStore({
       dbPath: join(tmp, "canonical.sqlite"),
       migrationsDir: MIGRATIONS_DIR,
@@ -119,14 +119,14 @@ describe("HTTP adapter", () => {
   });
 
   it("GET /api/recall threads entity filter through to RecallService", async () => {
-    const res = await app.request("/api/recall?q=hono&entity=NLE%20Memory&mode=keyword");
+    const res = await app.request("/api/recall?q=hono&entity=NLM&mode=keyword");
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       entity: string | null;
       results: { entities: string[] }[];
     };
-    expect(body.entity).toBe("NLE Memory");
-    expect(body.results.every((r) => r.entities.includes("NLE Memory"))).toBe(true);
+    expect(body.entity).toBe("NLM");
+    expect(body.results.every((r) => r.entities.includes("NLM"))).toBe(true);
   });
 
   it("GET /api/recall semantic mode goes through the embedder + vec0", async () => {
@@ -142,7 +142,7 @@ describe("HTTP adapter", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { id: string; entities: string[] };
     expect(body.id).toBe("sess_a");
-    expect(body.entities).toContain("NLE Memory");
+    expect(body.entities).toContain("NLM");
   });
 
   it("GET /api/session/:id 404s on unknown id", async () => {
@@ -227,7 +227,7 @@ describe("HTTP adapter — data management", () => {
   let app: Hono;
 
   beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "nle-http-data-"));
+    tmp = mkdtempSync(join(tmpdir(), "nlm-http-data-"));
     dbPath = join(tmp, "canonical.sqlite");
     store = new SqliteSessionStore({ dbPath, migrationsDir: MIGRATIONS_DIR });
     for (const { session, embedding } of seed) {
@@ -270,7 +270,7 @@ describe("HTTP adapter — data management", () => {
   it("GET /api/data/backup streams a restorable SQLite snapshot", async () => {
     const res = await app.request("/api/data/backup");
     expect(res.status).toBe(200);
-    expect(res.headers.get("content-disposition")).toMatch(/nle-memory-backup-.*\.sqlite/);
+    expect(res.headers.get("content-disposition")).toMatch(/nlm-memory-backup-.*\.sqlite/);
     const bytes = Buffer.from(await res.arrayBuffer());
     // SQLite files start with the "SQLite format 3\0" magic header.
     expect(bytes.subarray(0, 15).toString("latin1")).toBe("SQLite format 3");
@@ -312,7 +312,7 @@ describe("HTTP adapter — fact recall", () => {
   let factQueryLogPath: string;
 
   beforeEach(async () => {
-    tmp = mkdtempSync(join(tmpdir(), "nle-http-facts-"));
+    tmp = mkdtempSync(join(tmpdir(), "nlm-http-facts-"));
     store = new SqliteSessionStore({
       dbPath: join(tmp, "canonical.sqlite"),
       migrationsDir: MIGRATIONS_DIR,
@@ -321,11 +321,11 @@ describe("HTTP adapter — fact recall", () => {
     factStore = new SqliteFactStore(store.rawDb());
     await factStore.insertMany([
       makeFact({
-        id: "f_hono", subject: "nle-memory-ts", predicate: "framework",
+        id: "f_hono", subject: "nlm-memory-ts", predicate: "framework",
         value: "Hono", confidence: 0.9, sourceSessionId: "sess_p",
       }),
       makeFact({
-        id: "f_fastify", subject: "nle-memory-ts", predicate: "framework",
+        id: "f_fastify", subject: "nlm-memory-ts", predicate: "framework",
         value: "Fastify", confidence: 0.9, sourceSessionId: "sess_p",
         createdAt: "2026-05-01T00:00:00Z", supersededBy: "f_hono",
       }),
@@ -345,7 +345,7 @@ describe("HTTP adapter — fact recall", () => {
   });
 
   it("GET /api/recall/facts returns the current fact for subject+predicate", async () => {
-    const res = await app.request("/api/recall/facts?subject=nle-memory-ts&predicate=framework");
+    const res = await app.request("/api/recall/facts?subject=nlm-memory-ts&predicate=framework");
     expect(res.status).toBe(200);
     const body = (await res.json()) as { total: number; results: { id: string; value: string }[] };
     expect(body.total).toBe(1);
@@ -354,9 +354,9 @@ describe("HTTP adapter — fact recall", () => {
   });
 
   it("GET /api/recall/facts excludes superseded by default, includes with flag", async () => {
-    const def = await app.request("/api/recall/facts?subject=nle-memory-ts");
+    const def = await app.request("/api/recall/facts?subject=nlm-memory-ts");
     expect(((await def.json()) as { total: number }).total).toBe(1);
-    const all = await app.request("/api/recall/facts?subject=nle-memory-ts&includeSuperseded=true");
+    const all = await app.request("/api/recall/facts?subject=nlm-memory-ts&includeSuperseded=true");
     expect(((await all.json()) as { total: number }).total).toBe(2);
   });
 
@@ -366,7 +366,7 @@ describe("HTTP adapter — fact recall", () => {
   });
 
   it("GET /api/facts/history walks the supersedence chain", async () => {
-    const res = await app.request("/api/facts/history?subject=nle-memory-ts&predicate=framework");
+    const res = await app.request("/api/facts/history?subject=nlm-memory-ts&predicate=framework");
     expect(res.status).toBe(200);
     const body = (await res.json()) as { chains: { history: { id: string }[] }[] };
     expect(body.chains[0]?.history.map((f) => f.id)).toEqual(["f_hono", "f_fastify"]);
@@ -377,7 +377,7 @@ describe("HTTP adapter — fact recall", () => {
   });
 
   it("GET /api/recall/facts records a fact query-log entry", async () => {
-    await app.request("/api/recall/facts?subject=nle-memory-ts&predicate=framework");
+    await app.request("/api/recall/facts?subject=nlm-memory-ts&predicate=framework");
     // logFactQuery is fire-and-forget; give the microtask a tick.
     await new Promise((r) => setTimeout(r, 50));
     const stats = await app.request("/api/recall/facts/stats?days=7");

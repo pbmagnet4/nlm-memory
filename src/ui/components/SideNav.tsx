@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 
-const STORAGE_KEY = "nle.sidenav.collapsed";
+const STORAGE_KEY = "nlm.sidenav.collapsed";
 
 interface NavItem {
   to: string;
@@ -33,7 +33,7 @@ export function SideNav() {
   return (
     <nav className={`sidenav${collapsed ? " collapsed" : ""}`} aria-label="Primary navigation">
       <div className="sidenav-header">
-        <span className="sidenav-wordmark">NLE</span>
+        <span className="sidenav-wordmark">NLM</span>
         <button
           className="sidenav-toggle"
           aria-label="Toggle sidebar"

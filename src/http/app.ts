@@ -60,12 +60,12 @@ export interface HttpDeps {
   readonly store: SessionStore;
   /** Pass the concrete store when /live endpoints (recent-writes / recent-markers) should be served. */
   readonly liveStore?: SqliteSessionStore;
-  /** Optional override for the query log path. Defaults to ~/.nle/query_log.jsonl or $NLE_QUERY_LOG. */
+  /** Optional override for the query log path. Defaults to ~/.nlm/query_log.jsonl or $NLM_QUERY_LOG. */
   readonly queryLogPath?: string;
   /** Fact recall — wire to enable /api/recall/facts + /api/facts/history. */
   readonly factRecall?: FactRecallService;
   readonly factStore?: FactStore;
-  /** Optional override for the fact query log path. Defaults to ~/.nle/fact_query_log.jsonl. */
+  /** Optional override for the fact query log path. Defaults to ~/.nlm/fact_query_log.jsonl. */
   readonly factQueryLogPath?: string;
   /** Path to canonical.sqlite for the /api/dataset endpoint. */
   readonly dbPath?: string;
@@ -124,7 +124,7 @@ export function createApp(deps: HttpDeps): Hono {
   const app = new Hono();
 
   app.get("/api/health", (c) =>
-    c.json({ status: "ok", service: "nle-memory", version: "0.2.0-dev" }),
+    c.json({ status: "ok", service: "nlm-memory", version: "0.2.0-dev" }),
   );
 
   app.get("/api/recall", async (c) => {
@@ -364,7 +364,7 @@ export function createApp(deps: HttpDeps): Hono {
       const bytes = readFileSync(scratch);
       const stamp = new Date().toISOString().slice(0, 10);
       c.header("Content-Type", "application/x-sqlite3");
-      c.header("Content-Disposition", `attachment; filename="nle-memory-backup-${stamp}.sqlite"`);
+      c.header("Content-Disposition", `attachment; filename="nlm-memory-backup-${stamp}.sqlite"`);
       return c.body(bytes);
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
