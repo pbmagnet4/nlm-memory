@@ -11,6 +11,7 @@
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { encode as toonEncode } from "@toon-format/toon";
 import { z } from "zod";
 import type { FactRecallService } from "@core/recall-facts/fact-recall-service.js";
 import type { RecallService } from "@core/recall/recall-service.js";
@@ -29,6 +30,10 @@ const DEFAULT_LIMIT = 10;
 const SERVER_NAME = "nlm-memory-mcp-server";
 const SERVER_VERSION = "0.2.0-dev";
 
+/** TOON encoding cuts token usage on large recall payloads. Opt in via
+ *  NLM_FORMAT=toon in the MCP server's env (see .mcp.json). Defaults to JSON. */
+const USE_TOON = process.env.NLM_FORMAT === "toon";
+
 export interface McpDeps {
   readonly recall: RecallService;
   readonly store: SessionStore;
@@ -42,19 +47,25 @@ export interface ToolResult {
   isError?: boolean;
 }
 
+function format(data: unknown): string {
+  if (USE_TOON) {
+    try {
+      return toonEncode(data);
+    } catch {
+      return JSON.stringify(data, null, 2);
+    }
+  }
+  return JSON.stringify(data, null, 2);
+}
+
 function truncate(data: unknown): string {
-  const str = JSON.stringify(data, null, 2);
+  const str = format(data);
   if (str.length <= CHARACTER_LIMIT) return str;
-  return JSON.stringify(
-    {
-      truncated: true,
-      truncation_message:
-        "Response too large. Lower limit or fetch fewer fields via get_session.",
-      partial_data: JSON.parse(str.slice(0, CHARACTER_LIMIT - 100)),
-    },
-    null,
-    2,
-  );
+  return format({
+    truncated: true,
+    truncation_message:
+      "Response too large. Lower limit or fetch fewer fields via get_session.",
+  });
 }
 
 function ok(data: unknown): ToolResult {
