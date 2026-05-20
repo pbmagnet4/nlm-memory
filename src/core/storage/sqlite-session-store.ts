@@ -79,6 +79,7 @@ type SessionRow = {
 type EntityRow = { session_id: string; entity_canonical: string };
 type MarkerRow = { session_id: string; kind: "decision" | "open"; text: string };
 type NeighborRow = { session_id: string; distance: number };
+type KeywordRow = { session_id: string; score: number };
 
 export interface RecentWrite {
   id: string;
@@ -477,8 +478,8 @@ export class SqliteSessionStore implements SessionStore {
     if (!matchExpr) return [];
     const k = Math.max(1, Math.trunc(limit));
     const rows = this.db
-      .prepare<[string, number], { sessionId: string; score: number }>(`
-        SELECT s.id AS sessionId,
+      .prepare<[string, number], KeywordRow>(`
+        SELECT s.id AS session_id,
                -bm25(sessions_fts, 10.0, 4.0, 1.0) AS score
         FROM sessions_fts
         JOIN sessions s ON s.rowid = sessions_fts.rowid
@@ -487,7 +488,7 @@ export class SqliteSessionStore implements SessionStore {
         LIMIT ?
       `)
       .all(matchExpr, k);
-    return rows.map((r) => ({ sessionId: r.sessionId, score: r.score }));
+    return rows.map((r) => ({ sessionId: r.session_id, score: r.score }));
   }
 
   async updateStatus(sessionId: string, status: SessionStatus): Promise<void> {
