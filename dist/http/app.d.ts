@@ -7,6 +7,11 @@
  * Layering: this module knows about RecallService and SessionStore (the
  * inner ring), but core/ knows nothing about Hono. Adapter direction stays
  * one-way.
+ *
+ * POST /mcp — Streamable-HTTP MCP endpoint for container agents (e.g. Hermes
+ * WebUI). Requires Authorization: Bearer <NLM_MCP_TOKEN>. Stateless: each
+ * request gets its own transport + server instance so there is no in-memory
+ * session state to manage. The existing stdio MCP path is untouched.
  */
 import { Hono } from "hono";
 import type { RecallService } from "../core/recall/recall-service.js";
@@ -18,6 +23,7 @@ import { ProviderRegistry } from "../core/providers/provider-registry.js";
 import { type IngestDeps } from "../core/ingest/ingest-session.js";
 import type { SessionStore } from "../ports/session-store.js";
 import type { SqliteSessionStore } from "../core/storage/sqlite-session-store.js";
+import type { McpDeps } from "../mcp/server.js";
 export interface HttpDeps {
     readonly recall: RecallService;
     readonly store: SessionStore;
@@ -48,5 +54,10 @@ export interface HttpDeps {
     };
     /** Directory containing the built UI (dist/ui). When set, /ui/* serves the SPA. */
     readonly uiDist?: string;
+    /**
+     * When provided, POST /mcp is mounted and token-gated with NLM_MCP_TOKEN.
+     * Omitting this keeps the route absent — no auth surface, no risk.
+     */
+    readonly mcpDeps?: McpDeps;
 }
 export declare function createApp(deps: HttpDeps): Hono;

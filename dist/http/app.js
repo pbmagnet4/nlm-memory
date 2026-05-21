@@ -7,10 +7,17 @@
  * Layering: this module knows about RecallService and SessionStore (the
  * inner ring), but core/ knows nothing about Hono. Adapter direction stays
  * one-way.
+ *
+ * POST /mcp — Streamable-HTTP MCP endpoint for container agents (e.g. Hermes
+ * WebUI). Requires Authorization: Bearer <NLM_MCP_TOKEN>. Stateless: each
+ * request gets its own transport + server instance so there is no in-memory
+ * session state to manage. The existing stdio MCP path is untouched.
  */
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { extname, join, normalize, sep } from "node:path";
 import { Hono } from "hono";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { createMcpServer } from "../mcp/server.js";
 import { snapshotScratchPath, stageRestore, vacuumSnapshot, } from "../core/storage/db-restore.js";
 import { logQuery, recallStats } from "../core/recall/query-log.js";
 import { recentQueryLog } from "../core/recall/recent-log.js";
@@ -60,6 +67,31 @@ const VALID_FACT_KINDS = ["decision", "open", "attribute"];
 export function createApp(deps) {
     const app = new Hono();
     app.get("/api/health", (c) => c.json({ status: "ok", service: "nlm-memory", version: "0.2.0-dev" }));
+    // ── MCP over HTTP (for container agents — e.g. Hermes WebUI) ─────────
+    // Stateless: one transport + McpServer instance per request, no in-memory
+    // session state. Bearer token from NLM_MCP_TOKEN is mandatory.
+    // The existing stdio MCP path (nlm mcp / .mcp.json) is untouched.
+    if (deps.mcpDeps) {
+        const mcpToken = process.env["NLM_MCP_TOKEN"];
+        if (!mcpToken) {
+            throw new Error("NLM_MCP_TOKEN must be set when mcpDeps is provided — " +
+                "refusing to mount an unauthenticated /mcp endpoint");
+        }
+        const capturedMcpDeps = deps.mcpDeps;
+        app.all("/mcp", async (c) => {
+            const auth = c.req.header("authorization") ?? "";
+            const match = /^Bearer\s+(\S+)$/i.exec(auth);
+            if (!match || match[1] !== mcpToken) {
+                return c.json({ error: "unauthorized" }, 401);
+            }
+            // No sessionIdGenerator = stateless mode: no session ID in responses,
+            // no session validation. Correct for per-request agent calls.
+            const transport = new WebStandardStreamableHTTPServerTransport({});
+            const server = createMcpServer(capturedMcpDeps);
+            await server.connect(transport);
+            return transport.handleRequest(c.req.raw);
+        });
+    }
     app.get("/api/recall", async (c) => {
         const q = c.req.query("q") ?? "";
         const entity = c.req.query("entity");

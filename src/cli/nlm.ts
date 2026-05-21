@@ -148,6 +148,7 @@ program
   .action(async (opts) => {
     const { store, facts, sources, providers, recall, factRecall, embedder, classifier } = buildStack();
     const { existsSync } = await import("node:fs");
+    const hasMcpToken = Boolean(process.env["NLM_MCP_TOKEN"]);
     const app = createApp({
       recall,
       store,
@@ -161,10 +162,19 @@ program
       ingest: { classifier, embedder, store, factStore: facts },
       embedderInfo: { provider: "ollama", model: "nomic-embed-text", dims: 768 },
       ...(existsSync(UI_DIST) ? { uiDist: UI_DIST } : {}),
+      // Wire POST /mcp only when NLM_MCP_TOKEN is present. Absent = route never
+      // mounts, zero attack surface. Present = token-gated Streamable-HTTP MCP
+      // endpoint for container agents (e.g. Hermes WebUI).
+      ...(hasMcpToken
+        ? { mcpDeps: { recall, store, factRecall, factStore: facts } }
+        : {}),
     });
     const p = port();
     serve({ fetch: app.fetch, port: p }, (info) => {
       console.error(`nlm-memory http listening on http://localhost:${info.port}`);
+      if (hasMcpToken) {
+        console.error(`  mcp:    http://localhost:${info.port}/mcp (token-gated)`);
+      }
       console.error(`  db:     ${dbPath()}`);
       console.error(`  ollama: ${ollamaUrl()}`);
     });
