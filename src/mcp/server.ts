@@ -13,6 +13,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { encode as toonEncode } from "@toon-format/toon";
 import { z } from "zod";
+import { logQuery } from "@core/recall/query-log.js";
+import { logFactQuery } from "@core/recall-facts/fact-query-log.js";
 import type { FactRecallService } from "@core/recall-facts/fact-recall-service.js";
 import type { RecallService } from "@core/recall/recall-service.js";
 import type { FactStore } from "@ports/fact-store.js";
@@ -104,6 +106,19 @@ export async function recallSessionsHandler(
       ...(input.kind !== undefined ? { kind: input.kind } : {}),
     };
     const result = await deps.recall.search(query);
+    // Telemetry — the MCP path is the real agent-usage path; without this it
+    // is invisible to query_log.jsonl and the Recall page. Fire-and-forget,
+    // mirrors the HTTP /api/recall handler.
+    void logQuery({
+      source: "mcp",
+      query: input.query ?? null,
+      entity: input.entity ?? null,
+      kind: input.kind ?? null,
+      mode: input.mode ?? "keyword",
+      limit: input.limit ?? DEFAULT_LIMIT,
+      nResults: result.total,
+      returnedIds: result.results.map((r) => r.id),
+    });
     return ok(result);
   } catch (e) {
     return err(e);
@@ -159,6 +174,18 @@ export async function recallFactsHandler(
         : {}),
     };
     const result = await deps.factRecall.search(query);
+    // Telemetry — see recallSessionsHandler. Fire-and-forget.
+    void logFactQuery({
+      source: "mcp",
+      query: input.query ?? null,
+      subject: input.subject ?? null,
+      predicate: input.predicate ?? null,
+      kind: input.kind ?? null,
+      mode: input.mode ?? "keyword",
+      limit: input.limit ?? DEFAULT_LIMIT,
+      nResults: result.total,
+      returnedIds: result.results.map((r) => r.id),
+    });
     return ok(result);
   } catch (e) {
     return err(e);
