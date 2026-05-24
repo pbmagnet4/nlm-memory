@@ -45,6 +45,7 @@ import { reembedCorpus } from "../core/embedding/embed-backfill.js";
 import { backfillFacts } from "../core/facts/backfill-facts.js";
 import { normalizeEmbeddings } from "../core/embedding/embed-normalize.js";
 import { ScanScheduler } from "../core/scheduler/scheduler.js";
+import { MemoSweepScheduler } from "../core/hook/memo-sweep.js";
 import { adapterFromSource } from "../core/adapters/from-source.js";
 import type { TranscriptAdapter } from "../ports/transcript-adapter.js";
 
@@ -198,6 +199,14 @@ program
     }, WAL_CHECKPOINT_INTERVAL_MS);
     checkpointTimer.unref();
 
+    // Memo sweep runs independently of the transcript scheduler — it's the
+    // backstop for SessionEnd hook unreliability (crashes, kill -9, IDE
+    // force-close don't fire SessionEnd, so memo files would otherwise
+    // accumulate forever). Always on, even when --no-scheduler.
+    const memoSweep = new MemoSweepScheduler();
+    memoSweep.start();
+    console.error("  memo sweep: dormant cleanup every 5m (threshold 24h)");
+
     if (opts.scheduler !== false) {
       const adapters = buildAdapters(sources);
       if (adapters.length === 0) {
@@ -218,6 +227,7 @@ program
         const shutdown = () => {
           clearInterval(checkpointTimer);
           scheduler.stop();
+          memoSweep.stop();
           store.close();
           process.exit(0);
         };
