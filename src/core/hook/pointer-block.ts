@@ -1,7 +1,10 @@
 /**
  * Renders the pointer block injected by the recall hook in live mode. Pure.
- * Pointer-only by design: ids + labels, no session content — the agent
- * pulls detail via the recall_sessions / get_session MCP tools.
+ * Pointer-only by design: ids + labels, no session content. The footer
+ * names all four NLM MCP tools because the pointer block is the only
+ * cross-runtime distribution surface for teaching the tool inventory —
+ * fresh-install users never edit a prompt or settings file, so anything
+ * we want the agent to know about the tool surface ships here.
  */
 
 export interface PointerHit {
@@ -18,6 +21,6 @@ export function formatPointerBlock(hits: ReadonlyArray<PointerHit>): string {
   return [
     "## Possibly-relevant prior sessions (nlm-memory)",
     ...lines,
-    "Pull detail with the recall_sessions / get_session MCP tools if relevant.",
+    "NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved).",
   ].join("\n");
 }

@@ -16,5 +16,7 @@ describe("formatPointerBlock", () => {
     expect(block).toContain("- sess_b · Semantic recall via sqlite-vec (2026-05-17)");
     expect(block).toContain("recall_sessions");
     expect(block).toContain("get_session");
+    expect(block).toContain("recall_facts");
+    expect(block).toContain("get_fact_history");
   });
 });
