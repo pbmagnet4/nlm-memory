@@ -72,6 +72,22 @@ describe("POST /api/recall/cite-event", () => {
     expect(typeof entry["ts"]).toBe("string");
   });
 
+  it("persists the kind field when provided (tool_use)", async () => {
+    const res = await app.request("/api/recall/cite-event", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        conversation_id: "conv-mcp",
+        cited_id: "cc_sub_a139f4ab7ca5aa909",
+        kind: "tool_use",
+      }),
+    });
+    expect(res.status).toBe(200);
+    const lines = readFileSync(citationLogPath, "utf8").trim().split("\n");
+    const entry = JSON.parse(lines[lines.length - 1] ?? "{}") as Record<string, unknown>;
+    expect(entry["kind"]).toBe("tool_use");
+  });
+
   it("rejects missing conversation_id", async () => {
     const res = await app.request("/api/recall/cite-event", {
       method: "POST",

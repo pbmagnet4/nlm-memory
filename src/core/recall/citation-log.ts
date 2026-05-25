@@ -12,9 +12,12 @@ import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 
+export type CitationKind = "tool_use" | "prose";
+
 export interface CitationEntry {
   readonly conversationId: string;
   readonly citedId: string;
+  readonly kind?: CitationKind;
   readonly responsePreview?: string;
 }
 
@@ -40,6 +43,7 @@ export async function appendCitation(
       ts: new Date().toISOString(),
       conversation_id: entry.conversationId,
       cited_id: entry.citedId,
+      ...(entry.kind !== undefined ? { kind: entry.kind } : {}),
       ...(entry.responsePreview !== undefined
         ? { response_preview: entry.responsePreview }
         : {}),

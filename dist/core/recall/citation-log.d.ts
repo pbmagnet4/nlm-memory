@@ -7,9 +7,11 @@
  * Path defaults to ~/.nlm/citation-log.jsonl, overridable via
  * NLM_CITATION_LOG. Telemetry path — never raises.
  */
+export type CitationKind = "tool_use" | "prose";
 export interface CitationEntry {
     readonly conversationId: string;
     readonly citedId: string;
+    readonly kind?: CitationKind;
     readonly responsePreview?: string;
 }
 export interface CitationStats {

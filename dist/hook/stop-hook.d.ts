@@ -15,19 +15,24 @@
  * succeeds even with missing transcript_path because the hook always logs
  * a `kind:"stop"` line.
  */
+import { type CitationKind } from "../core/hook/citation-detect.js";
 export interface StopHookInput {
     readonly conversationId: string;
     readonly transcriptPath: string;
     readonly stopHookActive: boolean;
 }
+export interface CitationEvent {
+    readonly id: string;
+    readonly kind: CitationKind;
+}
 export interface StopHookResult {
     readonly conversationId: string;
     readonly surfacedCount: number;
-    readonly citedIds: ReadonlyArray<string>;
+    readonly citations: ReadonlyArray<CitationEvent>;
     readonly responsePreview: string;
     readonly skipped: boolean;
 }
 export interface RunStopHookDeps {
-    readonly postCitation: (conversationId: string, citedId: string, responsePreview: string) => Promise<void>;
+    readonly postCitation: (conversationId: string, citedId: string, kind: CitationKind, responsePreview: string) => Promise<void>;
 }
 export declare function runStopHook(input: StopHookInput, deps: RunStopHookDeps): Promise<StopHookResult>;

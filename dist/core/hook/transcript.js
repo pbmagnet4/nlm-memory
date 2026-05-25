@@ -1,26 +1,31 @@
 /**
- * Read the last assistant message text from a Claude Code transcript JSONL.
+ * Read the last assistant message from a Claude Code transcript JSONL.
  *
  * Claude Code passes `transcript_path` in the Stop hook payload. Each line is
  * a JSON object; assistant turns have `type:"assistant"` and a `message`
- * object whose `content` is an array of blocks (`{type:"text", text:...}`
- * for prose; tool_use/tool_result blocks are ignored).
+ * object whose `content` is an array of blocks (`{type:"text", text:...}` for
+ * prose; `{type:"tool_use", name, input}` for tool invocations).
  *
- * Returns the concatenated text of the last assistant message, or null if
- * the file is missing/unreadable/empty/has no assistant turn. Fail-quiet:
- * a malformed file yields null rather than throwing — the Stop hook must
- * never break on transcript I/O.
+ * Two reads, one walk: `readLastAssistantTurn` parses every block of the
+ * last assistant turn and returns both the prose text AND the tool_use
+ * blocks. Stop-hook citation detection needs both — prose for substring
+ * matches, tool_use for the strong signal that the model invoked an NLM
+ * MCP tool referencing a surfaced session ID.
+ *
+ * Fail-quiet: a malformed file yields nulls/empty rather than throwing —
+ * the Stop hook must never break on transcript I/O.
  */
 import { existsSync, readFileSync } from "node:fs";
-export function readLastAssistantText(transcriptPath) {
+const EMPTY_TURN = { text: "", toolUses: [] };
+export function readLastAssistantTurn(transcriptPath) {
     if (!transcriptPath || !existsSync(transcriptPath))
-        return null;
+        return EMPTY_TURN;
     let raw;
     try {
         raw = readFileSync(transcriptPath, "utf8");
     }
     catch {
-        return null;
+        return EMPTY_TURN;
     }
     const lines = raw.split("\n");
     for (let i = lines.length - 1; i >= 0; i--) {
@@ -37,19 +42,30 @@ export function readLastAssistantText(transcriptPath) {
         if (parsed.type !== "assistant" || !parsed.message)
             continue;
         const content = parsed.message.content;
-        if (typeof content === "string")
-            return content;
+        if (typeof content === "string") {
+            return { text: content, toolUses: [] };
+        }
         if (Array.isArray(content)) {
-            const parts = [];
+            const textParts = [];
+            const toolUses = [];
             for (const block of content) {
                 if (block.type === "text" && typeof block.text === "string") {
-                    parts.push(block.text);
+                    textParts.push(block.text);
+                }
+                else if (block.type === "tool_use" && typeof block.name === "string") {
+                    toolUses.push({ name: block.name, input: block.input });
                 }
             }
-            if (parts.length > 0)
-                return parts.join("\n");
+            if (textParts.length > 0 || toolUses.length > 0) {
+                return { text: textParts.join("\n"), toolUses };
+            }
         }
     }
-    return null;
+    return EMPTY_TURN;
+}
+/** Back-compat shim for callers that only need prose. */
+export function readLastAssistantText(transcriptPath) {
+    const turn = readLastAssistantTurn(transcriptPath);
+    return turn.text || null;
 }
 //# sourceMappingURL=transcript.js.map

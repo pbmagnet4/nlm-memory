@@ -20,6 +20,7 @@ export async function appendCitation(entry, logPath = defaultLogPath()) {
             ts: new Date().toISOString(),
             conversation_id: entry.conversationId,
             cited_id: entry.citedId,
+            ...(entry.kind !== undefined ? { kind: entry.kind } : {}),
             ...(entry.responsePreview !== undefined
                 ? { response_preview: entry.responsePreview }
                 : {}),

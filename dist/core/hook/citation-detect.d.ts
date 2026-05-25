@@ -1,13 +1,32 @@
 /**
- * Detects which surfaced recall IDs an assistant response cited.
+ * Detects which surfaced recall IDs an assistant turn cited.
  *
- * Substring match. Real session IDs (`cc_sub_a139f4ab...`, `cc_<uuid>`,
- * `hm_20260427_6ff562`) are unique enough that false positives from generic
- * text are not a concern at expected ID shapes. Short or generic IDs would
- * need a stricter regex; if those become common, add a length floor here.
+ * Two channels, ordered by signal strength:
+ *  - tool_use:  the model invoked an MCP NLM tool (get_session, recall_facts,
+ *               get_fact_history, recall_sessions) whose input references a
+ *               surfaced ID. This is the strong "the model dug into the
+ *               surfaced session" signal. Almost no false positives.
+ *  - prose:     the surfaced ID appears as a substring in the response text.
+ *               Models rarely echo session IDs verbatim, so this channel
+ *               fires in practice almost never — kept for completeness.
  *
- * This is the training-data substrate for a future learned reranker:
- * every recall has a binary outcome (was_cited true/false). The signal is
- * unique to NLM's operator-as-user framing — competitors don't have it.
+ * Returns both the union of cited IDs and the per-ID channel so the citation
+ * log can carry kind metadata. ID minimum length keeps generic short tokens
+ * from false-positiving against either channel.
+ *
+ * This is the training-data substrate for a future learned reranker.
  */
+import type { ToolUseBlock } from "./transcript.js";
+export type CitationKind = "tool_use" | "prose";
+export interface CitationDetectInput {
+    readonly responseText: string;
+    readonly toolUses: ReadonlyArray<ToolUseBlock>;
+    readonly surfacedIds: Iterable<string>;
+}
+export interface DetectedCitation {
+    readonly id: string;
+    readonly kind: CitationKind;
+}
+export declare function detectCitations(input: CitationDetectInput): DetectedCitation[];
+/** Back-compat: prose-only detector returning a flat id list. */
 export declare function detectCitedIds(responseText: string, surfacedIds: Iterable<string>): string[];

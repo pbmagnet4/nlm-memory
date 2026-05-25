@@ -280,6 +280,11 @@ export class SqliteSessionStore implements SessionStore {
     // Embedding is best-effort and lives outside the txn so a slow Ollama
     // doesn't block the row commit.
     if (embedder) {
+      // Body cap restored to 4000 on 2026-05-25 after a 24K experiment
+      // produced 54% Ollama 500s and collapsed semantic R@5 from 87.2 →
+      // 15.8 on the LongMemEval-S baseline. nomic-embed-text via Ollama
+      // does not reliably accept inputs near its nominal 8192-token
+      // context. Real fix is chunk + max-pool (filed as #174).
       const text = [
         record.label,
         record.summary,

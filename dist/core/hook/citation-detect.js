@@ -1,31 +1,87 @@
 /**
- * Detects which surfaced recall IDs an assistant response cited.
+ * Detects which surfaced recall IDs an assistant turn cited.
  *
- * Substring match. Real session IDs (`cc_sub_a139f4ab...`, `cc_<uuid>`,
- * `hm_20260427_6ff562`) are unique enough that false positives from generic
- * text are not a concern at expected ID shapes. Short or generic IDs would
- * need a stricter regex; if those become common, add a length floor here.
+ * Two channels, ordered by signal strength:
+ *  - tool_use:  the model invoked an MCP NLM tool (get_session, recall_facts,
+ *               get_fact_history, recall_sessions) whose input references a
+ *               surfaced ID. This is the strong "the model dug into the
+ *               surfaced session" signal. Almost no false positives.
+ *  - prose:     the surfaced ID appears as a substring in the response text.
+ *               Models rarely echo session IDs verbatim, so this channel
+ *               fires in practice almost never — kept for completeness.
  *
- * This is the training-data substrate for a future learned reranker:
- * every recall has a binary outcome (was_cited true/false). The signal is
- * unique to NLM's operator-as-user framing — competitors don't have it.
+ * Returns both the union of cited IDs and the per-ID channel so the citation
+ * log can carry kind metadata. ID minimum length keeps generic short tokens
+ * from false-positiving against either channel.
+ *
+ * This is the training-data substrate for a future learned reranker.
  */
 const MIN_ID_LEN = 6;
-export function detectCitedIds(responseText, surfacedIds) {
-    if (!responseText)
-        return [];
-    const cited = [];
+export function detectCitations(input) {
+    const surfaced = [];
     const seen = new Set();
-    for (const id of surfacedIds) {
+    for (const id of input.surfacedIds) {
         if (id.length < MIN_ID_LEN)
             continue;
         if (seen.has(id))
             continue;
-        if (responseText.includes(id)) {
-            cited.push(id);
-            seen.add(id);
+        seen.add(id);
+        surfaced.push(id);
+    }
+    const cited = [];
+    const claimedByToolUse = new Set();
+    // Channel A: tool_use. Stringify each input and substring-scan for
+    // surfaced IDs. The NLM MCP tools (get_session, recall_sessions,
+    // recall_facts, get_fact_history) all accept ids via top-level fields,
+    // so the full JSON serialization always includes the id when used.
+    for (const tu of input.toolUses) {
+        if (!isNlmTool(tu.name))
+            continue;
+        const serialized = safeStringify(tu.input);
+        if (!serialized)
+            continue;
+        for (const id of surfaced) {
+            if (claimedByToolUse.has(id))
+                continue;
+            if (serialized.includes(id)) {
+                cited.push({ id, kind: "tool_use" });
+                claimedByToolUse.add(id);
+            }
+        }
+    }
+    // Channel B: prose. Only emit if the tool_use channel didn't already
+    // claim this id — same id shouldn't double-count.
+    if (input.responseText) {
+        for (const id of surfaced) {
+            if (claimedByToolUse.has(id))
+                continue;
+            if (input.responseText.includes(id)) {
+                cited.push({ id, kind: "prose" });
+            }
         }
     }
     return cited;
+}
+/** Back-compat: prose-only detector returning a flat id list. */
+export function detectCitedIds(responseText, surfacedIds) {
+    return detectCitations({
+        responseText,
+        toolUses: [],
+        surfacedIds,
+    }).map((c) => c.id);
+}
+function isNlmTool(name) {
+    // Claude Code namespaces MCP tools as `mcp__<server>__<tool>`. The NLM
+    // server name is "nlm-memory" in the user's .mcp.json today; accept any
+    // server name containing "nlm" so future renames stay covered.
+    return /^mcp__[^_]*nlm[^_]*__/.test(name);
+}
+function safeStringify(value) {
+    try {
+        return JSON.stringify(value);
+    }
+    catch {
+        return "";
+    }
 }
 //# sourceMappingURL=citation-detect.js.map

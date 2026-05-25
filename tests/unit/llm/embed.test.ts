@@ -47,7 +47,7 @@ describe("OllamaClient.embed prefix scheme", () => {
     expect(prompt.startsWith("search_document: ")).toBe(true);
   });
 
-  it("truncates text to 8000 chars before prefixing", async () => {
+  it("truncates text to MAX_EMBED_CHARS (8000) before prefixing", async () => {
     let prompt = "";
     const fetchImpl = makeFetch(({ body }) => {
       prompt = (body as { prompt: string }).prompt;
@@ -56,7 +56,10 @@ describe("OllamaClient.embed prefix scheme", () => {
     const client = new OllamaClient({ fetchImpl });
     const big = "x".repeat(10_000);
     await client.embed(big, "document");
-    // prompt = "search_document: " + truncated → prefix is 17 chars, body capped at 8000
+    // prompt = "search_document: " + truncated → prefix is 17 chars, body capped at 8000.
+    // Briefly raised to 28000 on 2026-05-25 then reverted same day; nomic-
+    // embed-text via Ollama 500s on inputs near the nominal 8192-token
+    // context. Real fix is chunk + max-pool (filed as #174).
     expect(prompt.length).toBe(17 + 8_000);
   });
 

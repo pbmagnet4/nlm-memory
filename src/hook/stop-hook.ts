@@ -20,9 +20,12 @@ import { pathToFileURL } from "node:url";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { detectCitedIds } from "@core/hook/citation-detect.js";
+import {
+  detectCitations,
+  type CitationKind,
+} from "@core/hook/citation-detect.js";
 import { loadSurfaced } from "@core/hook/memo.js";
-import { readLastAssistantText } from "@core/hook/transcript.js";
+import { readLastAssistantTurn } from "@core/hook/transcript.js";
 
 const RESPONSE_PREVIEW_CHARS = 200;
 const POST_TIMEOUT_MS = 1500;
@@ -33,10 +36,15 @@ export interface StopHookInput {
   readonly stopHookActive: boolean;
 }
 
+export interface CitationEvent {
+  readonly id: string;
+  readonly kind: CitationKind;
+}
+
 export interface StopHookResult {
   readonly conversationId: string;
   readonly surfacedCount: number;
-  readonly citedIds: ReadonlyArray<string>;
+  readonly citations: ReadonlyArray<CitationEvent>;
   readonly responsePreview: string;
   readonly skipped: boolean;
 }
@@ -45,6 +53,7 @@ export interface RunStopHookDeps {
   readonly postCitation: (
     conversationId: string,
     citedId: string,
+    kind: CitationKind,
     responsePreview: string,
   ) => Promise<void>;
 }
@@ -59,7 +68,7 @@ export async function runStopHook(
     return {
       conversationId: input.conversationId,
       surfacedCount: 0,
-      citedIds: [],
+      citations: [],
       responsePreview: "",
       skipped: true,
     };
@@ -70,29 +79,33 @@ export async function runStopHook(
     return {
       conversationId: input.conversationId,
       surfacedCount: 0,
-      citedIds: [],
+      citations: [],
       responsePreview: "",
       skipped: false,
     };
   }
 
-  const text = readLastAssistantText(input.transcriptPath);
-  if (!text) {
+  const turn = readLastAssistantTurn(input.transcriptPath);
+  if (!turn.text && turn.toolUses.length === 0) {
     return {
       conversationId: input.conversationId,
       surfacedCount: surfaced.size,
-      citedIds: [],
+      citations: [],
       responsePreview: "",
       skipped: false,
     };
   }
 
-  const cited = detectCitedIds(text, surfaced);
-  const preview = text.slice(0, RESPONSE_PREVIEW_CHARS);
+  const citations = detectCitations({
+    responseText: turn.text,
+    toolUses: turn.toolUses,
+    surfacedIds: surfaced,
+  });
+  const preview = turn.text.slice(0, RESPONSE_PREVIEW_CHARS);
 
-  for (const id of cited) {
+  for (const c of citations) {
     try {
-      await deps.postCitation(input.conversationId, id, preview);
+      await deps.postCitation(input.conversationId, c.id, c.kind, preview);
     } catch {
       // Daemon down or HTTP error — log entry below still records cited locally.
     }
@@ -101,7 +114,7 @@ export async function runStopHook(
   return {
     conversationId: input.conversationId,
     surfacedCount: surfaced.size,
-    citedIds: cited,
+    citations,
     responsePreview: preview,
     skipped: false,
   };
@@ -122,7 +135,8 @@ function logStopResult(result: StopHookResult): void {
         kind: "stop",
         conversationId: result.conversationId,
         surfacedCount: result.surfacedCount,
-        citedIds: result.citedIds,
+        citedIds: result.citations.map((c) => c.id),
+        citationKinds: result.citations.map((c) => c.kind),
         skipped: result.skipped,
         mode: process.env["NLM_HOOK_MODE"] === "live" ? "live" : "shadow",
       })}\n`,
@@ -146,6 +160,7 @@ function readStdin(): Promise<string> {
 async function postCitationOverHttp(
   conversationId: string,
   citedId: string,
+  kind: CitationKind,
   responsePreview: string,
 ): Promise<void> {
   const port = process.env["NLM_PORT"] ?? "3940";
@@ -159,6 +174,7 @@ async function postCitationOverHttp(
       body: JSON.stringify({
         conversation_id: conversationId,
         cited_id: citedId,
+        kind,
         response_preview: responsePreview,
       }),
       signal: controller.signal,

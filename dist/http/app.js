@@ -165,9 +165,11 @@ export function createApp(deps) {
             return c.json({ error: "cited_id required" }, 400);
         }
         const responsePreview = body["response_preview"];
+        const kind = body["kind"];
         await appendCitation({
             conversationId,
             citedId,
+            ...(kind === "tool_use" || kind === "prose" ? { kind } : {}),
             ...(typeof responsePreview === "string"
                 ? { responsePreview }
                 : {}),

@@ -29,6 +29,14 @@ import {
 
 export type FetchImpl = typeof fetch;
 
+// Tried raising 8000 → 28000 on 2026-05-25 to recover the answer-tail of
+// long gold sessions (median LongMemEval-S gold body is 14,294 chars). The
+// Ollama /api/embeddings endpoint returned 500 on 54% of those large
+// inputs despite nomic-embed-text's nominal 8192-token context — semantic
+// R@5 collapsed from 87.2% → 15.8%. Reverted. Real fix is chunk + max-pool
+// (each body split into ≤8K-char chunks, store all vectors, score against
+// max cosine at query time) so coverage doesn't depend on a single embed
+// call. Filed as #174.
 const MAX_EMBED_CHARS = 8_000;
 
 const EMBED_PREFIXES: Record<EmbeddingKind, string> = {
