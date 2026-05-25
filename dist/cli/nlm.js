@@ -45,6 +45,7 @@ import { backfillFacts } from "../core/facts/backfill-facts.js";
 import { normalizeEmbeddings } from "../core/embedding/embed-normalize.js";
 import { ScanScheduler } from "../core/scheduler/scheduler.js";
 import { MemoSweepScheduler } from "../core/hook/memo-sweep.js";
+import { isAgentLoaded, isBenignBootoutError } from "./launchctl-helpers.js";
 import { adapterFromSource } from "../core/adapters/from-source.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -453,12 +454,41 @@ program
         console.error("nlm uninstall: could not determine UID");
         process.exit(1);
     }
+    let bootoutFailed = false;
+    let bootoutStderr = "";
     try {
         execFileSync("launchctl", ["bootout", `gui/${uid}`, LAUNCH_AGENT_LABEL], { stdio: "pipe" });
         console.error("nlm: daemon stopped.");
     }
-    catch {
-        // wasn't running
+    catch (e) {
+        const err = e;
+        bootoutStderr = err.stderr ? err.stderr.toString() : "";
+        if (isBenignBootoutError(bootoutStderr)) {
+            // Agent wasn't loaded — fine, proceed to plist cleanup.
+        }
+        else {
+            bootoutFailed = true;
+        }
+    }
+    // Source of truth: did launchd actually unload the agent? Same shape
+    // of bug as #161 — silent partial success is worse than loud failure.
+    if (isAgentLoaded(LAUNCH_AGENT_LABEL)) {
+        console.error("nlm: uninstall FAILED — agent is still loaded after bootout.");
+        if (bootoutStderr.trim()) {
+            console.error(`  launchctl stderr: ${bootoutStderr.trim()}`);
+        }
+        console.error("  Recovery options:");
+        console.error(`    1. launchctl bootout gui/${uid}/${LAUNCH_AGENT_LABEL}`);
+        console.error("    2. If a stale process is holding the port, find it:");
+        console.error("       ps aux | grep 'nlm.js start' | grep -v grep");
+        console.error("       Then: kill <pid>  (or  kill -9 <pid>  if it ignores TERM)");
+        console.error("  Plist NOT removed — re-run `nlm uninstall` after the agent is gone.");
+        process.exit(1);
+    }
+    if (bootoutFailed) {
+        // launchctl errored AND the agent isn't loaded — odd but recoverable.
+        // Flag it so the user knows something off-script happened.
+        console.error(`nlm: bootout reported an error but agent is unloaded: ${bootoutStderr.trim()}`);
     }
     if (existsSync(LAUNCH_AGENT_PLIST)) {
         rmSync(LAUNCH_AGENT_PLIST);
