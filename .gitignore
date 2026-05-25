@@ -7,3 +7,7 @@ coverage/
 .vscode/
 .idea/
 __pycache__/
+
+# LongMemEval harness — per-run result artifacts are not committed; baselines
+# are summarized in CHANGELOG + Ventures/nlm-memory/track-record.md instead.
+reports/longmemeval/
