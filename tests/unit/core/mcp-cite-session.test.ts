@@ -40,11 +40,11 @@ describe("citeSessionHandler", () => {
     expect(result.isError).toBe(true);
   });
 
-  it("accepts optional conversation_id and note without error", async () => {
+  it("accepts optional conversation_id and reason without error", async () => {
     const result = await citeSessionHandler({
       id: "cc_sub_abc123def456",
       conversation_id: "conv_test_001",
-      note: "Used to confirm FTS5 choice.",
+      reason: "Used to confirm FTS5 choice.",
     });
     expect(result.isError).toBeFalsy();
   });

@@ -69,7 +69,7 @@ describe("POST /api/citation/explicit", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         id: "cc_sub_a139f4ab7ca5aa909",
-        note: "Confirmed FTS5 decision.",
+        reason: "Confirmed FTS5 decision.",
       }),
     });
     expect(existsSync(citationLogPath)).toBe(true);
