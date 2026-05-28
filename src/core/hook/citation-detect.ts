@@ -60,12 +60,11 @@ export function detectCitations(input: CitationDetectInput): DetectedCitation[] 
   for (const tu of input.toolUses) {
     if (!isNlmTool(tu.name)) continue;
     if (isCiteSessionTool(tu.name)) {
-      // A1: explicit cite_session call — id is in tu.input.id directly.
-      const explicitId = safeInputId(tu.input);
-      if (explicitId && surfaced.includes(explicitId) && !claimedByToolUse.has(explicitId)) {
-        cited.push({ id: explicitId, kind: "tool_use" });
-        claimedByToolUse.add(explicitId);
-      }
+      // A1: explicit cite_session call — the MCP server handler already wrote
+      // this citation directly to the citation log (citeSessionHandler →
+      // appendCitation). Detecting it here again would produce a second log
+      // entry for the same model action (double-count). Skip so the Stop hook
+      // only captures implicit citations the MCP handler didn't see.
       continue;
     }
     // A2: other NLM tools — serialize and substring-scan.
@@ -114,14 +113,6 @@ function isNlmTool(name: string): boolean {
 
 function isCiteSessionTool(name: string): boolean {
   return name.endsWith("__cite_session");
-}
-
-function safeInputId(input: unknown): string | undefined {
-  if (typeof input === "object" && input !== null && "id" in input) {
-    const id = (input as Record<string, unknown>)["id"];
-    if (typeof id === "string") return id;
-  }
-  return undefined;
 }
 
 function safeStringify(value: unknown): string {

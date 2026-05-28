@@ -1,15 +1,20 @@
 /**
- * cite_session tool_use detection. Exercises the A1 sub-case added in
- * phase-1c: when the model calls cite_session with an explicit ID, the
- * detector should recognize it as a tool_use citation without relying on
- * substring serialization.
+ * cite_session tool_use handling in the Stop hook detector.
+ *
+ * The MCP server's citeSessionHandler already calls appendCitation() directly
+ * when the model invokes cite_session. The Stop hook must NOT detect the same
+ * cite_session tool_use and write a second log entry (double-count). The A1
+ * sub-case in detectCitations now skips cite_session calls entirely.
+ *
+ * Implicit citations via other NLM tools (get_session, recall_sessions, etc.)
+ * still fire through the A2 path as before.
  */
 
 import { describe, expect, it } from "vitest";
 import { detectCitations } from "../../../../src/core/hook/citation-detect.js";
 
-describe("detectCitations — cite_session tool_use channel (A1)", () => {
-  it("detects a cite_session call as a tool_use citation", () => {
+describe("detectCitations — cite_session skipped to prevent double-count", () => {
+  it("does not detect cite_session as a citation (MCP handler already logged it)", () => {
     const result = detectCitations({
       responseText: "Based on that session, here is my answer.",
       toolUses: [
@@ -20,16 +25,16 @@ describe("detectCitations — cite_session tool_use channel (A1)", () => {
       ],
       surfacedIds: ["cc_sub_a139f4ab7ca5aa909"],
     });
-    expect(result).toEqual([{ id: "cc_sub_a139f4ab7ca5aa909", kind: "tool_use" }]);
+    expect(result).toEqual([]);
   });
 
-  it("only cites a session ID that was surfaced", () => {
+  it("does not detect cite_session even for a surfaced ID", () => {
     const result = detectCitations({
       responseText: "",
       toolUses: [
         {
           name: "mcp__nlm-memory__cite_session",
-          input: { id: "cc_unsurfaced_abc123" },
+          input: { id: "cc_sub_a139f4ab7ca5aa909" },
         },
       ],
       surfacedIds: ["cc_sub_a139f4ab7ca5aa909"],
@@ -37,7 +42,7 @@ describe("detectCitations — cite_session tool_use channel (A1)", () => {
     expect(result).toEqual([]);
   });
 
-  it("does not double-count when cite_session and prose both reference the same ID", () => {
+  it("falls back to prose detection when cite_session is skipped and ID appears in text", () => {
     const result = detectCitations({
       responseText: "Per cc_sub_a139f4ab7ca5aa909, the decision was FTS5.",
       toolUses: [
@@ -49,10 +54,10 @@ describe("detectCitations — cite_session tool_use channel (A1)", () => {
       surfacedIds: ["cc_sub_a139f4ab7ca5aa909"],
     });
     expect(result).toHaveLength(1);
-    expect(result[0]).toEqual({ id: "cc_sub_a139f4ab7ca5aa909", kind: "tool_use" });
+    expect(result[0]).toEqual({ id: "cc_sub_a139f4ab7ca5aa909", kind: "prose" });
   });
 
-  it("cites multiple IDs when cite_session is called multiple times", () => {
+  it("returns empty when multiple cite_session calls are skipped and no prose match", () => {
     const result = detectCitations({
       responseText: "",
       toolUses: [
@@ -67,14 +72,10 @@ describe("detectCitations — cite_session tool_use channel (A1)", () => {
       ],
       surfacedIds: ["cc_sub_a139f4ab7ca5aa909", "hm_20260427_6ff562"],
     });
-    expect(result).toHaveLength(2);
-    expect(result.map((c) => c.kind)).toEqual(["tool_use", "tool_use"]);
-    expect(result.map((c) => c.id).sort()).toEqual(
-      ["cc_sub_a139f4ab7ca5aa909", "hm_20260427_6ff562"].sort(),
-    );
+    expect(result).toEqual([]);
   });
 
-  it("does not interfere with A2 (get_session) citations for a different ID", () => {
+  it("A2 path (get_session) still fires while cite_session is skipped for the same turn", () => {
     const result = detectCitations({
       responseText: "",
       toolUses: [
@@ -89,8 +90,7 @@ describe("detectCitations — cite_session tool_use channel (A1)", () => {
       ],
       surfacedIds: ["cc_sub_a139f4ab7ca5aa909", "hm_20260427_6ff562"],
     });
-    expect(result).toHaveLength(2);
-    expect(result.find((c) => c.id === "cc_sub_a139f4ab7ca5aa909")).toMatchObject({ kind: "tool_use" });
-    expect(result.find((c) => c.id === "hm_20260427_6ff562")).toMatchObject({ kind: "tool_use" });
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ id: "hm_20260427_6ff562", kind: "tool_use" });
   });
 });

@@ -30,6 +30,9 @@ export interface StatsResult {
   readonly total: number;
   readonly with_results: number;
   readonly hit_rate: number;
+  // null until nlm useful-scan is implemented and populates useful-hit-log.jsonl.
+  // Forward-compat stub so the daily digest schema doesn't need a version bump.
+  readonly useful_hit_rate: null;
   readonly by_source: Record<string, number>;
   readonly top_queries: ReadonlyArray<{ readonly query: string; readonly count: number }>;
   readonly log_present: boolean;
@@ -71,6 +74,7 @@ export async function recallStats(
     total: 0,
     with_results: 0,
     hit_rate: 0,
+    useful_hit_rate: null,
     by_source: {},
     top_queries: [],
     log_present: false,
@@ -133,6 +137,7 @@ export async function recallStats(
     total,
     with_results: withResults,
     hit_rate: total === 0 ? 0 : Math.round((withResults / total) * 1000) / 1000,
+    useful_hit_rate: null,
     by_source: Object.fromEntries(sortedSources),
     top_queries: sortedQueries.map(([query, count]) => ({ query, count })),
     log_present: true,

@@ -24,6 +24,7 @@ export interface StatsResult {
     readonly total: number;
     readonly with_results: number;
     readonly hit_rate: number;
+    readonly useful_hit_rate: null;
     readonly by_source: Record<string, number>;
     readonly top_queries: ReadonlyArray<{
         readonly query: string;
