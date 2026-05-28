@@ -205,7 +205,7 @@ export function createApp(deps) {
             conversationId: typeof body["conversation_id"] === "string" ? body["conversation_id"] : "mcp_tool",
             citedId: id,
             kind: "tool_use",
-            ...(typeof body["note"] === "string" ? { responsePreview: body["note"] } : {}),
+            ...(typeof body["reason"] === "string" ? { responsePreview: body["reason"] } : {}),
         }, ...(deps.citationLogPath !== undefined ? [deps.citationLogPath] : []));
         return c.json({ logged: true, id, source: "mcp_tool" });
     });
