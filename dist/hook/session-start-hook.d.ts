@@ -5,7 +5,7 @@
  * agents that never trigger UserPromptSubmit). Surfaces relevant prior context
  * proactively so cold-start agents aren't recall-blind.
  *
- * Query is derived from working_directory + project name since no user prompt
+ * Query is derived from working_directory + project_name since no user prompt
  * exists yet — intentionally weaker than prompt-recall, best-effort only.
  *
  * Mirrors prompt-recall-hook.ts shape exactly: same pointer-block format, same

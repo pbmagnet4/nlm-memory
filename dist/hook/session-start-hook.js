@@ -5,7 +5,7 @@
  * agents that never trigger UserPromptSubmit). Surfaces relevant prior context
  * proactively so cold-start agents aren't recall-blind.
  *
- * Query is derived from working_directory + project name since no user prompt
+ * Query is derived from working_directory + project_name since no user prompt
  * exists yet — intentionally weaker than prompt-recall, best-effort only.
  *
  * Mirrors prompt-recall-hook.ts shape exactly: same pointer-block format, same
@@ -13,7 +13,7 @@
  */
 import { pathToFileURL } from "node:url";
 import { appendHookLog } from "../core/hook/hook-log.js";
-import { loadSurfaced, loadSurfacedForBudget, recordSurfaced } from "../core/hook/memo.js";
+import { loadSurfaced, recordSurfaced } from "../core/hook/memo.js";
 import { formatPointerBlock } from "../core/hook/pointer-block.js";
 import { selectHits } from "../core/hook/select.js";
 const SCORE_THRESHOLD = 0;
@@ -31,11 +31,9 @@ export async function runHook(input, deps) {
         hits = [];
     }
     const surfaced = loadSurfaced(input.conversationId);
-    const surfacedForBudget = loadSurfacedForBudget(input.conversationId, 0);
     const selected = selectHits({
         hits,
         surfaced,
-        surfacedForBudget,
         scoreThreshold: SCORE_THRESHOLD,
         perFireCap: PER_FIRE_CAP,
         perConversationCap: PER_CONVERSATION_CAP,
@@ -53,7 +51,7 @@ export async function runHook(input, deps) {
         mode: deps.mode,
     });
     if (deps.mode === "live" && selected.length > 0) {
-        recordSurfaced(input.conversationId, selected.map((h) => h.id), 0);
+        recordSurfaced(input.conversationId, selected.map((h) => h.id));
         return block;
     }
     return "";
