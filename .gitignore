@@ -9,5 +9,9 @@ coverage/
 __pycache__/
 
 # LongMemEval harness — per-run result artifacts are not committed; baselines
-# are summarized in CHANGELOG + Ventures/nlm-memory/track-record.md instead.
+# are summarized in Ventures/nlm-memory/track-record.md instead.
 reports/longmemeval/
+
+# Local development logs (session CHANGELOG, daily-digest cron output, etc.) —
+# kept on disk for personal history but never tracked in git.
+logs/
