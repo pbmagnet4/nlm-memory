@@ -32,10 +32,5 @@ export interface SetupOptions {
     readonly addHook: (path: string, command: string, event?: ClaudeHookEvent) => void;
     readonly removeHook: (path: string, event?: ClaudeHookEvent | "*") => void;
     readonly buildHookCommand: (nodeExec: string, script: string, mode: "shadow" | "live") => string;
-    readonly smokeTestHookCommand: (command: string, logPath: string) => {
-        ok: boolean;
-        reason?: string;
-        stderr?: string;
-    };
 }
 export declare function runSetup(opts: SetupOptions): Promise<void>;

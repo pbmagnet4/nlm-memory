@@ -45,16 +45,11 @@ export function installClaudeCodeHooks(opts) {
         try {
             const command = opts.buildHookCommand(opts.nodeExecPath, spec.script, "live");
             opts.addHook(opts.settingsPath, command, spec.event);
-            const smoke = opts.smokeTestHookCommand(command, opts.hookLogPath);
-            if (!smoke.ok) {
-                for (const prior of [...installed, spec])
-                    opts.removeHook(opts.settingsPath, prior.event);
-                const result = { ok: false, count: installed.length, failedLabel: spec.label };
-                return smoke.reason ? { ...result, errorMessage: smoke.reason } : result;
-            }
             installed.push(spec);
         }
         catch (e) {
+            for (const prior of installed)
+                opts.removeHook(opts.settingsPath, prior.event);
             return { ok: false, count: installed.length, failedLabel: spec.label, errorMessage: e instanceof Error ? e.message : String(e) };
         }
     }

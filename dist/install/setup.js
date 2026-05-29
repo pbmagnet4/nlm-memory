@@ -379,16 +379,13 @@ export async function runSetup(opts) {
                 // OS-level scripts, so they work on all platforms where Claude Code runs.
                 const hs = spinner();
                 hs.start("Configuring Claude Code — session hooks");
-                const hookLogPath = process.env["NLM_HOOK_LOG"] ?? join(homedir(), ".nlm", "hook-log.jsonl");
                 const hookResult = installClaudeCodeHooks({
                     nodeExecPath: opts.nodeExecPath,
                     hooks: opts.allHooks,
                     settingsPath: opts.claudeSettingsPath,
-                    hookLogPath,
                     addHook: opts.addHook,
                     removeHook: opts.removeHook,
                     buildHookCommand: opts.buildHookCommand,
-                    smokeTestHookCommand: opts.smokeTestHookCommand,
                 });
                 if (hookResult.ok) {
                     hs.stop(`${hookResult.count} hooks installed → ${opts.claudeSettingsPath}`);

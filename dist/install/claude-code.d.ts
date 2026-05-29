@@ -35,15 +35,9 @@ export interface HookInstallOptions {
     readonly nodeExecPath: string;
     readonly hooks: ReadonlyArray<HookSpec>;
     readonly settingsPath: string;
-    readonly hookLogPath: string;
     readonly addHook: (path: string, command: string, event?: ClaudeHookEvent) => void;
     readonly removeHook: (path: string, event?: ClaudeHookEvent | "*") => void;
     readonly buildHookCommand: (nodeExec: string, script: string, mode: "shadow" | "live") => string;
-    readonly smokeTestHookCommand: (command: string, logPath: string) => {
-        ok: boolean;
-        reason?: string;
-        stderr?: string;
-    };
 }
 export interface HookInstallResult {
     readonly ok: boolean;

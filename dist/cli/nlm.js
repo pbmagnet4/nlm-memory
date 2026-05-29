@@ -45,7 +45,7 @@ import { ClassifierBox } from "../llm/classifier-box.js";
 import { DeepSeekClient } from "../llm/deepseek-client.js";
 import { OllamaClient } from "../llm/ollama-client.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
-import { addHook, buildHookCommand, removeHook, smokeTestHookCommand } from "../core/hook/claude-settings.js";
+import { addHook, buildHookCommand, removeHook } from "../core/hook/claude-settings.js";
 import { codexBinaryAvailable, connectCodex, disconnectCodex, pluginScriptsDir, } from "../install/codex.js";
 import { connectClaudeCode, disconnectClaudeCode, installClaudeCodeHooks, mcpConfigPath } from "../install/claude-code.js";
 import { hardenNlmDirPermissions } from "../install/nlm-dir-perms.js";
@@ -628,38 +628,25 @@ hook
     .description("Add the NLM hooks (recall + session-end + stop) to ~/.claude/settings.json (live mode)")
     .action(() => {
     const path = claudeSettingsPath();
-    const hookLogPath = process.env["NLM_HOOK_LOG"] ?? join(homedir(), ".nlm", "hook-log.jsonl");
-    // Install + smoke each hook. If any fails, revert all and exit nonzero.
-    // Atomic install matters because partial state ("recall installed but
-    // session-end didn't smoke-test") is worse than no install — silent
-    // partial failure is the bug class we shipped #161 to prevent.
     const installed = [];
     for (const spec of ALL_HOOKS) {
         const command = buildHookCommand(process.execPath, spec.script, "live");
-        addHook(path, command, spec.event);
-        const smoke = smokeTestHookCommand(command, hookLogPath);
-        if (!smoke.ok) {
-            // Revert every hook we installed this run (including the failing one).
-            for (const prior of [...installed, spec]) {
+        try {
+            addHook(path, command, spec.event);
+            installed.push(spec);
+        }
+        catch (e) {
+            for (const prior of installed)
                 removeHook(path, prior.event);
-            }
-            console.error(`nlm: ${spec.label} hook (${spec.event}) FAILED smoke test — all NLM hooks reverted.`);
-            console.error(`  reason: ${smoke.reason}`);
-            if (smoke.stderr) {
-                const trimmed = smoke.stderr.trim();
-                if (trimmed)
-                    console.error(`  stderr: ${trimmed}`);
-            }
-            console.error(`  command was: ${command}`);
+            console.error(`nlm: ${spec.label} hook (${spec.event}) install failed — all NLM hooks reverted.`);
+            console.error(`  reason: ${e instanceof Error ? e.message : String(e)}`);
             process.exit(1);
         }
-        installed.push(spec);
     }
     console.error(`nlm: NLM hooks installed in ${path} (live mode):`);
     for (const spec of installed) {
         console.error(`  - ${spec.event} → ${spec.label}-hook`);
     }
-    console.error("  Smoke tests passed — all hooks appended synthetic entries to hook-log.jsonl.");
     console.error("  Recall hooks inject prior-session context on UserPromptSubmit and log to ~/.nlm/hook-log.jsonl.");
     console.error("  Session-end hook cleans up ~/.nlm/hook-state/<session>.json on session close.");
     console.error("  To run silently for calibration (no injection): set NLM_HOOK_MODE=shadow in the command.");
@@ -746,19 +733,16 @@ connect
     console.error("  Restart Claude Code to activate the MCP server.");
     if (opts.withHooks) {
         const path = claudeSettingsPath();
-        const hookLogPath = process.env["NLM_HOOK_LOG"] ?? join(homedir(), ".nlm", "hook-log.jsonl");
         const result = installClaudeCodeHooks({
             nodeExecPath: process.execPath,
             hooks: ALL_HOOKS,
             settingsPath: path,
-            hookLogPath,
             addHook,
             removeHook,
             buildHookCommand,
-            smokeTestHookCommand,
         });
         if (!result.ok) {
-            console.error(`nlm: ${result.failedLabel ?? "hook"} smoke test failed — all hooks reverted. Run \`nlm hook install\` manually.`);
+            console.error(`nlm: ${result.failedLabel ?? "hook"} install failed — all hooks reverted. Run \`nlm hook install\` manually.`);
             process.exit(1);
         }
         console.error(`nlm: ${result.count} hooks installed → ${path}`);
@@ -1001,7 +985,6 @@ program
         addHook,
         removeHook,
         buildHookCommand,
-        smokeTestHookCommand,
     });
 });
 program

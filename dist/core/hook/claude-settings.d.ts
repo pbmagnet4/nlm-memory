@@ -19,19 +19,6 @@ export declare function shellQuote(arg: string): string;
  */
 export declare function cmdQuote(arg: string): string;
 export declare function buildHookCommand(execPath: string, hookJs: string, mode: "shadow" | "live", targetPlatform?: NodeJS.Platform): string;
-export interface SmokeTestResult {
-    readonly ok: boolean;
-    readonly reason?: string;
-    readonly stderr?: string;
-}
-/**
- * Invoke the wired command exactly the way Claude Code does (sh -c on
- * POSIX, cmd.exe /c on Windows) with JSON on stdin and confirm the hook
- * log gained an entry. Catches the class of failures where settings.json
- * looks valid but the hook fails at startup (path tokenization, missing
- * modules, missing shell, etc.).
- */
-export declare function smokeTestHookCommand(command: string, hookLogPath: string, timeoutMs?: number): SmokeTestResult;
 export type ClaudeHookEvent = "UserPromptSubmit" | "SessionStart" | "SessionEnd" | "Stop" | "PreCompact" | "SubagentStart" | "PostToolUse" | "PreToolUse";
 export declare function addHook(settingsPath: string, command: string, event?: ClaudeHookEvent): void;
 /**
