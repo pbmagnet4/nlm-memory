@@ -103,7 +103,7 @@ describe("discover()", () => {
     expect(await adapter.discover()).toEqual([]);
   });
 
-  it("returns all tabIds across workspace DBs", async () => {
+  it("returns prefixed tabIds across workspace DBs", async () => {
     addWorkspace("ws1", [
       { tabId: "tab-aaa", bubbles: [{ type: "user", text: "Hello" }] },
     ]);
@@ -113,7 +113,7 @@ describe("discover()", () => {
     ]);
 
     const ids = await adapter.discover();
-    expect(ids.sort()).toEqual(["tab-aaa", "tab-bbb", "tab-ccc"].sort());
+    expect(ids.sort()).toEqual(["ws_tab-aaa", "ws_tab-bbb", "ws_tab-ccc"].sort());
   });
 
   it("skips tabs with no bubbles", async () => {
@@ -123,7 +123,7 @@ describe("discover()", () => {
     ]);
 
     const ids = await adapter.discover();
-    expect(ids).toEqual(["good-tab"]);
+    expect(ids).toEqual(["ws_good-tab"]);
   });
 
   it("deduplicates tabIds appearing in multiple workspaces", async () => {
@@ -132,7 +132,7 @@ describe("discover()", () => {
     addWorkspace("ws2", [{ tabId: "dup-tab", bubbles: [{ type: "user", text: "B" }] }]);
 
     const ids = await adapter.discover();
-    expect(ids.filter((id) => id === "dup-tab").length).toBe(1);
+    expect(ids.filter((id) => id === "ws_dup-tab").length).toBe(1);
   });
 
   it("filters by since using lastSendTime", async () => {
@@ -145,7 +145,17 @@ describe("discover()", () => {
 
     const cutoff = new Date(Date.now() - 5 * 24 * 3600_000);
     const ids = await adapter.discover({ since: cutoff });
-    expect(ids).toEqual(["new-tab"]);
+    expect(ids).toEqual(["ws_new-tab"]);
+  });
+
+  it("includes tab with lastSendTime=0 even when since is set (zero means unknown age)", async () => {
+    addWorkspace("ws1", [
+      { tabId: "zero-ts-tab", lastSendTime: 0, bubbles: [{ type: "user", text: "Hi" }] },
+    ]);
+
+    const cutoff = new Date(); // very recent cutoff that would exclude everything with a real ts
+    const ids = await adapter.discover({ since: cutoff });
+    expect(ids).toContain("ws_zero-ts-tab");
   });
 });
 
@@ -278,6 +288,120 @@ describe("parseSession()", () => {
 
     const chunk = await adapter.parseSession("bytes-tab");
     expect(chunk!.byteRange[1]).toBe(Buffer.byteLength(chunk!.text, "utf8"));
+  });
+});
+
+// ── global DB agent sessions (wsg_) ──────────────────────────────────────────
+
+describe("global DB agent sessions (wsg_)", () => {
+  let globalDb: Database.Database;
+  let globalDbPath: string;
+
+  beforeEach(() => {
+    const globalDir = join(userDir, "globalStorage");
+    mkdirSync(globalDir, { recursive: true });
+    globalDbPath = join(globalDir, "state.vscdb");
+    globalDb = new Database(globalDbPath);
+  });
+
+  afterEach(() => {
+    try { globalDb.close(); } catch { /* already closed */ }
+  });
+
+  function addCursorDiskKVSession(
+    composerId: string,
+    opts: { name?: string; createdAt?: string; lastUpdatedAt?: string; conversation?: Array<{ type?: number; role?: string; text: string }> } = {},
+  ): void {
+    globalDb.exec(`CREATE TABLE IF NOT EXISTS cursorDiskKV (key TEXT PRIMARY KEY, value TEXT);`);
+    const data = {
+      composerId,
+      name: opts.name,
+      createdAt: opts.createdAt ?? new Date(Date.now() - 3600_000).toISOString(),
+      lastUpdatedAt: opts.lastUpdatedAt ?? new Date().toISOString(),
+      conversation: opts.conversation ?? [],
+    };
+    globalDb.prepare(`INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)`).run(
+      `composerData:${composerId}`,
+      JSON.stringify(data),
+    );
+    globalDb.close();
+  }
+
+  function addItemTableSession(
+    composerId: string,
+    opts: { name?: string; conversation?: Array<{ type?: number; role?: string; text: string }> } = {},
+  ): void {
+    globalDb.exec(`CREATE TABLE IF NOT EXISTS ItemTable (key TEXT PRIMARY KEY, value TEXT);`);
+    const data = {
+      composerId,
+      name: opts.name,
+      conversation: opts.conversation ?? [],
+    };
+    // Use an agent-style key so the fallback LIKE query matches
+    globalDb.prepare(`INSERT INTO ItemTable (key, value) VALUES (?, ?)`).run(
+      `cascade:${composerId}`,
+      JSON.stringify(data),
+    );
+    globalDb.close();
+  }
+
+  it("discover() returns wsg_ ids from cursorDiskKV global sessions", async () => {
+    addCursorDiskKVSession("agent-aaa", {
+      conversation: [{ type: 1, text: "Hello" }],
+    });
+
+    const ids = await adapter.discover();
+    expect(ids).toContain("wsg_agent-aaa");
+  });
+
+  it("discover() returns wsg_ ids from ItemTable fallback", async () => {
+    addItemTableSession("flow-bbb", {
+      conversation: [{ role: "user", text: "Hi" }],
+    });
+
+    const ids = await adapter.discover();
+    expect(ids).toContain("wsg_flow-bbb");
+  });
+
+  it("parseSession(wsg_<id>) extracts turns via cursorDiskKV", async () => {
+    addCursorDiskKVSession("agent-parse", {
+      name: "My flow",
+      conversation: [
+        { type: 1, text: "Build a widget" },
+        { type: 2, text: "Built!" },
+      ],
+    });
+
+    const chunk = await adapter.parseSession("wsg_agent-parse");
+    expect(chunk).not.toBeNull();
+    expect(chunk!.turnCount).toBe(2);
+    expect(chunk!.text).toContain("user: Build a widget");
+    expect(chunk!.text).toContain("assistant: Built!");
+    expect(chunk!.label).toBe("My flow");
+    expect(chunk!.id).toMatch(/^wsg_/);
+    expect(chunk!.runtimeSessionId).toBe("agent-parse");
+  });
+
+  it("parseSession(wsg_<id>) returns null when conversation is empty", async () => {
+    addCursorDiskKVSession("empty-agent", { conversation: [] });
+    expect(await adapter.parseSession("wsg_empty-agent")).toBeNull();
+  });
+
+  it("discover() wsg_ filters by since using lastUpdatedAt", async () => {
+    const recentDb = new Database(globalDbPath);
+    recentDb.exec(`CREATE TABLE IF NOT EXISTS cursorDiskKV (key TEXT PRIMARY KEY, value TEXT);`);
+    const old = new Date(Date.now() - 10 * 24 * 3600_000).toISOString();
+    const recent = new Date().toISOString();
+    const oldData = { composerId: "old-agent", lastUpdatedAt: old, conversation: [{ type: 1, text: "Old" }] };
+    const newData = { composerId: "new-agent", lastUpdatedAt: recent, conversation: [{ type: 1, text: "New" }] };
+    recentDb.prepare(`INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)`).run("composerData:old-agent", JSON.stringify(oldData));
+    recentDb.prepare(`INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)`).run("composerData:new-agent", JSON.stringify(newData));
+    recentDb.close();
+
+    const cutoff = new Date(Date.now() - 5 * 24 * 3600_000);
+    const ids = await adapter.discover({ since: cutoff });
+    expect(ids).not.toContain("wsg_old-agent");
+    expect(ids).toContain("wsg_new-agent");
   });
 });
 

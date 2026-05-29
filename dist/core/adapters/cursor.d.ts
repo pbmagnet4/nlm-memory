@@ -1,22 +1,29 @@
 /**
- * CursorAdapter — reads Cursor AI composer sessions from state.vscdb.
+ * CursorAdapter — reads Cursor AI sessions across all three storage formats.
  *
- * Cursor stores all AI sessions in a global SQLite database at:
- *   macOS: ~/Library/Application Support/Cursor/User/globalStorage/state.vscdb
- *   Linux: ~/.config/Cursor/User/globalStorage/state.vscdb
+ * ## Storage locations (macOS, Linux analogues use ~/.config/)
  *
- * The database uses a key-value table `cursorDiskKV`:
- *   composerData:<composerId>  — session metadata (name, createdAt, lastUpdatedAt,
- *                                modelConfig, inline conversation[] OR separate bubbles)
- *   bubbleId:<composerId>:<bubbleId>  — individual messages (separate storage, v1.5+)
+ *   Global DB  ~/Library/Application Support/Cursor/User/globalStorage/state.vscdb
+ *     Table: cursorDiskKV
+ *     Keys:  composerData:<composerId>   — session metadata + conversation
+ *            bubbleId:<composerId>:<id>  — individual messages (separate storage)
  *
- * Message type: 1 = user, 2 = assistant.
- * Messages are extracted from inline `conversation[]` when present; otherwise
- * from `bubbleId:*` rows ordered by rowid ASC (insertion order).
+ *   Workspace DBs  ~/Library/.../Cursor/User/workspaceStorage/<hash>/state.vscdb
+ *     Table: ItemTable
+ *     Key:   composer.composerData       — allComposers[] (pre-global-migration)
+ *     Key:   workbench.panel.aichat.view.aichat.chatdata  — chat tabs (all versions)
  *
- * sourcePath: <dbPath>::<composerId>
+ * ## Session ID prefixes
  *
- * Env override: NLM_CURSOR_DB_PATH
+ *   cr_  — global cursorDiskKV composer (current, v1.x+)
+ *   crw_ — workspace ItemTable composer.composerData (v0.43–v1.x)
+ *   crc_ — workspace ItemTable chat tab (v0.x–v1.x)
+ *
+ * ## Options
+ *
+ *   dbPath — path to globalStorage/state.vscdb
+ *            (workspace DBs are derived from dbPath's parent directory)
+ *   Env override: NLM_CURSOR_DB_PATH
  */
 import type { DetectionResult, DiscoverOptions, SessionChunk, TranscriptAdapter } from "../../ports/transcript-adapter.js";
 export interface CursorAdapterOptions {
@@ -31,5 +38,8 @@ export declare class CursorAdapter implements TranscriptAdapter {
     constructor(opts?: CursorAdapterOptions);
     detect(): DetectionResult;
     discover(options?: DiscoverOptions): Promise<ReadonlyArray<string>>;
-    parseSession(composerId: string): Promise<SessionChunk | null>;
+    parseSession(id: string): Promise<SessionChunk | null>;
+    private _parseGlobalComposer;
+    private _parseWorkspaceComposer;
+    private _parseWorkspaceChatTab;
 }

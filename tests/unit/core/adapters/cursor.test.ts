@@ -6,9 +6,9 @@
  * can open it with better-sqlite3 in readonly mode.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CursorAdapter } from "../../../../src/core/adapters/cursor.js";
@@ -63,6 +63,39 @@ function addBubble(
   );
 }
 
+// ── Workspace helpers ─────────────────────────────────────────────────────────
+
+const CHAT_KEY = "workbench.panel.aichat.view.aichat.chatdata";
+
+function createWorkspaceDb(path: string): Database.Database {
+  mkdirSync(dirname(path), { recursive: true });
+  const db = new Database(path);
+  db.exec(`CREATE TABLE IF NOT EXISTS ItemTable (key TEXT PRIMARY KEY, value TEXT);`);
+  return db;
+}
+
+function addWorkspaceComposer(
+  db: Database.Database,
+  composerId: string,
+  opts: { name?: string; createdAt?: string; lastUpdatedAt?: string; conversation?: Array<{ type: number; text: string }> } = {},
+): void {
+  const allComposers = [{ composerId, name: opts.name ?? "ws composer", createdAt: opts.createdAt, lastUpdatedAt: opts.lastUpdatedAt, conversation: opts.conversation ?? [] }];
+  db.prepare(`INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)`).run(
+    "composer.composerData",
+    JSON.stringify({ allComposers }),
+  );
+}
+
+function addWorkspaceChatTab(
+  db: Database.Database,
+  tabs: Array<{ tabId: string; chatTitle?: string; lastSendTime?: number; bubbles?: Array<{ type: "user" | "ai"; text?: string }> }>,
+): void {
+  db.prepare(`INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)`).run(
+    CHAT_KEY,
+    JSON.stringify({ tabs }),
+  );
+}
+
 // ── Test setup ────────────────────────────────────────────────────────────────
 
 let tmp: string;
@@ -71,7 +104,9 @@ let adapter: CursorAdapter;
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "nlm-cursor-"));
-  dbPath = join(tmp, "state.vscdb");
+  // globalStorage/state.vscdb — adapter derives workspaceStorage from its parent's parent
+  dbPath = join(tmp, "globalStorage", "state.vscdb");
+  mkdirSync(dirname(dbPath), { recursive: true });
   adapter = new CursorAdapter({ dbPath });
 });
 
@@ -106,14 +141,14 @@ describe("discover()", () => {
     expect(await adapter.discover()).toEqual([]);
   });
 
-  it("returns composerIds for all composer entries", async () => {
+  it("returns prefixed composerIds for all composer entries", async () => {
     const db = createDb(dbPath);
     addComposerInline(db, "composer-aaa");
     addComposerInline(db, "composer-bbb");
     db.close();
 
     const ids = await adapter.discover();
-    expect(ids).toEqual(["composer-aaa", "composer-bbb"]);
+    expect(ids).toEqual(["cr_composer-aaa", "cr_composer-bbb"]);
   });
 
   it("returns empty array when DB has no cursorDiskKV table", async () => {
@@ -133,7 +168,7 @@ describe("discover()", () => {
     db.close();
 
     const ids = await adapter.discover();
-    expect(ids).toEqual(["composer-good"]);
+    expect(ids).toEqual(["cr_composer-good"]);
   });
 
   it("filters by since when lastUpdatedAt is set", async () => {
@@ -146,7 +181,7 @@ describe("discover()", () => {
 
     const cutoff = new Date(Date.now() - 5 * 24 * 3600_000);
     const ids = await adapter.discover({ since: cutoff });
-    expect(ids).toEqual(["new-composer"]);
+    expect(ids).toEqual(["cr_new-composer"]);
   });
 });
 
@@ -306,6 +341,136 @@ describe("parseSession()", () => {
     const chunk = await adapter.parseSession("bytes-id");
     const expected = Buffer.byteLength(chunk!.text, "utf8");
     expect(chunk!.byteRange[1]).toBe(expected);
+  });
+});
+
+// ── workspace composer (crw_) ─────────────────────────────────────────────────
+
+describe("workspace composer (crw_)", () => {
+  function wsDbPath(hash = "ws-hash-1"): string {
+    return join(tmp, "workspaceStorage", hash, "state.vscdb");
+  }
+
+  it("discover() returns crw_ ids from workspace ItemTable", async () => {
+    const db = createWorkspaceDb(wsDbPath());
+    addWorkspaceComposer(db, "ws-comp-aaa", { conversation: [{ type: 1, text: "hi" }] });
+    db.close();
+
+    const ids = await adapter.discover();
+    expect(ids).toContain("crw_ws-comp-aaa");
+  });
+
+  it("parseSession(crw_<id>) returns chunk from workspace composer", async () => {
+    const db = createWorkspaceDb(wsDbPath());
+    addWorkspaceComposer(db, "ws-comp-abc", {
+      name: "My workspace session",
+      conversation: [
+        { type: 1, text: "Fix the bug" },
+        { type: 2, text: "Done!" },
+      ],
+    });
+    db.close();
+
+    const chunk = await adapter.parseSession("crw_ws-comp-abc");
+    expect(chunk).not.toBeNull();
+    expect(chunk!.turnCount).toBe(2);
+    expect(chunk!.text).toContain("user: Fix the bug");
+    expect(chunk!.text).toContain("assistant: Done!");
+    expect(chunk!.label).toBe("My workspace session");
+    expect(chunk!.id).toMatch(/^crw_/);
+    expect(chunk!.runtimeSessionId).toBe("ws-comp-abc");
+  });
+
+  it("parseSession(crw_<id>) returns null when composer has no turns", async () => {
+    const db = createWorkspaceDb(wsDbPath());
+    addWorkspaceComposer(db, "empty-ws-comp", { conversation: [] });
+    db.close();
+
+    expect(await adapter.parseSession("crw_empty-ws-comp")).toBeNull();
+  });
+});
+
+// ── workspace chat tab (crc_) ─────────────────────────────────────────────────
+
+describe("workspace chat tab (crc_)", () => {
+  function wsDbPath(hash = "ws-chat-hash"): string {
+    return join(tmp, "workspaceStorage", hash, "state.vscdb");
+  }
+
+  it("discover() returns crc_ ids from workspace chat tab ItemTable", async () => {
+    const db = createWorkspaceDb(wsDbPath());
+    addWorkspaceChatTab(db, [
+      { tabId: "chat-aaa", bubbles: [{ type: "user", text: "Hello" }] },
+      { tabId: "chat-bbb", bubbles: [{ type: "ai", text: "Hi" }] },
+    ]);
+    db.close();
+
+    const ids = await adapter.discover();
+    expect(ids).toContain("crc_chat-aaa");
+    expect(ids).toContain("crc_chat-bbb");
+  });
+
+  it("discover() skips chat tabs with no bubbles", async () => {
+    const db = createWorkspaceDb(wsDbPath());
+    addWorkspaceChatTab(db, [
+      { tabId: "empty-tab", bubbles: [] },
+      { tabId: "good-tab", bubbles: [{ type: "user", text: "Hi" }] },
+    ]);
+    db.close();
+
+    const ids = await adapter.discover();
+    expect(ids).not.toContain("crc_empty-tab");
+    expect(ids).toContain("crc_good-tab");
+  });
+
+  it("discover() filters chat tabs by since using lastSendTime", async () => {
+    const db = createWorkspaceDb(wsDbPath());
+    const old = Date.now() - 10 * 24 * 3600_000;
+    const recent = Date.now();
+    addWorkspaceChatTab(db, [
+      { tabId: "old-chat", lastSendTime: old, bubbles: [{ type: "user", text: "Old" }] },
+      { tabId: "new-chat", lastSendTime: recent, bubbles: [{ type: "user", text: "New" }] },
+    ]);
+    db.close();
+
+    const cutoff = new Date(Date.now() - 5 * 24 * 3600_000);
+    const ids = await adapter.discover({ since: cutoff });
+    expect(ids).not.toContain("crc_old-chat");
+    expect(ids).toContain("crc_new-chat");
+  });
+
+  it("discover() includes chat tab with lastSendTime=0 even when since is set", async () => {
+    const db = createWorkspaceDb(wsDbPath());
+    addWorkspaceChatTab(db, [
+      { tabId: "zero-ts-chat", lastSendTime: 0, bubbles: [{ type: "user", text: "Hi" }] },
+    ]);
+    db.close();
+
+    const cutoff = new Date(); // very recent cutoff
+    const ids = await adapter.discover({ since: cutoff });
+    expect(ids).toContain("crc_zero-ts-chat");
+  });
+
+  it("parseSession(crc_<id>) returns chunk from workspace chat tab", async () => {
+    const db = createWorkspaceDb(wsDbPath());
+    addWorkspaceChatTab(db, [
+      {
+        tabId: "crc-parse-tab",
+        chatTitle: "Chat test",
+        bubbles: [
+          { type: "user", text: "Question" },
+          { type: "ai", text: "Answer" },
+        ],
+      },
+    ]);
+    db.close();
+
+    const chunk = await adapter.parseSession("crc_crc-parse-tab");
+    expect(chunk).not.toBeNull();
+    expect(chunk!.turnCount).toBe(2);
+    expect(chunk!.label).toBe("Chat test");
+    expect(chunk!.id).toMatch(/^crc_/);
+    expect(chunk!.runtimeSessionId).toBe("crc-parse-tab");
   });
 });
 

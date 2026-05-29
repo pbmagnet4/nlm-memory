@@ -1,29 +1,36 @@
 /**
- * CursorAdapter — reads Cursor AI composer sessions from state.vscdb.
+ * CursorAdapter — reads Cursor AI sessions across all three storage formats.
  *
- * Cursor stores all AI sessions in a global SQLite database at:
- *   macOS: ~/Library/Application Support/Cursor/User/globalStorage/state.vscdb
- *   Linux: ~/.config/Cursor/User/globalStorage/state.vscdb
+ * ## Storage locations (macOS, Linux analogues use ~/.config/)
  *
- * The database uses a key-value table `cursorDiskKV`:
- *   composerData:<composerId>  — session metadata (name, createdAt, lastUpdatedAt,
- *                                modelConfig, inline conversation[] OR separate bubbles)
- *   bubbleId:<composerId>:<bubbleId>  — individual messages (separate storage, v1.5+)
+ *   Global DB  ~/Library/Application Support/Cursor/User/globalStorage/state.vscdb
+ *     Table: cursorDiskKV
+ *     Keys:  composerData:<composerId>   — session metadata + conversation
+ *            bubbleId:<composerId>:<id>  — individual messages (separate storage)
  *
- * Message type: 1 = user, 2 = assistant.
- * Messages are extracted from inline `conversation[]` when present; otherwise
- * from `bubbleId:*` rows ordered by rowid ASC (insertion order).
+ *   Workspace DBs  ~/Library/.../Cursor/User/workspaceStorage/<hash>/state.vscdb
+ *     Table: ItemTable
+ *     Key:   composer.composerData       — allComposers[] (pre-global-migration)
+ *     Key:   workbench.panel.aichat.view.aichat.chatdata  — chat tabs (all versions)
  *
- * sourcePath: <dbPath>::<composerId>
+ * ## Session ID prefixes
  *
- * Env override: NLM_CURSOR_DB_PATH
+ *   cr_  — global cursorDiskKV composer (current, v1.x+)
+ *   crw_ — workspace ItemTable composer.composerData (v0.43–v1.x)
+ *   crc_ — workspace ItemTable chat tab (v0.x–v1.x)
+ *
+ * ## Options
+ *
+ *   dbPath — path to globalStorage/state.vscdb
+ *            (workspace DBs are derived from dbPath's parent directory)
+ *   Env override: NLM_CURSOR_DB_PATH
  */
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { durationMinutes, normalizeTimestamp, safeSessionId } from "./common.js";
-const TOOL_RESULT_PREVIEW_CHARS = 240;
+// ── Path helpers ──────────────────────────────────────────────────────────────
 export function defaultDbPath() {
     if (process.env["NLM_CURSOR_DB_PATH"])
         return process.env["NLM_CURSOR_DB_PATH"];
@@ -33,22 +40,45 @@ export function defaultDbPath() {
     }
     return join(home, ".config/Cursor/User/globalStorage/state.vscdb");
 }
-function parseBubble(bubble) {
-    const type = bubble.type;
-    if (type !== 1 && type !== 2)
-        return null;
-    const role = type === 1 ? "user" : "assistant";
-    const text = (bubble.text ?? "").trim();
-    if (!text)
-        return null;
-    return { role, text };
+function workspaceStorageDir(globalDbPath) {
+    // globalStorage/state.vscdb → User/ → User/workspaceStorage/
+    return join(dirname(dirname(globalDbPath)), "workspaceStorage");
 }
-function extractTurnsFromBubbles(bubbles) {
+function listWorkspaceDbs(globalDbPath) {
+    const wsDir = workspaceStorageDir(globalDbPath);
+    if (!existsSync(wsDir))
+        return [];
+    try {
+        return readdirSync(wsDir, { withFileTypes: true })
+            .filter((e) => e.isDirectory())
+            .map((e) => join(wsDir, e.name, "state.vscdb"))
+            .filter((p) => existsSync(p));
+    }
+    catch {
+        return [];
+    }
+}
+// ── Turn extraction ───────────────────────────────────────────────────────────
+function extractComposerTurns(bubbles) {
     const turns = [];
     for (const b of bubbles) {
-        const turn = parseBubble(b);
-        if (turn)
-            turns.push(turn);
+        const type = b.type;
+        if (type !== 1 && type !== 2)
+            continue;
+        const text = (b.text ?? "").trim();
+        if (!text)
+            continue;
+        turns.push({ role: type === 1 ? "user" : "assistant", text });
+    }
+    return turns;
+}
+function extractChatTurns(bubbles) {
+    const turns = [];
+    for (const b of bubbles) {
+        const text = (b.rawText ?? b.text ?? "").trim();
+        if (!text)
+            continue;
+        turns.push({ role: b.type === "user" ? "user" : "assistant", text });
     }
     return turns;
 }
@@ -60,16 +90,16 @@ function extractSeparateBubbles(db, composerId) {
     for (const row of rows) {
         if (!row.value)
             continue;
-        let bubble;
         try {
-            bubble = JSON.parse(row.value);
+            const b = JSON.parse(row.value);
+            const type = b.type;
+            if (type !== 1 && type !== 2)
+                continue;
+            const text = (b.text ?? "").trim();
+            if (text)
+                turns.push({ role: type === 1 ? "user" : "assistant", text });
         }
-        catch {
-            continue;
-        }
-        const turn = parseBubble(bubble);
-        if (turn)
-            turns.push(turn);
+        catch { /* skip malformed */ }
     }
     return turns;
 }
@@ -83,6 +113,124 @@ function provisionalLabel(turns) {
     }
     return "Untitled session";
 }
+function buildChunk(id, runtime, runtimeSessionId, sourcePath, turns, startedAt, endedAt, label) {
+    const text = turns.map((t) => `${t.role}: ${t.text}`).join("\n\n");
+    return {
+        id,
+        runtime,
+        runtimeSessionId,
+        sourcePath,
+        startedAt,
+        endedAt,
+        durationMin: durationMinutes(startedAt, endedAt),
+        turnCount: turns.length,
+        byteRange: [0, Buffer.byteLength(text, "utf8")],
+        projectDir: "",
+        gitBranch: "",
+        text,
+        label,
+    };
+}
+// ── Workspace parsers ─────────────────────────────────────────────────────────
+/** Workspace ItemTable: composer.composerData → allComposers[]. */
+function discoverWorkspaceComposers(db) {
+    try {
+        const row = db
+            .prepare(`SELECT value FROM ItemTable WHERE key = ?`)
+            .get("composer.composerData");
+        if (!row?.value)
+            return [];
+        const data = JSON.parse(row.value);
+        const composers = data.allComposers ?? [];
+        return composers
+            .filter((c) => c.composerId)
+            .map((c) => `crw_${c.composerId}`);
+    }
+    catch {
+        return [];
+    }
+}
+/** Workspace ItemTable: workbench.panel.aichat.view.aichat.chatdata → tabs[]. */
+function discoverWorkspaceChatTabs(db, since) {
+    try {
+        const row = db
+            .prepare(`SELECT value FROM ItemTable WHERE key = ?`)
+            .get("workbench.panel.aichat.view.aichat.chatdata");
+        if (!row?.value)
+            return [];
+        const data = JSON.parse(row.value);
+        const tabs = data.tabs ?? [];
+        const cutoff = since?.getTime();
+        return tabs
+            .filter((t) => {
+            if (!t.tabId)
+                return false;
+            if (!(t.bubbles && t.bubbles.length > 0))
+                return false;
+            if (cutoff !== undefined) {
+                const ts = t.lastSendTime;
+                // Only skip if we have a real non-zero timestamp that's before the cutoff
+                if (ts !== undefined && ts > 0 && ts < cutoff)
+                    return false;
+            }
+            return true;
+        })
+            .map((t) => `crc_${t.tabId}`);
+    }
+    catch {
+        return [];
+    }
+}
+function parseWorkspaceComposer(db, composerId, dbPath) {
+    try {
+        const row = db
+            .prepare(`SELECT value FROM ItemTable WHERE key = ?`)
+            .get("composer.composerData");
+        if (!row?.value)
+            return null;
+        const data = JSON.parse(row.value);
+        const meta = (data.allComposers ?? []).find((c) => c.composerId === composerId);
+        if (!meta)
+            return null;
+        const inlineTurns = extractComposerTurns(meta.conversation ?? []);
+        if (inlineTurns.length === 0)
+            return null;
+        const startedAt = normalizeTimestamp(meta.createdAt ?? meta.lastUpdatedAt ?? "");
+        const endedAt = normalizeTimestamp(meta.lastUpdatedAt ?? meta.createdAt ?? "");
+        const label = meta.name?.trim() ? meta.name.trim().slice(0, 80) : provisionalLabel(inlineTurns);
+        return buildChunk(safeSessionId("crw", composerId), "cursor/1.0", composerId, `${dbPath}::composer:${composerId}`, inlineTurns, startedAt, endedAt, label);
+    }
+    catch {
+        return null;
+    }
+}
+function parseWorkspaceChatTab(db, tabId, dbPath) {
+    try {
+        const row = db
+            .prepare(`SELECT value FROM ItemTable WHERE key = ?`)
+            .get("workbench.panel.aichat.view.aichat.chatdata");
+        if (!row?.value)
+            return null;
+        const data = JSON.parse(row.value);
+        const tab = (data.tabs ?? []).find((t) => t.tabId === tabId);
+        if (!tab)
+            return null;
+        const turns = extractChatTurns(tab.bubbles ?? []);
+        if (turns.length === 0)
+            return null;
+        const endedAtMs = tab.lastSendTime ?? 0;
+        const endedAt = endedAtMs > 0 ? new Date(endedAtMs).toISOString() : "";
+        const label = tab.chatTitle?.trim()
+            ? tab.chatTitle.trim().slice(0, 80)
+            : provisionalLabel(turns);
+        return buildChunk(safeSessionId("crc", tabId), "cursor/1.0", tabId, `${dbPath}::chat:${tabId}`, turns, endedAt, // no creation timestamp; use endedAt for both
+        endedAt, label);
+    }
+    catch {
+        return null;
+    }
+}
+// ── Adapter ───────────────────────────────────────────────────────────────────
 export class CursorAdapter {
     name = "cursor";
     runtimeVersion = "cursor/1.0";
@@ -103,55 +251,85 @@ export class CursorAdapter {
         };
     }
     async discover(options) {
-        if (!existsSync(this.dbPath))
-            return [];
-        let db;
-        try {
-            db = new Database(this.dbPath, { readonly: true });
-            // Verify the table exists (workspace DBs use ItemTable, not cursorDiskKV)
-            const tableCheck = db
-                .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='cursorDiskKV'`)
-                .get();
-            if (!tableCheck)
-                return [];
-            const rows = db
-                .prepare(`SELECT key, value FROM cursorDiskKV WHERE key LIKE ? ORDER BY rowid ASC`)
-                .all("composerData:%");
-            const ids = [];
-            const cutoff = options?.since?.getTime();
-            for (const row of rows) {
-                if (!row.value)
-                    continue;
-                let meta;
-                try {
-                    meta = JSON.parse(row.value);
-                }
-                catch {
-                    continue;
-                }
-                if (cutoff !== undefined) {
-                    // Filter by lastUpdatedAt or createdAt
-                    const ts = meta.lastUpdatedAt ?? meta.createdAt;
-                    if (ts !== undefined && ts !== null) {
-                        const normalized = normalizeTimestamp(ts);
-                        if (normalized && Date.parse(normalized) < cutoff)
+        const ids = [];
+        const seen = new Set();
+        const add = (id) => { if (!seen.has(id)) {
+            seen.add(id);
+            ids.push(id);
+        } };
+        // ── Global DB (current format, v1.x+) ─────────────────────────────────
+        if (existsSync(this.dbPath)) {
+            let db;
+            try {
+                db = new Database(this.dbPath, { readonly: true });
+                const hasKV = db
+                    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='cursorDiskKV'`)
+                    .get();
+                if (hasKV) {
+                    const rows = db
+                        .prepare(`SELECT key, value FROM cursorDiskKV WHERE key LIKE ? ORDER BY rowid ASC`)
+                        .all("composerData:%");
+                    const cutoff = options?.since?.getTime();
+                    for (const row of rows) {
+                        if (!row.value)
                             continue;
+                        try {
+                            const meta = JSON.parse(row.value);
+                            if (cutoff !== undefined) {
+                                const ts = meta.lastUpdatedAt ?? meta.createdAt;
+                                if (ts !== undefined && ts !== null) {
+                                    const normalized = normalizeTimestamp(ts);
+                                    if (normalized && Date.parse(normalized) < cutoff)
+                                        continue;
+                                }
+                            }
+                            const composerId = meta.composerId ?? row.key.split(":").slice(1).join(":");
+                            if (composerId)
+                                add(`cr_${composerId}`);
+                        }
+                        catch { /* skip */ }
                     }
                 }
-                const composerId = meta.composerId ?? row.key.split(":").slice(1).join(":");
-                if (composerId)
-                    ids.push(composerId);
             }
-            return ids;
+            catch { /* skip inaccessible DB */ }
+            finally {
+                db?.close();
+            }
         }
-        catch {
-            return [];
+        // ── Workspace DBs (pre-migration sessions) ────────────────────────────
+        for (const wsDbPath of listWorkspaceDbs(this.dbPath)) {
+            let db;
+            try {
+                db = new Database(wsDbPath, { readonly: true });
+                const hasItemTable = db
+                    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='ItemTable'`)
+                    .get();
+                if (!hasItemTable)
+                    continue;
+                for (const id of discoverWorkspaceComposers(db))
+                    add(id);
+                for (const id of discoverWorkspaceChatTabs(db, options?.since))
+                    add(id);
+            }
+            catch { /* skip */ }
+            finally {
+                db?.close();
+            }
         }
-        finally {
-            db?.close();
-        }
+        return ids;
     }
-    async parseSession(composerId) {
+    async parseSession(id) {
+        if (id.startsWith("crw_")) {
+            return this._parseWorkspaceComposer(id.slice("crw_".length));
+        }
+        if (id.startsWith("crc_")) {
+            return this._parseWorkspaceChatTab(id.slice("crc_".length));
+        }
+        // cr_ prefix (or legacy unprefixed IDs)
+        const composerId = id.startsWith("cr_") ? id.slice("cr_".length) : id;
+        return this._parseGlobalComposer(composerId);
+    }
+    _parseGlobalComposer(composerId) {
         if (!existsSync(this.dbPath))
             return null;
         let db;
@@ -162,41 +340,19 @@ export class CursorAdapter {
                 .get(`composerData:${composerId}`);
             if (!row?.value)
                 return null;
-            let meta;
-            try {
-                meta = JSON.parse(row.value);
-            }
-            catch {
-                return null;
-            }
-            // Extract turns: inline conversation[] preferred; fall back to separate bubbleId rows
-            const inlineConversation = meta.conversation ?? [];
-            const turns = inlineConversation.length > 0
-                ? extractTurnsFromBubbles(inlineConversation)
+            const meta = JSON.parse(row.value);
+            const inlineTurns = extractComposerTurns(meta.conversation ?? []);
+            const turns = inlineTurns.length > 0
+                ? inlineTurns
                 : extractSeparateBubbles(db, composerId);
             if (turns.length === 0)
                 return null;
             const startedAt = normalizeTimestamp(meta.createdAt ?? meta.lastUpdatedAt ?? "");
             const endedAt = normalizeTimestamp(meta.lastUpdatedAt ?? meta.createdAt ?? "");
-            const transcript = turns.map((t) => `${t.role}: ${t.text}`).join("\n\n");
             const label = meta.name?.trim()
                 ? meta.name.trim().slice(0, 80)
                 : provisionalLabel(turns);
-            return {
-                id: safeSessionId("cr", composerId),
-                runtime: this.runtimeVersion,
-                runtimeSessionId: composerId,
-                sourcePath: `${this.dbPath}::${composerId}`,
-                startedAt,
-                endedAt,
-                durationMin: durationMinutes(startedAt, endedAt),
-                turnCount: turns.length,
-                byteRange: [0, Buffer.byteLength(transcript, "utf8")],
-                projectDir: "",
-                gitBranch: "",
-                text: transcript,
-                label,
-            };
+            return buildChunk(safeSessionId("cr", composerId), this.runtimeVersion, composerId, `${this.dbPath}::${composerId}`, turns, startedAt, endedAt, label);
         }
         catch {
             return null;
@@ -204,6 +360,38 @@ export class CursorAdapter {
         finally {
             db?.close();
         }
+    }
+    _parseWorkspaceComposer(composerId) {
+        for (const wsDbPath of listWorkspaceDbs(this.dbPath)) {
+            let db;
+            try {
+                db = new Database(wsDbPath, { readonly: true });
+                const chunk = parseWorkspaceComposer(db, composerId, wsDbPath);
+                if (chunk)
+                    return chunk;
+            }
+            catch { /* next */ }
+            finally {
+                db?.close();
+            }
+        }
+        return null;
+    }
+    _parseWorkspaceChatTab(tabId) {
+        for (const wsDbPath of listWorkspaceDbs(this.dbPath)) {
+            let db;
+            try {
+                db = new Database(wsDbPath, { readonly: true });
+                const chunk = parseWorkspaceChatTab(db, tabId, wsDbPath);
+                if (chunk)
+                    return chunk;
+            }
+            catch { /* next */ }
+            finally {
+                db?.close();
+            }
+        }
+        return null;
     }
 }
 //# sourceMappingURL=cursor.js.map

@@ -52,8 +52,10 @@ import {
   pluginScriptsDir,
 } from "../install/codex.js";
 import { connectClaudeCode, disconnectClaudeCode, installClaudeCodeHooks } from "../install/claude-code.js";
+import { connectCursor, disconnectCursor } from "../install/cursor.js";
 import { connectHermes, disconnectHermes, hermesConfigPath } from "../install/hermes.js";
 import { connectHermesAgent, disconnectHermesAgent, hermesAgentPluginDir } from "../install/hermes-agent.js";
+import { connectWindsurf, disconnectWindsurf } from "../install/windsurf.js";
 import { runSetup } from "../install/setup.js";
 import { runParity } from "./classify-parity.js";
 import { reembedCorpus } from "../core/embedding/embed-backfill.js";
@@ -746,6 +748,54 @@ connect
     console.error("  Also run: nlm connect hermes  (to wire the MCP server)");
   });
 
+connect
+  .command("cursor")
+  .description("Register Cursor as an nlm source (reads state.vscdb directly — no files installed)")
+  .option("--db-path <path>", "override path to globalStorage/state.vscdb")
+  .option("--dry-run", "print what would happen without changing files")
+  .action((opts) => {
+    const store = new SqliteSessionStore({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
+    try {
+      const registry = new SourceRegistry(store.rawDb());
+      const report = connectCursor(registry, {
+        ...(opts.dbPath ? { dbPath: opts.dbPath as string } : {}),
+        dryRun: Boolean(opts.dryRun),
+      });
+      if (opts.dryRun) {
+        console.error(`nlm connect cursor (dry run): register source at ${report.adapterDbPath}${report.adapterExists ? "" : " (not found yet)"}`);
+        return;
+      }
+      const suffix = report.adapterExists ? "" : " (DB not found — will activate when Cursor is installed)";
+      console.error(`nlm: Cursor source ${report.action} → ${report.adapterDbPath}${suffix}`);
+    } finally {
+      store.close();
+    }
+  });
+
+connect
+  .command("windsurf")
+  .description("Register Windsurf as an nlm source (reads state.vscdb files directly — no files installed)")
+  .option("--user-dir <path>", "override path to Windsurf User directory")
+  .option("--dry-run", "print what would happen without changing files")
+  .action((opts) => {
+    const store = new SqliteSessionStore({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
+    try {
+      const registry = new SourceRegistry(store.rawDb());
+      const report = connectWindsurf(registry, {
+        ...(opts.userDir ? { userDir: opts.userDir as string } : {}),
+        dryRun: Boolean(opts.dryRun),
+      });
+      if (opts.dryRun) {
+        console.error(`nlm connect windsurf (dry run): register source at ${report.userDir}${report.dirExists ? "" : " (not found yet)"}`);
+        return;
+      }
+      const suffix = report.dirExists ? "" : " (User dir not found — will activate when Windsurf is installed)";
+      console.error(`nlm: Windsurf source ${report.action} → ${report.userDir}${suffix}`);
+    } finally {
+      store.close();
+    }
+  });
+
 const disconnect = program
   .command("disconnect")
   .description("Disconnect nlm-memory from an AI coding runtime");
@@ -839,6 +889,48 @@ disconnect
     console.error(report.removed
       ? `nlm: removed plugin directory ${report.destDir}`
       : `nlm: no plugin directory found at ${report.destDir}`);
+  });
+
+disconnect
+  .command("cursor")
+  .description("Disable the Cursor source in the nlm registry (leaves Cursor untouched)")
+  .option("--dry-run", "print what would happen without changing files")
+  .action((opts) => {
+    const store = new SqliteSessionStore({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
+    try {
+      const registry = new SourceRegistry(store.rawDb());
+      const report = disconnectCursor(registry, { dryRun: Boolean(opts.dryRun) });
+      if (opts.dryRun) {
+        console.error("nlm disconnect cursor (dry run): disable Cursor source in registry");
+        return;
+      }
+      console.error(report.action === "disabled"
+        ? "nlm: Cursor source disabled"
+        : "nlm: no Cursor source found in registry");
+    } finally {
+      store.close();
+    }
+  });
+
+disconnect
+  .command("windsurf")
+  .description("Disable the Windsurf source in the nlm registry (leaves Windsurf untouched)")
+  .option("--dry-run", "print what would happen without changing files")
+  .action((opts) => {
+    const store = new SqliteSessionStore({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
+    try {
+      const registry = new SourceRegistry(store.rawDb());
+      const report = disconnectWindsurf(registry, { dryRun: Boolean(opts.dryRun) });
+      if (opts.dryRun) {
+        console.error("nlm disconnect windsurf (dry run): disable Windsurf source in registry");
+        return;
+      }
+      console.error(report.action === "disabled"
+        ? "nlm: Windsurf source disabled"
+        : "nlm: no Windsurf source found in registry");
+    } finally {
+      store.close();
+    }
   });
 
 program

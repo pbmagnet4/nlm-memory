@@ -1,24 +1,27 @@
 /**
- * WindsurfAdapter — reads Windsurf (Codeium) Cascade chat sessions.
+ * WindsurfAdapter — reads Windsurf (Codeium Cascade) sessions.
  *
- * Windsurf is a VS Code fork; chat history lives in workspace-scoped SQLite
- * databases under the User data directory:
+ * ## Storage locations (macOS; Linux uses ~/.config/)
  *
- *   macOS: ~/Library/Application Support/Windsurf/User/workspaceStorage/<hash>/state.vscdb
- *   Linux: ~/.config/Windsurf/User/workspaceStorage/<hash>/state.vscdb
+ *   Workspace DBs  ~/Library/Application Support/Windsurf/User/workspaceStorage/<hash>/state.vscdb
+ *     Table: ItemTable
+ *     Key:   workbench.panel.aichat.view.aichat.chatdata  — chat tabs
+ *     Bubble role: type 'user' → user, type 'ai' → assistant
  *
- * Each workspace DB uses an `ItemTable` key-value store. Chat tabs are stored
- * under key `workbench.panel.aichat.view.aichat.chatdata` as a JSON object
- * with a `tabs[]` array. Each tab is a conversation session.
+ *   Global DB  ~/Library/Application Support/Windsurf/User/globalStorage/state.vscdb
+ *     Table: cursorDiskKV (if present) — composerData:*, agentData:*, flowData:*
+ *     Table: ItemTable (fallback)     — keys matching %agent%, %flow%, %cascade%
+ *     Conversation format: type 1/2 (user/assistant) or role: user/assistant
  *
- * Tab message format:
- *   type: 'user' | 'ai'  (string, not int — distinct from Cursor)
- *   rawText / text: content
+ * ## Session ID prefixes
  *
- * pathOrUrl: path to the User directory (adapter discovers all workspace DBs
- * from <userDir>/workspaceStorage/).
+ *   ws_  — workspace chat tab (ItemTable chatdata)
+ *   wsg_ — global DB agent/flow session (cursorDiskKV or ItemTable)
  *
- * sourcePath: <dbPath>::<tabId>
+ * ## pathOrUrl in source registry
+ *   Path to the Windsurf User directory. The adapter discovers:
+ *     <userDir>/workspaceStorage/<hash>/state.vscdb  (workspace)
+ *     <userDir>/globalStorage/state.vscdb             (global)
  *
  * Env override: NLM_WINDSURF_USER_DIR
  */
@@ -26,9 +29,9 @@ import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { durationMinutes, safeSessionId } from "./common.js";
+import { durationMinutes, normalizeTimestamp, safeSessionId } from "./common.js";
 const CHAT_KEY = "workbench.panel.aichat.view.aichat.chatdata";
-const TOOL_RESULT_PREVIEW_CHARS = 240;
+// ── Path helpers ──────────────────────────────────────────────────────────────
 export function defaultUserDir() {
     if (process.env["NLM_WINDSURF_USER_DIR"])
         return process.env["NLM_WINDSURF_USER_DIR"];
@@ -40,6 +43,9 @@ export function defaultUserDir() {
 }
 function workspaceStorageDir(userDir) {
     return join(userDir, "workspaceStorage");
+}
+function globalDbPath(userDir) {
+    return join(userDir, "globalStorage", "state.vscdb");
 }
 function listWorkspaceDbs(userDir) {
     const wsDir = workspaceStorageDir(userDir);
@@ -55,6 +61,61 @@ function listWorkspaceDbs(userDir) {
         return [];
     }
 }
+// ── Turn extraction ───────────────────────────────────────────────────────────
+function extractChatTurns(bubbles) {
+    const turns = [];
+    for (const b of bubbles) {
+        const text = (b.rawText ?? b.text ?? "").trim();
+        if (!text)
+            continue;
+        turns.push({ role: b.type === "user" ? "user" : "assistant", text });
+    }
+    return turns;
+}
+function extractAgentTurns(bubbles) {
+    const turns = [];
+    for (const b of bubbles) {
+        const text = (b.text ?? "").trim();
+        if (!text)
+            continue;
+        // Accept numeric type (1/2) or string role
+        const isUser = b.type === 1 || b.role === "user";
+        const isAssistant = b.type === 2 || b.role === "assistant";
+        if (!isUser && !isAssistant)
+            continue;
+        turns.push({ role: isUser ? "user" : "assistant", text });
+    }
+    return turns;
+}
+function provisionalLabel(turns) {
+    for (const t of turns) {
+        if (t.role !== "user")
+            continue;
+        const first = t.text.split("\n", 1)[0]?.trim();
+        if (first)
+            return first.slice(0, 80);
+    }
+    return "Untitled session";
+}
+function buildChunk(id, runtimeSessionId, sourcePath, turns, startedAt, endedAt, label) {
+    const text = turns.map((t) => `${t.role}: ${t.text}`).join("\n\n");
+    return {
+        id,
+        runtime: "windsurf/1.0",
+        runtimeSessionId,
+        sourcePath,
+        startedAt,
+        endedAt,
+        durationMin: durationMinutes(startedAt, endedAt),
+        turnCount: turns.length,
+        byteRange: [0, Buffer.byteLength(text, "utf8")],
+        projectDir: "",
+        gitBranch: "",
+        text,
+        label,
+    };
+}
+// ── Workspace chat helpers ────────────────────────────────────────────────────
 function parseTabsFromDb(dbPath) {
     let db;
     try {
@@ -74,17 +135,66 @@ function parseTabsFromDb(dbPath) {
         db?.close();
     }
 }
-function extractTurns(bubbles) {
-    const turns = [];
-    for (const b of bubbles) {
-        const text = (b.rawText ?? b.text ?? "").trim();
-        if (!text)
-            continue;
-        const role = b.type === "user" ? "user" : "assistant";
-        turns.push({ role, text });
+function parseGlobalSessions(globalPath) {
+    if (!existsSync(globalPath))
+        return [];
+    let db;
+    const results = [];
+    try {
+        db = new Database(globalPath, { readonly: true });
+        const tables = db
+            .prepare(`SELECT name FROM sqlite_master WHERE type='table'`)
+            .all()
+            .map((r) => r.name);
+        if (tables.includes("cursorDiskKV")) {
+            const rows = db
+                .prepare(`SELECT key, value FROM cursorDiskKV
+           WHERE key LIKE 'composerData:%' OR key LIKE 'agentData:%' OR key LIKE 'flowData:%'
+           ORDER BY rowid ASC`)
+                .all();
+            for (const row of rows) {
+                if (!row.value)
+                    continue;
+                try {
+                    const meta = JSON.parse(row.value);
+                    const rawId = meta.composerId ?? row.key.split(":").slice(1).join(":");
+                    if (rawId)
+                        results.push({ id: rawId, meta, dbPath: globalPath });
+                }
+                catch { /* skip */ }
+            }
+        }
+        else if (tables.includes("ItemTable")) {
+            // Fallback: probe for agent/flow/cascade keys
+            const rows = db
+                .prepare(`SELECT key, value FROM ItemTable
+           WHERE key LIKE '%agent%' OR key LIKE '%flow%' OR key LIKE '%cascade%'`)
+                .all();
+            for (const row of rows) {
+                if (!row.value)
+                    continue;
+                try {
+                    const data = JSON.parse(row.value);
+                    if (typeof data !== "object" || !data)
+                        continue;
+                    // Accept any object with a conversation array
+                    const conv = data.conversation;
+                    if (!Array.isArray(conv) || conv.length === 0)
+                        continue;
+                    const id = data.composerId ?? row.key;
+                    results.push({ id, meta: data, dbPath: globalPath });
+                }
+                catch { /* skip */ }
+            }
+        }
     }
-    return turns;
+    catch { /* inaccessible */ }
+    finally {
+        db?.close();
+    }
+    return results;
 }
+// ── Adapter ───────────────────────────────────────────────────────────────────
 export class WindsurfAdapter {
     name = "windsurf";
     runtimeVersion = "windsurf/1.0";
@@ -94,7 +204,6 @@ export class WindsurfAdapter {
         this.userDir = opts.userDir ?? defaultUserDir();
     }
     detect() {
-        const wsDir = workspaceStorageDir(this.userDir);
         if (existsSync(this.userDir)) {
             return { adapterName: this.name, enabled: true, path: this.userDir, hint: null };
         }
@@ -106,72 +215,83 @@ export class WindsurfAdapter {
         };
     }
     async discover(options) {
-        const dbPaths = listWorkspaceDbs(this.userDir);
-        if (dbPaths.length === 0)
-            return [];
-        const found = [];
+        const seen = new Set();
+        const ids = [];
+        const add = (id) => { if (!seen.has(id)) {
+            seen.add(id);
+            ids.push(id);
+        } };
         const cutoff = options?.since?.getTime();
-        for (const dbPath of dbPaths) {
-            const tabs = parseTabsFromDb(dbPath);
-            for (const tab of tabs) {
+        // ── Workspace chat tabs ───────────────────────────────────────────────
+        for (const dbPath of listWorkspaceDbs(this.userDir)) {
+            for (const tab of parseTabsFromDb(dbPath)) {
                 if (!tab.tabId)
                     continue;
                 if (!(tab.bubbles && tab.bubbles.length > 0))
                     continue;
                 if (cutoff !== undefined) {
                     const ts = tab.lastSendTime;
-                    if (ts !== undefined && ts < cutoff)
+                    // Only skip when we have a real non-zero timestamp older than the cutoff.
+                    // Missing (undefined) or zero timestamps are treated as "unknown age" — include.
+                    if (ts !== undefined && ts > 0 && ts < cutoff)
                         continue;
                 }
-                found.push({ tabId: tab.tabId, dbPath, lastSendTime: tab.lastSendTime ?? 0 });
+                add(`ws_${tab.tabId}`);
             }
         }
-        // Deduplicate by tabId (a tab should only appear in one workspace DB,
-        // but guard against edge cases from workspaceStorage migration artifacts)
-        const seen = new Set();
-        return found
-            .filter((t) => {
-            if (seen.has(t.tabId))
-                return false;
-            seen.add(t.tabId);
-            return true;
-        })
-            .map((t) => t.tabId);
+        // ── Global agent/flow sessions ────────────────────────────────────────
+        for (const gs of parseGlobalSessions(globalDbPath(this.userDir))) {
+            if (cutoff !== undefined) {
+                const ts = gs.meta.lastUpdatedAt ?? gs.meta.createdAt;
+                if (ts !== undefined && ts !== null) {
+                    const normalized = normalizeTimestamp(ts);
+                    if (normalized && Date.parse(normalized) < cutoff)
+                        continue;
+                }
+            }
+            add(`wsg_${gs.id}`);
+        }
+        return ids;
     }
-    async parseSession(tabId) {
-        const dbPaths = listWorkspaceDbs(this.userDir);
-        for (const dbPath of dbPaths) {
+    async parseSession(id) {
+        if (id.startsWith("wsg_")) {
+            return this._parseGlobalSession(id.slice("wsg_".length));
+        }
+        // ws_ prefix or legacy plain tabId
+        const tabId = id.startsWith("ws_") ? id.slice("ws_".length) : id;
+        return this._parseWorkspaceChatTab(tabId);
+    }
+    _parseWorkspaceChatTab(tabId) {
+        for (const dbPath of listWorkspaceDbs(this.userDir)) {
             const tabs = parseTabsFromDb(dbPath);
             const tab = tabs.find((t) => t.tabId === tabId);
             if (!tab)
                 continue;
-            const bubbles = tab.bubbles ?? [];
-            const turns = extractTurns(bubbles);
+            const turns = extractChatTurns(tab.bubbles ?? []);
             if (turns.length === 0)
                 return null;
-            // Windsurf tabs carry lastSendTime (epoch ms) but no per-tab createdAt.
             const endedAtMs = tab.lastSendTime ?? 0;
             const endedAt = endedAtMs > 0 ? new Date(endedAtMs).toISOString() : "";
-            const startedAt = endedAt; // no creation timestamp available
-            const transcript = turns.map((t) => `${t.role}: ${t.text}`).join("\n\n");
             const label = tab.chatTitle?.trim()
                 ? tab.chatTitle.trim().slice(0, 80)
-                : (turns.find((t) => t.role === "user")?.text.split("\n")[0]?.trim().slice(0, 80) ?? "Untitled session");
-            return {
-                id: safeSessionId("ws", tabId),
-                runtime: this.runtimeVersion,
-                runtimeSessionId: tabId,
-                sourcePath: `${dbPath}::${tabId}`,
-                startedAt,
-                endedAt,
-                durationMin: durationMinutes(startedAt, endedAt),
-                turnCount: turns.length,
-                byteRange: [0, Buffer.byteLength(transcript, "utf8")],
-                projectDir: "",
-                gitBranch: "",
-                text: transcript,
-                label,
-            };
+                : provisionalLabel(turns);
+            return buildChunk(safeSessionId("ws", tabId), tabId, `${dbPath}::${tabId}`, turns, endedAt, endedAt, label);
+        }
+        return null;
+    }
+    _parseGlobalSession(rawId) {
+        for (const gs of parseGlobalSessions(globalDbPath(this.userDir))) {
+            if (gs.id !== rawId)
+                continue;
+            const turns = extractAgentTurns(gs.meta.conversation ?? []);
+            if (turns.length === 0)
+                return null;
+            const startedAt = normalizeTimestamp(gs.meta.createdAt ?? gs.meta.lastUpdatedAt ?? "");
+            const endedAt = normalizeTimestamp(gs.meta.lastUpdatedAt ?? gs.meta.createdAt ?? "");
+            const label = gs.meta.name?.trim()
+                ? gs.meta.name.trim().slice(0, 80)
+                : provisionalLabel(turns);
+            return buildChunk(safeSessionId("wsg", rawId), rawId, `${gs.dbPath}::${rawId}`, turns, startedAt, endedAt, label);
         }
         return null;
     }
