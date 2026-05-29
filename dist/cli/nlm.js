@@ -28,6 +28,7 @@ import { homedir } from "node:os";
 import { mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { Command } from "commander";
+import pkg from "../../package.json" with { type: "json" };
 import { serve } from "@hono/node-server";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { FactRecallService } from "../core/recall-facts/fact-recall-service.js";
@@ -153,7 +154,7 @@ const program = new Command();
 program
     .name("nlm")
     .description("Local-first memory operating system for AI operators")
-    .version("0.3.0");
+    .version(pkg.version);
 program
     .command("start")
     .description("Boot the HTTP server + ingest scheduler")

@@ -13,6 +13,7 @@ interface HoverState {
   entity: string;
   date: string;
   count: number;
+  superseded: number;
   x: number;
   y: number;
 }
@@ -49,16 +50,28 @@ export function RiverPage() {
       ? sessions.filter((s) => (now - Date.parse(s.started_at!)) / 86_400_000 <= days)
       : sessions;
     const lanes = new Map<string, Map<string, number>>();
+    const supersededLanes = new Map<string, Map<string, number>>();
     const dateSet = new Set<string>();
     for (const s of filtered) {
       const d = (s.started_at ?? "").slice(0, 10);
       if (!d) continue;
       dateSet.add(d);
+      const isSuperseded = s.status === "superseded";
       for (const e of s.entities) {
-        const inner = lanes.get(e) ?? new Map<string, number>();
-        inner.set(d, (inner.get(d) ?? 0) + 1);
-        lanes.set(e, inner);
+        if (isSuperseded) {
+          const inner = supersededLanes.get(e) ?? new Map<string, number>();
+          inner.set(d, (inner.get(d) ?? 0) + 1);
+          supersededLanes.set(e, inner);
+        } else {
+          const inner = lanes.get(e) ?? new Map<string, number>();
+          inner.set(d, (inner.get(d) ?? 0) + 1);
+          lanes.set(e, inner);
+        }
       }
+    }
+    // Ensure every entity that only has superseded sessions still appears
+    for (const [e] of supersededLanes) {
+      if (!lanes.has(e)) lanes.set(e, new Map());
     }
     const dates = [...dateSet].sort();
     const laneRows = [...lanes.entries()]
@@ -66,6 +79,7 @@ export function RiverPage() {
         entity,
         total: [...perDate.values()].reduce((a, b) => a + b, 0),
         perDate,
+        supersededPerDate: supersededLanes.get(entity) ?? new Map<string, number>(),
       }))
       .sort((a, b) => b.total - a.total)
       .slice(0, 24);
@@ -213,7 +227,7 @@ export function RiverPage() {
             })()}
           </div>
         </div>
-        {view.laneRows.map(({ entity, perDate, total }) => {
+        {view.laneRows.map(({ entity, perDate, supersededPerDate, total }) => {
           const isRecent = view.recentEntities.has(entity);
           return (
             <div key={entity} className="river-row">
@@ -229,14 +243,21 @@ export function RiverPage() {
               <div className="river-cells">
                 {view.dates.map((d) => {
                   const v = perDate.get(d) ?? 0;
+                  const sc = supersededPerDate.get(d) ?? 0;
+                  const hasAny = v > 0 || sc > 0;
+                  const cls = [
+                    "river-cell",
+                    `tier-${tier(v)}`,
+                    sc > 0 ? "has-corrections" : "",
+                  ].filter(Boolean).join(" ");
                   return (
                     <div
                       key={d}
-                      className={`river-cell tier-${tier(v)}`}
-                      onMouseEnter={(e) => setHover({ entity, date: d, count: v, x: e.clientX, y: e.clientY })}
+                      className={cls}
+                      onMouseEnter={(e) => setHover({ entity, date: d, count: v, superseded: sc, x: e.clientX, y: e.clientY })}
                       onMouseLeave={() => setHover(null)}
-                      onClick={() => v > 0 && onCellClick(entity, d)}
-                      style={v > 0 ? { cursor: "pointer" } : {}}
+                      onClick={() => hasAny && onCellClick(entity, d)}
+                      style={hasAny ? { cursor: "pointer" } : {}}
                     />
                   );
                 })}
@@ -248,11 +269,15 @@ export function RiverPage() {
 
       {view.laneRows.length === 0 && <div className="muted">No entities in this window.</div>}
 
-      {hover && hover.count > 0 && (
+      {hover && (hover.count > 0 || hover.superseded > 0) && (
         <div className="river-hover" style={{ left: hover.x + 12, top: hover.y + 12 }}>
           <span className="dot" style={{ background: data.entity_colors[hover.entity] ?? "#666" }} />
           <span className="river-hover-name">{hover.entity}</span>
-          <span className="muted small">{hover.date} · {hover.count} session{hover.count === 1 ? "" : "s"}</span>
+          <span className="muted small">
+            {hover.date}
+            {hover.count > 0 && ` · ${hover.count} session${hover.count === 1 ? "" : "s"}`}
+            {hover.superseded > 0 && ` · ${hover.superseded} corrected`}
+          </span>
         </div>
       )}
 

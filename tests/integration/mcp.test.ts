@@ -151,11 +151,17 @@ describe("MCP adapter", () => {
     store.insertEdgeForTest("sess_a", "sess_b", "supersedes");
     const newer = await getSessionHandler({ recall, store }, { id: "sess_a" });
     const older = await getSessionHandler({ recall, store }, { id: "sess_b" });
-    const newerBody = parsePayload(newer) as { supersedes: string[]; supersededBy: string | null };
-    const olderBody = parsePayload(older) as { supersedes: string[]; supersededBy: string | null };
-    expect(newerBody.supersedes).toEqual(["sess_b"]);
+    type SupersedesEntry = { id: string; label: string; summary: string };
+    type SupersededBy = { id: string; label: string; summary: string } | null;
+    const newerBody = parsePayload(newer) as { supersedes: SupersedesEntry[]; supersededBy: SupersededBy };
+    const olderBody = parsePayload(older) as { supersedes: SupersedesEntry[]; supersededBy: SupersededBy };
+    expect(newerBody.supersedes).toHaveLength(1);
+    expect(newerBody.supersedes[0]!.id).toBe("sess_b");
+    expect(typeof newerBody.supersedes[0]!.label).toBe("string");
     expect(newerBody.supersededBy).toBeNull();
-    expect(olderBody.supersededBy).toBe("sess_a");
+    expect(olderBody.supersededBy).not.toBeNull();
+    expect(olderBody.supersededBy!.id).toBe("sess_a");
+    expect(typeof olderBody.supersededBy!.label).toBe("string");
     expect(olderBody.supersedes).toEqual([]);
   });
 

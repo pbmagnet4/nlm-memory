@@ -18,6 +18,7 @@ import { timingSafeEqual } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, extname, join, normalize, sep } from "node:path";
 import { Hono } from "hono";
+import pkg from "../../package.json" with { type: "json" };
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { createMcpServer } from "../mcp/server.js";
 import { snapshotScratchPath, stageRestore, vacuumSnapshot, } from "../core/storage/db-restore.js";
@@ -148,7 +149,7 @@ export function createApp(deps) {
         }
         return next();
     });
-    app.get("/api/health", (c) => c.json({ status: "ok", service: "nlm-memory", version: "0.2.0-dev" }));
+    app.get("/api/health", (c) => c.json({ status: "ok", service: "nlm-memory", version: pkg.version }));
     // ── MCP over HTTP (for container agents — e.g. Hermes WebUI) ─────────
     // Stateless: one transport + McpServer instance per request, no in-memory
     // session state. Bearer token from NLM_MCP_TOKEN is mandatory.

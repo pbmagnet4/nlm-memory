@@ -1,12 +1,37 @@
 {
   "name": "nlm-memory",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Local-first non-linear memory operating system for AI operators.",
   "type": "module",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=20.0.0"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pbmagnet4/nlm-memory-ts.git"
+  },
+  "homepage": "https://github.com/pbmagnet4/nlm-memory-ts#readme",
+  "bugs": {
+    "url": "https://github.com/pbmagnet4/nlm-memory-ts/issues"
+  },
+  "keywords": [
+    "ai",
+    "memory",
+    "mcp",
+    "claude-code",
+    "codex",
+    "hermes",
+    "local-first",
+    "recall",
+    "session-memory"
+  ],
+  "files": [
+    "dist",
+    "plugin",
+    "LICENSE",
+    "README.md"
+  ],
   "bin": {
     "nlm": "dist/cli/nlm.js"
   },

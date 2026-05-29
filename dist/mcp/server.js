@@ -87,7 +87,26 @@ export async function getSessionHandler(deps, input) {
         if (!session) {
             return err(new Error(`session ${input.id} not found`));
         }
-        return ok(session);
+        // Enrich supersedence links with labels so AI callers get context, not just opaque IDs
+        const linkedIds = [
+            ...(session.supersedes ?? []),
+            ...(session.supersededBy ? [session.supersededBy] : []),
+        ];
+        const linked = linkedIds.length > 0 ? await deps.store.getByIds(linkedIds) : [];
+        const byId = new Map(linked.map((s) => [s.id, s]));
+        const supersedes = (session.supersedes ?? []).map((id) => {
+            const s = byId.get(id);
+            return s ? { id, label: s.label, summary: s.summary } : { id, label: "", summary: "" };
+        });
+        const supersededBy = session.supersededBy
+            ? (() => {
+                const s = byId.get(session.supersededBy);
+                return s
+                    ? { id: session.supersededBy, label: s.label, summary: s.summary }
+                    : { id: session.supersededBy, label: "", summary: "" };
+            })()
+            : null;
+        return ok({ ...session, supersedes, supersededBy });
     }
     catch (e) {
         return err(e);
