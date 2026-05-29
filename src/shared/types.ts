@@ -13,8 +13,6 @@
  */
 export type SessionStatus = "active" | "idle" | "closed" | "superseded";
 
-export type MarkerKind = "decision" | "open";
-
 export interface Session {
   readonly id: string;
   readonly runtime: string;

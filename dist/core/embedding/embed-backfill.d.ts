@@ -33,4 +33,3 @@ export interface BackfillReport {
     readonly dbMissing: boolean;
 }
 export declare function reembedCorpus(opts: BackfillOptions): Promise<BackfillReport>;
-export declare function clearBackfillState(statePath?: string): void;

@@ -62,8 +62,6 @@ export const PREDICATE_VOCABULARY = [
   "blocker",
 ] as const;
 
-export type PredicateVocab = (typeof PREDICATE_VOCABULARY)[number];
-
 const VOCAB_SET = new Set<string>(PREDICATE_VOCABULARY);
 
 export const CLASSIFIER_SYSTEM_PROMPT = `You are a session classifier. Your job is to read a transcript of a conversation between a user and an AI coding agent, then return EXACTLY this JSON object describing what happened in that conversation:

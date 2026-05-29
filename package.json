@@ -1,6 +1,6 @@
 {
   "name": "nlm-memory",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "description": "Local-first non-linear memory operating system for AI operators.",
   "type": "module",
   "license": "Apache-2.0",
@@ -48,8 +48,7 @@
     "test:watch": "vitest",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
-    "lint": "eslint src tests"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json"
   },
   "dependencies": {
     "@clack/prompts": "^1.4.0",

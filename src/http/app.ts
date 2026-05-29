@@ -12,6 +12,10 @@
  * WebUI). Requires Authorization: Bearer <NLM_MCP_TOKEN>. Stateless: each
  * request gets its own transport + server instance so there is no in-memory
  * session state to manage. The existing stdio MCP path is untouched.
+ *
+ * Structure: createApp is a thin composition root that wires the local-only
+ * access middleware and then delegates each route group to a registerXxx
+ * function defined below. Route handlers themselves are unchanged.
  */
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -178,18 +182,43 @@ export function createApp(deps: HttpDeps): Hono {
   const app = new Hono();
   const boundPort = process.env["NLM_PORT"] ? Number.parseInt(process.env["NLM_PORT"], 10) : 3940;
 
-  // ── Local-only access middleware (defense in depth on top of 127.0.0.1 bind) ──
-  //
-  // Threat model: server binds to loopback so external network is blocked.
-  // What's left:
-  //   1. DNS rebinding from a malicious tab — Host check blocks it
-  //   2. Browser drive-by from a cross-origin tab — Origin check blocks it
-  //   3. Port forwarding (ssh -L, ngrok) reaching another machine — Bearer blocks it
-  //
-  // Applied to /api/* and /mcp. Static UI (/ui/*) and /api/health pass through
-  // the host check but skip Origin/Bearer so SPAs and liveness probes work.
-  // Skip entirely under Vitest — in-process app.request() calls have no real
-  // network surface and synthesize requests without a Host header.
+  installLocalOnlyMiddleware(app, boundPort);
+  registerHealthRoute(app);
+  registerMcpRoute(app, deps);
+  registerRecallRoutes(app, deps);
+  registerHookRoutes(app);
+  registerHermesAgentHookRoutes(app, deps);
+  registerFactRoutes(app, deps);
+  registerLiveRoutes(app, deps);
+  registerDatasetRoute(app, deps);
+  registerDataManagementRoutes(app, deps);
+  registerActionRoutes(app, deps);
+  registerClassifierRoutes(app, deps);
+  registerSourceRoutes(app, deps);
+  registerIngestRoute(app, deps);
+  registerProviderRoutes(app, deps);
+  registerSessionRoute(app, deps);
+
+  if (deps.uiDist) {
+    mountSpa(app, deps.uiDist);
+  }
+
+  return app;
+}
+
+// ── Local-only access middleware (defense in depth on top of 127.0.0.1 bind) ──
+//
+// Threat model: server binds to loopback so external network is blocked.
+// What's left:
+//   1. DNS rebinding from a malicious tab — Host check blocks it
+//   2. Browser drive-by from a cross-origin tab — Origin check blocks it
+//   3. Port forwarding (ssh -L, ngrok) reaching another machine — Bearer blocks it
+//
+// Applied to /api/* and /mcp. Static UI (/ui/*) and /api/health pass through
+// the host check but skip Origin/Bearer so SPAs and liveness probes work.
+// Skip entirely under Vitest — in-process app.request() calls have no real
+// network surface and synthesize requests without a Host header.
+function installLocalOnlyMiddleware(app: Hono, boundPort: number): void {
   const skipLocalGate = !!process.env["VITEST"] || process.env["NODE_ENV"] === "test";
   app.use("/api/*", async (c, next) => {
     if (skipLocalGate) return next();
@@ -224,41 +253,46 @@ export function createApp(deps: HttpDeps): Hono {
     }
     return next();
   });
+}
 
+function registerHealthRoute(app: Hono): void {
   app.get("/api/health", (c) =>
     c.json({ status: "ok", service: "nlm-memory", version: pkg.version }),
   );
+}
 
-  // ── MCP over HTTP (for container agents — e.g. Hermes WebUI) ─────────
-  // Stateless: one transport + McpServer instance per request, no in-memory
-  // session state. Bearer token from NLM_MCP_TOKEN is mandatory.
-  // The existing stdio MCP path (nlm mcp / .mcp.json) is untouched.
-  if (deps.mcpDeps) {
-    const mcpToken = process.env["NLM_MCP_TOKEN"];
-    if (!mcpToken) {
-      throw new Error(
-        "NLM_MCP_TOKEN must be set when mcpDeps is provided — " +
-        "refusing to mount an unauthenticated /mcp endpoint",
-      );
-    }
-    const capturedMcpDeps = deps.mcpDeps;
-    app.all("/mcp", async (c) => {
-      const auth = c.req.header("authorization") ?? "";
-      const match = /^Bearer\s+(\S+)$/i.exec(auth);
-      const given = Buffer.from(match?.[1] ?? "", "utf8");
-      const want = Buffer.from(mcpToken, "utf8");
-      if (!match || given.length !== want.length || !timingSafeEqual(given, want)) {
-        return c.json({ error: "unauthorized" }, 401);
-      }
-      // No sessionIdGenerator = stateless mode: no session ID in responses,
-      // no session validation. Correct for per-request agent calls.
-      const transport = new WebStandardStreamableHTTPServerTransport({});
-      const server = createMcpServer(capturedMcpDeps);
-      await server.connect(transport);
-      return transport.handleRequest(c.req.raw);
-    });
+// ── MCP over HTTP (for container agents — e.g. Hermes WebUI) ─────────
+// Stateless: one transport + McpServer instance per request, no in-memory
+// session state. Bearer token from NLM_MCP_TOKEN is mandatory.
+// The existing stdio MCP path (nlm mcp / .mcp.json) is untouched.
+function registerMcpRoute(app: Hono, deps: HttpDeps): void {
+  if (!deps.mcpDeps) return;
+  const mcpToken = process.env["NLM_MCP_TOKEN"];
+  if (!mcpToken) {
+    throw new Error(
+      "NLM_MCP_TOKEN must be set when mcpDeps is provided — " +
+      "refusing to mount an unauthenticated /mcp endpoint",
+    );
   }
+  const capturedMcpDeps = deps.mcpDeps;
+  app.all("/mcp", async (c) => {
+    const auth = c.req.header("authorization") ?? "";
+    const match = /^Bearer\s+(\S+)$/i.exec(auth);
+    const given = Buffer.from(match?.[1] ?? "", "utf8");
+    const want = Buffer.from(mcpToken, "utf8");
+    if (!match || given.length !== want.length || !timingSafeEqual(given, want)) {
+      return c.json({ error: "unauthorized" }, 401);
+    }
+    // No sessionIdGenerator = stateless mode: no session ID in responses,
+    // no session validation. Correct for per-request agent calls.
+    const transport = new WebStandardStreamableHTTPServerTransport({});
+    const server = createMcpServer(capturedMcpDeps);
+    await server.connect(transport);
+    return transport.handleRequest(c.req.raw);
+  });
+}
 
+function registerRecallRoutes(app: Hono, deps: HttpDeps): void {
   app.get("/api/recall", async (c) => {
     const q = c.req.query("q") ?? "";
     const entity = c.req.query("entity");
@@ -400,9 +434,10 @@ export function createApp(deps: HttpDeps): Hono {
     );
     return c.json({ logged: true, id, source: "mcp_tool" });
   });
+}
 
-  // ── Hook endpoints (Phase 1d) ─────────────────────────────────────────────
-
+// ── Hook endpoints (Phase 1d) ─────────────────────────────────────────────
+function registerHookRoutes(app: Hono): void {
   // PreCompact hook: flush surfaced-ID memo for the compacting conversation
   // and stamp a compaction record so post-compaction recalls don't get
   // suppressed by stale "already surfaced" gates.
@@ -469,16 +504,17 @@ export function createApp(deps: HttpDeps): Hono {
     }
     return c.json({ ok: true, recorded: true });
   });
+}
 
-  // ── NousResearch Hermes Agent lifecycle hooks ─────────────────────────────
-  //
-  // Python plugin (~/.hermes/plugins/nlm-memory/__init__.py) calls these
-  // endpoints for the 6 events it registers with ctx.register_hook().
-  //
-  // pre_llm_call  → POST /api/hook/hermes-agent/pre-turn  (recall + inject)
-  // post_llm_call → POST /api/hook/hermes-agent/post-turn (citation detect)
-  // on_session_{start,end,finalize,reset} → POST /api/hook/hermes-agent/session-lifecycle
-
+// ── NousResearch Hermes Agent lifecycle hooks ─────────────────────────────
+//
+// Python plugin (~/.hermes/plugins/nlm-memory/__init__.py) calls these
+// endpoints for the 6 events it registers with ctx.register_hook().
+//
+// pre_llm_call  → POST /api/hook/hermes-agent/pre-turn  (recall + inject)
+// post_llm_call → POST /api/hook/hermes-agent/post-turn (citation detect)
+// on_session_{start,end,finalize,reset} → POST /api/hook/hermes-agent/session-lifecycle
+function registerHermesAgentHookRoutes(app: Hono, deps: HttpDeps): void {
   // pre-turn: run keyword recall against user_message, update the per-session
   // memo to avoid re-surfacing the same sessions within one conversation, and
   // return the formatted pointer block as {"context": "..."}.
@@ -573,9 +609,10 @@ export function createApp(deps: HttpDeps): Hono {
     }
     return c.json({ ok: true, event });
   });
+}
 
-  // ── Fact recall (Phase B.3 surface, exposed over HTTP for the MCP proxy) ──
-
+// ── Fact recall (Phase B.3 surface, exposed over HTTP for the MCP proxy) ──
+function registerFactRoutes(app: Hono, deps: HttpDeps): void {
   app.get("/api/recall/facts", async (c) => {
     if (!deps.factRecall) {
       return c.json({ error: "fact recall not wired in this deployment" }, 503);
@@ -663,7 +700,9 @@ export function createApp(deps: HttpDeps): Hono {
     );
     return c.json(stats);
   });
+}
 
+function registerLiveRoutes(app: Hono, deps: HttpDeps): void {
   app.get("/api/live/recent-writes", (c) => {
     if (!deps.liveStore) return c.json({ writes: [] });
     const limit = parseLimit(c.req.query("limit"), 50, 200);
@@ -675,16 +714,19 @@ export function createApp(deps: HttpDeps): Hono {
     const limit = parseLimit(c.req.query("limit"), 50, 200);
     return c.json({ markers: deps.liveStore.recentMarkers(limit) });
   });
+}
 
+function registerDatasetRoute(app: Hono, deps: HttpDeps): void {
   app.get("/api/dataset", (c) => {
     if (!deps.dbPath) return c.json({ error: "dataset endpoint requires dbPath" }, 503);
     const includePaths = c.req.query("include_paths") === "true";
     return c.json(buildDataset(deps.dbPath, { includePaths }));
   });
+}
 
-  // ── Data management ─────────────────────────────────────────────
-  // Storage stats, live-safe backup snapshot, and staged restore.
-
+// ── Data management ─────────────────────────────────────────────
+// Storage stats, live-safe backup snapshot, and staged restore.
+function registerDataManagementRoutes(app: Hono, deps: HttpDeps): void {
   app.get("/api/data/stats", (c) => {
     if (!deps.liveStore || !deps.dbPath) {
       return c.json({ error: "data stats require liveStore + dbPath" }, 503);
@@ -797,12 +839,13 @@ export function createApp(deps: HttpDeps): Hono {
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
     }
   });
+}
 
-  // ── Actions API ────────────────────────────────────────────────
-  // Append-only event log: dismiss/snooze/retire/label/merge all land here.
-  // Mutations are projected into the dataset at read time, never applied to
-  // the underlying sessions/entities/markers tables.
-
+// ── Actions API ────────────────────────────────────────────────
+// Append-only event log: dismiss/snooze/retire/label/merge all land here.
+// Mutations are projected into the dataset at read time, never applied to
+// the underlying sessions/entities/markers tables.
+function registerActionRoutes(app: Hono, deps: HttpDeps): void {
   app.post("/api/action", async (c) => {
     if (!deps.liveStore) return c.json({ error: "actions require liveStore" }, 503);
     const body = await c.req.json().catch(() => null);
@@ -844,7 +887,9 @@ export function createApp(deps: HttpDeps): Hono {
     });
     return c.json({ actions: rows });
   });
+}
 
+function registerClassifierRoutes(app: Hono, deps: HttpDeps): void {
   app.get("/api/classifier/info", (c) => {
     const provider = deps.classifier?.provider ?? "deepseek";
     const model = deps.classifier?.model ?? "deepseek-v4-flash";
@@ -881,11 +926,12 @@ export function createApp(deps: HttpDeps): Hono {
     deps.classifier.swap(provider as ClassifierProvider, model);
     return c.json({ provider: deps.classifier.provider, model: deps.classifier.model });
   });
+}
 
-  // ── Sources registry ────────────────────────────────────────────
-  // Each row = one transcript origin the daemon scans. UI uses these
-  // endpoints to surface existing sources + let users add custom ones.
-
+// ── Sources registry ────────────────────────────────────────────
+// Each row = one transcript origin the daemon scans. UI uses these
+// endpoints to surface existing sources + let users add custom ones.
+function registerSourceRoutes(app: Hono, deps: HttpDeps): void {
   app.get("/api/sources", (c) => {
     if (!deps.sources) return c.json({ sources: [] });
     return c.json({ sources: deps.sources.list() });
@@ -931,9 +977,11 @@ export function createApp(deps: HttpDeps): Hono {
     if (!token) return c.json({ error: "regenerate-token only applies to webhook sources" }, 400);
     return c.json({ token });
   });
+}
 
-  // Ingest (webhook push). Auth: Bearer token tied to a webhook source.
-  // Classification runs async so callers get a fast 202.
+// Ingest (webhook push). Auth: Bearer token tied to a webhook source.
+// Classification runs async so callers get a fast 202.
+function registerIngestRoute(app: Hono, deps: HttpDeps): void {
   app.post("/api/ingest", async (c) => {
     if (!deps.ingest || !deps.sources) {
       return c.json({ error: "ingest pipeline not wired" }, 503);
@@ -973,11 +1021,12 @@ export function createApp(deps: HttpDeps): Hono {
 
     return c.json({ id, status: "accepted", source: source.name }, 202);
   });
+}
 
-  // ── Providers registry ──────────────────────────────────────────
-  // Each row = one LLM endpoint. Keys are redacted on every response
-  // (rows carry hasApiKey:boolean instead).
-
+// ── Providers registry ──────────────────────────────────────────
+// Each row = one LLM endpoint. Keys are redacted on every response
+// (rows carry hasApiKey:boolean instead).
+function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
   app.get("/api/providers", (c) => {
     if (!deps.providers) return c.json({ providers: [] });
     return c.json({ providers: deps.providers.list() });
@@ -1051,7 +1100,9 @@ export function createApp(deps: HttpDeps): Hono {
       return c.json({ ok: false, error: message, latencyMs: Date.now() - startedAt }, 200);
     }
   });
+}
 
+function registerSessionRoute(app: Hono, deps: HttpDeps): void {
   app.get("/api/session/:id", async (c) => {
     const id = c.req.param("id");
     const session = await deps.store.getById(id);
@@ -1060,12 +1111,6 @@ export function createApp(deps: HttpDeps): Hono {
     }
     return c.json(session);
   });
-
-  if (deps.uiDist) {
-    mountSpa(app, deps.uiDist);
-  }
-
-  return app;
 }
 
 function parseActionInput(raw: unknown): {

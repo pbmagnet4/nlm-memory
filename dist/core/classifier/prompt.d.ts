@@ -34,7 +34,6 @@
  * at query time; the coercer will drop new `other` writes.)
  */
 export declare const PREDICATE_VOCABULARY: readonly ["framework", "endpoint", "model", "port", "host", "owner", "pricing", "cost", "deadline", "status", "stack", "runtime", "library", "version", "dependency", "schema", "integration", "deployment", "repo", "branch", "commit", "description", "decided-on", "assumption", "blocker"];
-export type PredicateVocab = (typeof PREDICATE_VOCABULARY)[number];
 export declare const CLASSIFIER_SYSTEM_PROMPT: string;
 export declare const MAX_TRANSCRIPT_CHARS = 15000;
 export declare function truncateTranscript(text: string, maxChars?: number): string;

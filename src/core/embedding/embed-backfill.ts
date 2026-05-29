@@ -201,10 +201,3 @@ export async function reembedCorpus(opts: BackfillOptions): Promise<BackfillRepo
     dbMissing: false,
   };
 }
-
-export function clearBackfillState(statePath: string = DEFAULT_STATE_PATH): void {
-  if (existsSync(statePath)) {
-    const { unlinkSync } = require("node:fs") as typeof import("node:fs");
-    unlinkSync(statePath);
-  }
-}

@@ -159,10 +159,4 @@ export async function reembedCorpus(opts) {
         dbMissing: false,
     };
 }
-export function clearBackfillState(statePath = DEFAULT_STATE_PATH) {
-    if (existsSync(statePath)) {
-        const { unlinkSync } = require("node:fs");
-        unlinkSync(statePath);
-    }
-}
 //# sourceMappingURL=embed-backfill.js.map

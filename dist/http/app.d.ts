@@ -12,6 +12,10 @@
  * WebUI). Requires Authorization: Bearer <NLM_MCP_TOKEN>. Stateless: each
  * request gets its own transport + server instance so there is no in-memory
  * session state to manage. The existing stdio MCP path is untouched.
+ *
+ * Structure: createApp is a thin composition root that wires the local-only
+ * access middleware and then delegates each route group to a registerXxx
+ * function defined below. Route handlers themselves are unchanged.
  */
 import { Hono } from "hono";
 import type { RecallService } from "../core/recall/recall-service.js";

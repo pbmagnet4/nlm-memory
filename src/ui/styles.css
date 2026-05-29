@@ -22,15 +22,6 @@
   --text-3: #686868;   /* muted — timestamps, section headers */
   --text-4: #383838;   /* disabled / placeholder       */
 
-  /* Legacy text aliases — TODO: migrate .astro call sites to --text-1/2/3/4 */
-  --text-primary: #e8e8e8;
-  --text-dim:     #b8b8b8;   /* TODO: migrate */
-  --text-muted:   #888;      /* TODO: migrate */
-  --text-faint:   #777;      /* TODO: migrate */
-  --text-ghost:   #666;      /* TODO: migrate */
-  --text-dead:    #555;      /* TODO: migrate */
-  --text-void:    #444;      /* TODO: migrate */
-
   /* Signal colors */
   --accent:      #e8ff6e;
   --accent-dim:  rgba(232, 255, 110, 0.12);
