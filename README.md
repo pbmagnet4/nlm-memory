@@ -1,10 +1,14 @@
 # nlm-memory
 
-> NLM (Non-Linear Memory) — a local-first memory operating system for AI operators.
+> Local-first memory OS for AI operators — one corpus across every runtime you use.
 
-`nlm-memory` indexes every AI session you run — Claude Code, Hermes, pi, Codex, Gemini, Aider — into a single searchable store on your machine. Recall by keyword, semantic similarity, or hybrid. Browse in a local web UI. Plug into any agent via MCP so it can query your history automatically.
+`nlm-memory` indexes every session from Claude Code, Codex, OpenCode, Hermes, Aider, and pi into a single searchable store on your machine. Three properties no competitor ships together:
 
-Everything stays on your machine. No cloud, no account, no API key required (except your classifier of choice).
+1. **Cross-runtime reach.** Claude Code, Codex, and OpenCode ship today. Hermes, pi, and Aider follow the same adapter pattern. One index, every tool — not one per runtime.
+2. **Editable timeline.** Sessions can be superseded, retired, or marked aborted. Memory is non-linear: patch history retroactively. No other memory layer lets you do this.
+3. **97.2% R@5 baseline.** On a 14-month corpus, keyword recall surfaces the right session in the top 5 on 97.2% of evaluator queries. No fine-tuning, no cloud, no account.
+
+Everything stays on your machine. No telemetry, no account required beyond your classifier of choice.
 
 ---
 
@@ -54,6 +58,15 @@ Add to `~/.mcp.json` (or your editor's MCP config):
 
 Find the path with `npm root -g` — the full path is `$(npm root -g)/nlm-memory/dist/cli/nlm.js`.
 
+Or use the runtime-specific connect commands:
+
+```sh
+nlm connect claude-code      # writes to ~/.mcp.json + installs hooks
+nlm connect codex            # installs as a Codex marketplace plugin
+nlm connect hermes           # writes to ~/.hermes/config.yaml (MCP)
+nlm connect hermes-agent     # installs as a NousResearch Hermes plugin (hooks + MCP)
+```
+
 Once wired, agents can call `recall_sessions` (search past conversations) and `recall_facts` (pull structured facts like decisions and project state) automatically.
 
 ---
@@ -76,9 +89,9 @@ Once wired, agents can call `recall_sessions` (search past conversations) and `r
 
 - **Unit of memory:** whole sessions with extracted markers (decisions, open questions, entities), not individual facts or graph edges.
 - **Audience:** you querying your own past work, not an embedded SDK for app developers.
-- **Cross-runtime:** one corpus across every AI tool you use. This is the moat.
-- **Editable timeline:** sessions can be superseded, retired, aborted. Memory is non-linear.
-- **Local-only:** no hosted offering, no telemetry.
+- **Cross-runtime:** one corpus across Claude Code, Codex, OpenCode, Hermes, and more. Competitors target one runtime.
+- **Editable timeline:** sessions can be superseded, retired, aborted. No other tool lets you retrofit memory — a record from 6 months ago can be corrected today.
+- **Local-only:** no hosted offering, no telemetry, no vendor dependency.
 
 ---
 

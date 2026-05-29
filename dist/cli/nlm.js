@@ -12,10 +12,15 @@
  *   nlm migrate  — run pending migrations against the canonical SQLite
  *   nlm recall   — one-shot recall query from the shell (debugging)
  *   nlm mcp      — run as an MCP stdio server (for ~/.mcp.json wiring)
+ *   nlm setup    — interactive first-run wizard (recommended entry point)
  *   nlm install  — install the macOS LaunchAgent (auto-start on login)
  *   nlm uninstall — remove the macOS LaunchAgent
  *   nlm hook install   — add the recall hook to Claude Code (shadow mode)
  *   nlm hook uninstall — remove the recall hook from Claude Code
+ *   nlm connect claude-code  — write MCP server block to ~/.mcp.json
+ *   nlm connect codex        — install Codex marketplace plugin
+ *   nlm disconnect claude-code — remove MCP block from ~/.mcp.json
+ *   nlm disconnect codex       — remove Codex plugin
  */
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
@@ -40,6 +45,10 @@ import { OllamaClient } from "../llm/ollama-client.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
 import { addHook, buildHookCommand, removeHook, smokeTestHookCommand } from "../core/hook/claude-settings.js";
 import { codexBinaryAvailable, connectCodex, disconnectCodex, pluginScriptsDir, } from "../install/codex.js";
+import { connectClaudeCode, disconnectClaudeCode, installClaudeCodeHooks } from "../install/claude-code.js";
+import { connectHermes, disconnectHermes, hermesConfigPath } from "../install/hermes.js";
+import { connectHermesAgent, disconnectHermesAgent, hermesAgentPluginDir } from "../install/hermes-agent.js";
+import { runSetup } from "../install/setup.js";
 import { runParity } from "./classify-parity.js";
 import { reembedCorpus } from "../core/embedding/embed-backfill.js";
 import { backfillFacts } from "../core/facts/backfill-facts.js";
@@ -620,6 +629,79 @@ connect
     }
     console.error("  Next: run `codex` interactively and approve the hook trust prompts. Then prompt — recall should fire.");
 });
+connect
+    .command("claude-code")
+    .description("Write the nlm-memory MCP server block into ~/.mcp.json")
+    .option("--with-hooks", "also install Claude Code session hooks")
+    .option("--dry-run", "print what would happen without changing files")
+    .action((opts) => {
+    if (opts.dryRun) {
+        console.error("nlm connect claude-code (dry run):");
+        console.error(`  write [mcpServers.nlm-memory] to ${join(homedir(), ".mcp.json")}`);
+        if (opts.withHooks)
+            console.error("  install 6 Claude Code hooks");
+        return;
+    }
+    const report = connectClaudeCode({ nlmBinPath: __filename, nodeExecPath: process.execPath });
+    const action = report.alreadyPresent ? "updated" : "written";
+    console.error(`nlm: [mcpServers.nlm-memory] ${action} → ${report.mcpConfigPath}`);
+    console.error("  Restart Claude Code to activate the MCP server.");
+    if (opts.withHooks) {
+        const path = claudeSettingsPath();
+        const hookLogPath = process.env["NLM_HOOK_LOG"] ?? join(homedir(), ".nlm", "hook-log.jsonl");
+        const result = installClaudeCodeHooks({
+            nodeExecPath: process.execPath,
+            hooks: ALL_HOOKS,
+            settingsPath: path,
+            hookLogPath,
+            addHook,
+            removeHook,
+            buildHookCommand,
+            smokeTestHookCommand,
+        });
+        if (!result.ok) {
+            console.error(`nlm: ${result.failedLabel ?? "hook"} smoke test failed — all hooks reverted. Run \`nlm hook install\` manually.`);
+            process.exit(1);
+        }
+        console.error(`nlm: ${result.count} hooks installed → ${path}`);
+    }
+});
+connect
+    .command("hermes")
+    .description("Write the nlm-memory MCP server entry into ~/.hermes/config.yaml")
+    .option("--dry-run", "print what would happen without changing files")
+    .action((opts) => {
+    if (opts.dryRun) {
+        console.error(`nlm connect hermes (dry run): write [mcp_servers.nlm-memory] to ${hermesConfigPath()}`);
+        return;
+    }
+    const report = connectHermes({ nlmBinPath: __filename, nodeExecPath: process.execPath, dryRun: false });
+    const action = report.alreadyPresent ? "updated" : "written";
+    console.error(`nlm: [mcp_servers.nlm-memory] ${action} → ${report.configPath}`);
+    console.error("  Restart Hermes to activate the MCP server.");
+});
+connect
+    .command("hermes-agent")
+    .description("Install the nlm-memory plugin into NousResearch Hermes Agent (~/.hermes/plugins/nlm-memory/)")
+    .option("--dry-run", "print what would happen without changing files")
+    .action((opts) => {
+    const pluginSrcDir = join(REPO_ROOT, "plugin-hermes-agent");
+    if (opts.dryRun) {
+        console.error(`nlm connect hermes-agent (dry run): copy ${pluginSrcDir} → ${hermesAgentPluginDir()}`);
+        console.error("  then: hermes plugins enable nlm-memory");
+        return;
+    }
+    const report = connectHermesAgent({ pluginSrcDir, dryRun: false });
+    const action = report.alreadyPresent ? "updated" : "installed";
+    console.error(`nlm: nlm-memory plugin ${action} → ${report.destDir}`);
+    if (report.enabledViaCli) {
+        console.error("  Enabled via: hermes plugins enable nlm-memory");
+    }
+    else {
+        console.error("  Run: hermes plugins enable nlm-memory (if hermes binary is on PATH)");
+    }
+    console.error("  Also run: nlm connect hermes  (to wire the MCP server)");
+});
 const disconnect = program
     .command("disconnect")
     .description("Disconnect nlm-memory from an AI coding runtime");
@@ -666,6 +748,69 @@ disconnect
             ? "  Stripped our entries from ~/.codex/hooks.json"
             : "  No legacy hooks to remove from ~/.codex/hooks.json");
     }
+});
+disconnect
+    .command("claude-code")
+    .description("Remove the nlm-memory MCP server block from ~/.mcp.json")
+    .option("--dry-run", "print what would happen without changing files")
+    .action((opts) => {
+    const report = disconnectClaudeCode({ dryRun: Boolean(opts.dryRun) });
+    if (opts.dryRun) {
+        console.error(`nlm disconnect claude-code (dry run): strip [mcpServers.nlm-memory] from ${report.mcpConfigPath}`);
+        return;
+    }
+    console.error(report.removed
+        ? `nlm: removed [mcpServers.nlm-memory] from ${report.mcpConfigPath}`
+        : `nlm: no [mcpServers.nlm-memory] entry found in ${report.mcpConfigPath}`);
+});
+disconnect
+    .command("hermes")
+    .description("Remove the nlm-memory MCP server entry from ~/.hermes/config.yaml")
+    .option("--dry-run", "print what would happen without changing files")
+    .action((opts) => {
+    const report = disconnectHermes({ dryRun: Boolean(opts.dryRun) });
+    if (opts.dryRun) {
+        console.error(`nlm disconnect hermes (dry run): strip [mcp_servers.nlm-memory] from ${report.configPath}`);
+        return;
+    }
+    console.error(report.removed
+        ? `nlm: removed [mcp_servers.nlm-memory] from ${report.configPath}`
+        : `nlm: no [mcp_servers.nlm-memory] entry found in ${report.configPath}`);
+});
+disconnect
+    .command("hermes-agent")
+    .description("Remove the nlm-memory plugin from ~/.hermes/plugins/nlm-memory/")
+    .option("--dry-run", "print what would happen without changing files")
+    .action((opts) => {
+    const report = disconnectHermesAgent({ dryRun: Boolean(opts.dryRun) });
+    if (opts.dryRun) {
+        console.error(`nlm disconnect hermes-agent (dry run): remove ${hermesAgentPluginDir()}`);
+        return;
+    }
+    console.error(report.removed
+        ? `nlm: removed plugin directory ${report.destDir}`
+        : `nlm: no plugin directory found at ${report.destDir}`);
+});
+program
+    .command("setup")
+    .description("Interactive first-run setup: detect runtimes, wire MCP + hooks, start daemon")
+    .action(async () => {
+    await runSetup({
+        nlmBinPath: __filename,
+        nodeExecPath: process.execPath,
+        migrationsDir: MIGRATIONS_DIR,
+        repoRoot: REPO_ROOT,
+        dbPath: dbPath(),
+        launchAgentLabel: LAUNCH_AGENT_LABEL,
+        launchAgentPlist: LAUNCH_AGENT_PLIST,
+        buildPlist,
+        claudeSettingsPath: claudeSettingsPath(),
+        allHooks: ALL_HOOKS,
+        addHook,
+        removeHook,
+        buildHookCommand,
+        smokeTestHookCommand,
+    });
 });
 program
     .command("useful-scan")

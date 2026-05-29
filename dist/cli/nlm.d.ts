@@ -12,9 +12,14 @@
  *   nlm migrate  — run pending migrations against the canonical SQLite
  *   nlm recall   — one-shot recall query from the shell (debugging)
  *   nlm mcp      — run as an MCP stdio server (for ~/.mcp.json wiring)
+ *   nlm setup    — interactive first-run wizard (recommended entry point)
  *   nlm install  — install the macOS LaunchAgent (auto-start on login)
  *   nlm uninstall — remove the macOS LaunchAgent
  *   nlm hook install   — add the recall hook to Claude Code (shadow mode)
  *   nlm hook uninstall — remove the recall hook from Claude Code
+ *   nlm connect claude-code  — write MCP server block to ~/.mcp.json
+ *   nlm connect codex        — install Codex marketplace plugin
+ *   nlm disconnect claude-code — remove MCP block from ~/.mcp.json
+ *   nlm disconnect codex       — remove Codex plugin
  */
 export {};

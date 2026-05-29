@@ -29,7 +29,11 @@ import type { RecallService } from "@core/recall/recall-service.js";
 import { logQuery, recallStats } from "@core/recall/query-log.js";
 import { recentQueryLog } from "@core/recall/recent-log.js";
 import { appendCitation, citationStats } from "@core/recall/citation-log.js";
-import { clearSurfaced, loadSurfaced } from "@core/hook/memo.js";
+import { clearSurfaced, loadSurfaced, recordSurfaced } from "@core/hook/memo.js";
+import { clearCited } from "@core/hook/cite-memo.js";
+import { classifyPrompt } from "@core/hook/gate.js";
+import { selectHits, type RecallHitInput } from "@core/hook/select.js";
+import { formatPointerBlock } from "@core/hook/pointer-block.js";
 import type { FactRecallService } from "@core/recall-facts/fact-recall-service.js";
 import { factRecallStats, logFactQuery } from "@core/recall-facts/fact-query-log.js";
 import type { FactStore } from "@ports/fact-store.js";
@@ -382,6 +386,110 @@ export function createApp(deps: HttpDeps): Hono {
       // Log failure must not fail the endpoint.
     }
     return c.json({ ok: true, recorded: true });
+  });
+
+  // ── NousResearch Hermes Agent lifecycle hooks ─────────────────────────────
+  //
+  // Python plugin (~/.hermes/plugins/nlm-memory/__init__.py) calls these
+  // endpoints for the 6 events it registers with ctx.register_hook().
+  //
+  // pre_llm_call  → POST /api/hook/hermes-agent/pre-turn  (recall + inject)
+  // post_llm_call → POST /api/hook/hermes-agent/post-turn (citation detect)
+  // on_session_{start,end,finalize,reset} → POST /api/hook/hermes-agent/session-lifecycle
+
+  // pre-turn: run keyword recall against user_message, update the per-session
+  // memo to avoid re-surfacing the same sessions within one conversation, and
+  // return the formatted pointer block as {"context": "..."}.
+  // Returns {"context": null} when there is nothing worth surfacing.
+  app.post("/api/hook/hermes-agent/pre-turn", async (c) => {
+    let body: Record<string, unknown>;
+    try {
+      body = (await c.req.json()) as Record<string, unknown>;
+    } catch {
+      return c.json({ error: "body must be JSON" }, 400);
+    }
+    const sessionId = body["session_id"];
+    const userMessage = body["user_message"];
+    if (typeof sessionId !== "string" || !sessionId) {
+      return c.json({ error: "session_id required" }, 400);
+    }
+    if (typeof userMessage !== "string" || !userMessage.trim()) {
+      return c.json({ context: null });
+    }
+    if (classifyPrompt(userMessage) === "generative") {
+      return c.json({ context: null });
+    }
+    try {
+      const result = await deps.recall.search({ query: userMessage, mode: "keyword", limit: 5 });
+      const hits: ReadonlyArray<RecallHitInput> = result.results.map((r) => ({
+        id: r.id,
+        label: r.label,
+        startedAt: r.startedAt,
+        matchScore: r.matchScore,
+      }));
+      const surfaced = loadSurfaced(sessionId);
+      const selected = selectHits({ hits, surfaced, scoreThreshold: 0, perFireCap: 3, perConversationCap: 10 });
+      if (selected.length === 0) return c.json({ context: null });
+      recordSurfaced(sessionId, selected.map((h) => h.id));
+      return c.json({ context: formatPointerBlock(selected) });
+    } catch {
+      return c.json({ context: null });
+    }
+  });
+
+  // post-turn: scan assistant_response for session IDs that were surfaced in
+  // this conversation and log prose citation events.
+  app.post("/api/hook/hermes-agent/post-turn", async (c) => {
+    let body: Record<string, unknown>;
+    try {
+      body = (await c.req.json()) as Record<string, unknown>;
+    } catch {
+      return c.json({ error: "body must be JSON" }, 400);
+    }
+    const sessionId = body["session_id"];
+    const assistantResponse = body["assistant_response"];
+    if (typeof sessionId !== "string" || !sessionId) {
+      return c.json({ error: "session_id required" }, 400);
+    }
+    if (typeof assistantResponse !== "string" || !assistantResponse) {
+      return c.json({ ok: true, cited: 0 });
+    }
+    const surfacedIds = [...loadSurfaced(sessionId)];
+    const cited: string[] = [];
+    for (const id of surfacedIds) {
+      if (assistantResponse.includes(id)) cited.push(id);
+    }
+    const preview = assistantResponse.slice(0, 200);
+    for (const citedId of cited) {
+      await appendCitation(
+        { conversationId: sessionId, citedId, kind: "prose", responsePreview: preview },
+        ...(deps.citationLogPath !== undefined ? [deps.citationLogPath] : []),
+      );
+    }
+    return c.json({ ok: true, cited: cited.length });
+  });
+
+  // session-lifecycle: memo housekeeping for on_session_{start,end,finalize,reset}.
+  // start is a no-op (memo is created lazily). end/finalize/reset clear the memo.
+  app.post("/api/hook/hermes-agent/session-lifecycle", async (c) => {
+    let body: Record<string, unknown>;
+    try {
+      body = (await c.req.json()) as Record<string, unknown>;
+    } catch {
+      return c.json({ error: "body must be JSON" }, 400);
+    }
+    const event = body["event"];
+    if (typeof event !== "string" || !["start", "end", "finalize", "reset"].includes(event)) {
+      return c.json({ error: "event must be one of: start, end, finalize, reset" }, 400);
+    }
+    if (event !== "start") {
+      const sessionId = body["session_id"];
+      if (typeof sessionId === "string" && sessionId) {
+        clearSurfaced(sessionId);
+        clearCited(sessionId);
+      }
+    }
+    return c.json({ ok: true, event });
   });
 
   // ── Fact recall (Phase B.3 surface, exposed over HTTP for the MCP proxy) ──

@@ -1,0 +1,15 @@
+name: nlm-memory
+version: 0.1.0
+description: Non-linear memory for Hermes — surfaces relevant prior sessions at each turn via keyword recall
+kind: memory
+author: pbmagnet4
+provides_hooks:
+  - pre_llm_call
+  - post_llm_call
+  - on_session_start
+  - on_session_end
+  - on_session_finalize
+  - on_session_reset
+requires_env:
+  - name: NLM_DAEMON_PORT
+    description: "Port the nlm-memory daemon listens on (default: 3940)"
