@@ -76,11 +76,9 @@ export interface HookInstallOptions {
   readonly nodeExecPath: string;
   readonly hooks: ReadonlyArray<HookSpec>;
   readonly settingsPath: string;
-  readonly hookLogPath: string;
   readonly addHook: (path: string, command: string, event?: ClaudeHookEvent) => void;
   readonly removeHook: (path: string, event?: ClaudeHookEvent | "*") => void;
   readonly buildHookCommand: (nodeExec: string, script: string, mode: "shadow" | "live") => string;
-  readonly smokeTestHookCommand: (command: string, logPath: string) => { ok: boolean; reason?: string; stderr?: string };
 }
 
 export interface HookInstallResult {
@@ -96,14 +94,9 @@ export function installClaudeCodeHooks(opts: HookInstallOptions): HookInstallRes
     try {
       const command = opts.buildHookCommand(opts.nodeExecPath, spec.script, "live");
       opts.addHook(opts.settingsPath, command, spec.event);
-      const smoke = opts.smokeTestHookCommand(command, opts.hookLogPath);
-      if (!smoke.ok) {
-        for (const prior of [...installed, spec]) opts.removeHook(opts.settingsPath, prior.event);
-        const result: HookInstallResult = { ok: false, count: installed.length, failedLabel: spec.label };
-        return smoke.reason ? { ...result, errorMessage: smoke.reason } : result;
-      }
       installed.push(spec);
     } catch (e) {
+      for (const prior of installed) opts.removeHook(opts.settingsPath, prior.event);
       return { ok: false, count: installed.length, failedLabel: spec.label, errorMessage: e instanceof Error ? e.message : String(e) };
     }
   }

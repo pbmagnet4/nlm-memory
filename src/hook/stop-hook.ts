@@ -11,9 +11,7 @@
  *  - Training-data substrate for a learned reranker (was_cited per query)
  *
  * Fail-open by design: any error yields a clean exit with no output. The
- * Stop hook can never block Claude Code's response. The smoke test path
- * succeeds even with missing transcript_path because the hook always logs
- * a `kind:"stop"` line.
+ * Stop hook can never block Claude Code's response.
  */
 
 import { pathToFileURL } from "node:url";

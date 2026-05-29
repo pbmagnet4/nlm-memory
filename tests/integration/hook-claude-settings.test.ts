@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -8,7 +8,6 @@ import {
   buildHookCommand,
   removeHook,
   shellQuote,
-  smokeTestHookCommand,
 } from "../../src/core/hook/claude-settings.js";
 
 interface Settings {
@@ -129,30 +128,6 @@ describe("claude-settings hook editor", () => {
     expect(cmd).toBe(
       'set NLM_HOOK_MODE=live && "C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\Test\\AppData\\Roaming\\npm\\node_modules\\nlm-memory\\dist\\hook\\prompt-recall-hook.js"',
     );
-  });
-
-  it("smokeTestHookCommand reports failure when command exits nonzero", () => {
-    const logPath = join(tmp, "hook-log.jsonl");
-    const result = smokeTestHookCommand("exit 1", logPath);
-    expect(result.ok).toBe(false);
-    expect(result.reason).toContain("exit code 1");
-  });
-
-  it("smokeTestHookCommand reports failure when log does not gain an entry", () => {
-    const logPath = join(tmp, "hook-log.jsonl");
-    const result = smokeTestHookCommand("true", logPath);
-    expect(result.ok).toBe(false);
-    expect(result.reason).toContain("no entry appended");
-  });
-
-  it("smokeTestHookCommand passes when command writes to the log", () => {
-    const logPath = join(tmp, "hook-log.jsonl");
-    const result = smokeTestHookCommand(
-      `printf '{"ts":"x"}\\n' >> ${shellQuote(logPath)}`,
-      logPath,
-    );
-    expect(result.ok).toBe(true);
-    expect(statSync(logPath).size).toBeGreaterThan(0);
   });
 
   it("addHook preserves an unrelated hook event key", () => {

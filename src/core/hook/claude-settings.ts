@@ -6,9 +6,8 @@
  * entries and preserves everything else.
  */
 
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { spawnSync } from "node:child_process";
 
 // Every NLM hook script ends in `-hook.js`. We tag entries we own by
 // matching the filename suffix against this list. Add new entries here
@@ -53,56 +52,6 @@ export function buildHookCommand(
     return `set NLM_HOOK_MODE=${mode} && ${cmdQuote(execPath)} ${cmdQuote(hookJs)}`;
   }
   return `NLM_HOOK_MODE=${mode} ${shellQuote(execPath)} ${shellQuote(hookJs)}`;
-}
-
-export interface SmokeTestResult {
-  readonly ok: boolean;
-  readonly reason?: string;
-  readonly stderr?: string;
-}
-
-/**
- * Invoke the wired command exactly the way Claude Code does (sh -c on
- * POSIX, cmd.exe /c on Windows) with JSON on stdin and confirm the hook
- * log gained an entry. Catches the class of failures where settings.json
- * looks valid but the hook fails at startup (path tokenization, missing
- * modules, missing shell, etc.).
- */
-export function smokeTestHookCommand(
-  command: string,
-  hookLogPath: string,
-  timeoutMs = 5000,
-): SmokeTestResult {
-  const sizeBefore = existsSync(hookLogPath) ? statSync(hookLogPath).size : 0;
-  const isWin = process.platform === "win32";
-  const result = spawnSync(
-    isWin ? "cmd.exe" : "sh",
-    [isWin ? "/c" : "-c", command],
-    {
-      input: JSON.stringify({ prompt: "smoke test", session_id: "install-smoke" }),
-      timeout: timeoutMs,
-      encoding: "utf8",
-    },
-  );
-  if (result.error && (result.error as NodeJS.ErrnoException).code !== "EPIPE") {
-    return { ok: false, reason: `spawn failed: ${result.error.message}` };
-  }
-  if (result.status !== 0) {
-    return {
-      ok: false,
-      reason: `exit code ${result.status ?? "null"}`,
-      stderr: result.stderr,
-    };
-  }
-  const sizeAfter = existsSync(hookLogPath) ? statSync(hookLogPath).size : 0;
-  if (sizeAfter <= sizeBefore) {
-    return {
-      ok: false,
-      reason: `no entry appended to ${hookLogPath}`,
-      stderr: result.stderr,
-    };
-  }
-  return { ok: true };
 }
 
 export type ClaudeHookEvent =

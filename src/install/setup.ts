@@ -62,7 +62,6 @@ export interface SetupOptions {
   readonly addHook: (path: string, command: string, event?: ClaudeHookEvent) => void;
   readonly removeHook: (path: string, event?: ClaudeHookEvent | "*") => void;
   readonly buildHookCommand: (nodeExec: string, script: string, mode: "shadow" | "live") => string;
-  readonly smokeTestHookCommand: (command: string, logPath: string) => { ok: boolean; reason?: string; stderr?: string };
 }
 
 // Embedding-only tags shouldn't be offered as classifier models — they
@@ -405,16 +404,13 @@ export async function runSetup(opts: SetupOptions): Promise<void> {
         // OS-level scripts, so they work on all platforms where Claude Code runs.
         const hs = spinner();
         hs.start("Configuring Claude Code — session hooks");
-        const hookLogPath = process.env["NLM_HOOK_LOG"] ?? join(homedir(), ".nlm", "hook-log.jsonl");
         const hookResult = installClaudeCodeHooks({
           nodeExecPath: opts.nodeExecPath,
           hooks: opts.allHooks,
           settingsPath: opts.claudeSettingsPath,
-          hookLogPath,
           addHook: opts.addHook,
           removeHook: opts.removeHook,
           buildHookCommand: opts.buildHookCommand,
-          smokeTestHookCommand: opts.smokeTestHookCommand,
         });
         if (hookResult.ok) {
           hs.stop(`${hookResult.count} hooks installed → ${opts.claudeSettingsPath}`);
