@@ -11,7 +11,7 @@
  *   Linux  — official install.sh / systemctl / detached spawn
  *   Windows — winget install / detached spawn
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { spawnSync, spawn } from "node:child_process";
@@ -157,7 +157,9 @@ export function pullEmbeddingModel() {
  */
 export function writeClassifierConfig(choice, apiKey) {
     const envPath = join(homedir(), ".nlm", ".env");
-    mkdirSync(join(homedir(), ".nlm"), { recursive: true });
+    const nlmDir = join(homedir(), ".nlm");
+    mkdirSync(nlmDir, { recursive: true, mode: 0o700 });
+    chmodSync(nlmDir, 0o700);
     const existing = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
     const kept = existing
         .split("\n")
@@ -173,6 +175,7 @@ export function writeClassifierConfig(choice, apiKey) {
     }
     if (choice === "ollama-offline")
         additions.push("NLM_CLASSIFIER=ollama");
-    writeFileSync(envPath, [kept, ...additions].filter(Boolean).join("\n") + "\n", "utf8");
+    writeFileSync(envPath, [kept, ...additions].filter(Boolean).join("\n") + "\n", { mode: 0o600 });
+    chmodSync(envPath, 0o600);
 }
 //# sourceMappingURL=ollama.js.map
