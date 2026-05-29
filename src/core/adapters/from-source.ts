@@ -9,6 +9,7 @@
 
 import type { TranscriptAdapter } from "@ports/transcript-adapter.js";
 import type { SourceRow } from "../sources/source-registry.js";
+import { AiderAdapter } from "./aider.js";
 import { ClaudeCodeAdapter } from "./claude-code.js";
 import { HermesAdapter } from "./hermes.js";
 import { HermesAgentAdapter } from "./hermes-agent.js";
@@ -18,6 +19,10 @@ import { PiAdapter } from "./pi.js";
 
 export function adapterFromSource(source: SourceRow): TranscriptAdapter | null {
   switch (source.kind) {
+    case "aider":
+      return source.pathOrUrl
+        ? new AiderAdapter({ historyFile: source.pathOrUrl })
+        : new AiderAdapter();
     case "claude-code":
       return source.pathOrUrl
         ? new ClaudeCodeAdapter({ projectsPath: source.pathOrUrl })
