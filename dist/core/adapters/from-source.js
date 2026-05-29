@@ -8,7 +8,9 @@
  */
 import { ClaudeCodeAdapter } from "./claude-code.js";
 import { HermesAdapter } from "./hermes.js";
+import { HermesAgentAdapter } from "./hermes-agent.js";
 import { JsonlGenericAdapter } from "./jsonl-generic.js";
+import { OpenCodeAdapter } from "./opencode.js";
 import { PiAdapter } from "./pi.js";
 export function adapterFromSource(source) {
     switch (source.kind) {
@@ -20,6 +22,14 @@ export function adapterFromSource(source) {
             return source.pathOrUrl
                 ? new HermesAdapter({ sessionsPath: source.pathOrUrl })
                 : new HermesAdapter();
+        case "hermes-agent":
+            return source.pathOrUrl
+                ? new HermesAgentAdapter({ dbPath: source.pathOrUrl })
+                : new HermesAgentAdapter();
+        case "opencode":
+            return source.pathOrUrl
+                ? new OpenCodeAdapter({ dbPath: source.pathOrUrl })
+                : new OpenCodeAdapter();
         case "pi":
             return source.pathOrUrl
                 ? new PiAdapter({ sessionsPath: source.pathOrUrl })

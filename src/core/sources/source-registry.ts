@@ -18,9 +18,10 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
+import { defaultDbPath as defaultHermesAgentDbPath } from "../adapters/hermes-agent.js";
 import { defaultDbPath as defaultOpenCodeDbPath } from "../adapters/opencode.js";
 
-export type SourceKind = "claude-code" | "hermes" | "opencode" | "pi" | "jsonl-generic" | "webhook";
+export type SourceKind = "claude-code" | "hermes" | "hermes-agent" | "opencode" | "pi" | "jsonl-generic" | "webhook";
 
 export interface SourceRow {
   readonly id: number;
@@ -206,6 +207,7 @@ export class SourceRegistry {
       ?? join(homedir(), ".pi", "agent", "sessions");
 
     const openCodeDbPath = defaultOpenCodeDbPath();
+    const hermesAgentDbPath = defaultHermesAgentDbPath();
 
     const presets: SourceInsert[] = [
       {
@@ -221,6 +223,13 @@ export class SourceRegistry {
         pathOrUrl: hermesPath,
         runtimeLabel: "hermes/1.0",
         enabled: existsSync(hermesPath),
+      },
+      {
+        kind: "hermes-agent",
+        name: "Hermes Agent",
+        pathOrUrl: hermesAgentDbPath,
+        runtimeLabel: "hermes-agent/1.0",
+        enabled: existsSync(hermesAgentDbPath),
       },
       {
         kind: "opencode",

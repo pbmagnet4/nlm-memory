@@ -1,9 +1,9 @@
 /**
- * Adds/removes the NLM recall hook entry in a Claude Code settings.json.
+ * Adds/removes NLM hook entries in a Claude Code settings.json.
  *
- * The nlm entry is identified by its command containing the marker
- * "prompt-recall-hook.js". add is idempotent (it replaces any prior nlm
- * entry); remove strips only the nlm entry and preserves everything else.
+ * NLM-owned entries are identified by HOOK_SCRIPT_MARKERS. add is idempotent
+ * (replaces any prior NLM entry for the same event); remove strips only NLM
+ * entries and preserves everything else.
  */
 /**
  * Single-quote a shell argument so paths with spaces or other shell

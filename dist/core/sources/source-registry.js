@@ -16,6 +16,8 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { defaultDbPath as defaultHermesAgentDbPath } from "../adapters/hermes-agent.js";
+import { defaultDbPath as defaultOpenCodeDbPath } from "../adapters/opencode.js";
 function rowFromDb(r, revealedToken = null) {
     let parsed = {};
     try {
@@ -151,6 +153,8 @@ export class SourceRegistry {
             ?? join(homedir(), ".hermes", "sessions");
         const piPath = process.env["PI_SESSIONS_PATH"]
             ?? join(homedir(), ".pi", "agent", "sessions");
+        const openCodeDbPath = defaultOpenCodeDbPath();
+        const hermesAgentDbPath = defaultHermesAgentDbPath();
         const presets = [
             {
                 kind: "claude-code",
@@ -165,6 +169,20 @@ export class SourceRegistry {
                 pathOrUrl: hermesPath,
                 runtimeLabel: "hermes/1.0",
                 enabled: existsSync(hermesPath),
+            },
+            {
+                kind: "hermes-agent",
+                name: "Hermes Agent",
+                pathOrUrl: hermesAgentDbPath,
+                runtimeLabel: "hermes-agent/1.0",
+                enabled: existsSync(hermesAgentDbPath),
+            },
+            {
+                kind: "opencode",
+                name: "OpenCode",
+                pathOrUrl: openCodeDbPath,
+                runtimeLabel: "opencode/1.0",
+                enabled: existsSync(openCodeDbPath),
             },
             {
                 kind: "pi",
