@@ -29,6 +29,7 @@ import { snapshotScratchPath, stageRestore, vacuumSnapshot, } from "../core/stor
 import { logQuery, recallStats } from "../core/recall/query-log.js";
 import { recentQueryLog } from "../core/recall/recent-log.js";
 import { appendCitation, citationStats } from "../core/recall/citation-log.js";
+import { appendSupersedence } from "../core/storage/supersedence-log.js";
 import { clearSurfaced, loadSurfaced, recordSurfaced } from "../core/hook/memo.js";
 import { clearCited } from "../core/hook/cite-memo.js";
 import { classifyPrompt } from "../core/hook/gate.js";
@@ -1000,6 +1001,51 @@ function registerSessionRoute(app, deps) {
             return c.json({ error: `session ${id} not found` }, 404);
         }
         return c.json(session);
+    });
+    // Post-hoc supersedence write path. Mirrors the `mark_superseded` MCP tool
+    // so UI + CLI + MCP all share one backend gesture. Path param is the
+    // predecessor (the session being retired); body names the successor.
+    app.post("/api/session/:id/supersede", async (c) => {
+        const predecessorId = c.req.param("id");
+        let body;
+        try {
+            body = await c.req.json();
+        }
+        catch {
+            return c.json({ error: "request body must be JSON" }, 400);
+        }
+        if (!body || typeof body !== "object") {
+            return c.json({ error: "request body must be a JSON object" }, 400);
+        }
+        const r = body;
+        const successorId = r["successor_id"] ?? r["successorId"];
+        const reason = r["reason"];
+        if (typeof successorId !== "string" || successorId.length === 0) {
+            return c.json({ error: "successor_id is required" }, 400);
+        }
+        if (reason !== undefined && typeof reason !== "string") {
+            return c.json({ error: "reason must be a string if provided" }, 400);
+        }
+        try {
+            await deps.store.markSuperseded(predecessorId, successorId);
+        }
+        catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            const status = msg.includes("not found") || msg.includes("itself") ? 400 : 500;
+            return c.json({ error: msg }, status);
+        }
+        void appendSupersedence({
+            predecessorId,
+            successorId,
+            source: c.req.header("x-supersedence-source") ?? "http",
+            ...(typeof reason === "string" ? { reason } : {}),
+        });
+        return c.json({
+            marked: true,
+            predecessor_id: predecessorId,
+            successor_id: successorId,
+            ...(typeof reason === "string" ? { reason } : {}),
+        });
     });
 }
 function parseActionInput(raw) {

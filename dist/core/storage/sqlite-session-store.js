@@ -457,6 +457,20 @@ export class SqliteSessionStore {
             if (!succExists) {
                 throw new Error(`successor session ${successorId} not found`);
             }
+            // Remove any prior `supersedes` edges pointing at this predecessor
+            // *except* the one we're about to assert. Without this, an overwrite
+            // (predecessor was previously marked superseded by some other session)
+            // leaves orphan edges — the predecessor reports the new successor in
+            // `supersededBy`, but the old successor still claims it superseded
+            // this predecessor in its `supersedes` list. The audit trail (the
+            // supersedence-log + the prior session itself) preserves the prior
+            // decision; the current edge graph should reflect current state.
+            this.db
+                .prepare(`DELETE FROM session_edges
+           WHERE to_session = ?
+             AND kind = 'supersedes'
+             AND from_session != ?`)
+                .run(predecessorId, successorId);
             this.db
                 .prepare(`INSERT OR IGNORE INTO session_edges (from_session, to_session, kind)
            VALUES (?, ?, 'supersedes')`)

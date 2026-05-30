@@ -252,6 +252,43 @@ describe("MCP adapter", () => {
       expect(result.isError).toBe(true);
       expect(result.content[0]?.text).toContain("itself");
     });
+
+    it("overwriting with a different successor removes the prior edge", async () => {
+      // Seed a third session and chain: sess_a is first superseded by sess_b,
+      // then re-marked as superseded by the new session. The session_edges
+      // graph must reflect the *current* successor only — orphan edges from
+      // the previous decision desync `supersededBy` from `supersedes`.
+      const c: Session = makeSession({
+        id: "sess_c",
+        label: "newer plan",
+        entities: ["NLM"],
+      });
+      store.insertSessionForTest(c);
+
+      await markSupersededHandler(
+        { recall, store },
+        { predecessor_id: "sess_a", successor_id: "sess_b" },
+      );
+      await markSupersededHandler(
+        { recall, store },
+        { predecessor_id: "sess_a", successor_id: "sess_c" },
+      );
+
+      const olderRes = await getSessionHandler({ recall, store }, { id: "sess_a" });
+      const olderBody = parsePayload(olderRes) as { supersededBy: { id: string } | null };
+      expect(olderBody.supersededBy?.id).toBe("sess_c");
+
+      // The original successor (sess_b) must no longer claim to supersede
+      // sess_a — that edge was replaced, not augmented.
+      const bRes = await getSessionHandler({ recall, store }, { id: "sess_b" });
+      const bBody = parsePayload(bRes) as { supersedes: { id: string }[] };
+      expect(bBody.supersedes).toEqual([]);
+
+      const cRes = await getSessionHandler({ recall, store }, { id: "sess_c" });
+      const cBody = parsePayload(cRes) as { supersedes: { id: string }[] };
+      expect(cBody.supersedes).toHaveLength(1);
+      expect(cBody.supersedes[0]?.id).toBe("sess_a");
+    });
   });
 
   describe("fact tools (B.3)", () => {

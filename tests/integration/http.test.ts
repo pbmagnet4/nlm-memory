@@ -150,6 +150,90 @@ describe("HTTP adapter", () => {
     expect(res.status).toBe(404);
   });
 
+  describe("POST /api/session/:id/supersede", () => {
+    beforeEach(() => {
+      process.env["NLM_SUPERSEDENCE_LOG"] = join(tmp, "supersedence-log.jsonl");
+    });
+    afterEach(() => {
+      delete process.env["NLM_SUPERSEDENCE_LOG"];
+    });
+
+    it("marks the predecessor and links to the successor", async () => {
+      const res = await app.request("/api/session/sess_a/supersede", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ successor_id: "sess_b", reason: "newer plan" }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { marked: boolean; predecessor_id: string };
+      expect(body.marked).toBe(true);
+      expect(body.predecessor_id).toBe("sess_a");
+
+      const after = await app.request("/api/session/sess_a");
+      const ses = (await after.json()) as { status: string; supersededBy: string | null };
+      expect(ses.status).toBe("superseded");
+      expect(ses.supersededBy).toBe("sess_b");
+    });
+
+    it("400s when successor_id is missing", async () => {
+      const res = await app.request("/api/session/sess_a/supersede", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain("successor_id");
+    });
+
+    it("400s when request body is not JSON", async () => {
+      const res = await app.request("/api/session/sess_a/supersede", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "not json",
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("400s when the predecessor is unknown", async () => {
+      const res = await app.request("/api/session/ghost/supersede", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ successor_id: "sess_b" }),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain("predecessor");
+    });
+
+    it("400s when predecessor equals successor", async () => {
+      const res = await app.request("/api/session/sess_a/supersede", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ successor_id: "sess_a" }),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("is idempotent — re-POST on the same pair stays clean", async () => {
+      await app.request("/api/session/sess_a/supersede", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ successor_id: "sess_b" }),
+      });
+      const res = await app.request("/api/session/sess_a/supersede", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ successor_id: "sess_b" }),
+      });
+      expect(res.status).toBe(200);
+      // sess_b should still report only one supersedes link
+      const after = await app.request("/api/session/sess_b");
+      const ses = (await after.json()) as { supersedes: string[] };
+      expect(ses.supersedes).toEqual(["sess_a"]);
+    });
+  });
+
   it("GET /api/recall/stats returns zero-totals when log is absent", async () => {
     const res = await app.request("/api/recall/stats?days=14");
     expect(res.status).toBe(200);

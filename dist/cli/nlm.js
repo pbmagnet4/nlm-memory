@@ -51,6 +51,7 @@ import { connectClaudeCode, disconnectClaudeCode, installClaudeCodeHooks, mcpCon
 import { hardenNlmDirPermissions } from "../install/nlm-dir-perms.js";
 import { ensureMcpToken } from "../install/ollama.js";
 import { connectCursor, disconnectCursor } from "../install/cursor.js";
+import { runSupersedeCommand } from "./supersede.js";
 import { connectHermes, disconnectHermes, hermesConfigPath } from "../install/hermes.js";
 import { connectHermesAgent, disconnectHermesAgent, hermesAgentPluginDir } from "../install/hermes-agent.js";
 import { connectWindsurf, disconnectWindsurf } from "../install/windsurf.js";
@@ -293,6 +294,21 @@ program
     finally {
         store.close();
     }
+});
+program
+    .command("supersede")
+    .description("Retroactively mark a session as superseded by a newer one")
+    .argument("[predecessor]", "predecessor session id (omit for interactive search)")
+    .argument("[successor]", "successor session id (omit for interactive search)")
+    .option("-r, --reason <text>", "optional rationale (logged to ~/.nlm/supersedence-log.jsonl)")
+    .option("-y, --yes", "skip confirmation")
+    .action(async (predecessorArg, successorArg, opts) => {
+    await runSupersedeCommand({
+        predecessor: predecessorArg,
+        successor: successorArg,
+        reason: opts.reason,
+        yes: Boolean(opts.yes),
+    });
 });
 program
     .command("classify-parity")

@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { SessionDrawerSkeleton } from "./Skeleton.js";
+import { SupersedePalette } from "./SupersedePalette.js";
 
 interface SessionDetail {
   id: string;
@@ -31,6 +32,27 @@ interface SessionDrawerProps {
 export function SessionDrawer({ sessionId, onClose, entityColor, onNavigate, prevSessionId, nextSessionId }: SessionDrawerProps) {
   const [session, setSession] = useState<SessionDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [reloadTick, setReloadTick] = useState(0);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [menuOpen]);
+
+  // Reset transient sub-UI state on every session change so a palette opened
+  // for sess_a doesn't leak into sess_b when the user navigates via the
+  // arrow keys mid-flow.
+  useEffect(() => {
+    setPaletteOpen(false);
+    setMenuOpen(false);
+  }, [sessionId]);
 
   useEffect(() => {
     setSession(null);
@@ -57,17 +79,22 @@ export function SessionDrawer({ sessionId, onClose, entityColor, onNavigate, pre
         });
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
-  }, [sessionId]);
+  }, [sessionId, reloadTick]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // When the supersede palette is open, it owns keyboard focus and Esc.
+      // Skip handling here so a single Esc only closes the palette, not the
+      // drawer underneath. SupersedePalette also stopPropagation()s but we
+      // belt-and-suspenders against missed events from native dispatch order.
+      if (paletteOpen) return;
       if (e.key === "Escape") { onClose(); return; }
       if (e.key === "ArrowLeft" && prevSessionId != null && onNavigate) onNavigate(prevSessionId);
       if (e.key === "ArrowRight" && nextSessionId != null && onNavigate) onNavigate(nextSessionId);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [onClose, onNavigate, prevSessionId, nextSessionId]);
+  }, [onClose, onNavigate, prevSessionId, nextSessionId, paletteOpen]);
 
   return (
     <>
@@ -98,6 +125,50 @@ export function SessionDrawer({ sessionId, onClose, entityColor, onNavigate, pre
               </button>
             </div>
           )}
+          <div className="drawer-menu" ref={menuRef}>
+            <button
+              type="button"
+              className="drawer-menu-trigger"
+              onClick={() => setMenuOpen((v) => !v)}
+              aria-label="Session actions"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              disabled={!session}
+            >
+              ⋯
+            </button>
+            {menuOpen && (
+              <ul className="drawer-menu-list" role="menu">
+                <li role="none">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="drawer-menu-item"
+                    disabled={!session}
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setPaletteOpen(true);
+                    }}
+                  >
+                    Mark superseded by…
+                  </button>
+                </li>
+                <li role="none">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="drawer-menu-item"
+                    onClick={() => {
+                      void navigator.clipboard?.writeText(sessionId);
+                      setMenuOpen(false);
+                    }}
+                  >
+                    Copy session ID
+                  </button>
+                </li>
+              </ul>
+            )}
+          </div>
           <button type="button" className="drawer-close" onClick={onClose} aria-label="Close">×</button>
         </header>
         {error && <div className="muted error drawer-body">{error}</div>}
@@ -194,6 +265,24 @@ export function SessionDrawer({ sessionId, onClose, entityColor, onNavigate, pre
           </div>
         )}
       </aside>
+      {paletteOpen && session && (
+        <SupersedePalette
+          predecessorId={session.id}
+          predecessorLabel={session.label || session.id}
+          onClose={() => setPaletteOpen(false)}
+          onMarked={(successorId) => {
+            setPaletteOpen(false);
+            // Optimistic: paint the supersedence banner immediately so the user
+            // sees their change before the canonical refresh round-trips. The
+            // reload still fires so any server-side mutations (e.g. status
+            // recompute) reconcile within one tick.
+            setSession((prev) =>
+              prev ? { ...prev, status: "superseded", supersededBy: successorId } : prev,
+            );
+            setReloadTick((t) => t + 1);
+          }}
+        />
+      )}
     </>
   );
 }

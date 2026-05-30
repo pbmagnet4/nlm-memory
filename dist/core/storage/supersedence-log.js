@@ -5,7 +5,9 @@
  * implicit in the session_edges row's predecessor reference.
  *
  * Path defaults to ~/.nlm/supersedence-log.jsonl, overridable via
- * NLM_SUPERSEDENCE_LOG. Telemetry path — never raises.
+ * NLM_SUPERSEDENCE_LOG. Telemetry path — never raises, but on failure it
+ * emits one warning line to stderr so a silent disk-full or permission
+ * issue doesn't leave the operator believing their audit trail is intact.
  */
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -26,8 +28,12 @@ export async function appendSupersedence(entry, logPath = defaultLogPath()) {
         };
         await appendFile(logPath, JSON.stringify(payload) + "\n", "utf8");
     }
-    catch {
-        // Telemetry failure must never break the call path.
+    catch (e) {
+        // Telemetry failure must never break the call path, but surface the
+        // problem so the operator can investigate (the supersedence itself
+        // still committed to SQLite — only the audit row is missing).
+        const msg = e instanceof Error ? e.message : String(e);
+        process.stderr.write(`nlm-memory: failed to append supersedence-log entry at ${logPath}: ${msg}\n`);
     }
 }
 //# sourceMappingURL=supersedence-log.js.map
