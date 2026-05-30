@@ -503,3 +503,79 @@ describe("HTTP adapter — fact recall", () => {
     expect((await bare.request("/api/recall/facts?subject=x")).status).toBe(503);
   });
 });
+
+// Local-only middleware. The default test setup skips the gate via VITEST.
+// This block exercises the gate explicitly by unsetting both env signals so
+// the browser-fetch heuristics (Origin / Sec-Fetch-Site) actually run.
+describe("HTTP local-only gate", () => {
+  let tmp: string;
+  let store: SqliteSessionStore;
+  let app: Hono;
+  let savedVitest: string | undefined;
+  let savedNodeEnv: string | undefined;
+  let savedToken: string | undefined;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "nlm-http-gate-"));
+    store = new SqliteSessionStore({
+      dbPath: join(tmp, "canonical.sqlite"),
+      migrationsDir: MIGRATIONS_DIR,
+    });
+    savedVitest = process.env["VITEST"];
+    savedNodeEnv = process.env["NODE_ENV"];
+    savedToken = process.env["NLM_MCP_TOKEN"];
+    delete process.env["VITEST"];
+    delete process.env["NODE_ENV"];
+    process.env["NLM_MCP_TOKEN"] = "test-token";
+    const recall = new RecallService({ store, llm: new FixedEmbedder(unit([1, 0, 0])) });
+    app = createApp({ recall, store, liveStore: store });
+  });
+
+  afterEach(() => {
+    store.close();
+    rmSync(tmp, { recursive: true, force: true });
+    if (savedVitest === undefined) delete process.env["VITEST"];
+    else process.env["VITEST"] = savedVitest;
+    if (savedNodeEnv === undefined) delete process.env["NODE_ENV"];
+    else process.env["NODE_ENV"] = savedNodeEnv;
+    if (savedToken === undefined) delete process.env["NLM_MCP_TOKEN"];
+    else process.env["NLM_MCP_TOKEN"] = savedToken;
+  });
+
+  it("allows /api/health with no auth headers (liveness probe)", async () => {
+    const res = await app.request("/api/health", { headers: { host: "localhost:3940" } });
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects /api/dataset without Origin and without Bearer (the original bug surface)", async () => {
+    const res = await app.request("/api/dataset", { headers: { host: "localhost:3940" } });
+    expect(res.status).toBe(401);
+  });
+
+  it("allows /api/dataset when Sec-Fetch-Site: same-origin is present", async () => {
+    // Same-origin GET from a browser SPA — Origin is often omitted by spec,
+    // but Sec-Fetch-Site is always sent and can't be forged cross-origin.
+    const res = await app.request("/api/dataset", {
+      headers: { host: "localhost:3940", "sec-fetch-site": "same-origin" },
+    });
+    // 200 (data) or 503 (factRecall not wired) — anything except 401/403 proves
+    // the gate let it through.
+    expect(res.status).not.toBe(401);
+    expect(res.status).not.toBe(403);
+  });
+
+  it("still rejects Sec-Fetch-Site: cross-site (attacker can't bypass)", async () => {
+    const res = await app.request("/api/dataset", {
+      headers: { host: "localhost:3940", "sec-fetch-site": "cross-site" },
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("allows /api/dataset when a loopback Origin is present", async () => {
+    const res = await app.request("/api/dataset", {
+      headers: { host: "localhost:3940", origin: "http://localhost:3940" },
+    });
+    expect(res.status).not.toBe(401);
+    expect(res.status).not.toBe(403);
+  });
+});

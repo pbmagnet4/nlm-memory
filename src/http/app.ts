@@ -239,7 +239,18 @@ function installLocalOnlyMiddleware(app: Hono, boundPort: number): void {
       // Loopback origin → same-origin UI request. Allow.
       return next();
     }
-    // No Origin → not a browser fetch. Require Bearer if a token is configured.
+    // Fetch Metadata: browsers send `Sec-Fetch-Site: same-origin` on every
+    // fetch issued by same-origin scripts, and the spec forbids JS or
+    // cross-origin attackers from setting Sec-Fetch-* headers. Modern
+    // browsers also omit `Origin` on same-origin GETs, which would otherwise
+    // trap UI fetches in the Bearer-required branch below. Trust this
+    // header as equivalent to a loopback Origin.
+    const fetchSite = c.req.header("sec-fetch-site");
+    if (fetchSite === "same-origin") {
+      return next();
+    }
+    // No Origin and no same-origin fetch metadata → not a browser fetch.
+    // Require Bearer if a token is configured.
     const token = process.env["NLM_MCP_TOKEN"];
     if (!token) {
       // No token configured → local-only daemon with loopback Host already verified.
