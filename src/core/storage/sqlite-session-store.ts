@@ -439,7 +439,7 @@ export class SqliteSessionStore implements SessionStore {
       if (!factText) continue;
       try {
         const { vector } = await embedder.embed(factText, "document");
-        factStore.upsertEmbedding(fact.id, vector);
+        await factStore.upsertEmbedding(fact.id, vector);
       } catch {
         // Per-fact embedding failure must not abort embedding of subsequent
         // facts. The fact row stays current; semantic recall just misses it

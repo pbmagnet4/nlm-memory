@@ -72,6 +72,31 @@ export interface FactStore {
   markSuperseded(oldId: string, newId: string | null): Promise<void>;
 
   /**
+   * Insert or replace the embedding vector for a fact. Vector dimension is
+   * fixed by the embedding model (nomic-embed-text → 768) and validated by
+   * the adapter. Best-effort at the call site: ingest traps errors so an
+   * unreachable embedder doesn't roll back the surrounding transaction.
+   */
+  upsertEmbedding(factId: string, vector: Float32Array): Promise<void>;
+
+  /**
+   * Atomic session-scoped fact write: delete prior facts for this session,
+   * insert the new set, then apply deterministic supersedence on any
+   * (subject, predicate) collision against existing non-superseded facts
+   * from other sessions. Must run inside a transaction (the caller wraps
+   * with Storage.withTransaction). See Section 2 of factstore-design.md
+   * and the original applyFactsInTxn comment in sqlite-session-store.ts
+   * for the ordering rationale (insert before supersedence-UPDATE).
+   *
+   * Replaces the SqliteSessionStore.applyFactsInTxn private helper as a
+   * port-level operation so any FactStore backend can implement it.
+   */
+  ingestSessionFacts(
+    sessionId: string,
+    facts: ReadonlyArray<import("@shared/types.js").Fact>,
+  ): Promise<void>;
+
+  /**
    * Pre-filtered fact list used by FactRecallService. Applies subject /
    * predicate / kind / confidence / superseded filters at the SQL layer
    * before keyword scoring runs in core. No ordering guarantee beyond

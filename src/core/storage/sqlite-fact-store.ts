@@ -230,7 +230,7 @@ export class SqliteFactStore implements FactStore {
    * trap embedder errors so an unreachable Ollama doesn't roll back ingest.
    * vec0 doesn't UPDATE, so this is a DELETE+INSERT pair.
    */
-  upsertEmbedding(factId: string, vector: Float32Array): void {
+  async upsertEmbedding(factId: string, vector: Float32Array): Promise<void> {
     const blob = Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
     this.db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ?").run(factId);
     this.db
@@ -258,6 +258,20 @@ export class SqliteFactStore implements FactStore {
         .run(newId, oldId);
     });
     txn();
+  }
+
+  async ingestSessionFacts(
+    sessionId: string,
+    facts: ReadonlyArray<Fact>,
+  ): Promise<void> {
+    // Stubbed in Task 2 to satisfy the FactStore interface. The real
+    // transactional implementation lands in Task 4 once SqliteStorage
+    // exists and SqliteSessionStore.applyFactsInTxn is removed.
+    void sessionId;
+    void facts;
+    throw new Error(
+      "ingestSessionFacts not yet wired — Task 4 implements the real DELETE+insert+supersedence flow",
+    );
   }
 
   private insertStmt() {

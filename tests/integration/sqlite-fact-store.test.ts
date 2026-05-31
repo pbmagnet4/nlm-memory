@@ -319,8 +319,8 @@ describe("SqliteFactStore (integration)", () => {
       near[0] = 1;
       const far = new Float32Array(768);
       far[1] = 1;
-      factStore.upsertEmbedding("near", near);
-      factStore.upsertEmbedding("far", far);
+      await factStore.upsertEmbedding("near", near);
+      await factStore.upsertEmbedding("far", far);
 
       const query = new Float32Array(768);
       query[0] = 1;
@@ -335,8 +335,8 @@ describe("SqliteFactStore (integration)", () => {
       v1[0] = 1;
       const v2 = new Float32Array(768);
       v2[1] = 1;
-      factStore.upsertEmbedding("f1", v1);
-      factStore.upsertEmbedding("f1", v2);
+      await factStore.upsertEmbedding("f1", v1);
+      await factStore.upsertEmbedding("f1", v2);
       const count = sessionStore.rawDb()
         .prepare<[], { c: number }>("SELECT COUNT(*) AS c FROM fact_embeddings WHERE fact_id = 'f1'")
         .get();
