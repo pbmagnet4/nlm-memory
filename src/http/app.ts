@@ -59,12 +59,14 @@ import { buildDataset } from "@core/dataset/build-dataset.js";
 import { ClassifierBox, type ClassifierProvider } from "../llm/classifier-box.js";
 import {
   SourceRegistry,
+  PgSourceRegistry,
   type SourceInsert,
   type SourceKind,
   type SourceUpdate,
 } from "@core/sources/source-registry.js";
 import {
   ProviderRegistry,
+  PgProviderRegistry,
   type ProviderInsert,
   type ProviderKind,
   type ProviderUpdate,
@@ -79,6 +81,7 @@ import {
 } from "@core/actions/actions-log.js";
 import type { SessionStore } from "@ports/session-store.js";
 import type { SqliteSessionStore } from "@core/storage/sqlite-session-store.js";
+import type { PgSessionStore } from "@core/storage/pg-session-store.js";
 import type { McpDeps } from "../mcp/server.js";
 import type {
   FactKind,
@@ -92,7 +95,7 @@ export interface HttpDeps {
   readonly recall: RecallService;
   readonly store: SessionStore;
   /** Pass the concrete store when /live endpoints (recent-writes / recent-markers) should be served. */
-  readonly liveStore?: SqliteSessionStore;
+  readonly liveStore?: SqliteSessionStore | PgSessionStore;
   /** Optional override for the query log path. Defaults to ~/.nlm/query_log.jsonl or $NLM_QUERY_LOG. */
   readonly queryLogPath?: string;
   /** Optional override for the citation log path. Defaults to ~/.nlm/citation-log.jsonl or $NLM_CITATION_LOG. */
@@ -107,9 +110,9 @@ export interface HttpDeps {
   /** Mutable classifier — read by /api/classifier/info, swapped by POST /api/classifier. */
   readonly classifier?: ClassifierBox;
   /** Sources registry — exposes /api/sources CRUD for the desktop UI. */
-  readonly sources?: SourceRegistry;
+  readonly sources?: SourceRegistry | PgSourceRegistry;
   /** Providers registry — exposes /api/providers CRUD for the desktop UI. */
-  readonly providers?: ProviderRegistry;
+  readonly providers?: ProviderRegistry | PgProviderRegistry;
   /** Wire to enable POST /api/ingest. When omitted, push ingest is disabled. */
   readonly ingest?: IngestDeps;
   /** Static embedder info — embeddings are always Ollama in this build (DeepSeek has no /embed). */
@@ -861,7 +864,8 @@ function registerDataManagementRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.liveStore || !deps.dbPath) {
       return c.json({ error: "data stats require liveStore + dbPath" }, 503);
     }
-    const db = deps.liveStore.rawDb();
+    // TODO(#215a): replace rawDb() with port methods; cast until then
+    const db = (deps.liveStore as import("@core/storage/sqlite-session-store.js").SqliteSessionStore).rawDb();
     const countOf = (table: string): number => {
       try {
         const row = db.prepare<[], { n: number }>(`SELECT COUNT(*) AS n FROM ${table}`).get();
@@ -921,7 +925,8 @@ function registerDataManagementRoutes(app: Hono, deps: HttpDeps): void {
     }
     const scratch = snapshotScratchPath(deps.dbPath);
     try {
-      vacuumSnapshot(deps.liveStore.rawDb(), scratch);
+      // TODO(#215a): replace rawDb() with port methods; cast until then
+      vacuumSnapshot((deps.liveStore as import("@core/storage/sqlite-session-store.js").SqliteSessionStore).rawDb(), scratch);
       const bytes = readFileSync(scratch);
       const stamp = new Date().toISOString().slice(0, 10);
       c.header("Content-Type", "application/x-sqlite3");
@@ -981,7 +986,8 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
     const body = await c.req.json().catch(() => null);
     const parsed = parseActionInput(body);
     if (!parsed) return c.json({ error: "invalid action payload" }, 400);
-    const id = writeAction(deps.liveStore.rawDb(), parsed);
+    // TODO(#215a): replace rawDb() with port methods; cast until then
+    const id = writeAction((deps.liveStore as import("@core/storage/sqlite-session-store.js").SqliteSessionStore).rawDb(), parsed);
     return c.json({ id, timestamp: new Date().toISOString() });
   });
 
@@ -993,13 +999,15 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
       .map(parseActionInput)
       .filter((x): x is NonNullable<ReturnType<typeof parseActionInput>> => x !== null);
     if (inputs.length === 0) return c.json({ accepted: 0, ids: [] });
-    const ids = writeActionsBatch(deps.liveStore.rawDb(), inputs);
+    // TODO(#215a): replace rawDb() with port methods; cast until then
+    const ids = writeActionsBatch((deps.liveStore as import("@core/storage/sqlite-session-store.js").SqliteSessionStore).rawDb(), inputs);
     return c.json({ accepted: ids.length, ids });
   });
 
   app.post("/api/action/:id/undo", (c) => {
     if (!deps.liveStore) return c.json({ error: "actions require liveStore" }, 503);
-    const result = undoAction(deps.liveStore.rawDb(), c.req.param("id"));
+    // TODO(#215a): replace rawDb() with port methods; cast until then
+    const result = undoAction((deps.liveStore as import("@core/storage/sqlite-session-store.js").SqliteSessionStore).rawDb(), c.req.param("id"));
     if (!result) return c.json({ error: "action not found or already undone" }, 404);
     return c.json({ id: result.undoId, timestamp: new Date().toISOString() });
   });
@@ -1010,7 +1018,8 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
     const subjectId = c.req.query("subject_id");
     const kind = c.req.query("kind");
     const limit = limitRaw ? Math.max(1, Math.min(500, Number.parseInt(limitRaw, 10))) : 100;
-    const rows = listActions(deps.liveStore.rawDb(), {
+    // TODO(#215a): replace rawDb() with port methods; cast until then
+    const rows = listActions((deps.liveStore as import("@core/storage/sqlite-session-store.js").SqliteSessionStore).rawDb(), {
       limit,
       ...(subjectId ? { subjectId } : {}),
       ...(kind ? { kind } : {}),
@@ -1072,7 +1081,8 @@ function registerSourceRoutes(app: Hono, deps: HttpDeps): void {
     const body = (await c.req.json().catch(() => null)) as Partial<SourceInsert> | null;
     const parsed = parseSourceInsert(body);
     if (!parsed) return c.json({ error: "invalid source payload" }, 400);
-    if (deps.sources.getByName(parsed.name)) {
+    // TODO(#215a): PgSourceRegistry port; cast until then
+    if ((deps.sources as SourceRegistry).getByName(parsed.name)) {
       return c.json({ error: `source named '${parsed.name}' already exists` }, 409);
     }
     return c.json(deps.sources.insert(parsed), 201);
@@ -1103,7 +1113,8 @@ function registerSourceRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.sources) return c.json({ error: "sources registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    const token = deps.sources.regenerateToken(id);
+    // TODO(#215a): PgSourceRegistry port; cast until then
+    const token = (deps.sources as SourceRegistry).regenerateToken(id);
     if (!token) return c.json({ error: "regenerate-token only applies to webhook sources" }, 400);
     return c.json({ token });
   });
@@ -1119,7 +1130,8 @@ function registerIngestRoute(app: Hono, deps: HttpDeps): void {
     const auth = c.req.header("authorization") ?? "";
     const match = /^Bearer\s+(\S+)$/i.exec(auth);
     if (!match || !match[1]) return c.json({ error: "missing or malformed bearer token" }, 401);
-    const source = deps.sources.findByToken(match[1]);
+    // TODO(#215a): PgSourceRegistry port; cast until then
+    const source = (deps.sources as SourceRegistry).findByToken(match[1]);
     if (!source || source.kind !== "webhook") return c.json({ error: "invalid token" }, 401);
     if (!source.enabled) return c.json({ error: "source is disabled" }, 403);
 
@@ -1167,7 +1179,8 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
     const body = (await c.req.json().catch(() => null)) as Partial<ProviderInsert> | null;
     const parsed = parseProviderInsert(body);
     if (!parsed) return c.json({ error: "invalid provider payload" }, 400);
-    if (deps.providers.getByName(parsed.name)) {
+    // TODO(#215a): PgProviderRegistry port; cast until then
+    if ((deps.providers as ProviderRegistry).getByName(parsed.name)) {
       return c.json({ error: `provider named '${parsed.name}' already exists` }, 409);
     }
     return c.json(deps.providers.insert(parsed), 201);
@@ -1198,9 +1211,10 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.providers) return c.json({ error: "providers registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    const provider = deps.providers.get(id);
+    // TODO(#215a): PgProviderRegistry port; cast until then
+    const provider = (deps.providers as ProviderRegistry).get(id);
     if (!provider) return c.json({ error: `provider ${id} not found` }, 404);
-    const key = deps.providers.getSecret(id);
+    const key = (deps.providers as ProviderRegistry).getSecret(id);
     try {
       const models = await listModels(provider, { apiKey: key });
       return c.json({ models });
@@ -1214,9 +1228,10 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.providers) return c.json({ error: "providers registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    const provider = deps.providers.get(id);
+    // TODO(#215a): PgProviderRegistry port; cast until then
+    const provider = (deps.providers as ProviderRegistry).get(id);
     if (!provider) return c.json({ error: `provider ${id} not found` }, 404);
-    const key = deps.providers.getSecret(id);
+    const key = (deps.providers as ProviderRegistry).getSecret(id);
     const startedAt = Date.now();
     try {
       const models = await listModels(provider, { apiKey: key });

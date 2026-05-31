@@ -38,6 +38,9 @@ import { RecallService } from "../core/recall/recall-service.js";
 import { ProviderRegistry } from "../core/providers/provider-registry.js";
 import { SourceRegistry } from "../core/sources/source-registry.js";
 import { SqliteStorage } from "../core/storage/sqlite-storage.js";
+import { PgStorage } from "../core/storage/pg-storage.js";
+import { PgSourceRegistry } from "../core/sources/source-registry.js";
+import { PgProviderRegistry } from "../core/providers/provider-registry.js";
 import { applyPendingRestore } from "../core/storage/db-restore.js";
 import { createApp } from "../http/app.js";
 import { createMcpServer } from "../mcp/server.js";
@@ -78,6 +81,10 @@ import { runDigest } from "./digest.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
+const PG_MIGRATIONS_DIR = join(
+  fileURLToPath(new URL(".", import.meta.url)),
+  "../../migrations/pg",
+);
 const UI_DIST = resolve(__dirname, "../../dist/ui");
 const DEFAULT_DB_PATH = resolve(homedir(), ".nlm/canonical.sqlite");
 const DEFAULT_PORT = 3940;
@@ -110,15 +117,16 @@ function buildClassifier(): ClassifierBox {
   return new ClassifierBox({ provider, model, ollamaUrl: ollamaUrl() });
 }
 
-function buildAdapters(sources: SourceRegistry): TranscriptAdapter[] {
+async function buildAdapters(sources: SourceRegistry | PgSourceRegistry): Promise<TranscriptAdapter[]> {
   // Sources table is the source of truth. Each enabled row maps to one
   // adapter via adapterFromSource(). Detection still gates registration —
   // a row pointing at a missing dir won't poll. NLM_ADAPTERS keeps working
   // as a name-based filter for forcing a subset during dev.
   const explicit = process.env["NLM_ADAPTERS"];
   const allowed = explicit ? new Set(explicit.split(",").map((s) => s.trim())) : null;
+  const rows = await sources.list();
   const out: TranscriptAdapter[] = [];
-  for (const row of sources.list()) {
+  for (const row of rows) {
     if (!row.enabled) continue;
     const adapter = adapterFromSource(row);
     if (!adapter) continue;
@@ -127,6 +135,16 @@ function buildAdapters(sources: SourceRegistry): TranscriptAdapter[] {
     out.push(adapter);
   }
   return out;
+}
+
+async function buildStorage(path: string): Promise<SqliteStorage | PgStorage> {
+  const pgUrl = process.env["NLM_PG_URL"];
+  if (pgUrl) {
+    const storage = PgStorage.create({ connectionString: pgUrl, migrationsDir: PG_MIGRATIONS_DIR });
+    await storage.init();
+    return storage;
+  }
+  return SqliteStorage.create({ dbPath: path, migrationsDir: MIGRATIONS_DIR });
 }
 
 async function buildStack() {
@@ -141,21 +159,21 @@ async function buildStack() {
     console.error(`nlm-memory: restored database from staged backup`);
     if (restored.archivedTo) console.error(`  previous db archived at ${restored.archivedTo}`);
   }
-  const storage = SqliteStorage.create({
-    dbPath: dbPath(),
-    migrationsDir: MIGRATIONS_DIR,
-  });
-  await storage.init();
+  const storage = await buildStorage(dbPath());
   const store = storage.sessions;
   // FactStore shares the SessionStore's connection so session+facts ingest
   // can commit in one transaction. Phase B.1 wires it in; no callers yet.
   const facts = storage.facts;
   // TODO(#215a): replace storage.rawDb() with port methods
-  const sources = new SourceRegistry(storage.rawDb());
-  sources.seedDefaults();
+  const sources = storage instanceof PgStorage
+    ? new PgSourceRegistry(storage.pgPool())
+    : new SourceRegistry((storage as SqliteStorage).rawDb());
+  await sources.seedDefaults();
   // TODO(#215a): replace storage.rawDb() with port methods
-  const providers = new ProviderRegistry(storage.rawDb());
-  providers.seedDefaults();
+  const providers = storage instanceof PgStorage
+    ? new PgProviderRegistry(storage.pgPool())
+    : new ProviderRegistry((storage as SqliteStorage).rawDb());
+  if (providers instanceof ProviderRegistry) providers.seedDefaults();
   // Recall only uses embed(). Embeddings live on Ollama; DeepSeek doesn't
   // expose them. Classifier is wired separately for Phase D ingest.
   const embedder = new OllamaClient({ baseUrl: ollamaUrl() });
@@ -197,7 +215,15 @@ program
       classifier,
       sources,
       providers,
-      ingest: { classifier, embedder, store, factStore: facts },
+      // TODO(#215a): PgStorage ingest port; cast until then
+      ...(!(storage instanceof PgStorage) ? {
+        ingest: {
+          classifier,
+          embedder,
+          store: store as import("../core/storage/sqlite-session-store.js").SqliteSessionStore,
+          ...(facts ? { factStore: facts as import("../core/storage/sqlite-fact-store.js").SqliteFactStore } : {}),
+        },
+      } : {}),
       embedderInfo: { provider: "ollama", model: "nomic-embed-text", dims: 768 },
       ...(existsSync(UI_DIST) ? { uiDist: UI_DIST } : {}),
       // Wire POST /mcp only when NLM_MCP_TOKEN is present. Absent = route never
@@ -231,21 +257,27 @@ program
     // Keep the SQLite WAL bounded. WAL mode is on but nothing else
     // checkpoints it; under continuous readers it grows without limit
     // (it had reached 38 MB), which slows every read. Drain once at boot,
-    // then every 5 minutes.
-    const WAL_CHECKPOINT_INTERVAL_MS = 5 * 60_000;
-    try {
-      store.checkpoint();
-    } catch {
-      // Boot checkpoint can lose a race with readers — the interval retries.
-    }
-    const checkpointTimer = setInterval(() => {
-      try {
-        store.checkpoint();
-      } catch {
-        // Checkpoint contention — the next tick retries.
-      }
-    }, WAL_CHECKPOINT_INTERVAL_MS);
-    checkpointTimer.unref();
+    // then every 5 minutes. Skip entirely when using PgStorage (no WAL).
+    const checkpointTimer = !(storage instanceof PgStorage)
+      ? (() => {
+          const WAL_CHECKPOINT_INTERVAL_MS = 5 * 60_000;
+          const sqliteStore = store as import("../core/storage/sqlite-session-store.js").SqliteSessionStore;
+          try {
+            sqliteStore.checkpoint();
+          } catch {
+            // Boot checkpoint can lose a race with readers — the interval retries.
+          }
+          const t = setInterval(() => {
+            try {
+              sqliteStore.checkpoint();
+            } catch {
+              // Checkpoint contention — the next tick retries.
+            }
+          }, WAL_CHECKPOINT_INTERVAL_MS);
+          t.unref();
+          return t;
+        })()
+      : null;
 
     // Memo sweep runs independently of the transcript scheduler — it's the
     // backstop for SessionEnd hook unreliability (crashes, kill -9, IDE
@@ -255,17 +287,18 @@ program
     memoSweep.start();
     console.error("  memo sweep: dormant cleanup every 5m (threshold 24h)");
 
-    if (opts.scheduler !== false) {
-      const adapters = buildAdapters(sources);
+    if (opts.scheduler !== false && !(storage instanceof PgStorage)) {
+      const adapters = await buildAdapters(sources);
       if (adapters.length === 0) {
         console.error("  scheduler: no adapters detected (set NLM_ADAPTERS to force-enable)");
       } else {
         const scheduler = new ScanScheduler({
-          store,
+          // TODO(#215a): PgStorage scheduler port; SQLite-only until then
+          store: store as import("../core/storage/sqlite-session-store.js").SqliteSessionStore,
           adapters,
           classifier,
           embedder,
-          factStore: facts,
+          factStore: (facts as import("../core/storage/sqlite-fact-store.js").SqliteFactStore | null | undefined) ?? null,
           intervalMs: opts.intervalMin * 60_000,
         });
         scheduler.start();
@@ -273,7 +306,7 @@ program
           `  scheduler: ${adapters.map((a) => a.name).join(", ")} every ${opts.intervalMin}m`,
         );
         const shutdown = async () => {
-          clearInterval(checkpointTimer);
+          if (checkpointTimer) clearInterval(checkpointTimer);
           scheduler.stop();
           memoSweep.stop();
           await storage.close();
@@ -399,8 +432,9 @@ program
     const { storage, store, facts, embedder, classifier } = await buildStack();
     try {
       const report = await backfillFacts({
-        store,
-        factStore: facts,
+        // TODO(#215a): PgStorage backfill port; SQLite-only until then
+        store: store as import("../core/storage/sqlite-session-store.js").SqliteSessionStore,
+        factStore: facts as import("../core/storage/sqlite-fact-store.js").SqliteFactStore,
         classifier,
         embedder: opts.embed === false ? null : embedder,
         ...(opts.state ? { statePath: opts.state } : {}),

@@ -8,6 +8,7 @@
  */
 
 import type Database from "better-sqlite3";
+import type { Pool } from "pg";
 
 export interface ActionInput {
   readonly kind: string;
@@ -115,4 +116,102 @@ export function listActions(
   params.push(limit);
   const rows = db.prepare<unknown[], ActionRow & { payload: string | null }>(sql).all(...params);
   return rows.map((r) => ({ ...r, payload: r.payload ? (JSON.parse(r.payload) as Record<string, unknown>) : null }));
+}
+
+// ---------------------------------------------------------------------------
+// PG-native counterparts
+// ---------------------------------------------------------------------------
+
+export async function writeActionPg(pool: Pool, input: ActionInput): Promise<string> {
+  const id = makeActionId();
+  const payload = input.payload ? JSON.stringify(input.payload) : null;
+  await pool.query(
+    `INSERT INTO actions (id, timestamp, kind, subject_type, subject_id, payload, actor, runtime)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [id, new Date().toISOString(), input.kind, input.subjectType, input.subjectId,
+     payload, input.actor ?? "user", input.runtime ?? "api"],
+  );
+  return id;
+}
+
+export async function writeActionsBatchPg(pool: Pool, inputs: ReadonlyArray<ActionInput>): Promise<string[]> {
+  if (inputs.length === 0) return [];
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const ids: string[] = [];
+    for (const input of inputs) {
+      const id = makeActionId();
+      const payload = input.payload ? JSON.stringify(input.payload) : null;
+      await client.query(
+        `INSERT INTO actions (id, timestamp, kind, subject_type, subject_id, payload, actor, runtime)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [id, new Date().toISOString(), input.kind, input.subjectType, input.subjectId,
+         payload, input.actor ?? "user", input.runtime ?? "api"],
+      );
+      ids.push(id);
+    }
+    await client.query("COMMIT");
+    return ids;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function undoActionPg(pool: Pool, actionId: string): Promise<UndoResult | null> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const target = await client.query<{ id: string; kind: string; subject_type: string; subject_id: string }>(
+      "SELECT id, kind, subject_type, subject_id FROM actions WHERE id = $1 AND reverted_by IS NULL FOR UPDATE",
+      [actionId],
+    );
+    if (!target.rows[0]) {
+      await client.query("ROLLBACK");
+      return null;
+    }
+    const t = target.rows[0];
+    const undoId = makeActionId();
+    const undoPayload = JSON.stringify({ undone_kind: t.kind, undone_subject: `${t.subject_type}:${t.subject_id}` });
+    await client.query(
+      `INSERT INTO actions (id, timestamp, kind, subject_type, subject_id, payload, actor, runtime)
+       VALUES ($1, $2, 'undo', 'action', $3, $4, 'user', 'api')`,
+      [undoId, new Date().toISOString(), actionId, undoPayload],
+    );
+    await client.query("UPDATE actions SET reverted_by = $1 WHERE id = $2", [undoId, actionId]);
+    await client.query("COMMIT");
+    return { undoId, originalKind: t.kind };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function listActionsPg(
+  pool: Pool,
+  opts: { limit?: number; subjectId?: string; kind?: string } = {},
+): Promise<ActionRow[]> {
+  const limit = opts.limit ?? 100;
+  const where: string[] = [];
+  const params: unknown[] = [];
+  let idx = 1;
+  if (opts.subjectId) { where.push(`subject_id = $${idx++}`); params.push(opts.subjectId); }
+  if (opts.kind) { where.push(`kind = $${idx++}`); params.push(opts.kind); }
+  const whereSql = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+  params.push(limit);
+  const result = await pool.query<ActionRow & { payload: string | null }>(
+    `SELECT id, timestamp, kind, subject_type, subject_id, payload, actor, runtime, reverted_by
+     FROM actions ${whereSql}
+     ORDER BY timestamp DESC LIMIT $${idx}`,
+    params,
+  );
+  return result.rows.map((r) => ({
+    ...r,
+    payload: r.payload ? (JSON.parse(r.payload) as Record<string, unknown>) : null,
+  }));
 }

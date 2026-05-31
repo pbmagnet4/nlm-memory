@@ -285,3 +285,126 @@ export class SourceRegistry {
     for (const p of presets) this.insert(p);
   }
 }
+
+import type { Pool } from "pg";
+
+/**
+ * PgSourceRegistry — CRUD over `sources` for the PG storage path.
+ * Takes a pg.Pool instead of better-sqlite3.Database.
+ * API mirrors SourceRegistry exactly so callers swap the constructor arg.
+ */
+export class PgSourceRegistry {
+  constructor(private readonly pool: Pool) {}
+
+  async list(): Promise<SourceRow[]> {
+    const result = await this.pool.query<{
+      id: number; kind: SourceKind; name: string; path_or_url: string | null;
+      runtime_label: string; parse_config: string; enabled: boolean;
+      token: string | null; created_at: string; updated_at: string;
+    }>(
+      `SELECT id, kind, name, path_or_url, runtime_label, parse_config,
+              enabled, token, created_at, updated_at
+       FROM sources ORDER BY id`,
+    );
+    return result.rows.map((r) => ({
+      id: r.id,
+      kind: r.kind,
+      name: r.name,
+      pathOrUrl: r.path_or_url,
+      runtimeLabel: r.runtime_label,
+      parseConfig: (() => { try { return JSON.parse(r.parse_config) as Record<string, unknown>; } catch { return {} as Record<string, unknown>; } })(),
+      enabled: r.enabled,
+      token: null,
+      hasToken: r.token !== null && r.token.length > 0,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    }));
+  }
+
+  async get(id: number): Promise<SourceRow | null> {
+    const result = await this.pool.query<{
+      id: number; kind: SourceKind; name: string; path_or_url: string | null;
+      runtime_label: string; parse_config: string; enabled: boolean;
+      token: string | null; created_at: string; updated_at: string;
+    }>(
+      `SELECT id, kind, name, path_or_url, runtime_label, parse_config,
+              enabled, token, created_at, updated_at
+       FROM sources WHERE id = $1`,
+      [id],
+    );
+    if (!result.rows[0]) return null;
+    const r = result.rows[0];
+    return {
+      id: r.id, kind: r.kind, name: r.name, pathOrUrl: r.path_or_url,
+      runtimeLabel: r.runtime_label,
+      parseConfig: (() => { try { return JSON.parse(r.parse_config) as Record<string, unknown>; } catch { return {} as Record<string, unknown>; } })(),
+      enabled: r.enabled, token: null,
+      hasToken: r.token !== null && r.token.length > 0,
+      createdAt: r.created_at, updatedAt: r.updated_at,
+    };
+  }
+
+  async insert(input: SourceInsert): Promise<SourceRow> {
+    // Webhook sources get a token minted at insert time — revealed once on the
+    // insert response only. Subsequent list()/get() always return token: null.
+    const token = input.kind === "webhook" ? mintToken() : null;
+    const result = await this.pool.query<{ id: number; created_at: string; updated_at: string }>(
+      `INSERT INTO sources (kind, name, path_or_url, runtime_label, parse_config, enabled, token)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, created_at, updated_at`,
+      [
+        input.kind, input.name, input.pathOrUrl ?? null, input.runtimeLabel,
+        JSON.stringify(input.parseConfig ?? {}), input.enabled ?? true, token,
+      ],
+    );
+    const row = result.rows[0];
+    if (!row) throw new Error("PgSourceRegistry.insert: RETURNING yielded no row");
+    return {
+      id: row.id, kind: input.kind, name: input.name, pathOrUrl: input.pathOrUrl ?? null,
+      runtimeLabel: input.runtimeLabel,
+      parseConfig: input.parseConfig ?? {},
+      enabled: input.enabled ?? true,
+      token, hasToken: token !== null,
+      createdAt: row.created_at, updatedAt: row.updated_at,
+    };
+  }
+
+  async update(id: number, patch: SourceUpdate): Promise<SourceRow | null> {
+    const sets: string[] = ["updated_at = NOW()"];
+    const params: unknown[] = [];
+    let idx = 1;
+    if (patch.name !== undefined) { sets.push(`name = $${idx++}`); params.push(patch.name); }
+    if (patch.pathOrUrl !== undefined) { sets.push(`path_or_url = $${idx++}`); params.push(patch.pathOrUrl); }
+    if (patch.runtimeLabel !== undefined) { sets.push(`runtime_label = $${idx++}`); params.push(patch.runtimeLabel); }
+    if (patch.parseConfig !== undefined) { sets.push(`parse_config = $${idx++}`); params.push(JSON.stringify(patch.parseConfig)); }
+    if (patch.enabled !== undefined) { sets.push(`enabled = $${idx++}`); params.push(patch.enabled); }
+    if (sets.length === 1) return this.get(id);
+    params.push(id);
+    await this.pool.query(
+      `UPDATE sources SET ${sets.join(", ")} WHERE id = $${idx}`,
+      params,
+    );
+    return this.get(id);
+  }
+
+  async delete(id: number): Promise<boolean> {
+    const result = await this.pool.query("DELETE FROM sources WHERE id = $1", [id]);
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async seedDefaults(): Promise<void> {
+    const presets: Array<{ kind: SourceKind; name: string; path_or_url: string | null; runtime_label: string }> = [
+      { kind: "claude-code", name: "claude-code", path_or_url: null, runtime_label: "claude-code" },
+      { kind: "hermes", name: "hermes", path_or_url: null, runtime_label: "hermes" },
+      { kind: "pi", name: "pi", path_or_url: null, runtime_label: "pi" },
+    ];
+    for (const p of presets) {
+      await this.pool.query(
+        `INSERT INTO sources (kind, name, path_or_url, runtime_label, parse_config, enabled)
+         VALUES ($1, $2, $3, $4, '{}', TRUE)
+         ON CONFLICT (name) DO NOTHING`,
+        [p.kind, p.name, p.path_or_url, p.runtime_label],
+      );
+    }
+  }
+}

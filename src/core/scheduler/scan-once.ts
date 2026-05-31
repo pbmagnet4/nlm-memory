@@ -23,6 +23,7 @@
 
 import { statSync } from "node:fs";
 import type Database from "better-sqlite3";
+import type { Pool } from "pg";
 import type {
   SessionChunk,
   TranscriptAdapter,
@@ -139,4 +140,104 @@ export function recordFailed(
        failure_count = failure_count + 1,
        last_processed_at = excluded.last_processed_at`,
   ).run(adapterName, sourcePath, size, size);
+}
+
+export function getFileSize(sourcePath: string): number | null {
+  try {
+    return statSync(sourcePath).size;
+  } catch {
+    return null;
+  }
+}
+
+export async function scanOncePg(
+  adapter: TranscriptAdapter,
+  idleMinutes: number,
+  pool: Pool,
+  now: number = Date.now(),
+): Promise<ScanResult[]> {
+  const idleMs = idleMinutes * 60 * 1000;
+  const stateRows = await pool.query<{
+    source_path: string;
+    file_size: number | null;
+    session_id: string | null;
+    failure_count: number;
+  }>(
+    `SELECT source_path, file_size, session_id, COALESCE(failure_count, 0) AS failure_count
+     FROM adapter_state WHERE adapter_name = $1`,
+    [adapter.name],
+  );
+  const stateMap = new Map(
+    stateRows.rows.map((r) => [
+      r.source_path,
+      { fileSize: r.file_size, sessionId: r.session_id, failureCount: r.failure_count },
+    ]),
+  );
+
+  const paths = await adapter.discover();
+  const results: ScanResult[] = [];
+
+  for (const sourcePath of paths) {
+    // Bug 1 fix: mtime gate — skip files still being written
+    let st;
+    try {
+      st = statSync(sourcePath);
+    } catch {
+      continue;
+    }
+    if (now - st.mtimeMs < idleMs) continue;
+
+    const state = stateMap.get(sourcePath);
+
+    // Bug 2 fix: skip unchanged files for ALL paths, not just failure-ceiling paths
+    if (state?.fileSize !== undefined && state.fileSize !== null) {
+      const currentSize = getFileSize(sourcePath);
+      if (currentSize === state.fileSize) continue;
+    }
+
+    if (state && state.failureCount >= MAX_CLASSIFY_FAILURES) {
+      // File has grown (we didn't continue above), reset failure count
+      await pool.query(
+        "UPDATE adapter_state SET failure_count = 0 WHERE adapter_name = $1 AND source_path = $2",
+        [adapter.name, sourcePath],
+      );
+    }
+
+    const chunk = await adapter.parseSession(sourcePath);
+    if (!chunk) continue;
+
+    const prior = stateMap.get(sourcePath);
+    const supersedes = prior?.sessionId !== chunk.id ? (prior?.sessionId ?? null) : null;
+    results.push({ chunk, supersedes });
+
+    await pool.query(
+      `INSERT INTO adapter_state (adapter_name, source_path, last_offset, file_size, session_id, failure_count)
+       VALUES ($1, $2, 0, $3, $4, 0)
+       ON CONFLICT (adapter_name, source_path) DO UPDATE SET
+         file_size = EXCLUDED.file_size,
+         session_id = EXCLUDED.session_id,
+         failure_count = 0,
+         last_processed_at = NOW()`,
+      [adapter.name, sourcePath, getFileSize(sourcePath), chunk.id],
+    );
+  }
+
+  return results;
+}
+
+export async function recordFailedPg(
+  pool: Pool,
+  adapterName: string,
+  sourcePath: string,
+  fileSize: number | null,
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO adapter_state (adapter_name, source_path, last_offset, failure_count, file_size)
+     VALUES ($1, $2, 0, 1, $3)
+     ON CONFLICT (adapter_name, source_path) DO UPDATE SET
+       failure_count = adapter_state.failure_count + 1,
+       file_size = $3,
+       last_processed_at = NOW()`,
+    [adapterName, sourcePath, fileSize],
+  );
 }

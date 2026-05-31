@@ -25,7 +25,7 @@ import type {
   IngestRecord,
   SqliteSessionStore,
 } from "@core/storage/sqlite-session-store.js";
-import { MAX_CLASSIFY_FAILURES, recordClassified, recordFailed, scanOnce } from "./scan-once.js";
+import { MAX_CLASSIFY_FAILURES, getFileSize, recordClassified, recordFailed, recordFailedPg, scanOnce, scanOncePg } from "./scan-once.js";
 
 const DEFAULT_INTERVAL_MS = 30 * 60 * 1000; // 30 min, matches Python default
 const DEFAULT_CLASSIFY_TIMEOUT_MS = 120_000;
@@ -114,9 +114,12 @@ export class ScanScheduler {
     let chunksSeen = 0;
 
     for (const adapter of this.opts.adapters) {
+      const _pgPool = (this.opts.store as { pgPool?: () => import("pg").Pool }).pgPool?.();
       let results;
       try {
-        results = await scanOnce(adapter, this.opts.idleMinutes, this.opts.store.rawDb());
+        results = _pgPool
+          ? await scanOncePg(adapter, this.opts.idleMinutes, _pgPool)
+          : await scanOnce(adapter, this.opts.idleMinutes, this.opts.store.rawDb());
       } catch (e) {
         this.opts.logger(
           `[scheduler] scanOnce error for ${adapter.name}: ${e instanceof Error ? e.message : String(e)}`,
@@ -136,13 +139,18 @@ export class ScanScheduler {
         } catch (e) {
           classifyFailures += 1;
           const reason = e instanceof TimeoutError ? "timed out" : `error: ${e instanceof Error ? e.message : String(e)}`;
-          recordFailed(this.opts.store.rawDb(), adapter.name, chunk.sourcePath);
-          const failureRow = this.opts.store.rawDb()
-            .prepare<[string, string], { failure_count: number }>(
-              "SELECT COALESCE(failure_count, 0) AS failure_count FROM adapter_state WHERE adapter_name = ? AND source_path = ?",
-            )
-            .get(adapter.name, chunk.sourcePath);
-          const count = failureRow?.failure_count ?? 1;
+          if (_pgPool) {
+            void recordFailedPg(_pgPool, adapter.name, chunk.sourcePath, getFileSize(chunk.sourcePath));
+          } else {
+            recordFailed(this.opts.store.rawDb(), adapter.name, chunk.sourcePath);
+          }
+          const count = _pgPool
+            ? 1
+            : (this.opts.store.rawDb()
+                .prepare<[string, string], { failure_count: number }>(
+                  "SELECT COALESCE(failure_count, 0) AS failure_count FROM adapter_state WHERE adapter_name = ? AND source_path = ?",
+                )
+                .get(adapter.name, chunk.sourcePath)?.failure_count ?? 1);
           const ceiling = count >= MAX_CLASSIFY_FAILURES ? ` (failure ${count}/${MAX_CLASSIFY_FAILURES} — will skip until file grows)` : ` (failure ${count}/${MAX_CLASSIFY_FAILURES})`;
           this.opts.logger(`[scheduler] classifier ${reason} for ${chunk.id}${ceiling}`);
           continue;
@@ -187,16 +195,22 @@ export class ScanScheduler {
             supersedes,
             factSink,
           );
-          recordClassified(
-            this.opts.store.rawDb(),
-            adapter.name,
-            chunk.sourcePath,
-            chunk.id,
-          );
+          if (!_pgPool) {
+            recordClassified(
+              this.opts.store.rawDb(),
+              adapter.name,
+              chunk.sourcePath,
+              chunk.id,
+            );
+          }
           inserted += 1;
         } catch (e) {
           storageFailures += 1;
-          recordFailed(this.opts.store.rawDb(), adapter.name, chunk.sourcePath);
+          if (_pgPool) {
+            void recordFailedPg(_pgPool, adapter.name, chunk.sourcePath, getFileSize(chunk.sourcePath));
+          } else {
+            recordFailed(this.opts.store.rawDb(), adapter.name, chunk.sourcePath);
+          }
           this.opts.logger(
             `[scheduler] storage error for ${chunk.id}: ${e instanceof Error ? e.message : String(e)}`,
           );

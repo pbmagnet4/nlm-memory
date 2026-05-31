@@ -194,3 +194,94 @@ export class ProviderRegistry {
     });
   }
 }
+
+import type { Pool } from "pg";
+
+/**
+ * PgProviderRegistry — CRUD over `providers` for the PG storage path.
+ * API mirrors ProviderRegistry exactly.
+ */
+export class PgProviderRegistry {
+  constructor(private readonly pool: Pool) {}
+
+  async list(): Promise<ProviderRow[]> {
+    const result = await this.pool.query<{
+      id: number; kind: ProviderKind; name: string; base_url: string | null;
+      api_key: string | null; default_model: string | null; enabled: boolean;
+      created_at: string; updated_at: string;
+    }>(
+      `SELECT id, kind, name, base_url, api_key, default_model, enabled, created_at, updated_at
+       FROM providers ORDER BY id`,
+    );
+    return result.rows.map((r) => ({
+      id: r.id, kind: r.kind, name: r.name, baseUrl: r.base_url,
+      apiKey: null, hasApiKey: r.api_key !== null && r.api_key.length > 0,
+      defaultModel: r.default_model, enabled: r.enabled,
+      createdAt: r.created_at, updatedAt: r.updated_at,
+    }));
+  }
+
+  async get(id: number): Promise<ProviderRow | null> {
+    const result = await this.pool.query<{
+      id: number; kind: ProviderKind; name: string; base_url: string | null;
+      api_key: string | null; default_model: string | null; enabled: boolean;
+      created_at: string; updated_at: string;
+    }>(
+      `SELECT id, kind, name, base_url, api_key, default_model, enabled, created_at, updated_at
+       FROM providers WHERE id = $1`,
+      [id],
+    );
+    if (!result.rows[0]) return null;
+    const r = result.rows[0];
+    return {
+      id: r.id, kind: r.kind, name: r.name, baseUrl: r.base_url,
+      apiKey: null, hasApiKey: r.api_key !== null && r.api_key.length > 0,
+      defaultModel: r.default_model, enabled: r.enabled,
+      createdAt: r.created_at, updatedAt: r.updated_at,
+    };
+  }
+
+  async getSecret(id: number): Promise<string | null> {
+    const result = await this.pool.query<{ api_key: string | null }>(
+      "SELECT api_key FROM providers WHERE id = $1", [id],
+    );
+    return result.rows[0]?.api_key ?? null;
+  }
+
+  async insert(input: ProviderInsert): Promise<ProviderRow> {
+    const result = await this.pool.query<{ id: number; created_at: string; updated_at: string }>(
+      `INSERT INTO providers (kind, name, base_url, api_key, default_model, enabled)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, created_at, updated_at`,
+      [input.kind, input.name, input.baseUrl ?? null, input.apiKey ?? null, input.defaultModel ?? null, input.enabled ?? true],
+    );
+    const row = result.rows[0];
+    if (!row) throw new Error("PgProviderRegistry.insert: RETURNING yielded no row");
+    return {
+      id: row.id, kind: input.kind, name: input.name, baseUrl: input.baseUrl ?? null,
+      apiKey: null, hasApiKey: (input.apiKey ?? "").length > 0,
+      defaultModel: input.defaultModel ?? null, enabled: input.enabled ?? true,
+      createdAt: row.created_at, updatedAt: row.updated_at,
+    };
+  }
+
+  async update(id: number, patch: ProviderUpdate): Promise<ProviderRow | null> {
+    const sets: string[] = ["updated_at = NOW()"];
+    const params: unknown[] = [];
+    let idx = 1;
+    if (patch.name !== undefined) { sets.push(`name = $${idx++}`); params.push(patch.name); }
+    if (patch.baseUrl !== undefined) { sets.push(`base_url = $${idx++}`); params.push(patch.baseUrl); }
+    if (patch.apiKey !== undefined) { sets.push(`api_key = $${idx++}`); params.push(patch.apiKey); }
+    if (patch.defaultModel !== undefined) { sets.push(`default_model = $${idx++}`); params.push(patch.defaultModel); }
+    if (patch.enabled !== undefined) { sets.push(`enabled = $${idx++}`); params.push(patch.enabled); }
+    if (sets.length === 1) return this.get(id);
+    params.push(id);
+    await this.pool.query(`UPDATE providers SET ${sets.join(", ")} WHERE id = $${idx}`, params);
+    return this.get(id);
+  }
+
+  async delete(id: number): Promise<boolean> {
+    const result = await this.pool.query("DELETE FROM providers WHERE id = $1", [id]);
+    return (result.rowCount ?? 0) > 0;
+  }
+}
