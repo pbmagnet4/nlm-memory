@@ -659,7 +659,7 @@ export class SqliteSessionStore implements SessionStore {
   }
 
   // ── insert helpers used by tests / future ingest path ─────────────────
-  /** @internal — test-only helper; production callers use insertSession(). */
+  /** @internal test-only helper; production callers use insertSession(). */
   insertSessionForTest(session: Session): void {
     const stmt = this.db.prepare(`
       INSERT INTO sessions (
