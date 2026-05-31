@@ -54,7 +54,7 @@ export class SqliteStorage implements Storage {
   }
 
   async withTransaction<T>(
-    fn: (ctx: StorageContext) => Promise<T> | T,
+    fn: (ctx: StorageContext) => T,
   ): Promise<T> {
     if (this.inTxn) {
       throw new Error("SqliteStorage.withTransaction does not support nesting");
@@ -64,13 +64,7 @@ export class SqliteStorage implements Storage {
       let captured: T | undefined;
       const txn = this.sessions.rawDb().transaction(() => {
         const ctx: StorageContext = { facts: this.facts, sessions: this.sessions };
-        const maybe = fn(ctx);
-        if (maybe instanceof Promise) {
-          throw new Error(
-            "withTransaction callback returned a Promise. Keep txn bodies synchronous.",
-          );
-        }
-        captured = maybe;
+        captured = fn(ctx);
       });
       txn();
       // Cast is safe: a sync throw inside fn propagates out of txn() before we reach here, so the success path always assigned captured.
