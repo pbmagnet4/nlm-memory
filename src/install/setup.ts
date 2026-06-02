@@ -235,14 +235,14 @@ export async function runSetup(opts: SetupOptions): Promise<void> {
       message: "Which classifier provider?",
       options: [
         {
+          value: "ollama-offline",
+          label: "Ollama (local) — recommended",
+          hint: "private — runs on this machine via your local Ollama. Nothing leaves the host. Slower; needs a chat model pulled.",
+        },
+        {
           value: "deepseek",
           label: "DeepSeek (cloud)",
           hint: "fast, cheap (~$0.002/session). Transcripts are sent to api.deepseek.com.",
-        },
-        {
-          value: "ollama-offline",
-          label: "Ollama (local)",
-          hint: "private — runs on this machine via your local Ollama. Slower; needs a chat model pulled.",
         },
       ],
     });

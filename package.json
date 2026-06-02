@@ -49,7 +49,10 @@
     "test:watch": "vitest",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "bench:longmemeval": "tsx scripts/longmemeval/run-harness.ts",
+    "bench:classifier": "tsx scripts/longmemeval/run-harness.ts --classifier",
+    "bench:compare": "tsx scripts/longmemeval/compare-classifiers.ts"
   },
   "dependencies": {
     "@clack/prompts": "^1.4.0",
