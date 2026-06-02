@@ -79,7 +79,7 @@ One corpus across every adapter. MCP works against all nine. **Automatic context
 
 | Runtime | Connect | Sessions read from | Hooks |
 |---|---|---|---|
-| **Claude Code** | `nlm connect claude-code` | `~/.claude/projects/**/*.jsonl` | 5 (UserPromptSubmit, SessionStart, Stop, PreCompact, SubagentStart) |
+| **Claude Code** | `nlm connect claude-code` | `~/.claude/projects/**/*.jsonl` | 6 (UserPromptSubmit, SessionStart, SessionEnd, Stop, PreCompact, SubagentStart) |
 | **Codex CLI** | `nlm connect codex` | `~/.codex/sessions/` | Marketplace plugin |
 | **Hermes** | `nlm connect hermes` | Hermes session DB | MCP only |
 | **Hermes Agent** | `nlm connect hermes-agent` | Hermes plugin path | pre-turn, post-turn, lifecycle |
@@ -87,7 +87,7 @@ One corpus across every adapter. MCP works against all nine. **Automatic context
 | **Windsurf** | `nlm connect windsurf` | Windsurf user dir | MCP only |
 | **OpenCode** | adapter active | `~/.local/share/opencode/` | MCP only |
 | **Aider** | adapter active | `AIDER_CHAT_HISTORY_FILE` | MCP only |
-| **pi.dev** | `nlm setup` (auto) or `nlm connect pi` | `~/.pi/agent/sessions/**/*.jsonl` | input (prompt-recall) |
+| **pi.dev** | `nlm setup` (auto) or `nlm connect pi` | `~/.pi/agent/sessions/**/*.jsonl` | 1 (input) |
 
 `nlm disconnect <runtime>` reverses any of the above.
 
@@ -99,7 +99,7 @@ Two delivery paths. They share the same index.
 
 ### 1. Hooks — automatic context injection
 
-Hooks fire on user input and prepend a pointer block of likely-relevant prior sessions to the model's context. Three runtimes ship them today: Claude Code (full six-hook lifecycle), Hermes Agent (parallel set), and pi.dev (one `input` hook via [nlm/](nlm/README.md), wired by `nlm setup` or `nlm connect pi`). Full lifecycle, modes, logging surface, and the load-bearing daily liveness canary documented in [docs/hooks.md](docs/hooks.md).
+Hooks fire on user input and prepend a pointer block of likely-relevant prior sessions to the model's context. Three runtimes ship them today: Claude Code (full six-hook lifecycle), Hermes Agent (parallel set), and pi.dev (one `input` hook via [nlm/](nlm/README.md), wired by `nlm setup` or `nlm connect pi`). Pi's extension API only exposes `input` — there are no session-lifecycle events — so transcript ingestion is handled by the passive adapter scanning `~/.pi/agent/sessions/` instead. Full lifecycle, modes, logging surface, and the load-bearing daily liveness canary documented in [docs/hooks.md](docs/hooks.md).
 
 The Claude Code surface (the most complete) installs six hooks into `~/.claude/settings.json`:
 
