@@ -85,7 +85,7 @@ One corpus across every adapter. `nlm connect` wires hooks + MCP for each runtim
 | **Windsurf** | `nlm connect windsurf` | Windsurf user dir | MCP only |
 | **OpenCode** | adapter active | `~/.local/share/opencode/` | MCP only |
 | **Aider** | adapter active | `AIDER_CHAT_HISTORY_FILE` | MCP only |
-| **pi.dev** | adapter active | `~/.pi/sessions/` | MCP only |
+| **pi.dev** | `nlm setup` (auto) or `nlm connect pi` | `~/.pi/agent/sessions/**/*.jsonl` | input (prompt-recall) |
 
 `nlm disconnect <runtime>` reverses any of the above.
 

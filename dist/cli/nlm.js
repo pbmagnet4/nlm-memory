@@ -34,10 +34,12 @@ import { serve } from "@hono/node-server";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { FactRecallService } from "../core/recall-facts/fact-recall-service.js";
 import { RecallService } from "../core/recall/recall-service.js";
-import { SqliteFactStore } from "../core/storage/sqlite-fact-store.js";
 import { ProviderRegistry } from "../core/providers/provider-registry.js";
 import { SourceRegistry } from "../core/sources/source-registry.js";
-import { SqliteSessionStore } from "../core/storage/sqlite-session-store.js";
+import { SqliteStorage } from "../core/storage/sqlite-storage.js";
+import { PgStorage } from "../core/storage/pg-storage.js";
+import { PgSourceRegistry } from "../core/sources/source-registry.js";
+import { PgProviderRegistry } from "../core/providers/provider-registry.js";
 import { applyPendingRestore } from "../core/storage/db-restore.js";
 import { createApp } from "../http/app.js";
 import { createMcpServer } from "../mcp/server.js";
@@ -56,6 +58,7 @@ import { getUpdateStatus } from "../core/update-check/check.js";
 import { connectHermes, disconnectHermes, hermesConfigPath } from "../install/hermes.js";
 import { connectHermesAgent, disconnectHermesAgent, hermesAgentPluginDir } from "../install/hermes-agent.js";
 import { connectWindsurf, disconnectWindsurf } from "../install/windsurf.js";
+import { connectPi, disconnectPi, piSettingsPath } from "../install/pi.js";
 import { runSetup } from "../install/setup.js";
 import { runParity } from "./classify-parity.js";
 import { reembedCorpus } from "../core/embedding/embed-backfill.js";
@@ -67,11 +70,11 @@ import { isAgentLoaded, isBenignBootoutError } from "./launchctl-helpers.js";
 import { DAEMON_PKILL_PATTERN, planRestart } from "./restart-helpers.js";
 import { applyEnvAssignment } from "./config-env.js";
 import { adapterFromSource } from "../core/adapters/from-source.js";
-import { scanUsefulHits } from "../core/recall/useful-scan.js";
 import { runDigest } from "./digest.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
+const PG_MIGRATIONS_DIR = join(fileURLToPath(new URL(".", import.meta.url)), "../../migrations/pg");
 const UI_DIST = resolve(__dirname, "../../dist/ui");
 const DEFAULT_DB_PATH = resolve(homedir(), ".nlm/canonical.sqlite");
 const DEFAULT_PORT = 3940;
@@ -102,15 +105,16 @@ function buildClassifier() {
         ?? (provider === "ollama" ? "phi4-mini:latest" : "deepseek-v4-flash");
     return new ClassifierBox({ provider, model, ollamaUrl: ollamaUrl() });
 }
-function buildAdapters(sources) {
+async function buildAdapters(sources) {
     // Sources table is the source of truth. Each enabled row maps to one
     // adapter via adapterFromSource(). Detection still gates registration —
     // a row pointing at a missing dir won't poll. NLM_ADAPTERS keeps working
     // as a name-based filter for forcing a subset during dev.
     const explicit = process.env["NLM_ADAPTERS"];
     const allowed = explicit ? new Set(explicit.split(",").map((s) => s.trim())) : null;
+    const rows = await sources.list();
     const out = [];
-    for (const row of sources.list()) {
+    for (const row of rows) {
         if (!row.enabled)
             continue;
         const adapter = adapterFromSource(row);
@@ -124,7 +128,16 @@ function buildAdapters(sources) {
     }
     return out;
 }
-function buildStack() {
+async function buildStorage(path) {
+    const pgUrl = process.env["NLM_PG_URL"];
+    if (pgUrl) {
+        const storage = PgStorage.create({ connectionString: pgUrl, migrationsDir: PG_MIGRATIONS_DIR });
+        await storage.init();
+        return storage;
+    }
+    return SqliteStorage.create({ dbPath: path, migrationsDir: MIGRATIONS_DIR });
+}
+async function buildStack() {
     // Load .env before any registry seeds so secrets carried in env vars
     // (DEEPSEEK_API_KEY today; OPENAI_API_KEY etc. tomorrow) bridge into
     // the providers table on first boot under launchd.
@@ -137,24 +150,29 @@ function buildStack() {
         if (restored.archivedTo)
             console.error(`  previous db archived at ${restored.archivedTo}`);
     }
-    const store = new SqliteSessionStore({
-        dbPath: dbPath(),
-        migrationsDir: MIGRATIONS_DIR,
-    });
+    const storage = await buildStorage(dbPath());
+    const store = storage.sessions;
     // FactStore shares the SessionStore's connection so session+facts ingest
     // can commit in one transaction. Phase B.1 wires it in; no callers yet.
-    const facts = new SqliteFactStore(store.rawDb());
-    const sources = new SourceRegistry(store.rawDb());
-    sources.seedDefaults();
-    const providers = new ProviderRegistry(store.rawDb());
-    providers.seedDefaults();
+    const facts = storage.facts;
+    // TODO(#215a): replace storage.rawDb() with port methods
+    const sources = storage instanceof PgStorage
+        ? new PgSourceRegistry(storage.pgPool())
+        : new SourceRegistry(storage.rawDb());
+    await sources.seedDefaults();
+    // TODO(#215a): replace storage.rawDb() with port methods
+    const providers = storage instanceof PgStorage
+        ? new PgProviderRegistry(storage.pgPool())
+        : new ProviderRegistry(storage.rawDb());
+    if (providers instanceof ProviderRegistry)
+        providers.seedDefaults();
     // Recall only uses embed(). Embeddings live on Ollama; DeepSeek doesn't
     // expose them. Classifier is wired separately for Phase D ingest.
     const embedder = new OllamaClient({ baseUrl: ollamaUrl() });
     const classifier = buildClassifier();
     const recall = new RecallService({ store, llm: embedder });
     const factRecall = new FactRecallService({ factStore: facts, llm: embedder });
-    return { store, facts, sources, providers, recall, factRecall, embedder, classifier };
+    return { storage, store, facts, sources, providers, recall, factRecall, embedder, classifier };
 }
 const program = new Command();
 program
@@ -174,7 +192,7 @@ program
     // non-browser callers. Idempotent: re-reads persisted token first.
     autoloadEnv();
     ensureMcpToken();
-    const { store, facts, sources, providers, recall, factRecall, embedder, classifier } = buildStack();
+    const { storage, store, facts, sources, providers, recall, factRecall, embedder, classifier } = await buildStack();
     const { existsSync } = await import("node:fs");
     const hasMcpToken = Boolean(process.env["NLM_MCP_TOKEN"]);
     const app = createApp({
@@ -187,7 +205,15 @@ program
         classifier,
         sources,
         providers,
-        ingest: { classifier, embedder, store, factStore: facts },
+        // TODO(#215a): PgStorage ingest port; cast until then
+        ...(!(storage instanceof PgStorage) ? {
+            ingest: {
+                classifier,
+                embedder,
+                store: store,
+                ...(facts ? { factStore: facts } : {}),
+            },
+        } : {}),
         embedderInfo: { provider: "ollama", model: "nomic-embed-text", dims: 768 },
         ...(existsSync(UI_DIST) ? { uiDist: UI_DIST } : {}),
         // Wire POST /mcp only when NLM_MCP_TOKEN is present. Absent = route never
@@ -218,23 +244,29 @@ program
     // Keep the SQLite WAL bounded. WAL mode is on but nothing else
     // checkpoints it; under continuous readers it grows without limit
     // (it had reached 38 MB), which slows every read. Drain once at boot,
-    // then every 5 minutes.
-    const WAL_CHECKPOINT_INTERVAL_MS = 5 * 60_000;
-    try {
-        store.checkpoint();
-    }
-    catch {
-        // Boot checkpoint can lose a race with readers — the interval retries.
-    }
-    const checkpointTimer = setInterval(() => {
-        try {
-            store.checkpoint();
-        }
-        catch {
-            // Checkpoint contention — the next tick retries.
-        }
-    }, WAL_CHECKPOINT_INTERVAL_MS);
-    checkpointTimer.unref();
+    // then every 5 minutes. Skip entirely when using PgStorage (no WAL).
+    const checkpointTimer = !(storage instanceof PgStorage)
+        ? (() => {
+            const WAL_CHECKPOINT_INTERVAL_MS = 5 * 60_000;
+            const sqliteStore = store;
+            try {
+                sqliteStore.checkpoint();
+            }
+            catch {
+                // Boot checkpoint can lose a race with readers — the interval retries.
+            }
+            const t = setInterval(() => {
+                try {
+                    sqliteStore.checkpoint();
+                }
+                catch {
+                    // Checkpoint contention — the next tick retries.
+                }
+            }, WAL_CHECKPOINT_INTERVAL_MS);
+            t.unref();
+            return t;
+        })()
+        : null;
     // Memo sweep runs independently of the transcript scheduler — it's the
     // backstop for SessionEnd hook unreliability (crashes, kill -9, IDE
     // force-close don't fire SessionEnd, so memo files would otherwise
@@ -242,27 +274,29 @@ program
     const memoSweep = new MemoSweepScheduler();
     memoSweep.start();
     console.error("  memo sweep: dormant cleanup every 5m (threshold 24h)");
-    if (opts.scheduler !== false) {
-        const adapters = buildAdapters(sources);
+    if (opts.scheduler !== false && !(storage instanceof PgStorage)) {
+        const adapters = await buildAdapters(sources);
         if (adapters.length === 0) {
             console.error("  scheduler: no adapters detected (set NLM_ADAPTERS to force-enable)");
         }
         else {
             const scheduler = new ScanScheduler({
-                store,
+                // TODO(#215a): PgStorage scheduler port; SQLite-only until then
+                store: store,
                 adapters,
                 classifier,
                 embedder,
-                factStore: facts,
+                factStore: facts ?? null,
                 intervalMs: opts.intervalMin * 60_000,
             });
             scheduler.start();
             console.error(`  scheduler: ${adapters.map((a) => a.name).join(", ")} every ${opts.intervalMin}m`);
-            const shutdown = () => {
-                clearInterval(checkpointTimer);
+            const shutdown = async () => {
+                if (checkpointTimer)
+                    clearInterval(checkpointTimer);
                 scheduler.stop();
                 memoSweep.stop();
-                store.close();
+                await storage.close();
                 process.exit(0);
             };
             process.on("SIGINT", shutdown);
@@ -273,14 +307,15 @@ program
 program
     .command("migrate")
     .description("Run pending migrations against the canonical SQLite")
-    .action(() => {
+    .action(async () => {
     // SqliteSessionStore's constructor loads sqlite-vec and runs migrations.
     // Opening + closing is the whole operation.
-    const store = new SqliteSessionStore({
+    const storage = SqliteStorage.create({
         dbPath: dbPath(),
         migrationsDir: MIGRATIONS_DIR,
     });
-    store.close();
+    await storage.init();
+    await storage.close();
     console.error(`nlm-memory: migrations applied at ${dbPath()}`);
 });
 program
@@ -292,7 +327,7 @@ program
     .option("-m, --mode <mode>", "keyword|semantic|hybrid", "keyword")
     .option("-l, --limit <n>", "max results", (v) => Number.parseInt(v, 10), 10)
     .action(async (query, opts) => {
-    const { store, recall } = buildStack();
+    const { storage, recall } = await buildStack();
     try {
         const result = await recall.search({
             query,
@@ -304,7 +339,7 @@ program
         process.stdout.write(JSON.stringify(result, null, 2) + "\n");
     }
     finally {
-        store.close();
+        await storage.close();
     }
 });
 program
@@ -376,10 +411,11 @@ program
     .option("--no-embed", "skip per-fact embedding (faster but disables semantic recall)")
     .option("-v, --verbose", "per-session progress on stderr")
     .action(async (opts) => {
-    const { store, facts, embedder, classifier } = buildStack();
+    const { storage, store, facts, embedder, classifier } = await buildStack();
     try {
         const report = await backfillFacts({
-            store,
+            // TODO(#215a): PgStorage backfill port; SQLite-only until then
+            store: store,
             factStore: facts,
             classifier,
             embedder: opts.embed === false ? null : embedder,
@@ -400,7 +436,7 @@ program
         process.stdout.write(JSON.stringify(report, null, 2) + "\n");
     }
     finally {
-        store.close();
+        await storage.close();
     }
 });
 program
@@ -422,7 +458,7 @@ program
     .command("mcp")
     .description("Run as an MCP stdio server (for ~/.mcp.json)")
     .action(async () => {
-    const { recall, store, facts, factRecall } = buildStack();
+    const { recall, store, facts, factRecall } = await buildStack();
     const server = createMcpServer({ recall, store, factStore: facts, factRecall });
     const transport = new StdioServerTransport();
     await server.connect(transport);
@@ -968,10 +1004,12 @@ connect
     .description("Register Cursor as an nlm source (reads state.vscdb directly — no files installed)")
     .option("--db-path <path>", "override path to globalStorage/state.vscdb")
     .option("--dry-run", "print what would happen without changing files")
-    .action((opts) => {
-    const store = new SqliteSessionStore({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
+    .action(async (opts) => {
+    const storage = SqliteStorage.create({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
+    await storage.init();
     try {
-        const registry = new SourceRegistry(store.rawDb());
+        // TODO(#215a): replace storage.rawDb() with port methods
+        const registry = new SourceRegistry(storage.rawDb());
         const report = connectCursor(registry, {
             ...(opts.dbPath ? { dbPath: opts.dbPath } : {}),
             dryRun: Boolean(opts.dryRun),
@@ -984,7 +1022,7 @@ connect
         console.error(`nlm: Cursor source ${report.action} → ${report.adapterDbPath}${suffix}`);
     }
     finally {
-        store.close();
+        await storage.close();
     }
 });
 connect
@@ -992,10 +1030,12 @@ connect
     .description("Register Windsurf as an nlm source (reads state.vscdb files directly — no files installed)")
     .option("--user-dir <path>", "override path to Windsurf User directory")
     .option("--dry-run", "print what would happen without changing files")
-    .action((opts) => {
-    const store = new SqliteSessionStore({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
+    .action(async (opts) => {
+    const storage = SqliteStorage.create({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
+    await storage.init();
     try {
-        const registry = new SourceRegistry(store.rawDb());
+        // TODO(#215a): replace storage.rawDb() with port methods
+        const registry = new SourceRegistry(storage.rawDb());
         const report = connectWindsurf(registry, {
             ...(opts.userDir ? { userDir: opts.userDir } : {}),
             dryRun: Boolean(opts.dryRun),
@@ -1008,8 +1048,30 @@ connect
         console.error(`nlm: Windsurf source ${report.action} → ${report.userDir}${suffix}`);
     }
     finally {
-        store.close();
+        await storage.close();
     }
+});
+connect
+    .command("pi")
+    .description("Register the nlm-memory prompt-recall extension in ~/.pi/agent/settings.json")
+    .option("--dry-run", "print what would happen without changing files")
+    .action((opts) => {
+    const pluginDir = join(REPO_ROOT, "plugin-pi");
+    const report = connectPi({ pluginDir, dryRun: Boolean(opts.dryRun) });
+    if (opts.dryRun) {
+        const verb = report.alreadyPresent ? "already present in" : "append to";
+        console.error(`nlm connect pi (dry run): ${verb} packages[] in ${report.settingsPath} → ${pluginDir}`);
+        return;
+    }
+    if (report.alreadyPresent) {
+        console.error(`nlm: pi extension already registered → ${report.pluginDir}`);
+    }
+    else {
+        console.error(`nlm: pi extension registered → ${report.settingsPath}`);
+        console.error(`  Packages entry: ${report.pluginDir}`);
+    }
+    console.error("  Restart pi to activate the prompt-recall hook.");
+    console.error("  Set NLM_HOOK_MODE=live in ~/.nlm/.env to flip from shadow → live.");
 });
 const disconnect = program
     .command("disconnect")
@@ -1104,10 +1166,12 @@ disconnect
     .command("cursor")
     .description("Disable the Cursor source in the nlm registry (leaves Cursor untouched)")
     .option("--dry-run", "print what would happen without changing files")
-    .action((opts) => {
-    const store = new SqliteSessionStore({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
+    .action(async (opts) => {
+    const storage = SqliteStorage.create({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
+    await storage.init();
     try {
-        const registry = new SourceRegistry(store.rawDb());
+        // TODO(#215a): replace storage.rawDb() with port methods
+        const registry = new SourceRegistry(storage.rawDb());
         const report = disconnectCursor(registry, { dryRun: Boolean(opts.dryRun) });
         if (opts.dryRun) {
             console.error("nlm disconnect cursor (dry run): disable Cursor source in registry");
@@ -1118,17 +1182,19 @@ disconnect
             : "nlm: no Cursor source found in registry");
     }
     finally {
-        store.close();
+        await storage.close();
     }
 });
 disconnect
     .command("windsurf")
     .description("Disable the Windsurf source in the nlm registry (leaves Windsurf untouched)")
     .option("--dry-run", "print what would happen without changing files")
-    .action((opts) => {
-    const store = new SqliteSessionStore({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
+    .action(async (opts) => {
+    const storage = SqliteStorage.create({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
+    await storage.init();
     try {
-        const registry = new SourceRegistry(store.rawDb());
+        // TODO(#215a): replace storage.rawDb() with port methods
+        const registry = new SourceRegistry(storage.rawDb());
         const report = disconnectWindsurf(registry, { dryRun: Boolean(opts.dryRun) });
         if (opts.dryRun) {
             console.error("nlm disconnect windsurf (dry run): disable Windsurf source in registry");
@@ -1139,8 +1205,22 @@ disconnect
             : "nlm: no Windsurf source found in registry");
     }
     finally {
-        store.close();
+        await storage.close();
     }
+});
+disconnect
+    .command("pi")
+    .description("Remove the nlm-memory pi extension from ~/.pi/agent/settings.json")
+    .option("--dry-run", "print what would happen without changing files")
+    .action((opts) => {
+    const report = disconnectPi({ dryRun: Boolean(opts.dryRun) });
+    if (opts.dryRun) {
+        console.error(`nlm disconnect pi (dry run): strip plugin-pi from packages[] in ${piSettingsPath()}`);
+        return;
+    }
+    console.error(report.removed
+        ? `nlm: pi extension removed → ${report.settingsPath}`
+        : `nlm: no nlm pi extension found in ${report.settingsPath}`);
 });
 program
     .command("setup")
@@ -1165,19 +1245,6 @@ program
         removeHook,
         buildHookCommand,
     });
-});
-program
-    .command("useful-scan")
-    .description("Scan hook log for useful recall hits; writes to ~/.nlm/useful-hit-log.jsonl")
-    .option("-d, --days <n>", "rolling window in days", (v) => Number.parseInt(v, 10), 1)
-    .option("--dry-run", "compute without writing to disk")
-    .action(async (opts) => {
-    const result = await scanUsefulHits({ days: opts.days, ...(opts.dryRun ? { dryRun: true } : {}) });
-    const rate = result.measurable === 0
-        ? "no measurable entries"
-        : `${result.useful}/${result.measurable} useful (${Math.round((result.useful / result.measurable) * 100)}%)`;
-    console.error(`nlm useful-scan: scanned ${result.total} recalls in the last ${opts.days}d — ${rate}` +
-        (opts.dryRun ? " (dry-run)" : `, ${result.appended} appended`));
 });
 program
     .command("digest")

@@ -1,95 +1,6 @@
-#!/usr/bin/env node
-
-// src/hook/prompt-recall-hook.ts
-import { pathToFileURL } from "node:url";
-
-// src/core/hook/gate.ts
-var LEADING_FILLER = /^(please|can you|could you|would you|will you|i need you to|i'd like you to|i want you to|i would like you to|help me|let's|lets|hey|ok|okay)\b[\s,]*/i;
-var GENERATIVE_OPENER = /^(write|draft|create|compose|generate|brainstorm|design|outline|sketch|invent|rename|come up with)\b/i;
-function classifyPrompt(prompt) {
-  let p = prompt.trim();
-  for (let i = 0; i < 3 && LEADING_FILLER.test(p); i++) {
-    p = p.replace(LEADING_FILLER, "");
-  }
-  return GENERATIVE_OPENER.test(p) ? "generative" : "evaluate";
-}
-
-// src/core/hook/hook-log.ts
-import { appendFileSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-function logPath() {
-  return process.env["NLM_HOOK_LOG"] ?? join(homedir(), ".nlm", "hook-log.jsonl");
-}
-function appendHookLog(entry) {
-  try {
-    const path = logPath();
-    mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(path, `${JSON.stringify(entry)}
-`, "utf8");
-  } catch {
-  }
-}
-
-// src/core/hook/memo.ts
-import { existsSync, mkdirSync as mkdirSync2, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir as homedir2 } from "node:os";
-import { join as join2 } from "node:path";
-function stateDir() {
-  return process.env["NLM_HOOK_STATE_DIR"] ?? join2(homedir2(), ".nlm", "hook-state");
-}
-function memoPath(conversationId) {
-  const safe = conversationId.replace(/[^A-Za-z0-9_-]/g, "_") || "unknown";
-  return join2(stateDir(), `${safe}.json`);
-}
-function loadSurfaced(conversationId) {
-  try {
-    const path = memoPath(conversationId);
-    if (!existsSync(path)) return /* @__PURE__ */ new Set();
-    const parsed = JSON.parse(readFileSync(path, "utf8"));
-    if (!Array.isArray(parsed)) return /* @__PURE__ */ new Set();
-    return new Set(parsed.filter((x) => typeof x === "string"));
-  } catch {
-    return /* @__PURE__ */ new Set();
-  }
-}
-function recordSurfaced(conversationId, ids) {
-  try {
-    const merged = loadSurfaced(conversationId);
-    for (const id of ids) merged.add(id);
-    mkdirSync2(stateDir(), { recursive: true });
-    writeFileSync(memoPath(conversationId), JSON.stringify([...merged]), "utf8");
-  } catch {
-  }
-}
-
-// src/core/hook/pointer-block.ts
-function formatPointerBlock(hits) {
-  if (hits.length === 0) return "";
-  const lines = hits.map(
-    (h) => `- ${h.id} \xB7 ${h.label} (${h.startedAt.slice(0, 10)})`
-  );
-  return [
-    "## Possibly-relevant prior sessions (nlm-memory)",
-    ...lines,
-    "NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved)."
-  ].join("\n");
-}
-
-// src/core/hook/select.ts
-function selectHits(params) {
-  const { hits, surfaced, scoreThreshold, perFireCap, perConversationCap } = params;
-  const eligible = hits.filter(
-    (h) => h.matchScore >= scoreThreshold && !surfaced.has(h.id)
-  );
-  const budget = Math.max(0, perConversationCap - surfaced.size);
-  const limit = Math.min(perFireCap, budget);
-  return eligible.slice(0, limit);
-}
-
 // src/llm/env-autoload.ts
-import { readFileSync as readFileSync2, existsSync as existsSync2 } from "node:fs";
-import { homedir as homedir3 } from "node:os";
+import { readFileSync, existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 var DEFAULT_SEARCH_PATHS = [
   "~/.nlm/.env",
@@ -98,7 +9,7 @@ var DEFAULT_SEARCH_PATHS = [
   "../../.env"
 ];
 function expandHome(p) {
-  if (p.startsWith("~/")) return resolve(homedir3(), p.slice(2));
+  if (p.startsWith("~/")) return resolve(homedir(), p.slice(2));
   return p;
 }
 function autoloadEnv(extraPaths = []) {
@@ -106,9 +17,9 @@ function autoloadEnv(extraPaths = []) {
   const paths = [...DEFAULT_SEARCH_PATHS, ...extraPaths];
   for (const raw of paths) {
     const path = expandHome(raw);
-    if (!existsSync2(path)) continue;
+    if (!existsSync(path)) continue;
     try {
-      const content = readFileSync2(path, "utf8");
+      const content = readFileSync(path, "utf8");
       for (const line of content.split("\n")) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) continue;
@@ -166,6 +77,93 @@ async function recallOverHttp(prompt) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+// src/hook/prompt-recall-hook.ts
+import { pathToFileURL } from "node:url";
+
+// src/core/hook/gate.ts
+var LEADING_FILLER = /^(please|can you|could you|would you|will you|i need you to|i'd like you to|i want you to|i would like you to|help me|let's|lets|hey|ok|okay)\b[\s,]*/i;
+var GENERATIVE_OPENER = /^(write|draft|create|compose|generate|brainstorm|design|outline|sketch|invent|rename|come up with)\b/i;
+function classifyPrompt(prompt) {
+  let p = prompt.trim();
+  for (let i = 0; i < 3 && LEADING_FILLER.test(p); i++) {
+    p = p.replace(LEADING_FILLER, "");
+  }
+  return GENERATIVE_OPENER.test(p) ? "generative" : "evaluate";
+}
+
+// src/core/hook/hook-log.ts
+import { appendFileSync, mkdirSync } from "node:fs";
+import { homedir as homedir2 } from "node:os";
+import { dirname, join } from "node:path";
+function logPath() {
+  return process.env["NLM_HOOK_LOG"] ?? join(homedir2(), ".nlm", "hook-log.jsonl");
+}
+function appendHookLog(entry) {
+  try {
+    const path = logPath();
+    mkdirSync(dirname(path), { recursive: true });
+    appendFileSync(path, `${JSON.stringify(entry)}
+`, "utf8");
+  } catch {
+  }
+}
+
+// src/core/hook/memo.ts
+import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, rmSync, writeFileSync } from "node:fs";
+import { homedir as homedir3 } from "node:os";
+import { join as join2 } from "node:path";
+function stateDir() {
+  return process.env["NLM_HOOK_STATE_DIR"] ?? join2(homedir3(), ".nlm", "hook-state");
+}
+function memoPath(conversationId) {
+  const safe = conversationId.replace(/[^A-Za-z0-9_-]/g, "_") || "unknown";
+  return join2(stateDir(), `${safe}.json`);
+}
+function loadSurfaced(conversationId) {
+  try {
+    const path = memoPath(conversationId);
+    if (!existsSync2(path)) return /* @__PURE__ */ new Set();
+    const parsed = JSON.parse(readFileSync2(path, "utf8"));
+    if (!Array.isArray(parsed)) return /* @__PURE__ */ new Set();
+    return new Set(parsed.filter((x) => typeof x === "string"));
+  } catch {
+    return /* @__PURE__ */ new Set();
+  }
+}
+function recordSurfaced(conversationId, ids) {
+  try {
+    const merged = loadSurfaced(conversationId);
+    for (const id of ids) merged.add(id);
+    mkdirSync2(stateDir(), { recursive: true });
+    writeFileSync(memoPath(conversationId), JSON.stringify([...merged]), "utf8");
+  } catch {
+  }
+}
+
+// src/core/hook/pointer-block.ts
+function formatPointerBlock(hits) {
+  if (hits.length === 0) return "";
+  const lines = hits.map(
+    (h) => `- ${h.id} \xB7 ${h.label} (${h.startedAt.slice(0, 10)})`
+  );
+  return [
+    "## Possibly-relevant prior sessions (nlm-memory)",
+    ...lines,
+    "NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved)."
+  ].join("\n");
+}
+
+// src/core/hook/select.ts
+function selectHits(params) {
+  const { hits, surfaced, scoreThreshold, perFireCap, perConversationCap } = params;
+  const eligible = hits.filter(
+    (h) => h.matchScore >= scoreThreshold && !surfaced.has(h.id)
+  );
+  const budget = Math.max(0, perConversationCap - surfaced.size);
+  const limit = Math.min(perFireCap, budget);
+  return eligible.slice(0, limit);
 }
 
 // src/hook/prompt-recall-hook.ts
@@ -250,6 +248,33 @@ async function main() {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   void main();
 }
+
+// src/hook/pi-extension.ts
+var envLoaded = false;
+function nlmExtension(pi) {
+  pi.on("input", async (event, ctx) => {
+    if (event.source === "extension") return { action: "continue" };
+    if (!event.text || !event.text.trim()) return { action: "continue" };
+    if (!envLoaded) {
+      autoloadEnv();
+      envLoaded = true;
+    }
+    try {
+      const mode = process.env["NLM_HOOK_MODE"] === "live" ? "live" : "shadow";
+      const conversationId = ctx.sessionManager.getSessionId() || "unknown";
+      const block = await runHook(
+        { prompt: event.text, conversationId },
+        { mode, recall: recallOverHttp }
+      );
+      if (!block) return { action: "continue" };
+      return { action: "transform", text: `${block}
+
+${event.text}` };
+    } catch {
+      return { action: "continue" };
+    }
+  });
+}
 export {
-  runHook
+  nlmExtension as default
 };

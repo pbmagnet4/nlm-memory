@@ -17,7 +17,7 @@ import { loadSurfaced, recordSurfaced } from "@core/hook/memo.js";
 import { formatPointerBlock } from "@core/hook/pointer-block.js";
 import { selectHits, type RecallHitInput } from "@core/hook/select.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
-import { hookAuthHeaders } from "./hook-auth.js";
+import { recallOverHttp } from "./recall-over-http.js";
 
 // Keyword recall returns raw BM25 scores (unbounded, not the 0..1 hybrid
 // scale). FTS5 MATCH already gates relevance — only lexically-matching
@@ -26,8 +26,6 @@ import { hookAuthHeaders } from "./hook-auth.js";
 const SCORE_THRESHOLD = 0;
 const PER_FIRE_CAP = 3;
 const PER_CONVERSATION_CAP = 10;
-const RECALL_LIMIT = 5; // fetch more than PER_FIRE_CAP to absorb score-filter + dedup
-const RECALL_TIMEOUT_MS = 2000; // keyword recall is ~400ms warm, ~1.4s cold
 const PROMPT_PREVIEW_CHARS = 200;
 
 export type HookMode = "shadow" | "live";
@@ -105,46 +103,6 @@ function readStdin(): Promise<string> {
     process.stdin.on("end", () => resolve(data));
     process.stdin.on("error", () => resolve(data));
   });
-}
-
-async function recallOverHttp(prompt: string): Promise<ReadonlyArray<RecallHitInput>> {
-  const portValue = process.env["NLM_PORT"] ?? "3940";
-  // keyword (FTS5) not hybrid: hybrid's Ollama embedding round-trip takes
-  // ~5s, far too slow for a hook that blocks prompt submission.
-  const url =
-    `http://localhost:${portValue}/api/recall` +
-    `?q=${encodeURIComponent(prompt)}&mode=keyword&limit=${RECALL_LIMIT}`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), RECALL_TIMEOUT_MS);
-  try {
-    const res = await fetch(url, {
-      headers: hookAuthHeaders({ "x-recall-source": "hook" }),
-      signal: controller.signal,
-    });
-    if (!res.ok) return [];
-    type RecallBody = {
-      results?: ReadonlyArray<{
-        id: string;
-        label: string;
-        startedAt: string;
-        matchScore: number;
-      }>;
-    };
-    let body: RecallBody;
-    try {
-      body = (await res.json()) as RecallBody;
-    } catch {
-      return [];
-    }
-    return (body.results ?? []).map((r) => ({
-      id: r.id,
-      label: r.label,
-      startedAt: r.startedAt,
-      matchScore: r.matchScore,
-    }));
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 async function main(): Promise<void> {

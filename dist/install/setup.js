@@ -17,6 +17,7 @@ import { cancel, confirm, intro, isCancel, log, multiselect, outro, password, se
 import { connectClaudeCode } from "./claude-code.js";
 import { connectHermes } from "./hermes.js";
 import { codexBinaryAvailable, connectCodex, pluginScriptsDir } from "./codex.js";
+import { connectPi } from "./pi.js";
 import { defaultDbPath as openCodeDefaultDbPath } from "../core/adapters/opencode.js";
 import { EMBEDDING_MODEL, embeddingModelPresent, ensureMcpToken, installOllama, ollamaBinaryAvailable, ollamaServerRunning, pullEmbeddingModel, startOllamaServer, waitForOllamaServer, writeClassifierConfig, } from "./ollama.js";
 import { installClaudeCodeHooks } from "./claude-code.js";
@@ -275,9 +276,10 @@ export async function runSetup(opts) {
     const ms = spinner();
     ms.start("Running database migrations");
     try {
-        const { SqliteSessionStore } = await import("../core/storage/sqlite-session-store.js");
-        const store = new SqliteSessionStore({ dbPath: opts.dbPath, migrationsDir: opts.migrationsDir });
-        store.close();
+        const { SqliteStorage } = await import("../core/storage/sqlite-storage.js");
+        const storage = SqliteStorage.create({ dbPath: opts.dbPath, migrationsDir: opts.migrationsDir });
+        await storage.init();
+        await storage.close();
         ms.stop("Database ready");
     }
     catch (e) {
@@ -437,9 +439,23 @@ export async function runSetup(opts) {
                 }
                 break;
             }
-            case "pi":
-                log.success("pi.dev: session scanning enabled (passive — no extra config needed)");
+            case "pi": {
+                const ps = spinner();
+                ps.start("Configuring pi.dev — prompt-recall extension");
+                try {
+                    const pluginDir = join(opts.repoRoot, "plugin-pi");
+                    const report = connectPi({ pluginDir });
+                    ps.stop(report.alreadyPresent
+                        ? `pi extension already registered → ${report.pluginDir}`
+                        : `pi extension registered → ${report.settingsPath} (restart pi to activate)`);
+                }
+                catch (e) {
+                    ps.stop("pi extension wiring failed");
+                    log.error(`${e instanceof Error ? e.message : String(e)}`);
+                    log.warn("Run `nlm connect pi` manually after fixing ~/.pi/agent/settings.json.");
+                }
                 break;
+            }
             default: {
                 const _ = id;
                 log.warn(`Unknown runtime: ${_} — skipping.`);

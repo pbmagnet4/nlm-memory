@@ -64,6 +64,7 @@ import { getUpdateStatus } from "../core/update-check/check.js";
 import { connectHermes, disconnectHermes, hermesConfigPath } from "../install/hermes.js";
 import { connectHermesAgent, disconnectHermesAgent, hermesAgentPluginDir } from "../install/hermes-agent.js";
 import { connectWindsurf, disconnectWindsurf } from "../install/windsurf.js";
+import { connectPi, disconnectPi, piSettingsPath } from "../install/pi.js";
 import { runSetup } from "../install/setup.js";
 import { runParity } from "./classify-parity.js";
 import { reembedCorpus } from "../core/embedding/embed-backfill.js";
@@ -1100,6 +1101,28 @@ connect
     }
   });
 
+connect
+  .command("pi")
+  .description("Register the nlm-memory prompt-recall extension in ~/.pi/agent/settings.json")
+  .option("--dry-run", "print what would happen without changing files")
+  .action((opts) => {
+    const pluginDir = join(REPO_ROOT, "plugin-pi");
+    const report = connectPi({ pluginDir, dryRun: Boolean(opts.dryRun) });
+    if (opts.dryRun) {
+      const verb = report.alreadyPresent ? "already present in" : "append to";
+      console.error(`nlm connect pi (dry run): ${verb} packages[] in ${report.settingsPath} → ${pluginDir}`);
+      return;
+    }
+    if (report.alreadyPresent) {
+      console.error(`nlm: pi extension already registered → ${report.pluginDir}`);
+    } else {
+      console.error(`nlm: pi extension registered → ${report.settingsPath}`);
+      console.error(`  Packages entry: ${report.pluginDir}`);
+    }
+    console.error("  Restart pi to activate the prompt-recall hook.");
+    console.error("  Set NLM_HOOK_MODE=live in ~/.nlm/.env to flip from shadow → live.");
+  });
+
 const disconnect = program
   .command("disconnect")
   .description("Disconnect nlm-memory from an AI coding runtime");
@@ -1239,6 +1262,21 @@ disconnect
     } finally {
       await storage.close();
     }
+  });
+
+disconnect
+  .command("pi")
+  .description("Remove the nlm-memory pi extension from ~/.pi/agent/settings.json")
+  .option("--dry-run", "print what would happen without changing files")
+  .action((opts) => {
+    const report = disconnectPi({ dryRun: Boolean(opts.dryRun) });
+    if (opts.dryRun) {
+      console.error(`nlm disconnect pi (dry run): strip plugin-pi from packages[] in ${piSettingsPath()}`);
+      return;
+    }
+    console.error(report.removed
+      ? `nlm: pi extension removed → ${report.settingsPath}`
+      : `nlm: no nlm pi extension found in ${report.settingsPath}`);
   });
 
 program

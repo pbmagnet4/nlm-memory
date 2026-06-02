@@ -20,6 +20,7 @@ import {
 import { connectClaudeCode } from "./claude-code.js";
 import { connectHermes } from "./hermes.js";
 import { codexBinaryAvailable, connectCodex, pluginScriptsDir } from "./codex.js";
+import { connectPi } from "./pi.js";
 import { defaultDbPath as openCodeDefaultDbPath } from "../core/adapters/opencode.js";
 import type { ClaudeHookEvent } from "../core/hook/claude-settings.js";
 import {
@@ -462,9 +463,24 @@ export async function runSetup(opts: SetupOptions): Promise<void> {
         break;
       }
 
-      case "pi":
-        log.success("pi.dev: session scanning enabled (passive — no extra config needed)");
+      case "pi": {
+        const ps = spinner();
+        ps.start("Configuring pi.dev — prompt-recall extension");
+        try {
+          const pluginDir = join(opts.repoRoot, "plugin-pi");
+          const report = connectPi({ pluginDir });
+          ps.stop(
+            report.alreadyPresent
+              ? `pi extension already registered → ${report.pluginDir}`
+              : `pi extension registered → ${report.settingsPath} (restart pi to activate)`,
+          );
+        } catch (e) {
+          ps.stop("pi extension wiring failed");
+          log.error(`${e instanceof Error ? e.message : String(e)}`);
+          log.warn("Run `nlm connect pi` manually after fixing ~/.pi/agent/settings.json.");
+        }
         break;
+      }
 
       default: {
         const _: never = id;

@@ -1,0 +1,12 @@
+{
+  "name": "nlm-memory-pi",
+  "version": "0.0.0",
+  "private": true,
+  "description": "pi.dev extension entry for nlm-memory prompt-recall hook.",
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "scripts/nlm-extension.mjs"
+    ]
+  }
+}
