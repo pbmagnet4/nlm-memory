@@ -8,10 +8,12 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/nlm-memory"><img src="https://img.shields.io/npm/v/nlm-memory?color=CB3837&label=npm&logo=npm" alt="npm version" /></a>
+  <a href="https://github.com/pbmagnet4/nlm-memory-ts/actions/workflows/ci.yml"><img src="https://github.com/pbmagnet4/nlm-memory-ts/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status" /></a>
   <a href="https://github.com/pbmagnet4/nlm-memory-ts/blob/main/LICENSE"><img src="https://img.shields.io/github/license/pbmagnet4/nlm-memory-ts?color=blue" alt="License: Apache 2.0" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/node/v/nlm-memory?color=brightgreen" alt="Node 20+" /></a>
-  <img src="https://img.shields.io/badge/tests-742%20passing-success" alt="742 tests passing" />
-  <img src="https://img.shields.io/badge/runtimes-9-8A2BE2" alt="9 runtimes supported" />
+  <img src="https://img.shields.io/badge/tests-726%20passing-success" alt="726 tests passing" />
+  <img src="https://img.shields.io/badge/MCP-9%20runtimes-8A2BE2" alt="MCP across 9 runtimes" />
+  <img src="https://img.shields.io/badge/hooks-3%20runtimes-7B2CBF" alt="Hooks on 3 runtimes" />
   <img src="https://img.shields.io/badge/telemetry-none-informational" alt="Zero telemetry" />
 </p>
 
@@ -30,7 +32,7 @@
 
 ---
 
-`nlm-memory` indexes every session from Claude Code, Codex, OpenCode, Cursor, Windsurf, Hermes, Aider, and pi into a single searchable store on your machine. Three properties no other memory layer ships together:
+`nlm-memory` is a local-first memory layer for AI coding agents. It indexes every session from Claude Code, Codex, OpenCode, Cursor, Windsurf, Hermes, Aider, and pi into a single searchable store on your machine. Three properties no other memory layer ships together:
 
 1. **Cross-runtime reach.** One index, every adapter.
 2. **Editable timeline.** Sessions can be superseded by newer ones; entities can be retired. Patch history retroactively — no other tool lets you do this. See [docs/supersedence.md](docs/supersedence.md).
@@ -73,7 +75,7 @@ nlm --version
 
 ## Runtimes
 
-One corpus across every adapter. `nlm connect` wires hooks + MCP for each runtime:
+One corpus across every adapter. MCP works against all nine. **Automatic context injection via hooks** ships on three (Claude Code, Hermes Agent, pi.dev); on the others the agent must call `recall_sessions` explicitly via MCP. `nlm connect` wires whichever surface the runtime supports:
 
 | Runtime | Connect | Sessions read from | Hooks |
 |---|---|---|---|
@@ -356,13 +358,13 @@ npm install
 npm run build          # compile dist/ — commit the result, it ships in the repo
 npm run dev            # hot-reload daemon
 npm run ui:dev         # hot-reload UI at localhost:5173 (proxies /api to :3940)
-npm test               # 612 tests across 64 files
+npm test               # 726 tests across 73 files
 npm run typecheck
 ```
 
 Architecture: hexagonal. `src/core/` knows about ports (interfaces), not adapters. `src/cli/nlm.ts` is the composition root — the only file that wires concrete implementations (`SqliteSessionStore`, `OllamaClient`, `Hono`, `StdioServerTransport`). Adapters in `src/core/adapters/` are one-way: they parse runtime-specific session formats into NLM's canonical shape; nothing in the runtime sees NLM.
 
-`dist/` is committed so `npm install -g` works without a build step. Rebuild + commit when you change `src/`.
+`dist/` is built on install via the `prepare` script (runs automatically on `npm install` from git or registry) and packed into the published tarball via the `files` field. Not tracked in git.
 
 ---
 

@@ -44,6 +44,7 @@
     "build:ui": "vite build --config src/ui/vite.config.ts",
     "build:codex-plugin": "node scripts/build-codex-plugin.mjs",
     "build": "npm run build:server && npm run build:ui && npm run build:codex-plugin",
+    "prepare": "[ -d src ] && npm run build || true",
     "ui:dev": "vite --config src/ui/vite.config.ts",
     "test": "vitest run",
     "test:watch": "vitest",
