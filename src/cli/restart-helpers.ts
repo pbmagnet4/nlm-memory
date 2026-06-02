@@ -55,3 +55,53 @@ export function planRestart(ctx: RestartContext): RestartStrategy {
   }
   return { kind: "unsupported", reason: `platform ${ctx.platform} not supported` };
 }
+
+export interface ExecuteRestartPlanDeps {
+  readonly successMessage: string;
+  readonly execFileSync: (cmd: string, args: string[], opts?: { stdio?: "inherit" | "ignore" | "pipe" }) => void;
+  readonly spawn: (cmd: string, args: string[], opts: { detached: boolean; stdio: string }) => { unref: () => void };
+  readonly execPath: string;
+  readonly filename: string;
+  readonly pkillPattern: string;
+}
+
+/**
+ * Executes a RestartStrategy produced by planRestart. Separated from
+ * planRestart so both `restart` and `upgrade` share the execution path
+ * without duplicating the switch.
+ */
+export function executeRestartPlan(
+  plan: RestartStrategy,
+  deps: ExecuteRestartPlanDeps,
+): void {
+  switch (plan.kind) {
+    case "launchctl-kickstart":
+      deps.execFileSync("launchctl", ["kickstart", "-k", `gui/${plan.uid}/${plan.label}`]);
+      console.error(`nlm: ${deps.successMessage}`);
+      return;
+    case "launchctl-bootstrap":
+      deps.execFileSync("launchctl", ["bootstrap", `gui/${plan.uid}`, plan.plist]);
+      console.error(`nlm: ${deps.successMessage} (agent was not loaded - bootstrapped and started)`);
+      return;
+    case "systemctl-restart":
+      deps.execFileSync("systemctl", ["--user", "restart", plan.unit]);
+      console.error(`nlm: ${deps.successMessage}`);
+      return;
+    case "pkill-respawn":
+      try {
+        deps.execFileSync("pkill", ["-f", deps.pkillPattern], { stdio: "ignore" });
+      } catch {
+        // No matching process - fine.
+      }
+      deps.spawn(deps.execPath, [deps.filename, "start"], {
+        detached: true,
+        stdio: "ignore",
+      }).unref();
+      console.error(`nlm: ${deps.successMessage}`);
+      return;
+    case "unsupported":
+      console.error(`nlm: restart failed - ${plan.reason}`);
+      console.error("  Binary is updated on disk. Start the daemon manually.");
+      process.exit(1);
+  }
+}

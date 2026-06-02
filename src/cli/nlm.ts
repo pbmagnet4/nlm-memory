@@ -73,7 +73,7 @@ import { normalizeEmbeddings } from "../core/embedding/embed-normalize.js";
 import { ScanScheduler } from "../core/scheduler/scheduler.js";
 import { MemoSweepScheduler } from "../core/hook/memo-sweep.js";
 import { isAgentLoaded, isBenignBootoutError } from "./launchctl-helpers.js";
-import { DAEMON_PKILL_PATTERN, planRestart } from "./restart-helpers.js";
+import { DAEMON_PKILL_PATTERN, planRestart, executeRestartPlan, type ExecuteRestartPlanDeps } from "./restart-helpers.js";
 import { isDevBuild, updateCheckCachePath } from "./upgrade-helpers.js";
 import { applyEnvAssignment } from "./config-env.js";
 import { adapterFromSource } from "../core/adapters/from-source.js";
@@ -716,39 +716,14 @@ program
       unitName: LINUX_SYSTEMD_UNIT_NAME,
     });
 
-    switch (plan.kind) {
-      case "launchctl-kickstart":
-        execFileSync("launchctl", ["kickstart", "-k", `gui/${plan.uid}/${plan.label}`]);
-        console.error(`nlm: kicked ${plan.label} — daemon restarted with new code.`);
-        return;
-      case "launchctl-bootstrap":
-        execFileSync("launchctl", ["bootstrap", `gui/${plan.uid}`, plan.plist]);
-        console.error("nlm: agent was not loaded — bootstrapped and started.");
-        return;
-      case "systemctl-restart":
-        execFileSync("systemctl", ["--user", "restart", plan.unit]);
-        console.error(`nlm: restarted ${plan.unit}.`);
-        return;
-      case "pkill-respawn":
-        try {
-          // Pattern matches the daemon entry point specifically. A naive
-          // "nlm.*start" would also match this `nlm restart` invocation and
-          // kill the process running pkill before it can spawn a replacement.
-          execFileSync("pkill", ["-f", DAEMON_PKILL_PATTERN], { stdio: "ignore" });
-        } catch {
-          // No matching process — fine, we'll just start a fresh one.
-        }
-        spawn(process.execPath, [__filename, "start"], {
-          detached: true,
-          stdio: "ignore",
-        }).unref();
-        console.error("nlm: no managed unit found — killed any running daemon and spawned a fresh one.");
-        return;
-      case "unsupported":
-        console.error(`nlm restart: ${plan.reason}`);
-        console.error("  Supported: macOS (LaunchAgent) and Linux (systemd user).");
-        process.exit(1);
-    }
+    executeRestartPlan(plan, {
+      successMessage: "daemon restarted with new code.",
+      execFileSync,
+      spawn: spawn as unknown as ExecuteRestartPlanDeps["spawn"],
+      execPath: process.execPath,
+      filename: __filename,
+      pkillPattern: DAEMON_PKILL_PATTERN,
+    });
   });
 
 program
@@ -782,36 +757,14 @@ program
       unitName: LINUX_SYSTEMD_UNIT_NAME,
     });
 
-    switch (plan.kind) {
-      case "launchctl-kickstart":
-        execFileSync("launchctl", ["kickstart", "-k", `gui/${plan.uid}/${plan.label}`]);
-        console.error("nlm: upgraded and restarted.");
-        return;
-      case "launchctl-bootstrap":
-        execFileSync("launchctl", ["bootstrap", `gui/${plan.uid}`, plan.plist]);
-        console.error("nlm: upgraded — agent was not loaded, bootstrapped and started.");
-        return;
-      case "systemctl-restart":
-        execFileSync("systemctl", ["--user", "restart", plan.unit]);
-        console.error("nlm: upgraded and restarted.");
-        return;
-      case "pkill-respawn":
-        try {
-          execFileSync("pkill", ["-f", DAEMON_PKILL_PATTERN], { stdio: "ignore" });
-        } catch {
-          // No matching process — fine.
-        }
-        spawn(process.execPath, [__filename, "start"], {
-          detached: true,
-          stdio: "ignore",
-        }).unref();
-        console.error("nlm: upgraded and restarted.");
-        return;
-      case "unsupported":
-        console.error(`nlm upgrade: restart failed — ${plan.reason}`);
-        console.error("  Binary is updated on disk. Start the daemon manually.");
-        process.exit(1);
-    }
+    executeRestartPlan(plan, {
+      successMessage: "upgraded and restarted.",
+      execFileSync,
+      spawn: spawn as unknown as ExecuteRestartPlanDeps["spawn"],
+      execPath: process.execPath,
+      filename: __filename,
+      pkillPattern: DAEMON_PKILL_PATTERN,
+    });
   });
 
 const config = program
