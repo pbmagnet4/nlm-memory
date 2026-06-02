@@ -731,7 +731,7 @@ program
   .description("Install the latest nlm-memory from npm and restart the daemon")
   .action(() => {
     if (isDevBuild(__filename)) {
-      console.error("nlm upgrade: you're running a dev build — run `npm run build` to pick up changes.");
+      console.error("nlm upgrade: you're running a dev build - run `npm run build` to pick up changes.");
       return;
     }
 
