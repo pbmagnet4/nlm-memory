@@ -21,8 +21,8 @@ const CARDS: Card[] = [
   },
   {
     to: "/settings/labels",
-    title: "Labels",
-    body: ({ entities }) => `${entities} entities catalogued. Promote candidates and edit types.`,
+    title: "Topics",
+    body: ({ entities }) => `${entities} topics catalogued. Promote candidates and edit types.`,
   },
   {
     to: "/settings/classifier",

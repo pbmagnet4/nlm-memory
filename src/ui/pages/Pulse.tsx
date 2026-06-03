@@ -56,7 +56,7 @@ export function PulsePage() {
       <div className="kpi-row">
         <Kpi label="This week" value={data.metrics.this_week} hint={`${data.metrics.last_week} last week`} />
         <Kpi label="Sessions" value={data.meta.sessions_total} hint="total" />
-        <Kpi label="Entities" value={data.meta.entities_total} hint="catalogued" />
+        <Kpi label="Topics" value={data.meta.entities_total} hint="catalogued" />
         <Kpi label="Decisions" value={data.metrics.closed_decisions} hint="non-superseded" />
         <KpiSparkline values={data.metrics.sparkline} />
       </div>
@@ -246,7 +246,7 @@ function AlertDrawer({ alert, entity, entityColor, sessions, onClose, onDismiss,
             <dd className="kv-value mono small">{alert.last_touch_at ?? "—"}</dd>
             {entity && (
               <>
-                <dt className="kv-label">Entity type</dt>
+                <dt className="kv-label">Topic type</dt>
                 <dd className="kv-value">{entity.type}</dd>
                 <dt className="kv-label">Total sessions</dt>
                 <dd className="kv-value mono">{entity.session_count}</dd>

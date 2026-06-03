@@ -261,8 +261,8 @@ export function SearchPage() {
           )}
 
           {topEntities.length > 0 && (
-            <div className="filter-group" role="group" aria-label="Entity filter" style={{ flexWrap: "wrap" }}>
-              <button type="button" className={`chip${entityFilter === "" ? " active" : ""}`} onClick={() => setEntityFilter("")}>all entities</button>
+            <div className="filter-group" role="group" aria-label="Topic filter" style={{ flexWrap: "wrap" }}>
+              <button type="button" className={`chip${entityFilter === "" ? " active" : ""}`} onClick={() => setEntityFilter("")}>all topics</button>
               {topEntities.slice(0, 12).map((e) => (
                 <button key={e} type="button" className={`chip${entityFilter === e ? " active" : ""}`} onClick={() => setEntityFilter(entityFilter === e ? "" : e)}>{e}</button>
               ))}
@@ -272,7 +272,7 @@ export function SearchPage() {
                   value={entityFilter}
                   onChange={(e) => setEntityFilter(e.target.value)}
                 >
-                  <option value="">more entities…</option>
+                  <option value="">more topics…</option>
                   {topEntities.slice(12).map((e) => (
                     <option key={e} value={e}>{e}</option>
                   ))}

@@ -97,7 +97,7 @@ export function SettingsLabelsPage() {
     <div className="page-pad">
       <SettingsSubnav />
       <div className="page-header">
-        <h2 className="page-title">Labels</h2>
+        <h2 className="page-title">Topics</h2>
         <input
           className="search-input"
           placeholder="search canonical or type…"
@@ -187,7 +187,7 @@ export function SettingsLabelsPage() {
           })}
           {slice.length === 0 && (
             <tr><td colSpan={6} className="muted small empty-row">
-              {entities.length === 0 ? "No entities yet." : "No entities match the current filters."}
+              {entities.length === 0 ? "No topics yet." : "No topics match the current filters."}
             </td></tr>
           )}
         </tbody>

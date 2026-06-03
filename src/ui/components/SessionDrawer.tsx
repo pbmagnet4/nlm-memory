@@ -236,7 +236,7 @@ export function SessionDrawer({ sessionId, onClose, entityColor, onNavigate, pre
             )}
             {session.entities.length > 0 && (
               <>
-                <h4 className="drawer-section">Entities</h4>
+                <h4 className="drawer-section">Topics</h4>
                 <div className="entity-chips">
                   {session.entities.map((e) => (
                     <Link key={e} to={`/thread?entity=${encodeURIComponent(e)}`} className="chip" onClick={onClose}>{e}</Link>

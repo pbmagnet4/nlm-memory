@@ -377,12 +377,12 @@ function EntityPicker({ data }: { data: Dataset }) {
   return (
     <div className="page-pad">
       <h2 className="page-title">Thread</h2>
-      <p className="muted">Pick an entity to view its reasoning history.</p>
+      <p className="muted">Pick a topic to view its reasoning history.</p>
       <div className="thread-sessions-head" style={{ marginTop: 16 }}>
         <div className="search-wrap" style={{ maxWidth: 320 }}>
           <input
             className="search-input"
-            placeholder="search entities…"
+            placeholder="search topics…"
             value={entitySearch}
             onChange={(e) => setEntitySearch(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Escape") setEntitySearch(""); }}
@@ -396,8 +396,8 @@ function EntityPicker({ data }: { data: Dataset }) {
         <span className="header-spacer" />
         <span className="muted small">
           {entitySearch
-            ? `${filtered.length} of ${data.entities.length} entities`
-            : `${data.entities.length} entities`}
+            ? `${filtered.length} of ${data.entities.length} topics`
+            : `${data.entities.length} topics`}
         </span>
       </div>
       <div className="thread-filters">
@@ -440,7 +440,7 @@ function EntityPicker({ data }: { data: Dataset }) {
           </li>
         ))}
         {slice.length === 0 && (
-          <li style={{ gridColumn: "1 / -1" }} className="muted empty-row">No entities match.</li>
+          <li style={{ gridColumn: "1 / -1" }} className="muted empty-row">No topics match.</li>
         )}
       </ul>
       {filtered.length > pageSize && (
