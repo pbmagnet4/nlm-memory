@@ -71,7 +71,7 @@ export interface DatasetResponse {
   readonly alerts: ReadonlyArray<{
     readonly id: string;
     readonly type: "stale";
-    readonly severity: "high" | "medium";
+    readonly severity: "high" | "medium" | "low";
     readonly entity: string;
     readonly summary: string;
     readonly sessions: ReadonlyArray<string>;
@@ -452,7 +452,7 @@ function computeStaleAlerts(
     alerts.push({
       id: alertId,
       type: "stale",
-      severity: ageDays > 60 ? "high" : "medium",
+      severity: ageDays > 60 ? "high" : ageDays > 45 ? "medium" : "low",
       entity: e.canonical,
       summary,
       sessions: last ? [last.id] : [],
@@ -460,7 +460,9 @@ function computeStaleAlerts(
       last_touch_at: last?.started_at ?? null,
     });
   }
-  alerts.sort((a, b) => (a.severity === "high" ? 0 : 1) - (b.severity === "high" ? 0 : 1));
+  // high → medium → low, then secondary by age desc so older items surface first within a tier.
+  const severityRank: Record<"high" | "medium" | "low", number> = { high: 0, medium: 1, low: 2 };
+  alerts.sort((a, b) => severityRank[a.severity] - severityRank[b.severity] || b.age_days - a.age_days);
   return alerts;
 }
 

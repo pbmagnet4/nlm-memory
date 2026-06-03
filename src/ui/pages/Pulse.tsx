@@ -7,7 +7,7 @@ import { SessionDrawer } from "../components/SessionDrawer.js";
 import { PromoteOpenButton } from "../components/PromoteOpenButton.js";
 import { PulseSkeleton } from "../components/Skeleton.js";
 
-type SeverityFilter = "all" | "high" | "medium";
+type SeverityFilter = "all" | "high" | "medium" | "low";
 type AlertSort = "oldest" | "recent";
 
 export function PulsePage() {
@@ -24,11 +24,12 @@ export function PulsePage() {
   }, [data, severity, sort]);
 
   const severityCounts = useMemo(() => {
-    if (!data) return { all: 0, high: 0, medium: 0 };
+    if (!data) return { all: 0, high: 0, medium: 0, low: 0 };
     return {
       all: data.alerts.length,
       high: data.alerts.filter((a) => a.severity === "high").length,
       medium: data.alerts.filter((a) => a.severity === "medium").length,
+      low: data.alerts.filter((a) => a.severity === "low").length,
     };
   }, [data]);
 
@@ -113,7 +114,7 @@ export function PulsePage() {
             </div>
             <div className="card-filters">
               <div className="filter-group" role="group" aria-label="Severity">
-                {(["all", "high", "medium"] as const).map((s) => (
+                {(["all", "high", "medium", "low"] as const).map((s) => (
                   <button
                     key={s}
                     type="button"

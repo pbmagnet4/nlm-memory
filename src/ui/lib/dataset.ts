@@ -37,7 +37,7 @@ export interface DatasetEntity {
 export interface DatasetAlert {
   id: string;
   type: "stale";
-  severity: "high" | "medium";
+  severity: "high" | "medium" | "low";
   entity: string;
   summary: string;
   sessions: string[];

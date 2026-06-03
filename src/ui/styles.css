@@ -1023,6 +1023,7 @@ code, .code-block {
 .chip-inline.status-stale      { color: var(--warn); border-color: rgba(255,153,51,0.25); background: var(--warn-dim); }
 .chip-inline.severity-high     { color: var(--danger); border-color: rgba(255,107,53,0.35); background: var(--danger-dim); }
 .chip-inline.severity-medium   { color: var(--warn); border-color: rgba(255,153,51,0.35); background: var(--warn-dim); }
+.chip-inline.severity-low      { color: var(--text-2); border-color: var(--border-3); background: var(--surface-2); }
 
 .chip-x {
   background: none;
