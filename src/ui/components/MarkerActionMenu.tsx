@@ -101,7 +101,7 @@ export function MarkerActionMenu({ options, editorSeed, onChanged }: MarkerActio
       onChange={(e) => handleChange(e.target.value)}
       aria-label="Row actions"
     >
-      <option value="">actions…</option>
+      <option value="">actions</option>
       {options.map((o) => (
         <option key={o.value} value={o.value}>{o.label}</option>
       ))}

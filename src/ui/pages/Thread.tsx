@@ -105,7 +105,7 @@ export function ThreadPage() {
   const decisionActions = (id: string, currentText: string): MarkerActionOption[] => [
     {
       value: "revise",
-      label: "revise…",
+      label: "revise",
       kind: "editor",
       buildAction: (to) => ({
         kind: "revise_decision",
@@ -124,8 +124,8 @@ export function ThreadPage() {
 
   const openActions = (id: string, currentText: string): MarkerActionOption[] => [
     {
-      value: "promote",
-      label: "promote to decision…",
+      value: "decide",
+      label: "decide",
       kind: "editor",
       buildAction: (resolution) => ({
         kind: "promote_open",

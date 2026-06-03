@@ -148,7 +148,7 @@ export function relativeAge(iso: string | null | undefined): string {
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return "—";
   const days = Math.floor((Date.now() - t) / 86_400_000);
-  if (days <= 0) return "today";
+  if (days <= 0) return "0d";
   if (days === 1) return "1d";
   if (days < 30) return `${days}d`;
   const months = Math.floor(days / 30);
