@@ -46,7 +46,7 @@ export function App() {
 
 function AppHeader() {
   const { pathname } = useLocation();
-  const page = pathname.replace(/^\//, "").replace(/\/+$/, "") || "live";
+  const page = pathname.replace(/^\//, "").replace(/\/+$/, "") || "pulse";
   return (
     <header className="app-header">
       <span className="wordmark-page">{page}</span>

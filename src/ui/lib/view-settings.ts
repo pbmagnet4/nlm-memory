@@ -19,7 +19,7 @@ export interface ViewSettings {
 export const VIEW_SETTINGS_KEY = "nlm.settings.views";
 
 export const VIEW_SETTINGS_DEFAULT: ViewSettings = {
-  landing: "live",
+  landing: "pulse",
   riverDensity: "comfortable",
   threadSort: "recent",
 };
