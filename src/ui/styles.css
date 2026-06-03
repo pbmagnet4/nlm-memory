@@ -697,7 +697,7 @@ input[type="file"].file-input:disabled::file-selector-button {
 }
 
 .live-board {
-  padding: 4px var(--page-x) 0;
+  padding: 4px var(--page-x) 20px;
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 16px;
