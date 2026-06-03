@@ -737,13 +737,21 @@ input[type="file"].file-input:disabled::file-selector-button {
   font-family: var(--font-mono);
 }
 
-.live-col-body { overflow-y: auto; flex: 1; }
+.live-col-body { overflow-y: auto; overflow-x: hidden; flex: 1; }
 
 .live-row {
   padding: 8px 14px;
   border-bottom: 1px solid var(--border-1);
   animation: fadeSlideIn 200ms ease-out;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
+
+/* Long unbroken strings (session ids, urls, hashes) wrap inside the row
+   instead of pushing the column wider. */
+.live-row .label,
+.live-row .body,
+.live-row .meta { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
 
 .live-row:last-child { border-bottom: none; }
 
