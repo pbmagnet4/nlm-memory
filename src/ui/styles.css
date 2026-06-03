@@ -1760,6 +1760,7 @@ a.session-label:hover { color: var(--accent); }
   overflow: hidden;
   padding-bottom: 0;
 }
+.drawer-body-stretch > .drawer-paragraph { margin: 0 0 16px; color: var(--text-2); }
 .drawer-body-stretch > .session-list { flex: 1; min-height: 0; overflow-y: auto; padding-right: 6px; }
 .drawer-body-stretch > .pagination { border-top: 1px solid var(--border-1); padding: 12px 0; margin: 0; }
 
