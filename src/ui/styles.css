@@ -357,13 +357,15 @@ input[type="file"].file-input:disabled::file-selector-button {
    so the main panel doesn't need a margin offset.                          */
 .page-shell {
   display: flex;
-  min-height: 100vh;
+  height: 100vh;
   background: var(--surface-0);
+  overflow: hidden;
 }
 
 .page-main {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -833,6 +835,11 @@ input[type="file"].file-input:disabled::file-selector-button {
   padding: 20px var(--page-x) 60px;
   flex: 1;
   min-width: 0;
+  /* page-shell now locks the viewport (height: 100vh); page-pad must
+     scroll internally so long pages (Search results, Thread session list,
+     Settings tables) don't push the whole shell. */
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .page-title {
