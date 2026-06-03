@@ -1199,7 +1199,8 @@ code, .code-block {
   font: inherit;
 }
 .bar-item-clickable { cursor: pointer; transition: background var(--ease); }
-.bar-item-clickable:hover { background: var(--surface-1); }
+.bar-item-clickable:hover { background: var(--surface-2); }
+.bar-item-clickable:hover .bar-label { color: var(--accent); }
 .bar-item-clickable:focus-visible { outline: 1px solid var(--border-4); outline-offset: -1px; }
 .bar-item[disabled] { cursor: default; opacity: 0.7; }
 
