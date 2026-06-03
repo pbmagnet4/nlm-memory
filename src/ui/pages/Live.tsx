@@ -51,6 +51,14 @@ export function LivePage() {
   const markers = usePolledEndpoint<MarkersResponse>("/api/live/recent-markers?limit=50", POLL_MS, { markers: [] });
 
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [hoveredSid, setHoveredSid] = useState<string | null>(null);
+  // Returned setter clears only if the row leaving is the one currently
+  // hovered. Prevents a leave-event from a stale row clobbering a fresh
+  // hover when the user moves quickly between rows.
+  const setHover = (sid: string) => (entering: boolean) => {
+    if (entering) setHoveredSid(sid);
+    else setHoveredSid((prev) => (prev === sid ? null : prev));
+  };
 
   const readKeys = reads.data.entries.map((r) => `${r.ts}|${r.source}|${r.query ?? ""}`);
   const writeKeys = writes.data.writes.map((w) => w.id);
@@ -93,7 +101,9 @@ export function LivePage() {
             <Row
               key={w.id}
               fresh={freshWrites.has(w.id)}
+              related={hoveredSid !== null && hoveredSid === w.id}
               onOpen={() => setSessionId(w.id)}
+              onHover={setHover(w.id)}
             >
               <span className="live-tag">{w.runtime.split("/")[0]}</span>
               <span className="label">{w.label}</span>
@@ -115,7 +125,9 @@ export function LivePage() {
               <Row
                 key={key}
                 fresh={freshMarkers.has(key)}
+                related={hoveredSid !== null && hoveredSid === m.sessionId}
                 onOpen={() => setSessionId(m.sessionId)}
+                onHover={setHover(m.sessionId)}
               >
                 <span className="live-tag" data-kind={m.kind}>{m.kind}</span>
                 <span className="label">{m.text}</span>
@@ -206,17 +218,25 @@ function Column({
 
 function Row({
   fresh,
+  related,
   onOpen,
+  onHover,
   children,
 }: {
   fresh: boolean;
+  related?: boolean;
   onOpen: () => void;
+  onHover?: (entering: boolean) => void;
   children: React.ReactNode;
 }) {
   return (
     <div
-      className={`live-row clickable${fresh ? " is-new" : ""}`}
+      className={`live-row clickable${fresh ? " is-new" : ""}${related ? " is-related" : ""}`}
       onClick={onOpen}
+      onMouseEnter={onHover ? () => onHover(true) : undefined}
+      onMouseLeave={onHover ? () => onHover(false) : undefined}
+      onFocus={onHover ? () => onHover(true) : undefined}
+      onBlur={onHover ? () => onHover(false) : undefined}
       role="button"
       tabIndex={0}
       onKeyDown={(e) => {

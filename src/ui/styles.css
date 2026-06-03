@@ -758,6 +758,14 @@ input[type="file"].file-input:disabled::file-selector-button {
 /* Newly arrived rows flash once so the feed reads as live. */
 .live-row.is-new { animation: fadeSlideIn 200ms ease-out, liveFlash 1200ms ease-out; }
 
+/* Hovering one row tags peer rows (other column, same session) with
+   is-related so the user can see the correspondence at a glance. */
+.live-row.is-related {
+  background: var(--accent-glow);
+  border-left: 2px solid var(--accent);
+  padding-left: 12px;
+}
+
 @keyframes liveFlash {
   0%   { background: var(--accent-glow); }
   100% { background: transparent; }
