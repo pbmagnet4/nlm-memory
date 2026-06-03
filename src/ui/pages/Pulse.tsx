@@ -55,6 +55,22 @@ export function PulsePage() {
       .slice(0, 20);
   }, [data]);
 
+  // Show the actual span of the displayed slice so the user knows the
+  // window without us pretending it's a fixed cutoff (it's count-based).
+  const recentSpan = useMemo(() => {
+    const oldest = recent[recent.length - 1]?.started_at;
+    if (!oldest) return null;
+    const ms = Date.now() - Date.parse(oldest);
+    if (!Number.isFinite(ms) || ms <= 0) return "last 24h";
+    const hours = Math.floor(ms / 3_600_000);
+    if (hours < 48) return "last 24h";
+    const days = Math.floor(hours / 24);
+    if (days < 30) return `last ${days}d`;
+    const months = Math.floor(days / 30);
+    if (months < 12) return `last ${months}mo`;
+    return `last ${Math.floor(days / 365)}y`;
+  }, [recent]);
+
   if (loading && !data) return <PulseSkeleton />;
   if (error && !data) return <div className="page-pad"><div className="muted error">{error}</div></div>;
   if (!data) return null;
@@ -83,7 +99,10 @@ export function PulsePage() {
         </section>
 
         <section className="card pulse-scroll-card pulse-area-recent">
-          <header className="card-head"><h3>Recent sessions</h3></header>
+          <header className="card-head">
+            <h3>Recent sessions</h3>
+            {recentSpan && <span className="muted small">{recentSpan}</span>}
+          </header>
           <div className="pulse-scroll-body">
             <ul className="session-list">
               {recent.map((s) => (
