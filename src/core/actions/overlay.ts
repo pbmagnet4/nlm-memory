@@ -33,6 +33,9 @@ export interface ActionOverlay {
    *  computed (session_count + age) classification at projection time;
    *  last non-reverted write wins. */
   readonly coherenceOverrides: Map<string, "active" | "sparse" | "stale">;
+  /** source canonical → target canonical. Source is hidden at projection
+   *  time (treated as retired); target absorbs the source's session count. */
+  readonly mergedEntities: Map<string, string>;
 }
 
 interface ActionRow {
@@ -54,6 +57,7 @@ export const EMPTY_OVERLAY: ActionOverlay = {
   dismissedDecisions: new Set(),
   revisedDecisions: new Map(),
   coherenceOverrides: new Map(),
+  mergedEntities: new Map(),
 };
 
 export function loadActionOverlay(db: Database.Database): ActionOverlay {
@@ -74,6 +78,7 @@ export function loadActionOverlay(db: Database.Database): ActionOverlay {
     dismissedDecisions: new Set(),
     revisedDecisions: new Map(),
     coherenceOverrides: new Map(),
+    mergedEntities: new Map(),
   };
 
   // ORDER BY id keeps reducer deterministic: later writes overwrite earlier
@@ -118,6 +123,10 @@ export function loadActionOverlay(db: Database.Database): ActionOverlay {
       const to = typeof payload?.["to"] === "string" ? payload["to"].trim() : "";
       if (to) overlay.revisedDecisions.set(r.subject_id, to);
       else overlay.revisedDecisions.delete(r.subject_id);
+    } else if (r.kind === "merge_entity" && r.subject_type === "entity") {
+      const into = typeof payload?.["into"] === "string" ? payload["into"].trim() : "";
+      if (into) overlay.mergedEntities.set(r.subject_id, into);
+      else overlay.mergedEntities.delete(r.subject_id);
     } else if (r.kind === "set_coherence" && r.subject_type === "entity") {
       const state = typeof payload?.["state"] === "string" ? payload["state"] : "";
       if (state === "active" || state === "sparse" || state === "stale") {

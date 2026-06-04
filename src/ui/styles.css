@@ -1783,6 +1783,37 @@ a.session-label:hover { color: var(--accent); }
   background: var(--danger-dim);
 }
 
+/* #264 — Merge picker sub-panel */
+.merge-picker {
+  background: var(--surface-2);
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.merge-result-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.merge-result-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.merge-result-row:hover { background: var(--surface-3); }
+.merge-result-row.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: var(--surface-3);
+}
+.coherence-rows-dimmed { opacity: 0.4; pointer-events: none; }
+
 .drawer-section {
   font-size: var(--text-xs);
   letter-spacing: 0.06em;

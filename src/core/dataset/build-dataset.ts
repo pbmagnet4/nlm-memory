@@ -263,12 +263,24 @@ function projectFromDb(db: Database.Database, dbPath: string, includePaths: bool
     .all();
 
   const overlay = loadActionOverlay(db);
+
+  // Count-folding pass (Option B): runs before coherence computation so the
+  // target entity's bucket reflects the absorbed session count.
+  if (overlay.mergedEntities.size > 0) {
+    const byCanonical = new Map(allEntityRows.map((e) => [e.canonical, e]));
+    for (const [source, into] of overlay.mergedEntities) {
+      const src = byCanonical.get(source);
+      const tgt = byCanonical.get(into);
+      if (src && tgt) tgt.session_count += src.session_count;
+    }
+  }
+
   const sessionStartByIdForCoherence = new Map<string, string | null>(
     sessionRows.map((s) => [s.id, s.started_at]),
   );
   const nowMs = Date.now();
   for (const e of allEntityRows) {
-    if (overlay.retiredEntities.has(e.canonical)) e.status = "retired";
+    if (overlay.retiredEntities.has(e.canonical) || overlay.mergedEntities.has(e.canonical)) e.status = "retired";
     else if (overlay.snoozedEntities.has(e.canonical)) e.status = "snoozed";
     const newType = overlay.labeledEntities.get(e.canonical);
     if (newType) e.type = newType;

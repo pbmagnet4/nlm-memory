@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useDataset, relativeAge } from "../lib/dataset.js";
 import type { DatasetAlert, DatasetEntity, DatasetRuntime, DatasetSession, TopicCoherence } from "../lib/dataset.js";
@@ -475,6 +475,145 @@ function Bar({ tone, label, value, pct, onPick }: {
   );
 }
 
+function MergePicker({
+  source,
+  entities,
+  entityColors,
+  entityDisplay,
+  onMerge,
+  onCancel,
+}: {
+  source: string;
+  entities: DatasetEntity[];
+  entityColors: Record<string, string>;
+  entityDisplay: Record<string, string>;
+  onMerge: (into: string) => void;
+  onCancel: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [confirming, setConfirming] = useState(false);
+  const [selected, setSelected] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const sourceLabel = entityDisplay[source] ?? source;
+
+  const candidates = useMemo(() => {
+    const q = query.toLowerCase();
+    return entities
+      .filter(
+        (e) =>
+          e.canonical !== source &&
+          e.status !== "retired" &&
+          (q === "" || (entityDisplay[e.canonical] ?? e.canonical).toLowerCase().includes(q)),
+      )
+      .sort((a, b) => b.session_count - a.session_count)
+      .slice(0, 8);
+  }, [entities, source, entityDisplay, query]);
+
+  const handleKeyDown = (ev: React.KeyboardEvent) => {
+    if (ev.key === "Escape") {
+      // Stop propagation so the CoherenceDrawer's Escape listener doesn't fire.
+      ev.stopPropagation();
+      onCancel();
+    } else if (ev.key === "ArrowDown") {
+      ev.preventDefault();
+      setActiveIndex((i) => Math.min(i + 1, candidates.length - 1));
+    } else if (ev.key === "ArrowUp") {
+      ev.preventDefault();
+      setActiveIndex((i) => Math.max(i - 1, 0));
+    } else if (ev.key === "Enter" && candidates[activeIndex]) {
+      ev.preventDefault();
+      if (confirming) {
+        if (selected) onMerge(selected);
+      } else {
+        setSelected(candidates[activeIndex].canonical);
+        setConfirming(true);
+      }
+    }
+  };
+
+  if (confirming && selected) {
+    const selectedLabel = entityDisplay[selected] ?? selected;
+    return (
+      <div
+        className="merge-picker"
+        onKeyDown={handleKeyDown}
+        role="dialog"
+        aria-label={`Confirm merge ${sourceLabel}`}
+        aria-modal="false"
+      >
+        <p className="drawer-paragraph">
+          Merge <strong>{sourceLabel}</strong> into <strong>{selectedLabel}</strong>?
+        </p>
+        <p className="drawer-paragraph muted small">
+          Sessions tagged to "{sourceLabel}" will be attributed to "{selectedLabel}" going forward.
+        </p>
+        <div className="filter-group">
+          <button type="button" className="chip" onClick={() => setConfirming(false)}>Cancel</button>
+          <button type="button" className="chip active" onClick={() => onMerge(selected)}>Confirm merge</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="merge-picker"
+      onKeyDown={handleKeyDown}
+      role="dialog"
+      aria-label={`Merge ${sourceLabel} into another topic`}
+      aria-modal="false"
+    >
+      <p className="drawer-paragraph" style={{ marginBottom: 8 }}>
+        Merge <strong>{sourceLabel}</strong> into:
+      </p>
+      <input
+        ref={inputRef}
+        className="form-input"
+        type="text"
+        placeholder="Type to search topics…"
+        value={query}
+        onChange={(ev) => { setQuery(ev.currentTarget.value); setActiveIndex(0); }}
+        aria-label="Search topics"
+        aria-autocomplete="list"
+      />
+      <ul className="merge-result-list">
+        {candidates.map((e, i) => {
+          const label = entityDisplay[e.canonical] ?? e.canonical;
+          return (
+            <li
+              key={e.canonical}
+              className={`merge-result-row${i === activeIndex ? " selected" : ""}`}
+              onClick={() => { setSelected(e.canonical); setActiveIndex(i); setConfirming(true); }}
+            >
+              <span className="dot" style={{ background: entityColors[e.canonical] ?? "#666" }} />
+              <span className="session-label">{label}</span>
+              <span className="session-meta">{e.session_count} session{e.session_count === 1 ? "" : "s"} · {e.coherence}</span>
+            </li>
+          );
+        })}
+        {candidates.length === 0 && (
+          <li className="muted empty-row">No topics match.</li>
+        )}
+      </ul>
+      <div className="filter-group" style={{ marginTop: 8 }}>
+        <button type="button" className="chip" onClick={onCancel}>Cancel</button>
+        <button
+          type="button"
+          className="chip active"
+          disabled={candidates.length === 0}
+          onClick={() => { setSelected(candidates[activeIndex]?.canonical ?? null); setConfirming(true); }}
+        >
+          Merge into selected →
+        </button>
+      </div>
+    </div>
+  );
+}
+
 const COHERENCE_TITLE: Record<TopicCoherence, string> = {
   active: "Active topics",
   sparse: "Sparse topics",
@@ -503,6 +642,7 @@ function CoherenceDrawer({
   onChanged: () => Promise<void> | void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
+  const [mergeSource, setMergeSource] = useState<string | null>(null);
   // Default 10 keeps the pagination visible on a typical viewport without
   // an internal scroll. Larger page sizes are a user choice that may push
   // rows past the drawer foot.
@@ -532,6 +672,24 @@ function CoherenceDrawer({
     window.addEventListener("keydown", onEsc);
     return () => window.removeEventListener("keydown", onEsc);
   }, [onClose]);
+
+  const postMerge = async (into: string) => {
+    if (!mergeSource) return;
+    const source = mergeSource;
+    setBusy(source);
+    setMergeSource(null);
+    try {
+      await postAction({
+        kind: "merge_entity",
+        subject_type: "entity",
+        subject_id: source,
+        payload: { into },
+      });
+      await onChanged();
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const setBucket = async (canonical: string, next: TopicCoherence | null) => {
     setBusy(canonical);
@@ -565,7 +723,17 @@ function CoherenceDrawer({
         </header>
         <div className="drawer-body">
           <p className="drawer-paragraph drawer-hint">{COHERENCE_HINT[bucket]}</p>
-          <ul className="session-list coherence-session-list">
+          {mergeSource && (
+            <MergePicker
+              source={mergeSource}
+              entities={entities}
+              entityColors={entityColors}
+              entityDisplay={entityDisplay}
+              onMerge={(into) => void postMerge(into)}
+              onCancel={() => setMergeSource(null)}
+            />
+          )}
+          <ul className={`session-list coherence-session-list${mergeSource ? " coherence-rows-dimmed" : ""}`}>
             {slice.map((e) => {
               const label = entityDisplay[e.canonical] ?? e.canonical;
               const overridden = e.coherence !== e.coherence_computed;
@@ -592,6 +760,15 @@ function CoherenceDrawer({
                         onClick={() => void setBucket(e.canonical, b)}
                       >{b}</button>
                     ))}
+                    {bucket === "sparse" && (
+                      <button
+                        type="button"
+                        className={`chip${mergeSource === e.canonical ? " active" : ""}`}
+                        disabled={rowBusy}
+                        onClick={() => setMergeSource(mergeSource === e.canonical ? null : e.canonical)}
+                        title="Merge this topic into another"
+                      >merge</button>
+                    )}
                     {overridden && (
                       <button
                         type="button"
