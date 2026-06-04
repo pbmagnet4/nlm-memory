@@ -786,32 +786,32 @@ function CoherenceDrawer({
               <li className="muted empty-row">No topics in this bucket right now.</li>
             )}
           </ul>
-          {rows.length > 0 && (
-            <div className="pagination pagination-compact">
-              <div className="page-size">
-                <label className="form-label">Per page</label>
-                <select
-                  className="form-input form-input-inline"
-                  value={pageSize}
-                  onChange={(ev) => setPageSize(Number.parseInt(ev.target.value, 10))}
-                >
-                  {DRAWER_PAGE_SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
-                </select>
-              </div>
-              <span className="header-spacer" />
-              <span className="muted small">
-                {start + 1}–{Math.min(start + pageSize, rows.length)} of {rows.length}
-              </span>
-              <div className="page-nav">
-                <button type="button" className="chip" disabled={currentPage === 0} onClick={() => setPage(0)}>«</button>
-                <button type="button" className="chip" disabled={currentPage === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>‹</button>
-                <span className="page-indicator mono">{currentPage + 1} / {pageCount}</span>
-                <button type="button" className="chip" disabled={currentPage >= pageCount - 1} onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}>›</button>
-                <button type="button" className="chip" disabled={currentPage >= pageCount - 1} onClick={() => setPage(pageCount - 1)}>»</button>
-              </div>
-            </div>
-          )}
         </div>
+        {rows.length > 0 && (
+          <div className="pagination pagination-compact coherence-pagination">
+            <div className="page-size">
+              <label className="form-label">Per page</label>
+              <select
+                className="form-input form-input-inline"
+                value={pageSize}
+                onChange={(ev) => setPageSize(Number.parseInt(ev.target.value, 10))}
+              >
+                {DRAWER_PAGE_SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+            <span className="header-spacer" />
+            <span className="muted small">
+              {start + 1}–{Math.min(start + pageSize, rows.length)} of {rows.length}
+            </span>
+            <div className="page-nav">
+              <button type="button" className="chip" disabled={currentPage === 0} onClick={() => setPage(0)}>«</button>
+              <button type="button" className="chip" disabled={currentPage === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>‹</button>
+              <span className="page-indicator mono">{currentPage + 1} / {pageCount}</span>
+              <button type="button" className="chip" disabled={currentPage >= pageCount - 1} onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}>›</button>
+              <button type="button" className="chip" disabled={currentPage >= pageCount - 1} onClick={() => setPage(pageCount - 1)}>»</button>
+            </div>
+          </div>
+        )}
       </aside>
     </>
   );

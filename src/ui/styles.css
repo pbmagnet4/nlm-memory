@@ -1783,6 +1783,25 @@ a.session-label:hover { color: var(--accent); }
   background: var(--danger-dim);
 }
 
+/* CoherenceDrawer: body becomes a flex column so the row list fills the
+   available height and the pagination footer pins to the drawer bottom. */
+.coherence-drawer .drawer-body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 0;
+}
+.coherence-session-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.coherence-pagination {
+  flex-shrink: 0;
+  padding: 10px 18px;
+  border-top: 1px solid var(--border-1);
+}
+
 /* #264 — Merge picker sub-panel */
 .merge-picker {
   background: var(--surface-2);
