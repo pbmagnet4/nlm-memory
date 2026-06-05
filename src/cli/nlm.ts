@@ -371,6 +371,37 @@ program
   });
 
 program
+  .command("misses")
+  .description("Show sessions the agent explicitly fetched but the hook never surfaced (recall miss log)")
+  .option("-d, --days <n>", "lookback window", (v) => Number.parseInt(v, 10), 7)
+  .option("--json", "emit JSON instead of a human-readable table")
+  .action(async (opts) => {
+    const { missStats } = await import("../core/recall/miss-log.js");
+    const stats = await missStats(opts.days);
+    if (opts.json) {
+      process.stdout.write(`${JSON.stringify(stats, null, 2)}\n`);
+      return;
+    }
+    if (!stats.logPresent) {
+      console.error(`No miss log at ${process.env["NLM_MISS_LOG"] ?? "~/.nlm/miss-log.jsonl"}.`);
+      console.error("Misses are recorded by the Stop hook when the agent explicitly fetches or cites a session NLM didn't surface.");
+      return;
+    }
+    console.log(`Recall misses — last ${stats.days} day(s)`);
+    console.log(`  Total miss events: ${stats.total}`);
+    console.log(`  Distinct missed session IDs: ${stats.distinctIds}`);
+    if (stats.topIds.length === 0) {
+      console.log("  (no misses in this window)");
+      return;
+    }
+    console.log("");
+    console.log("  Top missed session IDs:");
+    for (const row of stats.topIds) {
+      console.log(`    ${row.id}  ×${row.count}  (in ${row.conversations} conv${row.conversations === 1 ? "" : "s"})`);
+    }
+  });
+
+program
   .command("supersede")
   .description("Retroactively mark a session as superseded by a newer one")
   .argument("[predecessor]", "predecessor session id (omit for interactive search)")

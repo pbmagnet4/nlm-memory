@@ -25,6 +25,10 @@ export interface ScoreInputs {
 
 export interface SingleScore {
   readonly recallAtK: 0 | 1;
+  /** R@1 — did the rank-1 return match any gold id? */
+  readonly recallAt1: 0 | 1;
+  /** R@3 — did any of the top-3 returns match any gold id? */
+  readonly recallAt3: 0 | 1;
   readonly sessionBodyHit: 0 | 1;
 }
 
@@ -33,6 +37,8 @@ export function scoreOne(input: ScoreInputs): SingleScore {
   const topK = input.returnedIds.slice(0, input.k);
   const goldSet = new Set(input.goldIds);
   const recallAtK = topK.some((id) => goldSet.has(id)) ? 1 : 0;
+  const recallAt1 = topK.slice(0, 1).some((id) => goldSet.has(id)) ? 1 : 0;
+  const recallAt3 = topK.slice(0, 3).some((id) => goldSet.has(id)) ? 1 : 0;
 
   // Session-body hit: substring match for multi-word answers; word-boundary
   // match for short answers (single token <4 chars: "3", "yes", numeric
@@ -54,12 +60,14 @@ export function scoreOne(input: ScoreInputs): SingleScore {
       }
     }
   }
-  return { recallAtK, sessionBodyHit };
+  return { recallAtK, recallAt1, recallAt3, sessionBodyHit };
 }
 
 export interface Aggregate {
   readonly n: number;
   readonly recallAtK: number;
+  readonly recallAt1: number;
+  readonly recallAt3: number;
   readonly sessionBodyHitRate: number;
 }
 
@@ -67,17 +75,23 @@ export interface Aggregate {
 export function aggregate(scores: ReadonlyArray<SingleScore>): Aggregate {
   const n = scores.length;
   if (n === 0) {
-    return { n: 0, recallAtK: 0, sessionBodyHitRate: 0 };
+    return { n: 0, recallAtK: 0, recallAt1: 0, recallAt3: 0, sessionBodyHitRate: 0 };
   }
-  let r = 0;
+  let rK = 0;
+  let r1 = 0;
+  let r3 = 0;
   let s = 0;
   for (const x of scores) {
-    r += x.recallAtK;
+    rK += x.recallAtK;
+    r1 += x.recallAt1;
+    r3 += x.recallAt3;
     s += x.sessionBodyHit;
   }
   return {
     n,
-    recallAtK: round3(r / n),
+    recallAtK: round3(rK / n),
+    recallAt1: round3(r1 / n),
+    recallAt3: round3(r3 / n),
     sessionBodyHitRate: round3(s / n),
   };
 }

@@ -98,17 +98,19 @@ describe("scoreOne", () => {
 describe("aggregate", () => {
   it("computes mean rates rounded to 3 decimal places", () => {
     const a = aggregate([
-      { recallAtK: 1, sessionBodyHit: 1 },
-      { recallAtK: 0, sessionBodyHit: 1 },
-      { recallAtK: 1, sessionBodyHit: 0 },
+      { recallAtK: 1, recallAt1: 1, recallAt3: 1, sessionBodyHit: 1 },
+      { recallAtK: 0, recallAt1: 0, recallAt3: 0, sessionBodyHit: 1 },
+      { recallAtK: 1, recallAt1: 0, recallAt3: 1, sessionBodyHit: 0 },
     ]);
     expect(a.n).toBe(3);
     expect(a.recallAtK).toBeCloseTo(0.667, 3);
+    expect(a.recallAt1).toBeCloseTo(0.333, 3);
+    expect(a.recallAt3).toBeCloseTo(0.667, 3);
     expect(a.sessionBodyHitRate).toBeCloseTo(0.667, 3);
   });
 
   it("returns zeros for empty input", () => {
     const a = aggregate([]);
-    expect(a).toEqual({ n: 0, recallAtK: 0, sessionBodyHitRate: 0 });
+    expect(a).toEqual({ n: 0, recallAtK: 0, recallAt1: 0, recallAt3: 0, sessionBodyHitRate: 0 });
   });
 });

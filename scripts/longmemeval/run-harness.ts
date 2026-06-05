@@ -443,13 +443,13 @@ function renderSummary(json: {
   lines.push("");
   lines.push("## Aggregate");
   lines.push("");
-  lines.push(`| Mode | R@${json.k} | Session-body hit |`);
-  lines.push(`| --- | --- | --- |`);
+  lines.push(`| Mode | R@1 | R@3 | R@${json.k} | Session-body hit |`);
+  lines.push(`| --- | --- | --- | --- | --- |`);
   for (const mode of json.modes) {
     const a = json.aggregate[mode];
     if (!a) continue;
     lines.push(
-      `| ${mode} | ${(a.recallAtK * 100).toFixed(1)}% | ${(a.sessionBodyHitRate * 100).toFixed(1)}% |`,
+      `| ${mode} | ${(a.recallAt1 * 100).toFixed(1)}% | ${(a.recallAt3 * 100).toFixed(1)}% | ${(a.recallAtK * 100).toFixed(1)}% | ${(a.sessionBodyHitRate * 100).toFixed(1)}% |`,
     );
   }
   lines.push("");

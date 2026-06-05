@@ -24,6 +24,7 @@ import type {
 import { applyFilter } from "./filter.js";
 import { keywordMatchFields } from "./match-fields.js";
 import { detectQueryShape } from "./query-shape.js";
+import { recencyMultiplier } from "./recency.js";
 import { RewriteCache } from "./rewrite-cache.js";
 import { tokenSet } from "./tokenize.js";
 
@@ -304,14 +305,26 @@ function finalize(
   limit: number,
   hits: ReadonlyArray<RecallHit>,
 ): RecallResult {
+  // Apply recency decay to every hit, then re-sort by adjusted score so
+  // newer sessions surface ahead of equally-relevant older ones. The decay
+  // is multiplicative; within a single query all hits use the same scale
+  // (BM25, similarity, or RRF) so the multiplier preserves intra-mode
+  // ranking when ages are similar and skews recent when ages diverge.
+  // Disable per-deployment with NLM_RECALL_DECAY_HALF_LIFE_DAYS=0.
+  const now = Date.now();
+  const adjusted: RecallHit[] = hits.map((h) => ({
+    ...h,
+    matchScore: round4(h.matchScore * recencyMultiplier(h.startedAt, now)),
+  }));
+  adjusted.sort((a, b) => b.matchScore - a.matchScore);
   return {
     query,
     entity,
     kind,
     mode,
     limit,
-    total: hits.length,
-    results: hits.slice(0, limit),
+    total: adjusted.length,
+    results: adjusted.slice(0, limit),
   };
 }
 

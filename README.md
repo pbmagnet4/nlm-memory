@@ -245,6 +245,8 @@ recall: prompt / query
 | `NLM_USEFUL_HIT_LOG` | `~/.nlm/useful-hit-log.jsonl` | Citation/useful-hit ledger |
 | `NLM_QUERY_LOG` | `~/.nlm/query-log.jsonl` | Recall query telemetry |
 | `NLM_CITATION_LOG` | `~/.nlm/citation-log.jsonl` | Stop-hook citation events |
+| `NLM_MISS_LOG` | `~/.nlm/miss-log.jsonl` | Stop-hook miss events — sessions the agent explicitly fetched via `get_session`/`cite_session` that the hook never surfaced. Reviewed via `nlm misses`. |
+| `NLM_MISS_LOG_ENABLED` | `true` | Set to `0` to disable miss-log emission entirely. |
 | `NLM_MCP_TOKEN` | auto-generated | 256-bit bearer for `/api/*` (non-browser) and `/mcp` |
 | `NLM_MCP_CONFIG` | `~/.mcp.json` | Path the `connect`/`disconnect` commands modify |
 | `NLM_CLASSIFIER` | `ollama` | `ollama` (local, default), `deepseek`, `openai`, `anthropic`, `openrouter`, or `openai-compatible` |
@@ -253,6 +255,8 @@ recall: prompt / query
 | `NLM_ADAPTERS` | all | Comma-separated allowlist of adapters to enable |
 | `DEEPSEEK_API_KEY` | — | Required only when classifier=deepseek |
 | `NLM_DISABLE_UPDATE_CHECK` | — | Set to `1` to disable the daily npm-registry update check |
+| `NLM_RECALL_DECAY_HALF_LIFE_DAYS` | `180` | Half-life of the recency multiplier applied to recall scores. Older sessions score lower; defaults to 6 months. Set to `0` to disable recency weighting entirely. |
+| `NLM_RECALL_DECAY_FLOOR` | `0.25` | Lower bound on the recency multiplier — even ancient sessions retain at least 25% of their raw score so a perfect-match old session can still surface. |
 | `NLM_RECALL_REWRITE_DEFAULT` | `true` | Default value for the MCP `recall_sessions` `rewrite` parameter. When true, the service runs an LLM rewrite on vague natural-language queries before search. The HTTP hook caller bypasses rewrite regardless (hot-path protection). |
 | `NLM_RECALL_REWRITE_TIMEOUT_MS` | `5000` | Per-call timeout for the rewrite LLM. Separate from the classifier timeout. |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | — | Required for `nlm digest --telegram` |

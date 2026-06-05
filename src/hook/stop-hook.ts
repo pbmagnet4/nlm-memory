@@ -20,8 +20,10 @@ import {
   detectCitations,
   type CitationKind,
 } from "@core/hook/citation-detect.js";
+import { detectMisses } from "@core/hook/miss-detect.js";
 import { loadSurfaced } from "@core/hook/memo.js";
 import { loadCited, recordCited } from "@core/hook/cite-memo.js";
+import { appendMisses } from "@core/recall/miss-log.js";
 import {
   readAllAssistantTurns,
   type ToolUseBlock,
@@ -113,6 +115,23 @@ export async function runStopHook(
   });
   const alreadyCited = loadCited(input.conversationId);
   const fresh = detected.filter((c) => !alreadyCited.has(c.id));
+
+  // Spec E: passive miss detection. Any session the agent explicitly
+  // fetched via get_session / cite_session that was NOT in the surfaced
+  // set is a hook-side miss — the recall gate failed to fire for a
+  // session the model later cared about. Fire-and-forget: never blocks
+  // the Stop hook return.
+  const misses = detectMisses({ toolUses: allToolUses, surfacedIds: surfaced });
+  if (misses.length > 0) {
+    void appendMisses(
+      misses.map((m) => ({
+        conversationId: input.conversationId,
+        missedId: m.id,
+        kind: m.kind,
+        surfacedCount: surfaced.size,
+      })),
+    );
+  }
 
   // Preview is the LAST turn's prose — that's what Edward saw when Stop
   // fired. Stable substrate for the citation log even when detection
