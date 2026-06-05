@@ -48,6 +48,9 @@ class StubEmbedder implements LLMClient {
     if (this.fail) throw new LLMUnreachableError("ollama");
     return { vector: new Float32Array([1, 0, 0]), model: "stub" };
   }
+  async rewriteForRecall(): Promise<never> {
+    throw new Error("not used in tests");
+  }
   async classify(): Promise<never> {
     throw new Error("not used");
   }

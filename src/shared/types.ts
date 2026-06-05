@@ -45,6 +45,16 @@ export interface RecallQuery {
   readonly kind?: RecallKindFilter;
   readonly mode?: RecallMode;
   readonly limit?: number;
+  /**
+   * If true, RecallService runs an LLM rewrite pass on the query before
+   * keyword/semantic search — useful for vague natural-language queries.
+   * Falls back to the raw query on LLM errors. Adds ~hundreds of ms.
+   * Off by default; MCP `recall_sessions` tool defaults to true since
+   * callers there have already committed to a memory search. Hot-path
+   * callers (hooks) pass false; the HTTP handler force-overrides to false
+   * when the `x-recall-source: hook` header is present.
+   */
+  readonly rewrite?: boolean;
 }
 
 export interface RecallHit {

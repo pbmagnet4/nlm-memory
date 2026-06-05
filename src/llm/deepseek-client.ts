@@ -7,7 +7,9 @@
  *   • ~$0.002/session at typical sizes — full backfill of ~1,200 sessions
  *     ≈ $2.50.
  *   • Strong extraction quality (12+ entities, accurate decisions,
- *     0.9 confidence) where phi4-mini struggles or times out.
+ *     0.9 confidence). The 2026-06-02 head-to-head bench found qwen3:4b
+ *     statistically tied on schema validity and entity counts at $0/local;
+ *     DeepSeek remains the speed/throughput pick.
  *
  * Same prompt module as OllamaClient — only the transport differs. Same
  * error semantics: LLMUnreachableError for network/HTTP, ClassifierSchemaError
@@ -23,6 +25,7 @@ import type {
   EmbedResult,
   EmbeddingKind,
   LLMClient,
+  RewriteResult,
 } from "@ports/llm-client.js";
 import { LLMUnreachableError } from "@ports/llm-client.js";
 import {
@@ -32,7 +35,16 @@ import {
   stripJsonFences,
   validateClassifierJson,
 } from "@core/classifier/prompt.js";
+import { REWRITE_SYSTEM_PROMPT, parseRewriteJson } from "@core/recall/rewrite-prompt.js";
 import { ClassifierSchemaError } from "./ollama-client.js";
+
+const DEFAULT_REWRITE_TIMEOUT_MS = 5_000;
+function rewriteTimeoutMs(): number {
+  const raw = process.env["NLM_RECALL_REWRITE_TIMEOUT_MS"];
+  if (!raw) return DEFAULT_REWRITE_TIMEOUT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_REWRITE_TIMEOUT_MS;
+}
 
 export type FetchImpl = typeof fetch;
 
@@ -143,6 +155,46 @@ export class DeepSeekClient implements LLMClient {
     } catch (e) {
       if (e instanceof LLMUnreachableError || e instanceof ClassifierSchemaError) throw e;
       throw new LLMUnreachableError("deepseek", e);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async rewriteForRecall(query: string): Promise<RewriteResult> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), rewriteTimeoutMs());
+    try {
+      const res = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.classifyModel,
+          messages: [
+            { role: "system", content: REWRITE_SYSTEM_PROMPT },
+            { role: "user", content: query },
+          ],
+          response_format: { type: "json_object" },
+          temperature: 0.1,
+          max_tokens: 512,
+          stream: false,
+        }),
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        throw new LLMUnreachableError(
+          "deepseek-rewrite",
+          `status ${res.status}: ${await res.text().catch(() => "")}`,
+        );
+      }
+      const data = (await res.json()) as ChatResponse;
+      const rawContent = data.choices?.[0]?.message?.content?.trim() ?? "";
+      return parseRewriteJson(rawContent, "deepseek");
+    } catch (e) {
+      if (e instanceof LLMUnreachableError) throw e;
+      throw new LLMUnreachableError("deepseek-rewrite", e);
     } finally {
       clearTimeout(timer);
     }

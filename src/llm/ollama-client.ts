@@ -2,7 +2,7 @@
  * OllamaClient — LLMClient backed by a local Ollama HTTP endpoint.
  *
  * embed()    → POST /api/embeddings  (nomic-embed-text by default)
- * classify() → POST /api/chat        (phi4-mini by default, format=json)
+ * classify() → POST /api/chat        (qwen3:4b-instruct-2507 by default, format=json)
  *
  * Network/HTTP failure maps to LLMUnreachableError so RecallService can
  * degrade to keyword mode without crashing. Classification parse failures
@@ -17,6 +17,7 @@ import type {
   EmbedResult,
   EmbeddingKind,
   LLMClient,
+  RewriteResult,
 } from "@ports/llm-client.js";
 import { LLMUnreachableError } from "@ports/llm-client.js";
 import {
@@ -26,6 +27,15 @@ import {
   stripJsonFences,
   validateClassifierJson,
 } from "@core/classifier/prompt.js";
+import { REWRITE_SYSTEM_PROMPT, parseRewriteJson } from "@core/recall/rewrite-prompt.js";
+
+const DEFAULT_REWRITE_TIMEOUT_MS = 5_000;
+function rewriteTimeoutMs(): number {
+  const raw = process.env["NLM_RECALL_REWRITE_TIMEOUT_MS"];
+  if (!raw) return DEFAULT_REWRITE_TIMEOUT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_REWRITE_TIMEOUT_MS;
+}
 
 export type FetchImpl = typeof fetch;
 
@@ -88,7 +98,7 @@ export class OllamaClient implements LLMClient {
   constructor(opts: OllamaClientOptions = {}) {
     this.baseUrl = (opts.baseUrl ?? "http://localhost:11434").replace(/\/+$/, "");
     this.embedModel = opts.embedModel ?? "nomic-embed-text";
-    this.classifyModel = opts.classifyModel ?? "phi4-mini:latest";
+    this.classifyModel = opts.classifyModel ?? "qwen3:4b-instruct-2507-q4_K_M";
     this.timeoutMs = opts.timeoutMs ?? 10_000;
     this.classifyTimeoutMs = opts.classifyTimeoutMs ?? 180_000;
     this.fetchImpl = opts.fetchImpl ?? fetch;
@@ -175,6 +185,37 @@ export class OllamaClient implements LLMClient {
     } catch (e) {
       if (e instanceof LLMUnreachableError || e instanceof ClassifierSchemaError) throw e;
       throw new LLMUnreachableError("ollama", e);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async rewriteForRecall(query: string): Promise<RewriteResult> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), rewriteTimeoutMs());
+    try {
+      const res = await this.fetchImpl(`${this.baseUrl}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: this.classifyModel,
+          messages: [
+            { role: "system", content: REWRITE_SYSTEM_PROMPT },
+            { role: "user", content: query },
+          ],
+          stream: false,
+          format: "json",
+          options: { temperature: 0.1 },
+        }),
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new LLMUnreachableError("ollama-rewrite", `status ${res.status}`);
+      const data = (await res.json()) as ChatResponse;
+      const rawContent = data.message?.content?.trim() ?? "";
+      return parseRewriteJson(rawContent, "ollama");
+    } catch (e) {
+      if (e instanceof LLMUnreachableError) throw e;
+      throw new LLMUnreachableError("ollama-rewrite", e);
     } finally {
       clearTimeout(timer);
     }

@@ -23,6 +23,9 @@ class UnreachableEmbedder implements LLMClient {
   async embed(): Promise<EmbedResult> {
     throw new LLMUnreachableError("ollama");
   }
+  async rewriteForRecall(): Promise<never> {
+    throw new Error("not used in tests");
+  }
   async classify(): Promise<never> {
     throw new Error("not used");
   }

@@ -51,6 +51,9 @@ class StubClassifier implements LLMClient {
   async embed(): Promise<EmbedResult> {
     throw new Error("not used");
   }
+  async rewriteForRecall(): Promise<never> {
+    throw new Error("not used in tests");
+  }
   async classify(): Promise<ClassifyResult> {
     this.calls += 1;
     if (this.throwError) throw new Error("classifier blew up");
@@ -65,6 +68,9 @@ class StubEmbedder implements LLMClient {
     const v = new Float32Array(768);
     v[0] = 1;
     return { vector: v, model: "stub" };
+  }
+  async rewriteForRecall(): Promise<never> {
+    throw new Error("not used in tests");
   }
   async classify(): Promise<ClassifyResult> {
     throw new Error("not used");

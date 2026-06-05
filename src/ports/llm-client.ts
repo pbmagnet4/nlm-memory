@@ -46,7 +46,32 @@ export class LLMUnreachableError extends Error {
   }
 }
 
+/**
+ * Result of rewriting a vague natural-language recall query into both a
+ * keyword-optimized phrasing (entity-rich, suitable for FTS5 BM25) and a
+ * semantic-optimized phrasing (cleaner prose, suitable for embedding).
+ *
+ * The keyword and semantic queries are independent — keyword strips
+ * conversational filler and surfaces named entities; semantic preserves
+ * paraphrasing so the embedder has something meaningful to embed.
+ */
+export interface RewriteResult {
+  readonly keywordQuery: string;
+  readonly semanticQuery: string;
+  /** Free-text rationale for debugging; not used by the retrieval path. */
+  readonly rationale?: string;
+}
+
 export interface LLMClient {
   embed(text: string, kind: EmbeddingKind): Promise<EmbedResult>;
   classify(transcript: string): Promise<ClassifyResult>;
+  /**
+   * Rewrite a recall query for better retrieval. Cheap-ish call (one-shot
+   * chat completion, ~hundreds of ms locally). Implementations MUST throw
+   * LLMUnreachableError on network/transport failure so callers can
+   * fail-open back to the raw query. JSON-parse failures should also
+   * throw LLMUnreachableError (or a more specific subclass) — the caller
+   * never wants a garbage-rewritten query silently substituted.
+   */
+  rewriteForRecall(query: string): Promise<RewriteResult>;
 }

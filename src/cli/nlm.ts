@@ -59,6 +59,16 @@ import { connectClaudeCode, disconnectClaudeCode, installClaudeCodeHooks, mcpCon
 import { hardenNlmDirPermissions } from "../install/nlm-dir-perms.js";
 import { ensureMcpToken } from "../install/ollama.js";
 import { connectCursor, disconnectCursor } from "../install/cursor.js";
+import {
+  describeRemove,
+  describeUpsert,
+  installCursorRules,
+  installOpencodeRules,
+  installWindsurfRules,
+  uninstallCursorRules,
+  uninstallOpencodeRules,
+  uninstallWindsurfRules,
+} from "../install/rules-install.js";
 import { runSupersedeCommand } from "./supersede.js";
 import { getUpdateStatus } from "../core/update-check/check.js";
 import { connectHermes, disconnectHermes, hermesConfigPath } from "../install/hermes.js";
@@ -108,14 +118,15 @@ function ollamaUrl(): string {
 }
 
 function buildClassifier(): ClassifierBox {
-  // DeepSeek V4 Flash is the default for the ingest classifier per the
-  // 2026-05-19 parity run: ~5s/session, 90% first-try success vs Ollama
-  // phi4-mini's 0% on the same first three sessions. Override with
-  // NLM_CLASSIFIER=ollama if you need offline-only operation.
+  // qwen3:4b-instruct-2507-q4_K_M is the recommended local classifier per the
+  // 2026-06-02 head-to-head bench (reports/classifier-comparison/2026-06-02-deepseek-v4-vs-qwen3.md):
+  // statistical tie with DeepSeek V4 Flash on schema validity and entity/decision
+  // counts, with better open-question coverage (100% vs 75%). DeepSeek remains
+  // available for users who prioritize speed over locality.
   const provider = ((process.env["NLM_CLASSIFIER"] ?? "deepseek").toLowerCase() as ClassifierProvider);
   if (provider !== "ollama") autoloadEnv();
   const model = process.env["NLM_CLASSIFIER_MODEL"]
-    ?? (provider === "ollama" ? "phi4-mini:latest" : "deepseek-v4-flash");
+    ?? (provider === "ollama" ? "qwen3:4b-instruct-2507-q4_K_M" : "deepseek-v4-flash");
   return new ClassifierBox({ provider, model, ollamaUrl: ollamaUrl() });
 }
 
@@ -380,11 +391,11 @@ program
   .description("Run TS classifier against ~/.nlm/canonical.sqlite and diff vs persisted Python output")
   .option("-l, --limit <n>", "sessions to sample", (v) => Number.parseInt(v, 10), 10)
   .option("-p, --provider <name>", "deepseek | ollama", "deepseek")
-  .option("-m, --model <name>", "model tag (default: deepseek-v4-flash for deepseek, phi4-mini:latest for ollama)")
+  .option("-m, --model <name>", "model tag (default: deepseek-v4-flash for deepseek, qwen3:4b-instruct-2507-q4_K_M for ollama)")
   .option("-v, --verbose", "per-session diff lines on stderr")
   .action(async (opts) => {
     const provider = opts.provider === "ollama" ? "ollama" : "deepseek";
-    const defaultModel = provider === "deepseek" ? "deepseek-v4-flash" : "phi4-mini:latest";
+    const defaultModel = provider === "deepseek" ? "deepseek-v4-flash" : "qwen3:4b-instruct-2507-q4_K_M";
     const report = await runParity({
       limit: opts.limit,
       dbPath: dbPath(),
@@ -1070,6 +1081,7 @@ connect
   .command("cursor")
   .description("Register Cursor as an nlm source (reads state.vscdb directly — no files installed)")
   .option("--db-path <path>", "override path to globalStorage/state.vscdb")
+  .option("--with-rules", "also install workspace rules nudge at .cursor/rules/nlm-recall.mdc")
   .option("--dry-run", "print what would happen without changing files")
   .action(async (opts) => {
     const storage = SqliteStorage.create({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
@@ -1083,10 +1095,16 @@ connect
       });
       if (opts.dryRun) {
         console.error(`nlm connect cursor (dry run): register source at ${report.adapterDbPath}${report.adapterExists ? "" : " (not found yet)"}`);
+        if (opts.withRules) console.error("  also install workspace rules nudge at ./.cursor/rules/nlm-recall.mdc");
         return;
       }
       const suffix = report.adapterExists ? "" : " (DB not found — will activate when Cursor is installed)";
       console.error(`nlm: Cursor source ${report.action} → ${report.adapterDbPath}${suffix}`);
+      if (opts.withRules) {
+        const rules = installCursorRules();
+        console.error(`  ${describeUpsert("Cursor", rules)}`);
+        console.error("  Note: workspace-scoped. Re-run inside each project where you want the nudge.");
+      }
     } finally {
       await storage.close();
     }
@@ -1096,6 +1114,7 @@ connect
   .command("windsurf")
   .description("Register Windsurf as an nlm source (reads state.vscdb files directly — no files installed)")
   .option("--user-dir <path>", "override path to Windsurf User directory")
+  .option("--with-rules", "also install global rules nudge at ~/.codeium/windsurf/memories/global_rules.md")
   .option("--dry-run", "print what would happen without changing files")
   .action(async (opts) => {
     const storage = SqliteStorage.create({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
@@ -1109,12 +1128,38 @@ connect
       });
       if (opts.dryRun) {
         console.error(`nlm connect windsurf (dry run): register source at ${report.userDir}${report.dirExists ? "" : " (not found yet)"}`);
+        if (opts.withRules) console.error("  also install global rules nudge at ~/.codeium/windsurf/memories/global_rules.md");
         return;
       }
       const suffix = report.dirExists ? "" : " (User dir not found — will activate when Windsurf is installed)";
       console.error(`nlm: Windsurf source ${report.action} → ${report.userDir}${suffix}`);
+      if (opts.withRules) {
+        const rules = installWindsurfRules();
+        console.error(`  ${describeUpsert("Windsurf", rules)}`);
+      }
     } finally {
       await storage.close();
+    }
+  });
+
+connect
+  .command("opencode")
+  .description("Register OpenCode as an nlm source (reads opencode.db directly) and optionally install rules nudge")
+  .option("--with-rules", "also install global rules nudge at ~/.config/opencode/AGENTS.md")
+  .option("--dry-run", "print what would happen without changing files")
+  .action((opts) => {
+    if (opts.dryRun) {
+      console.error("nlm connect opencode (dry run):");
+      console.error("  OpenCode adapter is already wired via migrations/010_sources_opencode.sql — no source-registry mutation required");
+      if (opts.withRules) console.error("  install global rules nudge at ~/.config/opencode/AGENTS.md");
+      return;
+    }
+    console.error("nlm: OpenCode source already registered (see migration 010). No source-registry changes needed.");
+    if (opts.withRules) {
+      const rules = installOpencodeRules();
+      console.error(`  ${describeUpsert("OpenCode", rules)}`);
+    } else {
+      console.error("  Pass --with-rules to install the recall nudge at ~/.config/opencode/AGENTS.md");
     }
   });
 
@@ -1238,6 +1283,7 @@ disconnect
 disconnect
   .command("cursor")
   .description("Disable the Cursor source in the nlm registry (leaves Cursor untouched)")
+  .option("--with-rules", "also remove workspace rules nudge at .cursor/rules/nlm-recall.mdc")
   .option("--dry-run", "print what would happen without changing files")
   .action(async (opts) => {
     const storage = SqliteStorage.create({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
@@ -1248,11 +1294,16 @@ disconnect
       const report = disconnectCursor(registry, { dryRun: Boolean(opts.dryRun) });
       if (opts.dryRun) {
         console.error("nlm disconnect cursor (dry run): disable Cursor source in registry");
+        if (opts.withRules) console.error("  also remove ./.cursor/rules/nlm-recall.mdc");
         return;
       }
       console.error(report.action === "disabled"
         ? "nlm: Cursor source disabled"
         : "nlm: no Cursor source found in registry");
+      if (opts.withRules) {
+        const rules = uninstallCursorRules();
+        console.error(`  ${describeRemove("Cursor", rules)}`);
+      }
     } finally {
       await storage.close();
     }
@@ -1261,6 +1312,7 @@ disconnect
 disconnect
   .command("windsurf")
   .description("Disable the Windsurf source in the nlm registry (leaves Windsurf untouched)")
+  .option("--with-rules", "also remove global rules nudge at ~/.codeium/windsurf/memories/global_rules.md")
   .option("--dry-run", "print what would happen without changing files")
   .action(async (opts) => {
     const storage = SqliteStorage.create({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
@@ -1271,14 +1323,33 @@ disconnect
       const report = disconnectWindsurf(registry, { dryRun: Boolean(opts.dryRun) });
       if (opts.dryRun) {
         console.error("nlm disconnect windsurf (dry run): disable Windsurf source in registry");
+        if (opts.withRules) console.error("  also strip rules nudge from ~/.codeium/windsurf/memories/global_rules.md");
         return;
       }
       console.error(report.action === "disabled"
         ? "nlm: Windsurf source disabled"
         : "nlm: no Windsurf source found in registry");
+      if (opts.withRules) {
+        const rules = uninstallWindsurfRules();
+        console.error(`  ${describeRemove("Windsurf", rules)}`);
+      }
     } finally {
       await storage.close();
     }
+  });
+
+disconnect
+  .command("opencode")
+  .description("Strip the rules nudge from ~/.config/opencode/AGENTS.md (leaves OpenCode source registered)")
+  .option("--with-rules", "remove rules nudge (default behavior — flag is for symmetry with connect)")
+  .option("--dry-run", "print what would happen without changing files")
+  .action((opts) => {
+    if (opts.dryRun) {
+      console.error("nlm disconnect opencode (dry run): strip rules nudge from ~/.config/opencode/AGENTS.md");
+      return;
+    }
+    const rules = uninstallOpencodeRules();
+    console.error(`nlm: ${describeRemove("OpenCode", rules)}`);
   });
 
 disconnect

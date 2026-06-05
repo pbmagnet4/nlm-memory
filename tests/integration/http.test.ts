@@ -38,6 +38,9 @@ class FixedEmbedder implements LLMClient {
   async embed(): Promise<EmbedResult> {
     return { vector: this.vector, model: "fixed-test" };
   }
+  async rewriteForRecall(): Promise<never> {
+    throw new Error("not used in tests");
+  }
   async classify(): Promise<never> {
     throw new Error("not used in this test");
   }
@@ -131,6 +134,17 @@ describe("HTTP adapter", () => {
     };
     expect(body.entity).toBe("NLM");
     expect(body.results.every((r) => r.entities.includes("NLM"))).toBe(true);
+  });
+
+  it("GET /api/recall with x-recall-source: hook forces rewrite off (hot-path protection)", async () => {
+    // Even if the caller passes ?rewrite=true, the hook source header
+    // must force rewrite=false. The stub LLM here throws on rewrite, so a
+    // forwarded rewrite would surface as an error. Success indicates the
+    // server-side override fired.
+    const res = await app.request("/api/recall?q=anything&mode=keyword&rewrite=true", {
+      headers: { "x-recall-source": "hook" },
+    });
+    expect(res.status).toBe(200);
   });
 
   it("GET /api/recall semantic mode goes through the embedder + vec0", async () => {

@@ -24,6 +24,7 @@ import type {
 import { applyFilter } from "./filter.js";
 import { keywordMatchFields } from "./match-fields.js";
 import { detectQueryShape } from "./query-shape.js";
+import { RewriteCache } from "./rewrite-cache.js";
 import { tokenSet } from "./tokenize.js";
 
 const DEFAULT_LIMIT = 20;
@@ -43,6 +44,8 @@ export interface RecallServiceDeps {
 }
 
 export class RecallService {
+  private readonly rewriteCache = new RewriteCache();
+
   constructor(private readonly deps: RecallServiceDeps) {}
 
   async search(input: RecallQuery): Promise<RecallResult> {
@@ -63,17 +66,40 @@ export class RecallService {
 
     if (!input.query && !entity && !kind) return empty;
 
+    // 0. Optional query rewrite. Fails open on LLM unreachable / parse error:
+    //    keyword and semantic both fall back to the raw query, preserving
+    //    pre-spec-C behavior. Cached for 5min to amortize repeat calls.
+    let keywordQuery = input.query;
+    let semanticQuery = input.query;
+    if (input.rewrite === true && input.query) {
+      const cached = this.rewriteCache.get(input.query);
+      if (cached) {
+        keywordQuery = cached.keywordQuery;
+        semanticQuery = cached.semanticQuery;
+      } else {
+        try {
+          const rewritten = await this.deps.llm.rewriteForRecall(input.query);
+          this.rewriteCache.set(input.query, rewritten);
+          keywordQuery = rewritten.keywordQuery;
+          semanticQuery = rewritten.semanticQuery;
+        } catch (err) {
+          if (!(err instanceof LLMUnreachableError)) throw err;
+          // fail-open: keywordQuery / semanticQuery already set to raw input.query
+        }
+      }
+    }
+
     // 1. Search legs — ranked neighbor IDs only. No session bodies loaded.
     const kwNeighbors: ReadonlyArray<KeywordNeighbor> =
-      (mode === "keyword" || mode === "hybrid") && input.query
-        ? await this.deps.store.keywordSearch(input.query, limit * KEYWORD_OVERFETCH)
+      (mode === "keyword" || mode === "hybrid") && keywordQuery
+        ? await this.deps.store.keywordSearch(keywordQuery, limit * KEYWORD_OVERFETCH)
         : [];
 
     let semNeighbors: ReadonlyArray<SemanticNeighbor> = [];
     let semError: "ollama_unreachable" | null = null;
-    if ((mode === "semantic" || mode === "hybrid") && input.query) {
+    if ((mode === "semantic" || mode === "hybrid") && semanticQuery) {
       try {
-        const embedding = await this.deps.llm.embed(input.query, "query");
+        const embedding = await this.deps.llm.embed(semanticQuery, "query");
         semNeighbors = await this.deps.store.semanticSearch(
           embedding.vector,
           limit * SEMANTIC_OVERFETCH,
@@ -104,8 +130,10 @@ export class RecallService {
     );
 
     // 3. Build hits from the resolved sessions, preserving leg rank order.
-    const queryTokens = input.query
-      ? new Set(tokenSet(input.query))
+    //    matchedIn uses the keyword (possibly rewritten) query so the badge
+    //    reflects the tokens that actually drove the search.
+    const queryTokens = keywordQuery
+      ? new Set(tokenSet(keywordQuery))
       : new Set<string>();
 
     const kwHits: KeywordHit[] = [];

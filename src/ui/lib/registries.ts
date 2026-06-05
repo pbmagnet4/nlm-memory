@@ -120,7 +120,7 @@ export const SOURCE_PRESETS: Record<
 
 export const PROVIDER_PRESETS: Record<ProviderKind, { baseUrl: string | null; defaultModel: string | null }> = {
   deepseek: { baseUrl: "https://api.deepseek.com", defaultModel: "deepseek-v4-flash" },
-  ollama: { baseUrl: "http://localhost:11434", defaultModel: "phi4-mini:latest" },
+  ollama: { baseUrl: "http://localhost:11434", defaultModel: "qwen3:4b-instruct-2507-q4_K_M" },
   openai: { baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-4o-mini" },
   anthropic: { baseUrl: "https://api.anthropic.com", defaultModel: "claude-haiku-4-5-20251001" },
   openrouter: { baseUrl: "https://openrouter.ai/api/v1", defaultModel: "anthropic/claude-haiku-4-5" },

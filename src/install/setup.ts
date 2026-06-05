@@ -30,12 +30,16 @@ import {
   ensureMcpToken,
   installOllama,
   ollamaBinaryAvailable,
+  ollamaModelPresent,
   ollamaServerRunning,
   pullEmbeddingModel,
+  pullOllamaModel,
   startOllamaServer,
   waitForOllamaServer,
   writeClassifierConfig,
 } from "./ollama.js";
+
+const RECOMMENDED_OLLAMA_CLASSIFIER = "qwen3:4b-instruct-2507-q4_K_M";
 import { installClaudeCodeHooks } from "./claude-code.js";
 import { hardenNlmDirPermissions } from "./nlm-dir-perms.js";
 
@@ -276,22 +280,71 @@ export async function runSetup(opts: SetupOptions): Promise<void> {
       }
     } else {
       const ollamaModels = await fetchOllamaChatModels();
-      let modelValue = "phi4-mini:latest";
+      const recommendedPresent = ollamaModels.includes(RECOMMENDED_OLLAMA_CLASSIFIER);
+      let modelValue = RECOMMENDED_OLLAMA_CLASSIFIER;
+
       if (ollamaModels.length > 0) {
+        const options: { value: string; label: string; hint?: string }[] = [];
+        if (!recommendedPresent) {
+          options.push({
+            value: `__pull__:${RECOMMENDED_OLLAMA_CLASSIFIER}`,
+            label: `${RECOMMENDED_OLLAMA_CLASSIFIER} (pull now)`,
+            hint: "recommended default — best local classifier (2026-06-02 bench), ~3.5 GB",
+          });
+        }
+        for (const m of ollamaModels) {
+          if (m === RECOMMENDED_OLLAMA_CLASSIFIER) {
+            options.push({
+              value: m,
+              label: m,
+              hint: "recommended default — best local classifier (2026-06-02 bench)",
+            });
+          } else {
+            options.push({ value: m, label: m });
+          }
+        }
         const model = await select<string>({
           message: "Which Ollama chat model?",
-          options: ollamaModels.map((m) => ({
-            value: m,
-            label: m,
-            hint: m === "phi4-mini:latest" ? "recommended default — small, fast" : undefined,
-          })) as { value: string; label: string; hint?: string }[],
+          options,
         });
         if (isCancel(model)) { cancel("Setup cancelled."); process.exit(0); }
         modelValue = model as string;
       } else {
-        log.warn("No Ollama chat models detected. Defaulting to phi4-mini:latest.");
-        log.warn("  Pull a model with: ollama pull phi4-mini  (or any chat model you prefer)");
+        log.warn(`No Ollama chat models detected. Recommended default: ${RECOMMENDED_OLLAMA_CLASSIFIER}.`);
       }
+
+      // Auto-pull path: triggered either by explicit "pull now" choice from the
+      // menu, or by the no-models-present branch above.
+      const pullPrefix = "__pull__:";
+      const needsPull =
+        modelValue.startsWith(pullPrefix) ||
+        (ollamaModels.length === 0 && modelValue === RECOMMENDED_OLLAMA_CLASSIFIER);
+      if (needsPull) {
+        const targetTag = modelValue.startsWith(pullPrefix)
+          ? modelValue.slice(pullPrefix.length)
+          : modelValue;
+        modelValue = targetTag;
+        const doPull = await confirm({
+          message: `Pull ${targetTag} now? (~3.5 GB, required for local classification)`,
+        });
+        if (isCancel(doPull)) { cancel("Setup cancelled."); process.exit(0); }
+        if (doPull) {
+          const ps = spinner();
+          ps.start(`Pulling ${targetTag} (this may take a few minutes)`);
+          const result = pullOllamaModel(targetTag);
+          if (result.ok) {
+            ps.stop(`${targetTag} ready`);
+          } else {
+            ps.stop("Model pull failed");
+            log.warn(`Run \`ollama pull ${targetTag}\` manually to retry.`);
+          }
+        } else {
+          log.warn(`Skipping model pull — run \`ollama pull ${targetTag}\` before classifying.`);
+        }
+      } else if (!ollamaModelPresent(modelValue)) {
+        log.warn(`${modelValue} not detected locally — run \`ollama pull ${modelValue}\` before classifying.`);
+      }
+
       writeClassifierConfig({ choice: "ollama-offline", model: modelValue });
       log.success(`Ollama classifier (${modelValue}) saved to ~/.nlm/.env`);
     }

@@ -93,6 +93,16 @@ export interface RecallToolInput {
   kind: RecallKindFilter | undefined;
   mode: RecallMode | undefined;
   limit: number | undefined;
+  rewrite: boolean | undefined;
+}
+
+function mcpRewriteDefault(): boolean {
+  // MCP callers default to rewrite=true since they're already in explicit
+  // memory-search context and latency-tolerant. Env var overrides per
+  // deployment if the rewrite step regresses quality on a given corpus.
+  const raw = process.env["NLM_RECALL_REWRITE_DEFAULT"];
+  if (raw === undefined) return true;
+  return raw !== "0" && raw.toLowerCase() !== "false";
 }
 
 export async function recallSessionsHandler(
@@ -100,10 +110,12 @@ export async function recallSessionsHandler(
   input: Partial<RecallToolInput>,
 ): Promise<ToolResult> {
   try {
+    const rewrite = input.rewrite ?? mcpRewriteDefault();
     const query: RecallQuery = {
       query: input.query ?? "",
       mode: input.mode ?? "hybrid",
       limit: input.limit ?? DEFAULT_LIMIT,
+      rewrite,
       ...(input.entity !== undefined ? { entity: input.entity } : {}),
       ...(input.kind !== undefined ? { kind: input.kind } : {}),
     };
@@ -472,6 +484,12 @@ export function createMcpServer(deps: McpDeps): McpServer {
           .max(100)
           .default(DEFAULT_LIMIT)
           .describe("Max results to return."),
+        rewrite: z
+          .boolean()
+          .optional()
+          .describe(
+            "If true, run a small LLM rewrite on the query before search — extracts entities and strips conversational filler. Set true for vague natural-language queries ('that pgvector thing'); set false for exact-token queries. Defaults to true server-side for MCP callers; the hot-path HTTP hook caller forces it off regardless.",
+          ),
       },
       annotations: {
         readOnlyHint: true,
