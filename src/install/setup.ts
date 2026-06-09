@@ -432,7 +432,7 @@ export async function runSetup(opts: SetupOptions): Promise<void> {
         const cs = spinner();
         cs.start("Connecting Codex");
         try {
-          const report = connectCodex({ source: "pbmagnet4/nlm-memory-ts" }, pluginScriptsDir(opts.repoRoot));
+          const report = connectCodex({ source: "pbmagnet4/nlm-memory" }, pluginScriptsDir(opts.repoRoot));
           if (report.marketplaceAdd?.status !== 0 || report.pluginAdd?.status !== 0) {
             cs.stop("Codex connect had errors — run `nlm connect codex` manually to retry");
           } else {

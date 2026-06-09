@@ -2,7 +2,7 @@
 
 This directory is the Codex plugin distribution surface for nlm-memory. The
 repo root acts as a Codex marketplace (`codex plugin marketplace add
-pbmagnet4/nlm-memory-ts`), and this directory is the plugin Codex installs.
+pbmagnet4/nlm-memory`), and this directory is the plugin Codex installs.
 
 ## Install
 
@@ -10,8 +10,8 @@ Prerequisite: `npm install -g nlm-memory` (puts `nlm` on PATH; the MCP server
 spawns `nlm mcp`).
 
 ```bash
-codex plugin marketplace add pbmagnet4/nlm-memory-ts
-codex plugin add nlm-memory@nlm-memory-ts
+codex plugin marketplace add pbmagnet4/nlm-memory
+codex plugin add nlm-memory@nlm-memory
 ```
 
 Or use the wrapper: `nlm connect codex`.

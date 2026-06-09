@@ -150,7 +150,7 @@ export function UpdateBanner({ collapsed }: { collapsed: boolean }) {
         </button>
         <a
           className="update-banner-link small"
-          href={`https://github.com/pbmagnet4/nlm-memory-ts/releases/tag/v${status.latest}`}
+          href={`https://github.com/pbmagnet4/nlm-memory/releases/tag/v${status.latest}`}
           target="_blank"
           rel="noopener noreferrer"
         >

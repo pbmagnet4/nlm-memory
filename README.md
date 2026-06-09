@@ -8,8 +8,8 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/nlm-memory"><img src="https://img.shields.io/npm/v/nlm-memory?color=CB3837&label=npm&logo=npm" alt="npm version" /></a>
-  <a href="https://github.com/pbmagnet4/nlm-memory-ts/actions/workflows/ci.yml"><img src="https://github.com/pbmagnet4/nlm-memory-ts/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status" /></a>
-  <a href="https://github.com/pbmagnet4/nlm-memory-ts/blob/main/LICENSE"><img src="https://img.shields.io/github/license/pbmagnet4/nlm-memory-ts?color=blue" alt="License: Apache 2.0" /></a>
+  <a href="https://github.com/pbmagnet4/nlm-memory/actions/workflows/ci.yml"><img src="https://github.com/pbmagnet4/nlm-memory/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status" /></a>
+  <a href="https://github.com/pbmagnet4/nlm-memory/blob/main/LICENSE"><img src="https://img.shields.io/github/license/pbmagnet4/nlm-memory?color=blue" alt="License: Apache 2.0" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/node/v/nlm-memory?color=brightgreen" alt="Node 20+" /></a>
   <img src="https://img.shields.io/badge/tests-726%20passing-success" alt="726 tests passing" />
   <img src="https://img.shields.io/badge/MCP-9%20runtimes-8A2BE2" alt="MCP across 9 runtimes" />
@@ -370,8 +370,8 @@ The defining property is the editable timeline. mem0 and Letta append; NLM lets 
 ## Development
 
 ```sh
-git clone https://github.com/pbmagnet4/nlm-memory-ts
-cd nlm-memory-ts
+git clone https://github.com/pbmagnet4/nlm-memory
+cd nlm-memory
 npm install
 npm run build          # compile dist/ — commit the result, it ships in the repo
 npm run dev            # hot-reload daemon

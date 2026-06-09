@@ -946,7 +946,7 @@ const connect = program
 connect
   .command("codex")
   .description("Install nlm-memory as a Codex CLI plugin (marketplace + plugin add)")
-  .option("--source <source>", "marketplace source (owner/repo, git URL, or local path)", "pbmagnet4/nlm-memory-ts")
+  .option("--source <source>", "marketplace source (owner/repo, git URL, or local path)", "pbmagnet4/nlm-memory")
   .option("--local", "shortcut for --source <repo-root>; use during dev")
   .option("--with-hooks", "additionally write absolute paths to ~/.codex/hooks.json (Codex Desktop fallback for openai/codex#16430)")
   .option("--dry-run", "print what would happen without invoking codex")

@@ -9,11 +9,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/pbmagnet4/nlm-memory-ts.git"
+    "url": "git+https://github.com/pbmagnet4/nlm-memory.git"
   },
-  "homepage": "https://github.com/pbmagnet4/nlm-memory-ts#readme",
+  "homepage": "https://github.com/pbmagnet4/nlm-memory#readme",
   "bugs": {
-    "url": "https://github.com/pbmagnet4/nlm-memory-ts/issues"
+    "url": "https://github.com/pbmagnet4/nlm-memory/issues"
   },
   "keywords": [
     "ai",

@@ -1,5 +1,5 @@
 {
-  "name": "nlm-memory-ts",
+  "name": "nlm-memory",
   "interface": {
     "displayName": "nlm-memory"
   },

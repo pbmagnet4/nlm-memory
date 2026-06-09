@@ -5,7 +5,7 @@
  * Two distribution surfaces:
  *
  * 1. The plugin path (default). Registers a Codex marketplace pointing at
- *    pbmagnet4/nlm-memory-ts and installs the `nlm-memory` plugin from it.
+ *    pbmagnet4/nlm-memory and installs the `nlm-memory` plugin from it.
  *    Codex prompts for hook trust on first invocation; once trusted,
  *    UserPromptSubmit + Stop hooks fire, and the .mcp.json wires the
  *    `nlm-memory` MCP server alongside.
@@ -33,13 +33,13 @@ import {
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
-const DEFAULT_SOURCE = "pbmagnet4/nlm-memory-ts";
+const DEFAULT_SOURCE = "pbmagnet4/nlm-memory";
 const PLUGIN_NAME = "nlm-memory";
 // Marketplace name is derived from the source's basename by codex when
 // `codex plugin marketplace add <source>` runs without a --name flag. For
 // owner/repo this is the repo name; for a local path it's the directory
-// basename. Both resolve to "nlm-memory-ts" in our case.
-const MARKETPLACE_NAME = "nlm-memory-ts";
+// basename. Both resolve to "nlm-memory" in our case.
+const MARKETPLACE_NAME = "nlm-memory";
 
 // Marker substring identifying entries this CLI owns in ~/.codex/hooks.json
 // so disconnect can strip only our entries and leave anything the user
