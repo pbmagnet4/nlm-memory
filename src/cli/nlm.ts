@@ -288,7 +288,8 @@ program
 
     // Signal retention prune. Best-effort, every 6h, default 90d. Runs on
     // both SQLite and Pg backends since both expose pruneOlderThan().
-    const SIGNAL_RETENTION_DAYS = Number.parseInt(process.env["NLM_SIGNAL_RETENTION_DAYS"] ?? "90", 10);
+    const parsedRetentionDays = Number.parseInt(process.env["NLM_SIGNAL_RETENTION_DAYS"] ?? "90", 10);
+    const SIGNAL_RETENTION_DAYS = Number.isFinite(parsedRetentionDays) && parsedRetentionDays > 0 ? parsedRetentionDays : 90;
     const SIGNAL_PRUNE_INTERVAL_MS = 6 * 60 * 60_000;
     const signalPruneTimer = setInterval(() => {
       const cutoff = new Date(Date.now() - SIGNAL_RETENTION_DAYS * 86_400_000).toISOString();
