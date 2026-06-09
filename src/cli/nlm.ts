@@ -1340,6 +1340,32 @@ program
   });
 
 program
+  .command("improve")
+  .description("Report known failure modes + recommended actions from captured signals")
+  .option("--days <n>", "trailing window in days (default 14)", (v) => Number.parseInt(v, 10), 14)
+  .action(async (opts) => {
+    const storage = await buildStorage(dbPath());
+    const scope = installScope();
+    const sinceTs = new Date(Date.now() - opts.days * 86_400_000).toISOString();
+    const rows = await storage.signals.listForAggregation({ installScope: scope, sinceTs });
+    const { aggregateFailureModes } = await import("../core/signals/aggregate.js");
+    const { recommendActions } = await import("../core/signals/recommend.js");
+    const modes = aggregateFailureModes(rows);
+    if (modes.length === 0) {
+      console.error(`nlm improve: no failure modes above threshold in the last ${opts.days}d (${rows.length} signals).`);
+      await storage.close();
+      return;
+    }
+    console.error(`Failure modes (last ${opts.days}d, ${rows.length} signals):`);
+    for (const m of modes) {
+      console.error(`  ${m.model} ${m.repo} ${m.kind}/${m.step ?? "-"}: ${Math.round(m.failRate * 100)}% of ${m.total}`);
+    }
+    console.error("\nRecommendations:");
+    for (const r of recommendActions(modes)) console.error(`  [${r.kind}] ${r.text}`);
+    await storage.close();
+  });
+
+program
   .command("digest")
   .description("Compose a daily-activity digest from the running daemon (optionally post to Telegram)")
   .option("-p, --port <n>", "daemon port", (v) => Number.parseInt(v, 10), Number.parseInt(process.env["NLM_PORT"] ?? "3940", 10))
