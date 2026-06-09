@@ -99,6 +99,7 @@ export class PiAdapter implements TranscriptAdapter {
     }
 
     const turns: Turn[] = [];
+    const signals: unknown[] = [];
     let sessionId = "";
     let projectDir = "";
     let startedAt = "";
@@ -125,11 +126,14 @@ export class PiAdapter implements TranscriptAdapter {
         if (typeof evt["cwd"] === "string") projectDir = evt["cwd"];
         continue;
       }
-      if (
-        evtType === "model_change" ||
-        evtType === "thinking_level_change" ||
-        evtType === "custom_message"
-      ) {
+      if (evtType === "custom_message") {
+        if (evt["customType"] === "nlm.signal") {
+          const payload = evt["details"] ?? evt["content"];
+          if (payload && typeof payload === "object") signals.push(payload);
+        }
+        continue;
+      }
+      if (evtType === "model_change" || evtType === "thinking_level_change") {
         continue;
       }
       if (evtType !== "message") continue;
@@ -187,6 +191,7 @@ export class PiAdapter implements TranscriptAdapter {
       gitBranch: isAborted ? "aborted" : "",
       text: transcript,
       label,
+      ...(signals.length > 0 ? { signals } : {}),
     };
   }
 }
