@@ -35,7 +35,7 @@ export function aggregateFailureModes(
   const buckets = new Map<string, Bucket>();
 
   for (const s of signals) {
-    const key = [s.repo, s.model, s.kind, s.step ?? ""].join(" ");
+    const key = [s.repo, s.model, s.kind, s.step ?? ""].join("\0");
     let b = buckets.get(key);
     if (!b) {
       b = { repo: s.repo, model: s.model, kind: s.kind, step: s.step, total: 0, failures: 0, lastTs: s.ts };

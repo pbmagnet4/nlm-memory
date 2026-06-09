@@ -41,4 +41,16 @@ describe("aggregateFailureModes", () => {
     const modes = aggregateFailureModes([...a, ...b], { minFailRate: 0.2, minSamples: 10 });
     expect(modes.map((m) => m.step)).toEqual(["types", "lint"]);
   });
+
+  it("does not collide buckets when repo/model contain spaces", () => {
+    // Under a space joiner, ("/a b","m") and ("/a","b m") both key to "/a b m gate types".
+    const signals = [
+      ...Array.from({ length: 10 }, (_, i) => makeSignal({ id: `x${i}`, repo: "/a b", model: "m", kind: "gate", step: "types", outcome: "fail" })),
+      ...Array.from({ length: 10 }, (_, i) => makeSignal({ id: `y${i}`, repo: "/a", model: "b m", kind: "gate", step: "types", outcome: "pass" })),
+    ];
+    const modes = aggregateFailureModes(signals, { minFailRate: 0.2, minSamples: 10 });
+    // The all-fail bucket must qualify on its own; the all-pass bucket must not.
+    expect(modes).toHaveLength(1);
+    expect(modes[0]).toMatchObject({ repo: "/a b", model: "m", total: 10, failures: 10 });
+  });
 });
