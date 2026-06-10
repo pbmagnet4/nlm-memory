@@ -252,7 +252,7 @@ Daemon binds `127.0.0.1:3940` (override with `NLM_PORT`). Selected endpoints:
 | GET | `/api/live/recent-writes` | Bearer/Origin | Live tail of ingested sessions |
 | GET | `/api/data/backup` | Bearer/Origin | Streaming SQLite snapshot download |
 | POST | `/api/data/restore` | Bearer/Origin | Stage a snapshot for apply-on-restart |
-| POST | `/api/cite` | Bearer required | Log a session citation (mirrors `cite_session` MCP tool) |
+| POST | `/api/citation/explicit` | Bearer/Origin | Log an explicit session citation (the route backing the `cite_session` MCP tool; payload `{id, conversation_id?, reason?}`) |
 | POST | `/api/hook/pre-compact` | Bearer/Origin | Hook endpoint; flushes the surfaced-IDs memo |
 | ALL | `/mcp` | Bearer required | Streamable-HTTP MCP transport for container agents |
 

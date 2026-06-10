@@ -1050,7 +1050,7 @@ describe("HTTP gate — misconfig (NLM_UI_AUTH=cookie without NLM_MCP_TOKEN)", (
   });
 });
 
-describe("POST /api/cite with Bearer token", () => {
+describe("POST /api/citation/explicit", () => {
   let tmp: string;
   let storage: SqliteStorage;
   let app: Hono;
@@ -1068,7 +1068,6 @@ describe("POST /api/cite with Bearer token", () => {
       store.insertSessionForTest(session);
       store.insertEmbeddingForTest(session.id, embedding);
     }
-    process.env["NLM_MCP_TOKEN"] = "test-token-secret";
     process.env["NLM_CITATION_LOG"] = join(tmp, "citation-log.jsonl");
     const recall = new RecallService({
       store,
@@ -1080,53 +1079,26 @@ describe("POST /api/cite with Bearer token", () => {
   afterEach(async () => {
     await storage.close();
     rmSync(tmp, { recursive: true, force: true });
-    delete process.env["NLM_MCP_TOKEN"];
     delete process.env["NLM_CITATION_LOG"];
   });
 
-  it("logs a citation with valid Bearer token", async () => {
-    const res = await app.request("/api/cite", {
+  it("logs an explicit citation", async () => {
+    const res = await app.request("/api/citation/explicit", {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: "Bearer test-token-secret",
-      },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ id: "sess_a", reason: "referenced in response" }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { logged: boolean; id: string };
+    const body = (await res.json()) as { logged: boolean; id: string; source: string };
     expect(body.logged).toBe(true);
     expect(body.id).toBe("sess_a");
-  });
-
-  it("401s with missing Bearer token", async () => {
-    const res = await app.request("/api/cite", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id: "sess_a" }),
-    });
-    expect(res.status).toBe(401);
-  });
-
-  it("401s with invalid Bearer token", async () => {
-    const res = await app.request("/api/cite", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: "Bearer wrong-token",
-      },
-      body: JSON.stringify({ id: "sess_a" }),
-    });
-    expect(res.status).toBe(401);
+    expect(body.source).toBe("mcp_tool");
   });
 
   it("400s when id is missing", async () => {
-    const res = await app.request("/api/cite", {
+    const res = await app.request("/api/citation/explicit", {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: "Bearer test-token-secret",
-      },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(400);
@@ -1135,11 +1107,8 @@ describe("POST /api/cite with Bearer token", () => {
   });
 
   it("400s when body is not JSON", async () => {
-    const res = await app.request("/api/cite", {
+    const res = await app.request("/api/citation/explicit", {
       method: "POST",
-      headers: {
-        authorization: "Bearer test-token-secret",
-      },
       body: "not json",
     });
     expect(res.status).toBe(400);

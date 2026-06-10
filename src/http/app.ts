@@ -1328,41 +1328,6 @@ function registerSessionRoute(app: Hono, deps: HttpDeps): void {
     return c.json(session);
   });
 
-  // Citation endpoint — mirrors the `cite_session` MCP tool and `/api/citation/explicit`
-  // but requires Bearer token auth. Payload mirrors the MCP contract: id, conversation_id?, reason?
-  app.post("/api/cite", async (c) => {
-    const adminToken = process.env["NLM_MCP_TOKEN"];
-    if (adminToken) {
-      const auth = c.req.header("authorization") ?? "";
-      const m = /^Bearer\s+(\S+)$/i.exec(auth);
-      const given = Buffer.from(m?.[1] ?? "", "utf8");
-      const want = Buffer.from(adminToken, "utf8");
-      if (!m || given.length !== want.length || !timingSafeEqual(given, want)) {
-        return c.json({ error: "unauthorized" }, 401);
-      }
-    }
-    let body: Record<string, unknown>;
-    try {
-      body = (await c.req.json()) as Record<string, unknown>;
-    } catch {
-      return c.json({ error: "body must be JSON" }, 400);
-    }
-    const id = body["id"];
-    if (typeof id !== "string" || !id) {
-      return c.json({ error: "id required" }, 400);
-    }
-    await appendCitation(
-      {
-        conversationId: typeof body["conversation_id"] === "string" ? body["conversation_id"] : "mcp_tool",
-        citedId: id,
-        kind: "tool_use",
-        ...(typeof body["reason"] === "string" ? { responsePreview: body["reason"] } : {}),
-      },
-      ...(deps.citationLogPath !== undefined ? [deps.citationLogPath] : []),
-    );
-    return c.json({ logged: true, id });
-  });
-
   // Post-hoc supersedence write path. Mirrors the `mark_superseded` MCP tool
   // so UI + CLI + MCP all share one backend gesture. Path param is the
   // predecessor (the session being retired); body names the successor.
