@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { computePrecision, type PrecisionResult } from "../../../../src/core/recall/precision.js";
+import { computePrecision } from "../../../../src/core/recall/precision.js";
 import type { LogEntry } from "../../../../src/core/recall/query-log.js";
 import type { CitationEntry } from "../../../../src/core/recall/citation-log.js";
 
-const makeQueryEntry = (conversationId: string, returnedIds: string[]): LogEntry => ({
+const makeQueryEntry = (returnedIds: string[]): LogEntry => ({
   source: "hook",
   runtime: "claude-code",
   query: "test query",
@@ -24,7 +24,7 @@ const makeCitationEntry = (conversationId: string, citedId: string): CitationEnt
 describe("computePrecision", () => {
   it("returns zero precision when no citations match surfaced sessions", () => {
     const queries: Array<{ conversationId: string; entry: LogEntry }> = [
-      { conversationId: "conv_a", entry: makeQueryEntry("conv_a", ["sess_1", "sess_2"]) },
+      { conversationId: "conv_a", entry: makeQueryEntry(["sess_1", "sess_2"]) },
     ];
     const citations: CitationEntry[] = [
       makeCitationEntry("conv_a", "sess_9"),
@@ -36,7 +36,7 @@ describe("computePrecision", () => {
 
   it("returns 1.0 when every surfaced session is cited", () => {
     const queries: Array<{ conversationId: string; entry: LogEntry }> = [
-      { conversationId: "conv_a", entry: makeQueryEntry("conv_a", ["sess_1", "sess_2"]) },
+      { conversationId: "conv_a", entry: makeQueryEntry(["sess_1", "sess_2"]) },
     ];
     const citations: CitationEntry[] = [
       makeCitationEntry("conv_a", "sess_1"),
@@ -48,7 +48,7 @@ describe("computePrecision", () => {
 
   it("computes partial precision correctly", () => {
     const queries: Array<{ conversationId: string; entry: LogEntry }> = [
-      { conversationId: "conv_a", entry: makeQueryEntry("conv_a", ["sess_1", "sess_2", "sess_3", "sess_4"]) },
+      { conversationId: "conv_a", entry: makeQueryEntry(["sess_1", "sess_2", "sess_3", "sess_4"]) },
     ];
     const citations: CitationEntry[] = [
       makeCitationEntry("conv_a", "sess_1"),
@@ -60,8 +60,8 @@ describe("computePrecision", () => {
 
   it("averages precision across multiple conversations", () => {
     const queries: Array<{ conversationId: string; entry: LogEntry }> = [
-      { conversationId: "conv_a", entry: makeQueryEntry("conv_a", ["sess_1", "sess_2"]) },
-      { conversationId: "conv_b", entry: makeQueryEntry("conv_b", ["sess_3", "sess_4"]) },
+      { conversationId: "conv_a", entry: makeQueryEntry(["sess_1", "sess_2"]) },
+      { conversationId: "conv_b", entry: makeQueryEntry(["sess_3", "sess_4"]) },
     ];
     const citations: CitationEntry[] = [
       makeCitationEntry("conv_a", "sess_1"),
@@ -76,8 +76,8 @@ describe("computePrecision", () => {
 
   it("skips conversations with no surfaced sessions", () => {
     const queries: Array<{ conversationId: string; entry: LogEntry }> = [
-      { conversationId: "conv_a", entry: makeQueryEntry("conv_a", []) },
-      { conversationId: "conv_b", entry: makeQueryEntry("conv_b", ["sess_1"]) },
+      { conversationId: "conv_a", entry: makeQueryEntry([]) },
+      { conversationId: "conv_b", entry: makeQueryEntry(["sess_1"]) },
     ];
     const citations: CitationEntry[] = [
       makeCitationEntry("conv_b", "sess_1"),
