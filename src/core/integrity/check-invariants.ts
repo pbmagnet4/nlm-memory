@@ -73,11 +73,16 @@ const SQL_I4_MISSING_TO = `
 `;
 
 const SQL_I5_DUPLICATE_FACTS = `
-  SELECT id AS bad_id
-  FROM facts
-  WHERE superseded_by IS NULL
-  GROUP BY subject, predicate
-  HAVING count(*) > 1
+  SELECT f.id AS bad_id
+  FROM facts f
+  INNER JOIN (
+    SELECT subject, predicate
+    FROM facts
+    WHERE superseded_by IS NULL
+    GROUP BY subject, predicate
+    HAVING COUNT(*) > 1
+  ) dups ON f.subject = dups.subject AND f.predicate = dups.predicate
+  WHERE f.superseded_by IS NULL
   LIMIT 6
 `;
 
