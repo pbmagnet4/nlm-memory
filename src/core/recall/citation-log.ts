@@ -49,7 +49,8 @@ export async function readCitationLog(
     if (!line.trim()) continue;
     try {
       const obj = JSON.parse(line) as Record<string, unknown>;
-      if (typeof obj["ts"] === "string" && Date.parse(obj["ts"]) < cutoff) continue;
+      if (typeof obj["ts"] !== "string") continue;
+      if (Date.parse(obj["ts"]) < cutoff) continue;
       if (typeof obj["conversation_id"] !== "string" || typeof obj["cited_id"] !== "string") continue;
       const kind = obj["kind"] === "tool_use" || obj["kind"] === "prose" ? obj["kind"] : undefined;
       const responsePreview = typeof obj["response_preview"] === "string" ? obj["response_preview"] : undefined;

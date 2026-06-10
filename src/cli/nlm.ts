@@ -428,14 +428,14 @@ program
   .option("--days <n>", "lookback window in days", (v) => Number.parseInt(v, 10), 30)
   .option("--json", "emit JSON instead of human-readable output")
   .option("--verbose", "show per-conversation breakdown")
-  .action(async (opts: { days: number; json: boolean; verbose: boolean }) => {
+  .action(async (opts) => {
     const { computePrecision } = await import("../core/recall/precision.js");
     const { readQueryLog } = await import("../core/recall/query-log.js");
     const { readCitationLog } = await import("../core/recall/citation-log.js");
 
     const [queryEntries, citationEntries] = await Promise.all([
-      readQueryLog(opts.days).catch(() => []),
-      readCitationLog(opts.days).catch(() => []),
+      readQueryLog(opts.days),
+      readCitationLog(opts.days),
     ]);
 
     const result = computePrecision(queryEntries, citationEntries);
