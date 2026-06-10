@@ -578,9 +578,28 @@ export class SqliteSessionStore implements SessionStore {
       `)
       .all(blob, chunkK);
 
-    // Max-pool: keep the smallest distance (highest cosine) per session.
+    // Max-pool: keep the smallest distance (highest cosine) per session,
+    // filtering out sessions with superseded status.
     const best = new Map<string, number>();
+    const supersededSessionIds = new Set<string>();
+    // First pass: collect all unique session IDs to check their status
+    const uniqueSessionIds = [...new Set(rows.map((r) => r.session_id))];
+    if (uniqueSessionIds.length > 0) {
+      const placeholders = uniqueSessionIds.map(() => "?").join(",");
+      const statusRows = this.db
+        .prepare<string[], { id: string; status: string }>(
+          `SELECT id, status FROM sessions WHERE id IN (${placeholders})`,
+        )
+        .all(...uniqueSessionIds);
+      for (const sr of statusRows) {
+        if (sr.status === "superseded") {
+          supersededSessionIds.add(sr.id);
+        }
+      }
+    }
+    // Second pass: max-pool, excluding superseded sessions
     for (const r of rows) {
+      if (supersededSessionIds.has(r.session_id)) continue;
       const cur = best.get(r.session_id);
       if (cur === undefined || r.distance < cur) {
         best.set(r.session_id, r.distance);
@@ -613,6 +632,7 @@ export class SqliteSessionStore implements SessionStore {
         FROM sessions_fts
         JOIN sessions s ON s.rowid = sessions_fts.rowid
         WHERE sessions_fts MATCH ?
+          AND s.status != 'superseded'
         ORDER BY score DESC
         LIMIT ?
       `)

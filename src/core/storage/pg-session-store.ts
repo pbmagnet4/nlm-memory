@@ -98,10 +98,16 @@ export class PgSessionStore implements SessionStore {
   ): Promise<ReadonlyArray<SemanticNeighbor>> {
     const k = Math.max(1, Math.trunc(limit));
     const vecStr = `[${Array.from(queryVector).join(",")}]`;
-    const result = await this.pool.query<{ session_id: string; distance: number }>(
-      `SELECT session_id, MIN(embedding <-> $1::vector) AS distance
-       FROM session_embedding_chunks
-       GROUP BY session_id
+    const result = await this.pool.query<{
+      session_id: string;
+      distance: number;
+      status: string;
+    }>(
+      `SELECT sec.session_id, MIN(sec.embedding <-> $1::vector) AS distance, s.status
+       FROM session_embedding_chunks sec
+       JOIN sessions s ON s.id = sec.session_id
+       GROUP BY sec.session_id, s.status
+       HAVING s.status != 'superseded'
        ORDER BY distance
        LIMIT $2`,
       [vecStr, k],
@@ -120,6 +126,7 @@ export class PgSessionStore implements SessionStore {
               ts_rank_cd(fts_vector, websearch_to_tsquery('english', $1)) AS score
        FROM sessions
        WHERE fts_vector @@ websearch_to_tsquery('english', $1)
+         AND status != 'superseded'
        ORDER BY score DESC
        LIMIT $2`,
       [query, k],

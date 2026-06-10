@@ -66,4 +66,25 @@ describe("SqliteSessionStore.keywordSearch", () => {
     const hits = await store.keywordSearch("plan router work", 1);
     expect(hits.length).toBeLessThanOrEqual(1);
   });
+
+  it("filters out superseded sessions", async () => {
+    // Insert a superseded session with distinctive text
+    store.insertSessionForTest(
+      makeSession({ id: "s_old", label: "elasticsearch indexing", body: "old search backend" }),
+    );
+    store.insertSessionForTest(
+      makeSession({ id: "s_new", label: "opensearch migration", body: "new search backend" }),
+    );
+    // Mark s_old as superseded by s_new
+    await store.markSuperseded("s_old", "s_new");
+
+    // Search for a term unique to the superseded session
+    const hits = await store.keywordSearch("elasticsearch", 10);
+    const sessionIds = hits.map((h) => h.sessionId);
+    expect(sessionIds).not.toContain("s_old");
+    // The newer one should still be found (if we search for "opensearch" or "new")
+    const newHits = await store.keywordSearch("opensearch", 10);
+    const newIds = newHits.map((h) => h.sessionId);
+    expect(newIds).toContain("s_new");
+  });
 });
