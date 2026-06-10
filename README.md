@@ -473,6 +473,7 @@ npm run dev            # hot-reload daemon
 npm run ui:dev         # hot-reload UI at localhost:5173 (proxies /api to :3940)
 npm test               # 726 tests across 73 files
 npm run typecheck
+node dist/cli/nlm.js doctor    # pre-publish: verify DB invariants (exit 1 on violations)
 ```
 
 Architecture: hexagonal. `src/core/` knows about ports (interfaces), not adapters. `src/cli/nlm.ts` is the composition root — the only file that wires concrete implementations (`SqliteSessionStore`, `OllamaClient`, `Hono`, `StdioServerTransport`). Adapters in `src/core/adapters/` are one-way: they parse runtime-specific session formats into NLM's canonical shape; nothing in the runtime sees NLM.

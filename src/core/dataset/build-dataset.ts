@@ -15,6 +15,7 @@ import { liveSessionStatus } from "@core/storage/live-status.js";
 import { loadActionOverlay, openQuestionId, decisionId } from "@core/actions/overlay.js";
 import type { ActionOverlay } from "@core/actions/overlay.js";
 import type { SessionStatus } from "@shared/types.js";
+import { runCheapChecksOnSqlite } from "@core/integrity/check-invariants.js";
 
 export interface DatasetSession {
   readonly id: string;
@@ -78,16 +79,26 @@ export interface DatasetResponse {
     readonly stale: number;
     readonly closed_decisions: number;
   };
-  readonly alerts: ReadonlyArray<{
-    readonly id: string;
-    readonly type: "stale";
-    readonly severity: "high" | "medium" | "low";
-    readonly entity: string;
-    readonly summary: string;
-    readonly sessions: ReadonlyArray<string>;
-    readonly age_days: number;
-    readonly last_touch_at: string | null;
-  }>;
+  readonly alerts: ReadonlyArray<
+    | {
+        readonly id: string;
+        readonly type: "stale";
+        readonly severity: "high" | "medium" | "low";
+        readonly entity: string;
+        readonly summary: string;
+        readonly sessions: ReadonlyArray<string>;
+        readonly age_days: number;
+        readonly last_touch_at: string | null;
+      }
+    | {
+        readonly id: string;
+        readonly type: "integrity";
+        readonly severity: "high";
+        readonly summary: string;
+        readonly count: number;
+        readonly sampleIds: ReadonlyArray<string>;
+      }
+  >;
   readonly runtimes: ReadonlyArray<DatasetRuntime>;
 }
 
@@ -361,7 +372,9 @@ function projectFromDb(db: Database.Database, dbPath: string, includePaths: bool
   }
 
   const metrics = computeMetrics(sessions, entityRows);
-  const alerts = computeStaleAlerts(sessions, entityRows, overlay);
+  const staleAlerts = computeStaleAlerts(sessions, entityRows, overlay);
+  const integrityAlerts = computeIntegrityAlerts(db);
+  const alerts = [...staleAlerts, ...integrityAlerts];
   const runtimes = computeRuntimes(sessions);
 
   return {
@@ -487,14 +500,16 @@ function computeCoherence(
   return "sparse";
 }
 
+type StaleAlert = Extract<DatasetResponse["alerts"][number], { type: "stale" }>;
+
 function computeStaleAlerts(
   sessions: ReadonlyArray<DatasetSession>,
   entityRows: ReadonlyArray<EntityCatalogRow>,
   overlay: ActionOverlay,
-): DatasetResponse["alerts"] {
+): StaleAlert[] {
   const now = Date.now();
   const sessionsById = new Map(sessions.map((s) => [s.id, s]));
-  const alerts: DatasetResponse["alerts"][number][] = [];
+  const alerts: StaleAlert[] = [];
   for (const e of entityRows) {
     if (e.session_count === 0 || e.status === "retired" || e.status === "snoozed") continue;
     const last = sessionsById.get(e.last_seen_session ?? "");
@@ -531,6 +546,22 @@ function computeStaleAlerts(
   const severityRank: Record<"high" | "medium" | "low", number> = { high: 0, medium: 1, low: 2 };
   alerts.sort((a, b) => severityRank[a.severity] - severityRank[b.severity] || b.age_days - a.age_days);
   return alerts;
+}
+
+function computeIntegrityAlerts(db: Database.Database): DatasetResponse["alerts"] {
+  try {
+    const violations = runCheapChecksOnSqlite(db);
+    return violations.map((v) => ({
+      id: `integrity_${v.id}`,
+      type: "integrity" as const,
+      severity: "high" as const,
+      summary: `Integrity ${v.id}: ${v.description} (${v.count} instance${v.count === 1 ? "" : "s"})`,
+      count: v.count,
+      sampleIds: v.sampleIds,
+    }));
+  } catch {
+    return [];
+  }
 }
 
 const HUES = [200, 270, 320, 30, 90, 150, 220, 290, 340, 50, 110, 170] as const;

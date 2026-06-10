@@ -90,6 +90,7 @@ import { adapterFromSource } from "../core/adapters/from-source.js";
 import type { TranscriptAdapter } from "../ports/transcript-adapter.js";
 import { runDigest } from "./digest.js";
 import { installScope } from "../core/signals/install-scope.js";
+import { runChecksOnSqlite, runChecksOnPg, applyFixOnSqlite, applyFixOnPg } from "../core/integrity/check-invariants.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1536,6 +1537,57 @@ program
       console.error("nlm digest:", e instanceof Error ? e.message : e);
       process.exit(1);
     }
+  });
+
+program
+  .command("doctor")
+  .description("Check database integrity invariants and optionally repair safe violations")
+  .option("--fix", "repair mechanically safe violations: delete self-loop edges (I1), restore orphaned superseded sessions to closed (I2)")
+  .action(async (opts) => {
+    const storage = await buildStorage(dbPath());
+    let violations;
+    let fixReport;
+    try {
+      if (opts.fix) {
+        if (storage instanceof PgStorage) {
+          fixReport = await applyFixOnPg(storage.pgPool());
+        } else {
+          fixReport = applyFixOnSqlite((storage as SqliteStorage).rawDb());
+        }
+        if (fixReport.deletedSelfLoops > 0) {
+          console.log(`  fixed I1: deleted ${fixReport.deletedSelfLoops} self-loop edge(s)`);
+        }
+        if (fixReport.restoredToClosed > 0) {
+          console.log(`  fixed I2: restored ${fixReport.restoredToClosed} session(s) to closed`);
+        }
+        if (fixReport.deletedSelfLoops === 0 && fixReport.restoredToClosed === 0) {
+          console.log("  --fix: nothing to repair");
+        }
+      }
+      if (storage instanceof PgStorage) {
+        violations = await runChecksOnPg(storage.pgPool());
+      } else {
+        violations = runChecksOnSqlite((storage as SqliteStorage).rawDb());
+      }
+    } finally {
+      await storage.close();
+    }
+
+    const ALL_CHECKS = ["I1", "I2", "I3", "I4", "I5a", "I5b", "I6"];
+    const byId = new Map(violations.map((v) => [v.id, v]));
+    let anyFail = false;
+    for (const id of ALL_CHECKS) {
+      const v = byId.get(id);
+      if (v) {
+        anyFail = true;
+        const samples = v.sampleIds.length > 0 ? `  samples: ${v.sampleIds.slice(0, 5).join(", ")}` : "";
+        console.log(`FAIL ${id}  count=${v.count}  ${v.description}${samples ? "\n" + samples : ""}`);
+      } else {
+        console.log(`PASS ${id}`);
+      }
+    }
+
+    if (anyFail) process.exit(1);
   });
 
 program.parseAsync().catch((e) => {

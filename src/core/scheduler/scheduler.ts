@@ -17,6 +17,9 @@
  * are skipped rather than persisted as low-quality noise.
  */
 
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import type { LLMClient } from "@ports/llm-client.js";
 import type { TranscriptAdapter } from "@ports/transcript-adapter.js";
 import type { SignalStore } from "@ports/signal-store.js";
@@ -29,12 +32,45 @@ import type {
 } from "@core/storage/sqlite-session-store.js";
 import type { Signal } from "@shared/types.js";
 import { MAX_CLASSIFY_FAILURES, getFileSize, recordClassified, recordClassifiedPg, recordFailed, recordFailedPg, scanOnce, scanOncePg } from "./scan-once.js";
+import { runCheapChecksOnSqlite } from "@core/integrity/check-invariants.js";
 
 const DEFAULT_INTERVAL_MS = 30 * 60 * 1000; // 30 min, matches Python default
 const DEFAULT_CLASSIFY_TIMEOUT_MS = 120_000;
 const DEFAULT_CONFIDENCE_FLOOR = 0.3;
 const DEFAULT_IDLE_MINUTES = 15;
 const BODY_CAP = 200_000;
+const INTEGRITY_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24h
+
+interface IntegrityCache {
+  readonly checkedAt: string;
+}
+
+function integrityCheckCachePath(): string {
+  return process.env["NLM_INTEGRITY_CACHE"] ?? join(homedir(), ".nlm", "integrity-check.json");
+}
+
+function shouldRunIntegrityCheck(now: number): boolean {
+  try {
+    const raw = readFileSync(integrityCheckCachePath(), "utf8");
+    const parsed = JSON.parse(raw) as Partial<IntegrityCache>;
+    if (typeof parsed.checkedAt === "string") {
+      return now - Date.parse(parsed.checkedAt) >= INTEGRITY_CHECK_INTERVAL_MS;
+    }
+  } catch {
+    // cache missing or corrupt — run the check
+  }
+  return true;
+}
+
+function markIntegrityCheckRan(now: number): void {
+  try {
+    const path = integrityCheckCachePath();
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({ checkedAt: new Date(now).toISOString() }, null, 2), "utf8");
+  } catch {
+    // cache write failure is non-fatal
+  }
+}
 
 export interface SchedulerOptions {
   readonly store: SqliteSessionStore;
@@ -125,8 +161,21 @@ export class ScanScheduler {
     let storageFailures = 0;
     let chunksSeen = 0;
 
+    const now = Date.now();
+    const _pgPool = (this.opts.store as { pgPool?: () => import("pg").Pool }).pgPool?.();
+    if (!_pgPool && shouldRunIntegrityCheck(now)) {
+      try {
+        const violations = runCheapChecksOnSqlite(this.opts.store.rawDb());
+        markIntegrityCheckRan(now);
+        for (const v of violations) {
+          this.opts.logger(`[integrity] FAIL ${v.id} count=${v.count} ${v.description}  run \`nlm doctor\` to inspect or \`nlm doctor --fix\` to repair`);
+        }
+      } catch (e) {
+        this.opts.logger(`[integrity] check error: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
     for (const adapter of this.opts.adapters) {
-      const _pgPool = (this.opts.store as { pgPool?: () => import("pg").Pool }).pgPool?.();
       let results;
       try {
         results = _pgPool
