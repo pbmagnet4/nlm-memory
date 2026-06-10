@@ -82,8 +82,8 @@ One corpus across every adapter. MCP works against all nine. **Automatic context
 |---|---|---|---|
 | **Claude Code** | `nlm connect claude-code` | `~/.claude/projects/**/*.jsonl` | 6 hooks: UserPromptSubmit, SessionStart, SessionEnd, Stop, PreCompact, SubagentStart |
 | **Codex CLI** | `nlm connect codex` | `~/.codex/sessions/` | Marketplace plugin (UserPromptSubmit + Stop) |
-| **Hermes** | `nlm connect hermes` | `~/.hermes/sessions/` | MCP only |
-| **Hermes Agent** | `nlm connect hermes-agent` | `~/.hermes/state.db` | 6 hooks: pre_llm_call, post_llm_call, on_session_start/end/finalize/reset |
+| **Hermes** (WebUI) | `nlm connect hermes` | `~/.hermes/sessions/` | MCP only (writes the MCP server block to `~/.hermes/config.yaml`) |
+| **Hermes Agent** (NousResearch CLI) | `nlm connect hermes-agent` | `~/.hermes/state.db` | 6 hooks: pre_llm_call, post_llm_call, on_session_start/end/finalize/reset (Python plugin in `~/.hermes/plugins/nlm-memory/`) |
 | **Cursor** | `nlm connect cursor [--with-rules]` | Cursor IDE chat DB | MCP + optional rules nudge (workspace `.cursor/rules/nlm-recall.mdc`) |
 | **Windsurf** | `nlm connect windsurf [--with-rules]` | Windsurf user dir | MCP + optional rules nudge (`~/.codeium/windsurf/memories/global_rules.md`) |
 | **OpenCode** | `nlm connect opencode [--with-rules]` | `~/.local/share/opencode/` | MCP + optional rules nudge (`~/.config/opencode/AGENTS.md`) |
@@ -107,7 +107,7 @@ Hooks fire on user input and prepend a pointer block of likely-relevant prior se
 | Event | What NLM does | Mode |
 |---|---|---|
 | **UserPromptSubmit** | Score the prompt, silently prepend pointer block listing 0–3 most likely-relevant prior sessions | live by default |
-| **SessionStart** | Cold-start agents (cron, background) hit this; same pointer-block delivery without a user prompt | live by default |
+| **SessionStart** | Cold-start agents (cron, background) hit this; same pointer-block delivery without a user prompt, plus a "Known failure modes for this repo" block when signals data exists (see Signals below) | live by default |
 | **SessionEnd** | Delete the per-conversation memo on session close so state files don't accumulate | always on |
 | **Stop** | Scan the model's response for citations of surfaced session IDs → updates `useful_hit_rate` and builds the reranker training substrate | always on |
 | **PreCompact** | Flush the per-conversation surfaced-IDs memo so post-compaction recalls aren't gated | always on |
