@@ -1095,8 +1095,8 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
 
 function registerClassifierRoutes(app: Hono, deps: HttpDeps): void {
   app.get("/api/classifier/info", (c) => {
-    const provider = deps.classifier?.provider ?? "deepseek";
-    const model = deps.classifier?.model ?? "deepseek-v4-flash";
+    const provider = deps.classifier?.provider ?? "ollama";
+    const model = deps.classifier?.model ?? "qwen3:4b-instruct-2507-q4_K_M";
     return c.json({
       provider,
       model,

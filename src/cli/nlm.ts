@@ -122,9 +122,10 @@ function buildClassifier(): ClassifierBox {
   // qwen3:4b-instruct-2507-q4_K_M is the recommended local classifier per the
   // 2026-06-02 head-to-head bench (reports/classifier-comparison/2026-06-02-deepseek-v4-vs-qwen3.md):
   // statistical tie with DeepSeek V4 Flash on schema validity and entity/decision
-  // counts, with better open-question coverage (100% vs 75%). DeepSeek remains
-  // available for users who prioritize speed over locality.
-  const provider = ((process.env["NLM_CLASSIFIER"] ?? "deepseek").toLowerCase() as ClassifierProvider);
+  // counts, with better open-question coverage (100% vs 75%). Ollama is the
+  // default to keep the daemon local-first and key-free; DeepSeek remains
+  // available via NLM_CLASSIFIER=deepseek for users who prioritize speed.
+  const provider = ((process.env["NLM_CLASSIFIER"] ?? "ollama").toLowerCase() as ClassifierProvider);
   if (provider !== "ollama") autoloadEnv();
   const model = process.env["NLM_CLASSIFIER_MODEL"]
     ?? (provider === "ollama" ? "qwen3:4b-instruct-2507-q4_K_M" : "deepseek-v4-flash");
