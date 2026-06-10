@@ -240,6 +240,47 @@ export async function recordClassifiedPg(
   );
 }
 
+export function recordSkippedLowConfidence(
+  db: Database.Database,
+  adapterName: string,
+  sourcePath: string,
+): void {
+  let size = 0;
+  try {
+    size = statSync(sourcePath).size;
+  } catch {
+    return;
+  }
+  db.prepare(
+    `INSERT INTO adapter_state
+       (adapter_name, source_path, last_offset, file_size, session_id, failure_count, last_processed_at)
+     VALUES (?, ?, ?, ?, NULL, 0, datetime('now'))
+     ON CONFLICT(adapter_name, source_path) DO UPDATE SET
+       last_offset = excluded.last_offset,
+       file_size = excluded.file_size,
+       failure_count = 0,
+       last_processed_at = excluded.last_processed_at`,
+  ).run(adapterName, sourcePath, size, size);
+}
+
+export async function recordSkippedLowConfidencePg(
+  pool: Pool,
+  adapterName: string,
+  sourcePath: string,
+): Promise<void> {
+  const size = getFileSize(sourcePath);
+  if (size === null) return;
+  await pool.query(
+    `INSERT INTO adapter_state (adapter_name, source_path, last_offset, file_size, session_id, failure_count, last_processed_at)
+     VALUES ($1, $2, 0, $3, NULL, 0, NOW())
+     ON CONFLICT (adapter_name, source_path) DO UPDATE SET
+       file_size = EXCLUDED.file_size,
+       failure_count = 0,
+       last_processed_at = NOW()`,
+    [adapterName, sourcePath, size],
+  );
+}
+
 export async function recordFailedPg(
   pool: Pool,
   adapterName: string,

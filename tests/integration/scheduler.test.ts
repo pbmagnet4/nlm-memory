@@ -183,6 +183,136 @@ describe("ScanScheduler.tick", () => {
     expect(report.inserted).toBe(0);
   });
 
+  it("low-confidence: records adapter_state so second tick is a no-op", async () => {
+    const adapter = new ClaudeCodeAdapter({ projectsPath: projects, idleMinutes: 15 });
+    const classifier = new StubClassifier({
+      label: "x", summary: "y", entities: [], decisions: [], open: [], confidence: 0.1, facts: [],
+    });
+    const messages: string[] = [];
+    const scheduler = new ScanScheduler({
+      store, adapters: [adapter], classifier, embedder: null,
+      logger: (m) => messages.push(m),
+    });
+
+    // Tick 1: file is new, classifier returns low-confidence
+    const tick1 = await scheduler.tick();
+    expect(tick1.chunksSeen).toBe(1);
+    expect(tick1.skippedLowConfidence).toBe(1);
+    expect(messages.some((m) => m.includes("low-confidence"))).toBe(true);
+
+    // adapter_state must have been written (file_size set, session_id NULL)
+    const state = store.rawDb()
+      .prepare<[], { file_size: number; session_id: string | null }>(
+        "SELECT file_size, session_id FROM adapter_state WHERE adapter_name = 'claude-code'",
+      ).get();
+    expect(state).not.toBeNull();
+    expect(state?.session_id).toBeNull();
+    expect(state?.file_size).toBeGreaterThan(0);
+
+    // Tick 2: unchanged file — must not re-attempt (chunksSeen = 0)
+    const tick2 = await scheduler.tick();
+    expect(tick2.chunksSeen).toBe(0);
+  });
+
+  it("low-confidence: re-attempted when file grows", async () => {
+    const lowClassifier = new StubClassifier({
+      label: "x", summary: "y", entities: [], decisions: [], open: [], confidence: 0.1, facts: [],
+    });
+    const highClassifier = new StubClassifier();
+    let classifier: StubClassifier = lowClassifier;
+    // Proxy that delegates to whichever classifier is active
+    const proxy: import("../../src/ports/llm-client.js").LLMClient = {
+      embed: async () => { throw new Error("not used"); },
+      rewriteForRecall: async () => { throw new Error("not used"); },
+      classify: async (_text) => classifier.classify(),
+    };
+
+    const adapter = new ClaudeCodeAdapter({ projectsPath: projects, idleMinutes: 15 });
+    const scheduler = new ScanScheduler({
+      store, adapters: [adapter], classifier: proxy, embedder: null, logger: () => {},
+    });
+
+    // Tick 1: low-confidence, file_size recorded
+    const tick1 = await scheduler.tick();
+    expect(tick1.skippedLowConfidence).toBe(1);
+
+    // Grow the file + re-age it
+    const fixturePath = join(projects, "project_a", "fixture.jsonl");
+    const { readFileSync: rfs, writeFileSync: wfs, utimesSync: uts } = require("node:fs") as typeof import("node:fs");
+    wfs(fixturePath, rfs(fixturePath, "utf8") +
+      JSON.stringify({ type: "user", message: { content: "more" }, timestamp: "2026-05-19T11:00:00Z" }) + "\n");
+    const oldT = (Date.now() - 60 * 60 * 1000) / 1000;
+    uts(fixturePath, oldT, oldT);
+
+    // Switch to high-confidence classifier and re-tick
+    classifier = highClassifier;
+    const tick2 = await scheduler.tick();
+    expect(tick2.chunksSeen).toBe(1);
+    expect(tick2.inserted).toBe(1);
+  });
+
+  it("low-confidence: prior session_id preserved in adapter_state after file grows + low-conf again", async () => {
+    // Establish a prior successful classify (session_id = S)
+    const adapter = new ClaudeCodeAdapter({ projectsPath: projects, idleMinutes: 15 });
+    const goodClassifier = new StubClassifier();
+    const scheduler = new ScanScheduler({
+      store, adapters: [adapter], classifier: goodClassifier, embedder: null, logger: () => {},
+    });
+    const tick1 = await scheduler.tick();
+    expect(tick1.inserted).toBe(1);
+
+    const db = store.rawDb();
+    const priorSessionId = db
+      .prepare<[], { session_id: string }>(
+        "SELECT session_id FROM adapter_state WHERE adapter_name = 'claude-code'",
+      ).get()!.session_id;
+    expect(priorSessionId).toBeTruthy();
+
+    // Grow the file
+    const fixturePath = join(projects, "project_a", "fixture.jsonl");
+    const { readFileSync: rfs, writeFileSync: wfs, utimesSync: uts } = require("node:fs") as typeof import("node:fs");
+    const mutated = rfs(fixturePath, "utf8")
+      .replace(/"sessionId"\s*:\s*"[^"]+"/g, '"sessionId": "resumed-uuid-99999"') +
+      JSON.stringify({ type: "user", message: { content: "more" }, timestamp: "2026-05-19T11:00:00Z" }) + "\n";
+    wfs(fixturePath, mutated);
+    const oldT = (Date.now() - 60 * 60 * 1000) / 1000;
+    uts(fixturePath, oldT, oldT);
+
+    // Tick 2: low-confidence result
+    const lowClassifier = new StubClassifier({
+      label: "x", summary: "y", entities: [], decisions: [], open: [], confidence: 0.1, facts: [],
+    });
+    const scheduler2 = new ScanScheduler({
+      store, adapters: [adapter], classifier: lowClassifier, embedder: null, logger: () => {},
+    });
+    const tick2 = await scheduler2.tick();
+    expect(tick2.skippedLowConfidence).toBe(1);
+
+    // session_id must still be the prior value — not clobbered
+    const stateAfterLowConf = db
+      .prepare<[], { session_id: string | null }>(
+        "SELECT session_id FROM adapter_state WHERE adapter_name = 'claude-code'",
+      ).get();
+    expect(stateAfterLowConf?.session_id).toBe(priorSessionId);
+
+    // Grow again + high-confidence classify → supersedes prior session with 'replaces' edge
+    wfs(fixturePath, rfs(fixturePath, "utf8") +
+      JSON.stringify({ type: "user", message: { content: "even more" }, timestamp: "2026-05-19T12:00:00Z" }) + "\n");
+    uts(fixturePath, oldT, oldT);
+
+    const scheduler3 = new ScanScheduler({
+      store, adapters: [adapter], classifier: goodClassifier, embedder: null, logger: () => {},
+    });
+    const tick3 = await scheduler3.tick();
+    expect(tick3.inserted).toBe(1);
+
+    // Should have a 'replaces' edge pointing at priorSessionId
+    const edges = db.prepare<[], { from_session: string; to_session: string; kind: string }>(
+      "SELECT from_session, to_session, kind FROM session_edges",
+    ).all();
+    expect(edges.some((e) => e.kind === "replaces" && e.to_session === priorSessionId)).toBe(true);
+  });
+
   it("classifier failure is contained — chunk skipped, ingest continues", async () => {
     const adapter = new ClaudeCodeAdapter({ projectsPath: projects, idleMinutes: 15 });
     const classifier = new StubClassifier(undefined, true);

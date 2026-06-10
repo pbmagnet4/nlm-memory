@@ -31,7 +31,7 @@ import type {
   SqliteSessionStore,
 } from "@core/storage/sqlite-session-store.js";
 import type { Signal } from "@shared/types.js";
-import { MAX_CLASSIFY_FAILURES, getFileSize, recordClassified, recordClassifiedPg, recordFailed, recordFailedPg, scanOnce, scanOncePg } from "./scan-once.js";
+import { MAX_CLASSIFY_FAILURES, getFileSize, recordClassified, recordClassifiedPg, recordFailed, recordFailedPg, recordSkippedLowConfidence, recordSkippedLowConfidencePg, scanOnce, scanOncePg } from "./scan-once.js";
 import { runCheapChecksOnSqlite } from "@core/integrity/check-invariants.js";
 
 const DEFAULT_INTERVAL_MS = 30 * 60 * 1000; // 30 min, matches Python default
@@ -219,6 +219,14 @@ export class ScanScheduler {
 
         if (classification.confidence < this.opts.confidenceFloor) {
           skippedLowConfidence += 1;
+          if (_pgPool) {
+            await recordSkippedLowConfidencePg(_pgPool, adapter.name, chunk.sourcePath);
+          } else {
+            recordSkippedLowConfidence(this.opts.store.rawDb(), adapter.name, chunk.sourcePath);
+          }
+          this.opts.logger(
+            `[scheduler] low-confidence (${classification.confidence} < ${this.opts.confidenceFloor}) for ${chunk.id} - skipping until file grows`,
+          );
           continue;
         }
 
