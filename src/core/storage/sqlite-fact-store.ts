@@ -316,27 +316,16 @@ export class SqliteFactStore implements FactStore {
     const insertStmt = this.insertStmt();
     for (const f of facts) insertStmt.run(this.toRow(f));
 
-    const findCollisionStmt = this.db.prepare<
-      [string, string, string],
-      { id: string }
-    >(`
-      SELECT id
-      FROM facts
-      WHERE subject = ?
-        AND predicate = ?
-        AND superseded_by IS NULL
-        AND id != ?
-      ORDER BY created_at DESC
-      LIMIT 1
-    `);
+    // Collapse EVERY other active fact for this (subject, predicate) under the
+    // new fact, not just the single most-recent prior. A single-prior loop
+    // cannot restore the invariant once two priors are already active and
+    // leaves the duplicate live forever. See NLM #301.
     const markSupersededStmt = this.db.prepare(
-      "UPDATE facts SET superseded_by = ? WHERE id = ?",
+      `UPDATE facts SET superseded_by = ?
+       WHERE subject = ? AND predicate = ? AND superseded_by IS NULL AND id != ?`,
     );
     for (const f of facts) {
-      const collision = findCollisionStmt.get(f.subject, f.predicate, f.id);
-      if (collision && collision.id !== f.id) {
-        markSupersededStmt.run(f.id, collision.id);
-      }
+      markSupersededStmt.run(f.id, f.subject, f.predicate, f.id);
     }
   }
 

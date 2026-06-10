@@ -327,19 +327,18 @@ export class SqliteSessionStore implements SessionStore {
           const factStoreImpl = factSink.factStore;
           for (const f of factSink.facts) factStoreImpl.insertRowInTxn(f);
 
-          const findCollisionStmt = db.prepare<[string, string, string], { id: string }>(`
-            SELECT id FROM facts
-            WHERE subject = ? AND predicate = ? AND superseded_by IS NULL AND id != ?
-            ORDER BY created_at DESC LIMIT 1
-          `);
+          // Collapse EVERY other active fact for this (subject, predicate)
+          // under the new fact — not just the single most-recent prior. A
+          // single-prior loop cannot restore the invariant once two priors are
+          // already active (multi-pass backfill, or an ON DELETE SET NULL
+          // un-supersede leaving siblings live); each ingest would clear only
+          // one and the duplicate would persist. See NLM #301.
           const markSupersededStmt = db.prepare(
-            "UPDATE facts SET superseded_by = ? WHERE id = ?",
+            `UPDATE facts SET superseded_by = ?
+             WHERE subject = ? AND predicate = ? AND superseded_by IS NULL AND id != ?`,
           );
           for (const f of factSink.facts) {
-            const collision = findCollisionStmt.get(f.subject, f.predicate, f.id);
-            if (collision && collision.id !== f.id) {
-              markSupersededStmt.run(f.id, collision.id);
-            }
+            markSupersededStmt.run(f.id, f.subject, f.predicate, f.id);
           }
         }
       }
@@ -443,19 +442,14 @@ export class SqliteSessionStore implements SessionStore {
       if (facts.length > 0) {
         for (const f of facts) factStore.insertRowInTxn(f);
 
-        const findCollisionStmt = db.prepare<[string, string, string], { id: string }>(`
-          SELECT id FROM facts
-          WHERE subject = ? AND predicate = ? AND superseded_by IS NULL AND id != ?
-          ORDER BY created_at DESC LIMIT 1
-        `);
+        // Collapse EVERY other active fact for this (subject, predicate) under
+        // the new fact — see the matching comment in insertSession (NLM #301).
         const markSupersededStmt = db.prepare(
-          "UPDATE facts SET superseded_by = ? WHERE id = ?",
+          `UPDATE facts SET superseded_by = ?
+           WHERE subject = ? AND predicate = ? AND superseded_by IS NULL AND id != ?`,
         );
         for (const f of facts) {
-          const collision = findCollisionStmt.get(f.subject, f.predicate, f.id);
-          if (collision && collision.id !== f.id) {
-            markSupersededStmt.run(f.id, collision.id);
-          }
+          markSupersededStmt.run(f.id, f.subject, f.predicate, f.id);
         }
       }
     });
