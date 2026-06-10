@@ -50,7 +50,7 @@ npm install -g nlm-memory
 nlm setup
 ```
 
-`nlm setup` is the interactive first-run wizard. It picks your classifier + model, wires the runtimes you actually use, generates an `NLM_MCP_TOKEN`, hardens permissions on `~/.nlm/`, and installs the daemon supervisor for your platform.
+`nlm setup` is the interactive first-run wizard. It picks your classifier + model, wires the runtimes you actually use, generates an `NLM_MCP_TOKEN`, hardens permissions on `~/.nlm/`, and installs the daemon supervisor for your platform. For headless environments (servers, CI, agents), use `nlm start` directly after initial setup — it boots the daemon without interactive prompts.
 
 | Platform | Daemon | Notes |
 |---|---|---|
@@ -64,7 +64,7 @@ Stop or remove: `nlm uninstall`.
 
 ## Quick Start
 
-After `nlm setup` finishes, open **http://localhost:3940/ui** — the daemon is running. A 30-second sanity check:
+After `nlm setup` finishes, open **http://localhost:3940/ui** — the daemon is running. (If you changed `NLM_PORT`, substitute your port in all examples below.) A 30-second sanity check:
 
 ```sh
 nlm recall "what was that pgvector decision"   # one-shot search from the shell
@@ -246,12 +246,13 @@ Daemon binds `127.0.0.1:3940` (override with `NLM_PORT`). Selected endpoints:
 | GET | `/api/recall/recent` | Bearer/Origin | Last N recall events for live tail/telemetry |
 | GET | `/api/recall/cite-stats` | Bearer/Origin | Citation rate over `?days=` |
 | GET | `/api/session/:id` | Bearer/Origin | Full session body + supersedence links |
-| GET | `/api/recall/facts` | Bearer/Origin | Structured fact search |
+| GET | `/api/recall/facts` | Bearer/Origin | Structured fact search; includes `hint` field when empty |
 | GET | `/api/facts/history` | Bearer/Origin | Version chain for one fact |
 | GET | `/api/dataset` | Bearer/Origin | Full session list for the UI dataset view |
 | GET | `/api/live/recent-writes` | Bearer/Origin | Live tail of ingested sessions |
 | GET | `/api/data/backup` | Bearer/Origin | Streaming SQLite snapshot download |
 | POST | `/api/data/restore` | Bearer/Origin | Stage a snapshot for apply-on-restart |
+| POST | `/api/cite` | Bearer required | Log a session citation (mirrors `cite_session` MCP tool) |
 | POST | `/api/hook/pre-compact` | Bearer/Origin | Hook endpoint; flushes the surfaced-IDs memo |
 | ALL | `/mcp` | Bearer required | Streamable-HTTP MCP transport for container agents |
 
