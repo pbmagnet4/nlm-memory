@@ -299,7 +299,7 @@ export class PgSessionStore implements SessionStore {
           [record.id, name],
         );
       }
-      if (supersedes) {
+      if (supersedes && supersedes !== record.id) {
         await client.query(
           `INSERT INTO session_edges (from_session, to_session, kind)
            VALUES ($1, $2, 'supersedes') ON CONFLICT DO NOTHING`,

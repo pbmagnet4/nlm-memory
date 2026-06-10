@@ -238,6 +238,42 @@ describe("ScanScheduler.tick", () => {
     expect(supersededStatus?.status).toBe("superseded");
   });
 
+  it("a grown transcript re-ingested under the same id does not supersede itself", async () => {
+    const adapter = new ClaudeCodeAdapter({ projectsPath: projects, idleMinutes: 15 });
+    const classifier = new StubClassifier();
+    const scheduler = new ScanScheduler({
+      store, adapters: [adapter], classifier, embedder: null, logger: () => {},
+    });
+    await scheduler.tick();
+    const db = store.rawDb();
+    const firstId = db
+      .prepare<[], { session_id: string }>(
+        "SELECT session_id FROM adapter_state WHERE adapter_name = 'claude-code'",
+      ).get()!.session_id;
+
+    // Grow the file WITHOUT changing the sessionId — the parser yields the same
+    // deterministic id, so the resumed session would otherwise supersede itself.
+    const fixturePath = join(projects, "project_a", "fixture.jsonl");
+    const { readFileSync, writeFileSync, utimesSync } = require("node:fs") as typeof import("node:fs");
+    const grown = readFileSync(fixturePath, "utf8") +
+      JSON.stringify({ type: "user", message: { content: "more work" }, timestamp: "2026-05-19T11:00:00Z" }) + "\n";
+    writeFileSync(fixturePath, grown);
+    const oldT = (Date.now() - 60 * 60 * 1000) / 1000;
+    utimesSync(fixturePath, oldT, oldT);
+
+    const second = await scheduler.tick();
+    expect(second.inserted).toBe(1);
+
+    const selfEdges = db.prepare<[], { c: number }>(
+      "SELECT COUNT(*) AS c FROM session_edges WHERE from_session = to_session AND kind = 'supersedes'",
+    ).get();
+    expect(selfEdges?.c).toBe(0);
+    const status = db.prepare<[string], { status: string }>(
+      "SELECT status FROM sessions WHERE id = ?",
+    ).get(firstId);
+    expect(status?.status).toBe("closed");
+  });
+
   it("re-ingest of the same session updates row in place (no duplicates)", async () => {
     const adapter = new ClaudeCodeAdapter({ projectsPath: projects, idleMinutes: 15 });
     const classifier = new StubClassifier();

@@ -71,7 +71,6 @@ export async function scanOnce(
     if (age < idleMs) continue;
 
     const prior = byPath.get(path);
-    let supersedes: string | null = null;
     if (prior) {
       const sizeUnchanged = (prior.file_size ?? 0) === st.size;
       if (sizeUnchanged) {
@@ -85,11 +84,12 @@ export async function scanOnce(
           "UPDATE adapter_state SET failure_count = 0 WHERE adapter_name = ? AND source_path = ?",
         ).run(adapter.name, path);
       }
-      supersedes = prior.session_id;
     }
 
     const chunk = await adapter.parseSession(path);
     if (!chunk) continue;
+    const supersedes =
+      prior?.session_id && prior.session_id !== chunk.id ? prior.session_id : null;
     out.push({ chunk, supersedes });
   }
   return out;

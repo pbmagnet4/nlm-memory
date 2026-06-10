@@ -269,7 +269,7 @@ export class SqliteSessionStore implements SessionStore {
         linkEnt.run(record.id, name);
       }
 
-      if (supersedes) {
+      if (supersedes && supersedes !== record.id) {
         db.prepare(
           `INSERT OR IGNORE INTO session_edges (from_session, to_session, kind)
            VALUES (?, ?, 'supersedes')`,
