@@ -170,6 +170,30 @@ export class PgSessionStore implements SessionStore {
         "UPDATE sessions SET status = 'superseded', updated_at = NOW() WHERE id = $1",
         [predecessorId],
       );
+
+      // Cascade supersedence to facts
+      const { rows: predecessorFacts } = await client.query<{
+        id: string;
+        subject: string;
+        predicate: string;
+      }>(
+        "SELECT id, subject, predicate FROM facts WHERE source_session_id = $1",
+        [predecessorId]
+      );
+
+      for (const pFact of predecessorFacts) {
+        const { rows } = await client.query<{ id: string }>(
+          "SELECT id FROM facts WHERE source_session_id = $1 AND subject = $2 AND predicate = $3 AND superseded_by IS NULL LIMIT 1",
+          [successorId, pFact.subject, pFact.predicate]
+        );
+        if (rows[0]) {
+          await client.query(
+            "UPDATE facts SET superseded_by = $1 WHERE id = $2",
+            [rows[0].id, pFact.id]
+          );
+        }
+      }
+
       await client.query("COMMIT");
     } catch (err) {
       await client.query("ROLLBACK");
