@@ -79,6 +79,32 @@ export async function runHook(
   return "";
 }
 
+/** Join the failure-mode block (if any) above the session-recall block. */
+export function composeSessionStartOutput(failureModeBlock: string, recallBlock: string): string {
+  return [failureModeBlock, recallBlock].filter((s) => s.length > 0).join("\n\n");
+}
+
+async function fetchFailureModeBlock(repo: string): Promise<string> {
+  if (!repo) return "";
+  const portValue = process.env["NLM_PORT"] ?? "3940";
+  const url = `http://localhost:${portValue}/api/signals/failure-modes?repo=${encodeURIComponent(repo)}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), RECALL_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      headers: hookAuthHeaders({ "x-recall-source": "session-start-hook" }),
+      signal: controller.signal,
+    });
+    if (!res.ok) return "";
+    const body = (await res.json()) as { block?: string };
+    return typeof body.block === "string" ? body.block : "";
+  } catch {
+    return "";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Derive a best-effort query from SessionStart payload fields. */
 function buildQuery(workingDirectory: string, projectName: string): string {
   const dirTail = workingDirectory.split("/").filter(Boolean).at(-1) ?? "";
@@ -160,7 +186,9 @@ async function main(): Promise<void> {
     const query = buildQuery(workingDirectory, projectName);
     const mode: HookMode = process.env["NLM_HOOK_MODE"] === "live" ? "live" : "shadow";
     const out = await runHook({ conversationId, query }, { mode, recall: recallOverHttp });
-    if (out) process.stdout.write(out);
+    const failureModes = mode === "live" ? await fetchFailureModeBlock(workingDirectory) : "";
+    const combined = composeSessionStartOutput(failureModes, out);
+    if (combined) process.stdout.write(combined);
   } catch {
     // Fail open — never block or fail a session start.
   }

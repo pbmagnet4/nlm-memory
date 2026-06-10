@@ -79,6 +79,7 @@ import { applyEnvAssignment } from "./config-env.js";
 import { adapterFromSource } from "../core/adapters/from-source.js";
 import type { TranscriptAdapter } from "../ports/transcript-adapter.js";
 import { runDigest } from "./digest.js";
+import { installScope } from "../core/signals/install-scope.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -166,6 +167,8 @@ async function buildStack() {
   // FactStore shares the SessionStore's connection so session+facts ingest
   // can commit in one transaction. Phase B.1 wires it in; no callers yet.
   const facts = storage.facts;
+  const signals = storage.signals;
+  const scope = installScope();
   // TODO(#215a): replace storage.rawDb() with port methods
   const sources = storage instanceof PgStorage
     ? new PgSourceRegistry(storage.pgPool())
@@ -182,7 +185,7 @@ async function buildStack() {
   const classifier = buildClassifier();
   const recall = new RecallService({ store, llm: embedder });
   const factRecall = new FactRecallService({ factStore: facts, llm: embedder });
-  return { storage, store, facts, sources, providers, recall, factRecall, embedder, classifier };
+  return { storage, store, facts, signals, scope, sources, providers, recall, factRecall, embedder, classifier };
 }
 
 const program = new Command();
@@ -204,7 +207,7 @@ program
     // non-browser callers. Idempotent: re-reads persisted token first.
     autoloadEnv();
     ensureMcpToken();
-    const { storage, store, facts, sources, providers, recall, factRecall, embedder, classifier } = await buildStack();
+    const { storage, store, facts, signals, scope, sources, providers, recall, factRecall, embedder, classifier } = await buildStack();
     const { existsSync } = await import("node:fs");
     const hasMcpToken = Boolean(process.env["NLM_MCP_TOKEN"]);
     const app = createApp({
@@ -226,6 +229,8 @@ program
           ...(facts ? { factStore: facts as import("../core/storage/sqlite-fact-store.js").SqliteFactStore } : {}),
         },
       } : {}),
+      signalStore: signals,
+      installScope: scope,
       embedderInfo: { provider: "ollama", model: "nomic-embed-text", dims: 768 },
       ...(existsSync(UI_DIST) ? { uiDist: UI_DIST } : {}),
       // Wire POST /mcp only when NLM_MCP_TOKEN is present. Absent = route never
@@ -281,6 +286,17 @@ program
         })()
       : null;
 
+    // Signal retention prune. Best-effort, every 6h, default 90d. Runs on
+    // both SQLite and Pg backends since both expose pruneOlderThan().
+    const parsedRetentionDays = Number.parseInt(process.env["NLM_SIGNAL_RETENTION_DAYS"] ?? "90", 10);
+    const SIGNAL_RETENTION_DAYS = Number.isFinite(parsedRetentionDays) && parsedRetentionDays > 0 ? parsedRetentionDays : 90;
+    const SIGNAL_PRUNE_INTERVAL_MS = 6 * 60 * 60_000;
+    const signalPruneTimer = setInterval(() => {
+      const cutoff = new Date(Date.now() - SIGNAL_RETENTION_DAYS * 86_400_000).toISOString();
+      void signals.pruneOlderThan(cutoff).catch(() => { /* prune is best-effort */ });
+    }, SIGNAL_PRUNE_INTERVAL_MS);
+    signalPruneTimer.unref();
+
     // Memo sweep runs independently of the transcript scheduler — it's the
     // backstop for SessionEnd hook unreliability (crashes, kill -9, IDE
     // force-close don't fire SessionEnd, so memo files would otherwise
@@ -301,6 +317,8 @@ program
           classifier,
           embedder,
           factStore: (facts as import("../core/storage/sqlite-fact-store.js").SqliteFactStore | null | undefined) ?? null,
+          signalStore: signals,
+          installScope: scope,
           intervalMs: opts.intervalMin * 60_000,
         });
         scheduler.start();
@@ -1319,6 +1337,32 @@ program
       removeHook,
       buildHookCommand,
     });
+  });
+
+program
+  .command("improve")
+  .description("Report known failure modes + recommended actions from captured signals")
+  .option("--days <n>", "trailing window in days (default 14)", (v) => Number.parseInt(v, 10), 14)
+  .action(async (opts) => {
+    const storage = await buildStorage(dbPath());
+    const scope = installScope();
+    const sinceTs = new Date(Date.now() - opts.days * 86_400_000).toISOString();
+    const rows = await storage.signals.listForAggregation({ installScope: scope, sinceTs });
+    const { aggregateFailureModes } = await import("../core/signals/aggregate.js");
+    const { recommendActions } = await import("../core/signals/recommend.js");
+    const modes = aggregateFailureModes(rows);
+    if (modes.length === 0) {
+      console.error(`nlm improve: no failure modes above threshold in the last ${opts.days}d (${rows.length} signals).`);
+      await storage.close();
+      return;
+    }
+    console.error(`Failure modes (last ${opts.days}d, ${rows.length} signals):`);
+    for (const m of modes) {
+      console.error(`  ${m.model} ${m.repo} ${m.kind}/${m.step ?? "-"}: ${Math.round(m.failRate * 100)}% of ${m.total}`);
+    }
+    console.error("\nRecommendations:");
+    for (const r of recommendActions(modes)) console.error(`  [${r.kind}] ${r.text}`);
+    await storage.close();
   });
 
 program

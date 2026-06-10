@@ -22,6 +22,7 @@
   <a href="#quick-start">Quick Start</a> &middot;
   <a href="#runtimes">Runtimes</a> &middot;
   <a href="#how-recall-works">How recall works</a> &middot;
+  <a href="#agent-self-improvement-signals">Signals</a> &middot;
   <a href="#mcp-tools">MCP</a> &middot;
   <a href="#rest-api">REST API</a> &middot;
   <a href="#daily-digest">Digest</a> &middot;
@@ -134,6 +135,86 @@ All three fail-open: any daemon error yields a clean exit and never blocks the m
 ### 2. MCP — explicit tools any agent can call
 
 Container-hosted agents (Hermes WebUI, Codex CLI, etc.) hit the Streamable-HTTP `POST /mcp` endpoint with `Authorization: Bearer ${NLM_MCP_TOKEN}`. Stdio MCP is also supported for Claude Code via `~/.mcp.json`.
+
+---
+
+## Agent self-improvement signals
+
+NLM can ingest structured feedback events (`nlm.signal`) from any tool in your agent stack -- quality gates, eval runners, code reviewers, test harnesses -- and surface the aggregated failure patterns back to the agent at session start. Over time the agent learns which steps tend to fail for a given repo and model, without any external service.
+
+### Payload contract
+
+```jsonc
+{
+  "v": 1,
+  "kind": "gate" | "eval" | "review" | "test",  // required
+  "outcome": "pass" | "fail" | "fix" | "exhausted",  // required
+  "producer": "quality-gate",   // defaults to "unknown"
+  "model": "qwen3-coder",       // defaults to "unknown"
+  "repo": "/path/or/name",      // defaults to "unknown"
+  "detail": { "step": "types", "files": ["a.ts"], "attempt": 2 },
+  "session": "<session-id-if-known>",
+  "ts": "2026-06-09T18:00:00.000Z"  // defaults to now
+}
+```
+
+`kind` and `outcome` are the only required fields; invalid values are rejected with `400`. `install_scope` is stamped server-side -- do not send it.
+
+### Transports
+
+**HTTP (any producer)**
+
+```js
+await fetch("http://localhost:3940/api/signal", {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({
+    kind: "gate", producer: "my-tool", outcome: "fail",
+    model, repo, detail: { step: "types" }, ts: new Date().toISOString(),
+  }),
+});
+```
+
+Rides the standard `/api/*` loopback gate. When the daemon runs with `NLM_UI_AUTH=cookie`, send `Authorization: Bearer $NLM_MCP_TOKEN`.
+
+**Session-embedded (pi.dev)**
+
+Pi producers call `pi.appendEntry("nlm.signal", payload)` inside an extension. This writes:
+
+```json
+{ "type": "custom", "customType": "nlm.signal", "data": { ...payload } }
+```
+
+to the session `.jsonl`. NLM's pi adapter recognises the `nlm.signal` customType and the scheduler drains it during normal ingest -- no HTTP call required.
+
+### Failure-mode recall
+
+NLM aggregates signals into failure modes per `(repo, model)` pair. A mode surfaces when its fail-rate reaches 20% or higher over at least 10 events in a trailing 14-day window. At session start the Claude Code `SessionStart` hook injects a "Known failure modes for this repo" block into the agent prompt automatically (repo-scoped). Any harness can fetch the same data directly:
+
+```
+GET /api/signals/failure-modes?repo=<repo>&model=<model>
+```
+
+### Inspection
+
+```sh
+nlm improve   # prints failure modes + recommendations for the current repo
+```
+
+The UI **Recall** page also has a failure-modes panel. NLM surfaces findings and recommendations only -- it never acts on them.
+
+### Configuration and privacy
+
+| Var | Default | What |
+|---|---|---|
+| `NLM_SIGNALS_ENABLED` | `1` (on) | Set to `0` to disable signal ingest entirely |
+| `NLM_SIGNAL_RETENTION_DAYS` | `90` | Raw signals older than this are pruned |
+
+Signals are local-only. They are stamped with a per-install ID from `~/.nlm/install-id` and never leave the machine.
+
+### Reference producer
+
+The pi `quality-gate` extension (in the `pi-sandbox` repo) is a ~10-line integration that emits `nlm.signal` per gate step and again on retry exhaustion. It is the canonical example of the session-embedded transport.
 
 ---
 

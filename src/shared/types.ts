@@ -145,3 +145,44 @@ export interface FactHistoryChain {
   readonly predicate: string;
   readonly history: ReadonlyArray<Fact>;
 }
+
+// ── Signals (agent self-improvement lane) ──────────────────────────────────
+//
+// A distinct store kind from facts: structured quality/eval telemetry emitted
+// by harnesses (the Pi quality gate is the reference producer). Append-only,
+// idempotent on a deterministic id, no supersedence, no embeddings. See
+// docs/superpowers/specs/2026-06-09-agent-self-improvement-signals.md.
+
+export type SignalKind = "gate" | "eval" | "review" | "test";
+export type SignalOutcome = "pass" | "fail" | "fix" | "exhausted";
+
+/** Producer-side payload. `install_scope` and `id` are stamped server-side. */
+export interface SignalInput {
+  readonly v?: number;
+  readonly kind: SignalKind;
+  readonly producer: string;
+  readonly outcome: SignalOutcome;
+  readonly model: string;
+  readonly repo: string;
+  readonly step: string | null;
+  readonly detail: Record<string, unknown> | null;
+  readonly session: string | null;
+  readonly ts: string;
+}
+
+/** Stored signal. `step` is denormalized from `detail.step` for indexing. */
+export interface Signal {
+  readonly id: string;
+  readonly v: number;
+  readonly installScope: string;
+  readonly kind: SignalKind;
+  readonly producer: string;
+  readonly outcome: SignalOutcome;
+  readonly model: string;
+  readonly repo: string;
+  readonly step: string | null;
+  readonly detail: Record<string, unknown> | null;
+  readonly sessionId: string | null;
+  readonly ts: string;
+  readonly createdAt: string;
+}
