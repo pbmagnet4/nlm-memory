@@ -43,10 +43,10 @@ describe("listModels", () => {
 
   it("hits Ollama /api/tags and sorts results", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({
-      models: [{ name: "phi4-mini:latest" }, { name: "llama3.2:3b" }, { name: "mistral:7b" }],
+      models: [{ name: "qwen3:4b-instruct-2507-q4_K_M" }, { name: "llama3.2:3b" }, { name: "mistral:7b" }],
     }));
     const models = await listModels(row({ kind: "ollama" }), { fetchImpl });
-    expect(models).toEqual(["llama3.2:3b", "mistral:7b", "phi4-mini:latest"]);
+    expect(models).toEqual(["llama3.2:3b", "mistral:7b", "qwen3:4b-instruct-2507-q4_K_M"]);
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect((fetchImpl.mock.calls[0]?.[0] as string).endsWith("/api/tags")).toBe(true);
   });

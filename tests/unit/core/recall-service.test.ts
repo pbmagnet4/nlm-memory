@@ -48,6 +48,9 @@ class StubEmbedder implements LLMClient {
     if (this.fail) throw new LLMUnreachableError("ollama");
     return { vector: new Float32Array([1, 0, 0]), model: "stub" };
   }
+  async rewriteForRecall(): Promise<never> {
+    throw new Error("not used in tests");
+  }
   async classify(): Promise<never> {
     throw new Error("not used");
   }
@@ -182,6 +185,29 @@ describe("RecallService.search", () => {
     expect(big.limit).toBe(100);
     const small = await svc.search({ query: "session", mode: "keyword", limit: 0 });
     expect(small.limit).toBe(1);
+  });
+
+  it("recency: newer session ranks ahead of equally-scored older session", async () => {
+    // Two sessions with the same FTS5 score; one is fresh (multiplier ~1.0),
+    // one is two half-lives old (360d → multiplier ~0.25). The newer one
+    // must sort first after the recency post-pass in finalize().
+    const now = new Date();
+    const fresh = makeSession({ id: "fresh", label: "fresh session", startedAt: now.toISOString() });
+    const old = makeSession({
+      id: "old",
+      label: "old session",
+      startedAt: new Date(now.getTime() - 360 * 86_400_000).toISOString(),
+    });
+    const store = new InMemoryStore(
+      [fresh, old],
+      [],
+      // Store returns old first (higher raw score) — finalize must flip them.
+      [{ sessionId: "old", score: 10 }, { sessionId: "fresh", score: 10 }],
+    );
+    const svc = new RecallService({ store, llm: new StubEmbedder() });
+    const result = await svc.search({ query: "session", mode: "keyword" });
+    expect(result.results.map((r) => r.id)).toEqual(["fresh", "old"]);
+    expect(result.results[0]!.matchScore).toBeGreaterThan(result.results[1]!.matchScore);
   });
 
   it("resolves only the hit sessions and never loads the full corpus", async () => {

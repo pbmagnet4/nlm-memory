@@ -37,6 +37,9 @@ class DeterministicEmbedder implements LLMClient {
     // Stable, distinct, unit-length vectors per call
     return { vector: unitWithLeading(this.calls), model: "fake" };
   }
+  async rewriteForRecall(): Promise<never> {
+    throw new Error("not used in tests");
+  }
   async classify(): Promise<never> {
     throw new Error("not used");
   }

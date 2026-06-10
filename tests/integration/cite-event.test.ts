@@ -19,6 +19,9 @@ class FixedEmbedder implements LLMClient {
   async embed(): Promise<EmbedResult> {
     return { vector: new Float32Array(768), model: "fixed-test" };
   }
+  async rewriteForRecall(): Promise<never> {
+    throw new Error("not used in tests");
+  }
   async classify(): Promise<never> {
     throw new Error("not used");
   }

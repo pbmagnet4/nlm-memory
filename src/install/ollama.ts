@@ -168,13 +168,30 @@ export async function waitForOllamaServer(
 // ── Model pull ────────────────────────────────────────────────────────────
 
 /**
+ * Pull any Ollama model by tag. Blocks until complete. Caller shows a spinner.
+ */
+export function pullOllamaModel(tag: string): OllamaResult {
+  const r = spawnSync("ollama", ["pull", tag], { encoding: "utf8" });
+  return { ok: r.status === 0, output: (r.stdout + r.stderr).trim() };
+}
+
+/**
  * Pull the embedding model. Blocks until complete (~1–3 min on first run, a
  * few seconds on subsequent runs). The caller shows a spinner during this call.
  */
 export function pullEmbeddingModel(): OllamaResult {
-  // Give the server a moment to accept connections if it was just started.
-  const r = spawnSync("ollama", ["pull", EMBEDDING_MODEL], { encoding: "utf8" });
-  return { ok: r.status === 0, output: (r.stdout + r.stderr).trim() };
+  return pullOllamaModel(EMBEDDING_MODEL);
+}
+
+/**
+ * Check whether a specific Ollama chat model tag is locally pulled. Matches by
+ * substring against `ollama list`, so `qwen3:4b-instruct-2507-q4_K_M` will be
+ * detected whether the local copy is the exact tag or a digest alias.
+ */
+export function ollamaModelPresent(tag: string): boolean {
+  const r = spawnSync("ollama", ["list"], { encoding: "utf8" });
+  if (r.status !== 0) return false;
+  return r.stdout.includes(tag);
 }
 
 // ── API key / classifier config ───────────────────────────────────────────

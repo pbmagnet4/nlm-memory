@@ -45,6 +45,24 @@ export interface RecallQuery {
   readonly kind?: RecallKindFilter;
   readonly mode?: RecallMode;
   readonly limit?: number;
+  /**
+   * If true, RecallService runs an LLM rewrite pass on the query before
+   * keyword/semantic search — useful for vague natural-language queries.
+   * Falls back to the raw query on LLM errors. Adds ~hundreds of ms.
+   * Off by default; MCP `recall_sessions` tool defaults to true since
+   * callers there have already committed to a memory search. Hot-path
+   * callers (hooks) pass false; the HTTP handler force-overrides to false
+   * when the `x-recall-source: hook` header is present.
+   */
+  readonly rewrite?: boolean;
+  /**
+   * If true, RecallService attaches a `relatedFacts` array of current
+   * high-confidence facts about the entities in the top hits. Defaults
+   * to true for the HTTP hook caller (so the pointer block can include
+   * structured context); other callers must opt in. Disable globally
+   * via NLM_HOOK_INJECT_FACTS=false. Spec G.2.
+   */
+  readonly withRelatedFacts?: boolean;
 }
 
 export interface RecallHit {
@@ -73,6 +91,13 @@ export interface RecallResult {
   readonly total: number;
   readonly results: ReadonlyArray<RecallHit>;
   readonly modeUnavailable?: "ollama_unreachable";
+  /**
+   * Spec G.2: optional set of current high-confidence facts about the
+   * entities in the top hits. Present only when the caller requested
+   * `withRelatedFacts`. The pointer-block formatter renders these as a
+   * "Known facts" section beneath the session pointer list.
+   */
+  readonly relatedFacts?: ReadonlyArray<RelatedFact>;
 }
 
 /**
@@ -126,6 +151,13 @@ export interface FactHit extends Fact {
   readonly matchedIn: ReadonlyArray<FactMatchField>;
   readonly keywordScore?: number;
   readonly semanticScore?: number;
+  /**
+   * Number of distinct sessions across the full fact history that asserted
+   * this exact (subject, predicate, value). >1 means corroborated; the
+   * recall service applies a log-scale boost to matchScore based on this
+   * count. Capped boost via NLM_FACT_CORROBORATION_BOOST_CAP.
+   */
+  readonly corroborationCount?: number;
 }
 
 export interface FactRecallResult {
@@ -138,6 +170,20 @@ export interface FactRecallResult {
   readonly total: number;
   readonly results: ReadonlyArray<FactHit>;
   readonly modeUnavailable?: "ollama_unreachable";
+}
+
+/**
+ * A current high-confidence fact attached to a recall result — the hook
+ * uses these to inject structured context ("polysignal uses: duckdb")
+ * alongside the session pointer list. Selected by `pickRelatedFacts`
+ * server-side using the entities of the top recall hits, the fact-store
+ * confidence filter, and the spec G.1 corroborationCount.
+ */
+export interface RelatedFact {
+  readonly subject: string;
+  readonly predicate: string;
+  readonly value: string;
+  readonly corroborationCount: number;
 }
 
 export interface FactHistoryChain {

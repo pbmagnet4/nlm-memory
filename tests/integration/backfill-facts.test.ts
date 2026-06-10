@@ -33,6 +33,9 @@ class ScriptedClassifier implements LLMClient {
   async embed(): Promise<EmbedResult> {
     throw new Error("not used");
   }
+  async rewriteForRecall(): Promise<never> {
+    throw new Error("not used in tests");
+  }
   async classify(transcript: string): Promise<ClassifyResult> {
     this.calls.push(transcript);
     if (this.errorIds.has(transcript)) {

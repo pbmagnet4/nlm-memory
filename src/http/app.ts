@@ -197,6 +197,23 @@ export function isLoopbackOrigin(origin: string | undefined, port: number): bool
   );
 }
 
+// Parses NLM_ALLOWED_ORIGINS (comma-separated origin URLs) into a set of
+// trusted origins and the hosts derived from them. Called once at middleware
+// install time so env is read once, not per request.
+export function parseAllowedOrigins(raw: string): { origins: Set<string>; hosts: Set<string> } {
+  const origins = new Set<string>();
+  const hosts = new Set<string>();
+  for (const entry of raw.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)) {
+    origins.add(entry);
+    try {
+      hosts.add(new URL(entry).host);
+    } catch {
+      // ignore malformed entries
+    }
+  }
+  return { origins, hosts };
+}
+
 const VALID_MODES: ReadonlyArray<RecallMode> = ["keyword", "semantic", "hybrid"];
 const VALID_KINDS: ReadonlyArray<RecallKindFilter> = ["decision", "open"];
 const VALID_FACT_KINDS: ReadonlyArray<FactKind> = ["decision", "open", "attribute"];
@@ -264,17 +281,18 @@ function uiAuthMode(): "cookie" | "none" {
 
 function installLocalOnlyMiddleware(app: Hono, boundPort: number): void {
   const skipLocalGate = !!process.env["VITEST"] || process.env["NODE_ENV"] === "test";
+  const extras = parseAllowedOrigins(process.env["NLM_ALLOWED_ORIGINS"] ?? "");
   app.use("/api/*", async (c, next) => {
     if (skipLocalGate) return next();
     const host = c.req.header("host");
-    if (!isLoopbackHost(host, boundPort)) {
+    if (!isLoopbackHost(host, boundPort) && !extras.hosts.has(host?.toLowerCase() ?? "")) {
       return c.json({ error: "host header not allowed" }, 403);
     }
     if (c.req.path === "/api/health") {
       return next();
     }
     const origin = c.req.header("origin");
-    if (origin !== undefined && !isLoopbackOrigin(origin, boundPort)) {
+    if (origin !== undefined && !isLoopbackOrigin(origin, boundPort) && !extras.origins.has(origin.toLowerCase())) {
       return c.json({ error: "origin not allowed" }, 403);
     }
     if (uiAuthMode() === "none") {
@@ -454,18 +472,45 @@ function registerRecallRoutes(app: Hono, deps: HttpDeps): void {
       return c.json({ error: "limit must be 1..100" }, 400);
     }
 
+    // Rewrite resolution: the hot-path hook caller always sets
+    // `x-recall-source: hook`, and that header force-disables the LLM
+    // rewrite step regardless of the `?rewrite=...` query string. This
+    // protects the ~400ms hook latency budget even if a misconfigured
+    // hook caller passes rewrite=true. MCP and direct HTTP callers honor
+    // the query param; default is false at the HTTP layer.
+    const source = c.req.header("x-recall-source") ?? "http";
+    const runtime = c.req.header("x-recall-runtime") ?? null;
+    const rewriteParam = c.req.query("rewrite");
+    let rewrite: boolean | undefined;
+    if (source === "hook") {
+      rewrite = false;
+    } else if (rewriteParam !== undefined) {
+      rewrite = rewriteParam === "true" || rewriteParam === "1";
+    }
+
+    // Spec G.2: `?withFacts=true` (or hook source = automatic) attaches
+    // a relatedFacts array. Hooks get facts by default; other callers
+    // opt in via the query param.
+    const factsParam = c.req.query("withFacts");
+    let withRelatedFacts: boolean | undefined;
+    if (factsParam !== undefined) {
+      withRelatedFacts = factsParam === "true" || factsParam === "1";
+    } else if (source === "hook") {
+      withRelatedFacts = true;
+    }
+
     const query: RecallQuery = {
       query: q,
       mode: mode as RecallMode,
       limit,
       ...(entity !== undefined ? { entity } : {}),
       ...(kind !== undefined ? { kind: kind as RecallKindFilter } : {}),
+      ...(rewrite !== undefined ? { rewrite } : {}),
+      ...(withRelatedFacts !== undefined ? { withRelatedFacts } : {}),
     };
     const result = await deps.recall.search(query);
 
     // Fire-and-forget telemetry — never blocks the response.
-    const source = c.req.header("x-recall-source") ?? "http";
-    const runtime = c.req.header("x-recall-runtime") ?? null;
     void logQuery(
       {
         source,
@@ -682,7 +727,12 @@ function registerHermesAgentHookRoutes(app: Hono, deps: HttpDeps): void {
       return c.json({ context: null });
     }
     try {
-      const result = await deps.recall.search({ query: userMessage, mode: "keyword", limit: 5 });
+      const result = await deps.recall.search({
+        query: userMessage,
+        mode: "keyword",
+        limit: 5,
+        withRelatedFacts: true,
+      });
       const hits: ReadonlyArray<RecallHitInput> = result.results.map((r) => ({
         id: r.id,
         label: r.label,
@@ -691,9 +741,13 @@ function registerHermesAgentHookRoutes(app: Hono, deps: HttpDeps): void {
       }));
       const surfaced = loadSurfaced(sessionId);
       const selected = selectHits({ hits, surfaced, scoreThreshold: 0, perFireCap: 3, perConversationCap: 10 });
-      if (selected.length === 0) return c.json({ context: null });
-      recordSurfaced(sessionId, selected.map((h) => h.id));
-      return c.json({ context: formatPointerBlock(selected) });
+      if (selected.length === 0 && (result.relatedFacts ?? []).length === 0) {
+        return c.json({ context: null });
+      }
+      if (selected.length > 0) {
+        recordSurfaced(sessionId, selected.map((h) => h.id));
+      }
+      return c.json({ context: formatPointerBlock(selected, result.relatedFacts ?? []) });
     } catch {
       return c.json({ context: null });
     }
@@ -1053,7 +1107,7 @@ function registerClassifierRoutes(app: Hono, deps: HttpDeps): void {
       },
       default_models: {
         deepseek: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat"],
-        ollama: ["phi4-mini:latest", "qwen2.5:3b-instruct", "llama3.2:3b", "mistral:7b"],
+        ollama: ["qwen3:4b-instruct-2507-q4_K_M", "qwen2.5:3b-instruct", "llama3.2:3b", "mistral:7b"],
       },
       embedder: deps.embedderInfo ?? { provider: "ollama", model: "nomic-embed-text", dims: 768 },
     });

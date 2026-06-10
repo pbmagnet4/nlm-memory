@@ -38,6 +38,9 @@ class FixedEmbedder implements LLMClient {
   async embed(): Promise<EmbedResult> {
     return { vector: this.vector, model: "fixed-test" };
   }
+  async rewriteForRecall(): Promise<never> {
+    throw new Error("not used in tests");
+  }
   async classify(): Promise<never> {
     throw new Error("not used in this test");
   }
@@ -131,6 +134,17 @@ describe("HTTP adapter", () => {
     };
     expect(body.entity).toBe("NLM");
     expect(body.results.every((r) => r.entities.includes("NLM"))).toBe(true);
+  });
+
+  it("GET /api/recall with x-recall-source: hook forces rewrite off (hot-path protection)", async () => {
+    // Even if the caller passes ?rewrite=true, the hook source header
+    // must force rewrite=false. The stub LLM here throws on rewrite, so a
+    // forwarded rewrite would surface as an error. Success indicates the
+    // server-side override fired.
+    const res = await app.request("/api/recall?q=anything&mode=keyword&rewrite=true", {
+      headers: { "x-recall-source": "hook" },
+    });
+    expect(res.status).toBe(200);
   });
 
   it("GET /api/recall semantic mode goes through the embedder + vec0", async () => {
@@ -511,6 +525,157 @@ describe("HTTP adapter — fact recall", () => {
       store,
     });
     expect((await bare.request("/api/recall/facts?subject=x")).status).toBe(503);
+  });
+});
+
+// Spec G.2 end-to-end: confirm the HTTP layer attaches relatedFacts when
+// the caller asks for it (or is a hook source). This is the cross-runtime
+// contract that ALL four hook-bearing runtimes rely on: Claude Code,
+// Codex CLI, Hermes Agent, pi.dev. If this test passes, every hook runtime
+// that POSTs to /api/recall with `x-recall-source: hook` will get facts
+// without per-runtime changes.
+describe("HTTP adapter — Spec G.2 fact injection contract", () => {
+  let tmp: string;
+  let storage: SqliteStorage;
+  let app: Hono;
+
+  beforeEach(async () => {
+    tmp = mkdtempSync(join(tmpdir(), "nlm-http-g2-"));
+    storage = SqliteStorage.create({
+      dbPath: join(tmp, "canonical.sqlite"),
+      migrationsDir: MIGRATIONS_DIR,
+    });
+    await storage.init();
+    const store = storage.sessions;
+    const factStore = storage.facts;
+
+    // Seed: two sessions tagged with the same entity, three corroborating
+    // facts about it — should surface in the recall response when a hook
+    // source asks for facts.
+    const today = new Date().toISOString();
+    store.insertSessionForTest({
+      id: "sess_g2_a",
+      runtime: "claude-code",
+      runtimeSessionId: "g2-a",
+      startedAt: today,
+      endedAt: today,
+      durationMin: 5,
+      label: "PolySignal trade execution",
+      summary: "trade execution debugging",
+      status: "closed",
+      transcriptKind: "claude-code-jsonl",
+      transcriptPath: null,
+      body: "PolySignal trade execution flow",
+      entities: ["polysignal"],
+      decisions: [],
+      open: [],
+    });
+    store.insertSessionForTest({
+      id: "sess_g2_b",
+      runtime: "claude-code",
+      runtimeSessionId: "g2-b",
+      startedAt: today,
+      endedAt: today,
+      durationMin: 8,
+      label: "PolySignal pipeline rewrite",
+      summary: "pipeline refactor",
+      status: "closed",
+      transcriptKind: "claude-code-jsonl",
+      transcriptPath: null,
+      body: "PolySignal pipeline rewrite",
+      entities: ["polysignal"],
+      decisions: [],
+      open: [],
+    });
+
+    await factStore.insertMany([
+      makeFact({ id: "f_g2_1", subject: "polysignal", predicate: "uses", value: "duckdb", confidence: 0.9, sourceSessionId: "sess_g2_a" }),
+      makeFact({ id: "f_g2_2", subject: "polysignal", predicate: "uses", value: "duckdb", confidence: 0.9, sourceSessionId: "sess_g2_b" }),
+      makeFact({ id: "f_g2_3", subject: "polysignal", predicate: "framework", value: "hono", confidence: 0.9, sourceSessionId: "sess_g2_a" }),
+      makeFact({ id: "f_g2_4", subject: "polysignal", predicate: "framework", value: "hono", confidence: 0.9, sourceSessionId: "sess_g2_b" }),
+    ]);
+
+    const recall = new RecallService({
+      store,
+      llm: new FixedEmbedder(unit([1, 0, 0])),
+      factStore,
+    });
+    app = createApp({ recall, store, factStore });
+  });
+
+  afterEach(async () => {
+    await storage.close();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("attaches relatedFacts when x-recall-source: hook is set", async () => {
+    const res = await app.request("/api/recall?q=polysignal&mode=keyword", {
+      headers: { "x-recall-source": "hook", "x-recall-runtime": "claude-code" },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      results: { id: string }[];
+      relatedFacts?: { subject: string; predicate: string; value: string; corroborationCount: number }[];
+    };
+    expect(body.results.length).toBeGreaterThan(0);
+    expect(body.relatedFacts).toBeDefined();
+    expect(body.relatedFacts!.length).toBeGreaterThanOrEqual(2);
+    const usesFact = body.relatedFacts!.find((f) => f.predicate === "uses");
+    expect(usesFact?.value).toBe("duckdb");
+    expect(usesFact?.corroborationCount).toBe(2);
+  });
+
+  it("attaches relatedFacts when ?withFacts=true is explicit", async () => {
+    const res = await app.request("/api/recall?q=polysignal&mode=keyword&withFacts=true");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { relatedFacts?: unknown[] };
+    expect(Array.isArray(body.relatedFacts)).toBe(true);
+    expect(body.relatedFacts!.length).toBeGreaterThan(0);
+  });
+
+  it("omits relatedFacts for default HTTP callers (no header, no flag)", async () => {
+    const res = await app.request("/api/recall?q=polysignal&mode=keyword");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { relatedFacts?: unknown[] };
+    expect(body.relatedFacts).toBeUndefined();
+  });
+
+  it("respects ?withFacts=false even from a hook source", async () => {
+    const res = await app.request("/api/recall?q=polysignal&mode=keyword&withFacts=false", {
+      headers: { "x-recall-source": "hook" },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { relatedFacts?: unknown[] };
+    expect(body.relatedFacts).toBeUndefined();
+  });
+
+  it("Hermes Agent pre-turn endpoint renders facts in its context block", async () => {
+    const res = await app.request("/api/hook/hermes-agent/pre-turn", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        session_id: "hermes_test_session_xxxxxx",
+        user_message: "what did we decide about polysignal storage",
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { context: string | null };
+    expect(typeof body.context).toBe("string");
+    expect(body.context).toContain("## Known facts about top entities");
+    expect(body.context).toContain("polysignal uses: duckdb");
+  });
+
+  it("NLM_HOOK_INJECT_FACTS=0 disables fact attachment even on hook source", async () => {
+    process.env["NLM_HOOK_INJECT_FACTS"] = "0";
+    try {
+      const res = await app.request("/api/recall?q=polysignal&mode=keyword", {
+        headers: { "x-recall-source": "hook" },
+      });
+      const body = (await res.json()) as { relatedFacts?: unknown[] };
+      expect(body.relatedFacts).toBeUndefined();
+    } finally {
+      delete process.env["NLM_HOOK_INJECT_FACTS"];
+    }
   });
 });
 

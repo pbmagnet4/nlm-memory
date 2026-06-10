@@ -3,7 +3,7 @@
  * implementation hits the same prompt (parity with the Python daemon).
  *
  * Hard cap at 15K chars matches `classifier.py` MAX_TRANSCRIPT_CHARS:
- * smaller models (phi4-mini, qwen) pattern-match JSON from the transcript
+ * smaller models (qwen3:4b, llama3.2:3b) pattern-match JSON from the transcript
  * above that size. Long sessions get first-half + last-half with a
  * separator to preserve opening intent + closing decisions.
  *

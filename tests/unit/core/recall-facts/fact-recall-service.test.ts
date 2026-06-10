@@ -56,6 +56,15 @@ class InMemoryFactStore implements FactStore {
   async getHistory(): Promise<ReadonlyArray<FactHistoryChain>> {
     return [];
   }
+  async corroborationCounts(
+    triples: ReadonlyArray<{ subject: string; predicate: string; value: string }>,
+  ): Promise<Map<string, number>> {
+    // Default: every triple is corroborated by exactly one session (no boost
+    // factor != 1.0). Subclass/spy if a test wants to inject specific counts.
+    const m = new Map<string, number>();
+    for (const t of triples) m.set(`${t.subject} ${t.predicate} ${t.value}`, 1);
+    return m;
+  }
   async upsertEmbedding(): Promise<void> {}
   async ingestSessionFacts(): Promise<void> {}
 }
@@ -65,6 +74,9 @@ class StubEmbedder implements LLMClient {
   async embed(): Promise<EmbedResult> {
     if (this.fail) throw new LLMUnreachableError("ollama");
     return { vector: new Float32Array([1, 0, 0]), model: "stub" };
+  }
+  async rewriteForRecall(): Promise<never> {
+    throw new Error("not used in tests");
   }
   async classify(): Promise<never> {
     throw new Error("not used");

@@ -13,6 +13,7 @@ import type {
   EmbedResult,
   EmbeddingKind,
   LLMClient,
+  RewriteResult,
 } from "@ports/llm-client.js";
 import { DeepSeekClient } from "./deepseek-client.js";
 import { OllamaClient } from "./ollama-client.js";
@@ -53,6 +54,10 @@ export class ClassifierBox implements LLMClient {
 
   classify(transcript: string): Promise<ClassifyResult> {
     return this.inner.classify(transcript);
+  }
+
+  rewriteForRecall(query: string): Promise<RewriteResult> {
+    return this.inner.rewriteForRecall(query);
   }
 
   private construct(provider: ClassifierProvider, model: string): LLMClient {

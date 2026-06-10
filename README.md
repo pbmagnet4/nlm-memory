@@ -76,7 +76,7 @@ nlm --version
 
 ## Runtimes
 
-One corpus across every adapter. MCP works against all nine. **Automatic context injection via hooks** ships on three (Claude Code, Hermes Agent, pi.dev); on the others the agent must call `recall_sessions` explicitly via MCP. `nlm connect` wires whichever surface the runtime supports:
+One corpus across every adapter. MCP works against all nine. **Automatic context injection via hooks** ships on four (Claude Code, Codex CLI, Hermes Agent, pi.dev). Cursor, Windsurf, and OpenCode receive an optional static rules-file nudge (`nlm connect <runtime> --with-rules`) that instructs the agent to call `recall_sessions` on history-flavored prompts — those runtimes don't expose a pre-prompt hook today, so a rules nudge is the closest equivalent. Aider is ingest-only. `nlm connect` wires whichever surface the runtime supports:
 
 | Runtime | Connect | Sessions read from | Hooks |
 |---|---|---|---|
@@ -84,10 +84,10 @@ One corpus across every adapter. MCP works against all nine. **Automatic context
 | **Codex CLI** | `nlm connect codex` | `~/.codex/sessions/` | Marketplace plugin (UserPromptSubmit + Stop) |
 | **Hermes** | `nlm connect hermes` | `~/.hermes/sessions/` | MCP only |
 | **Hermes Agent** | `nlm connect hermes-agent` | `~/.hermes/state.db` | 6 hooks: pre_llm_call, post_llm_call, on_session_start/end/finalize/reset |
-| **Cursor** | `nlm connect cursor` | Cursor IDE chat DB | MCP only |
-| **Windsurf** | `nlm connect windsurf` | Windsurf user dir | MCP only |
-| **OpenCode** | adapter active | `~/.local/share/opencode/` | MCP only |
-| **Aider** | adapter active | `AIDER_CHAT_HISTORY_FILE` | MCP only |
+| **Cursor** | `nlm connect cursor [--with-rules]` | Cursor IDE chat DB | MCP + optional rules nudge (workspace `.cursor/rules/nlm-recall.mdc`) |
+| **Windsurf** | `nlm connect windsurf [--with-rules]` | Windsurf user dir | MCP + optional rules nudge (`~/.codeium/windsurf/memories/global_rules.md`) |
+| **OpenCode** | `nlm connect opencode [--with-rules]` | `~/.local/share/opencode/` | MCP + optional rules nudge (`~/.config/opencode/AGENTS.md`) |
+| **Aider** | adapter active (ingest only) | `AIDER_CHAT_HISTORY_FILE` | No native MCP, no hooks — sessions are read into the corpus but Aider cannot call recall back |
 | **pi.dev** | `nlm setup` (auto) or `nlm connect pi` | `~/.pi/agent/sessions/**/*.jsonl` | 1 hook: input (prepend via transform) |
 
 `nlm disconnect <runtime>` reverses any of the above.
@@ -100,7 +100,7 @@ Two delivery paths. They share the same index.
 
 ### 1. Hooks — automatic context injection
 
-Hooks fire on user input and prepend a pointer block of likely-relevant prior sessions to the model's context. Three runtimes ship hooks today: Claude Code (six-hook lifecycle), Hermes Agent (six parallel hooks), and pi.dev (one `input` hook via [nlm/](nlm/README.md)). On all other runtimes the agent calls `recall_sessions` explicitly via MCP. Full lifecycle, modes, logging surface, and the daily liveness canary documented in [docs/hooks.md](docs/hooks.md).
+Hooks fire on user input and prepend a pointer block of likely-relevant prior sessions to the model's context. Four runtimes ship hooks today: Claude Code (six-hook lifecycle), Codex CLI (UserPromptSubmit + Stop via the marketplace plugin), Hermes Agent (six parallel hooks), and pi.dev (one `input` hook via [nlm/](nlm/README.md)). Cursor, Windsurf, and OpenCode don't expose a pre-prompt hook today, so the `--with-rules` install path drops a static rules snippet that asks the agent to call `recall_sessions` itself on history-flavored prompts (see [docs/hooks.md](docs/hooks.md) for the snippet). Full lifecycle, modes, logging surface, and the daily liveness canary documented in [docs/hooks.md](docs/hooks.md).
 
 **Claude Code** — six hooks written to `~/.claude/settings.json` via `nlm connect claude-code`:
 
@@ -326,14 +326,25 @@ recall: prompt / query
 | `NLM_USEFUL_HIT_LOG` | `~/.nlm/useful-hit-log.jsonl` | Citation/useful-hit ledger |
 | `NLM_QUERY_LOG` | `~/.nlm/query-log.jsonl` | Recall query telemetry |
 | `NLM_CITATION_LOG` | `~/.nlm/citation-log.jsonl` | Stop-hook citation events |
+| `NLM_MISS_LOG` | `~/.nlm/miss-log.jsonl` | Stop-hook miss events — sessions the agent explicitly fetched via `get_session`/`cite_session` that the hook never surfaced. Reviewed via `nlm misses`. |
+| `NLM_MISS_LOG_ENABLED` | `true` | Set to `0` to disable miss-log emission entirely. |
 | `NLM_MCP_TOKEN` | auto-generated | 256-bit bearer for `/api/*` (non-browser) and `/mcp` |
 | `NLM_MCP_CONFIG` | `~/.mcp.json` | Path the `connect`/`disconnect` commands modify |
 | `NLM_CLASSIFIER` | `ollama` | `ollama` (local, default), `deepseek`, `openai`, `anthropic`, `openrouter`, or `openai-compatible` |
-| `NLM_CLASSIFIER_MODEL` | `phi4-mini:latest` | Model id for the chosen provider |
+| `NLM_CLASSIFIER_MODEL` | `qwen3:4b-instruct-2507-q4_K_M` | Model id for the chosen provider. See [classifier bench](reports/classifier-comparison/2026-06-02-deepseek-v4-vs-qwen3.md) for why this is the recommended local default. |
 | `NLM_OLLAMA_URL` | `http://localhost:11434` | Override Ollama endpoint |
 | `NLM_ADAPTERS` | all | Comma-separated allowlist of adapters to enable |
 | `DEEPSEEK_API_KEY` | — | Required only when classifier=deepseek |
 | `NLM_DISABLE_UPDATE_CHECK` | — | Set to `1` to disable the daily npm-registry update check |
+| `NLM_RECALL_DECAY_HALF_LIFE_DAYS` | `180` | Half-life of the recency multiplier applied to recall scores. Older sessions score lower; defaults to 6 months. Set to `0` to disable recency weighting entirely. |
+| `NLM_RECALL_DECAY_FLOOR` | `0.25` | Lower bound on the recency multiplier — even ancient sessions retain at least 25% of their raw score so a perfect-match old session can still surface. |
+| `NLM_RECALL_REWRITE_DEFAULT` | `true` | Default value for the MCP `recall_sessions` `rewrite` parameter. When true, the service runs an LLM rewrite on vague natural-language queries before search. The HTTP hook caller bypasses rewrite regardless (hot-path protection). |
+| `NLM_RECALL_REWRITE_TIMEOUT_MS` | `5000` | Per-call timeout for the rewrite LLM. Separate from the classifier timeout. |
+| `NLM_FACT_CORROBORATION_BOOST_CAP` | `2.0` | Maximum multiplicative boost applied to fact recall scores based on how many sessions corroborate the same `(subject, predicate, value)`. Log-scale: 1 corroboration is 1.0×, 10 is 2.0× (capped). Set to `1.0` to disable the boost — the count is still returned on each hit. |
+| `NLM_HOOK_INJECT_FACTS` | `true` | Whether to attach high-confidence facts about top-hit entities to the pointer block injected by the hook. Set to `0` to disable globally. |
+| `NLM_HOOK_FACT_LIMIT` | `5` | Maximum number of facts in the "Known facts" section of the pointer block. |
+| `NLM_HOOK_FACT_MIN_CORROBORATION` | `2` | Minimum number of sessions that must have asserted a fact before it qualifies for hook injection. Set to `1` to include single-source facts. |
+| `NLM_HOOK_FACT_MIN_CONFIDENCE` | `0.7` | Minimum classifier confidence for a fact to qualify for hook injection. |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | — | Required for `nlm digest --telegram` |
 
 ### Changing the classifier from the UI

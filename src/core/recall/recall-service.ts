@@ -6,6 +6,7 @@
  * no SQLite, no HTTP. Tests substitute fake adapters.
  */
 
+import type { FactStore } from "@ports/fact-store.js";
 import type { LLMClient } from "@ports/llm-client.js";
 import { LLMUnreachableError } from "@ports/llm-client.js";
 import type {
@@ -24,10 +25,19 @@ import type {
 import { applyFilter } from "./filter.js";
 import { keywordMatchFields } from "./match-fields.js";
 import { detectQueryShape } from "./query-shape.js";
+import { recencyMultiplier } from "./recency.js";
+import { pickRelatedFacts } from "./related-facts.js";
+import { RewriteCache } from "./rewrite-cache.js";
 import { tokenSet } from "./tokenize.js";
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
+
+function isFactInjectionEnabled(): boolean {
+  const raw = process.env["NLM_HOOK_INJECT_FACTS"];
+  if (raw === undefined) return true;
+  return raw !== "0" && raw.toLowerCase() !== "false";
+}
 // Reciprocal Rank Fusion constant (Cormack et al. 2009). k=60 is the
 // canonical literature default. RRF combines ranked lists from multiple
 // retrievers by summing 1/(k + rank) per retriever, ignoring raw scores —
@@ -40,9 +50,18 @@ const KEYWORD_OVERFETCH = 3;
 export interface RecallServiceDeps {
   readonly store: SessionStore;
   readonly llm: LLMClient;
+  /**
+   * Spec G.2: when present, RecallService can attach `relatedFacts` to its
+   * results for callers that request `withRelatedFacts`. Optional — tests
+   * and lightweight callers (CLI debugging) can omit it without losing
+   * core recall functionality.
+   */
+  readonly factStore?: FactStore;
 }
 
 export class RecallService {
+  private readonly rewriteCache = new RewriteCache();
+
   constructor(private readonly deps: RecallServiceDeps) {}
 
   async search(input: RecallQuery): Promise<RecallResult> {
@@ -63,17 +82,40 @@ export class RecallService {
 
     if (!input.query && !entity && !kind) return empty;
 
+    // 0. Optional query rewrite. Fails open on LLM unreachable / parse error:
+    //    keyword and semantic both fall back to the raw query, preserving
+    //    pre-spec-C behavior. Cached for 5min to amortize repeat calls.
+    let keywordQuery = input.query;
+    let semanticQuery = input.query;
+    if (input.rewrite === true && input.query) {
+      const cached = this.rewriteCache.get(input.query);
+      if (cached) {
+        keywordQuery = cached.keywordQuery;
+        semanticQuery = cached.semanticQuery;
+      } else {
+        try {
+          const rewritten = await this.deps.llm.rewriteForRecall(input.query);
+          this.rewriteCache.set(input.query, rewritten);
+          keywordQuery = rewritten.keywordQuery;
+          semanticQuery = rewritten.semanticQuery;
+        } catch (err) {
+          if (!(err instanceof LLMUnreachableError)) throw err;
+          // fail-open: keywordQuery / semanticQuery already set to raw input.query
+        }
+      }
+    }
+
     // 1. Search legs — ranked neighbor IDs only. No session bodies loaded.
     const kwNeighbors: ReadonlyArray<KeywordNeighbor> =
-      (mode === "keyword" || mode === "hybrid") && input.query
-        ? await this.deps.store.keywordSearch(input.query, limit * KEYWORD_OVERFETCH)
+      (mode === "keyword" || mode === "hybrid") && keywordQuery
+        ? await this.deps.store.keywordSearch(keywordQuery, limit * KEYWORD_OVERFETCH)
         : [];
 
     let semNeighbors: ReadonlyArray<SemanticNeighbor> = [];
     let semError: "ollama_unreachable" | null = null;
-    if ((mode === "semantic" || mode === "hybrid") && input.query) {
+    if ((mode === "semantic" || mode === "hybrid") && semanticQuery) {
       try {
-        const embedding = await this.deps.llm.embed(input.query, "query");
+        const embedding = await this.deps.llm.embed(semanticQuery, "query");
         semNeighbors = await this.deps.store.semanticSearch(
           embedding.vector,
           limit * SEMANTIC_OVERFETCH,
@@ -104,8 +146,10 @@ export class RecallService {
     );
 
     // 3. Build hits from the resolved sessions, preserving leg rank order.
-    const queryTokens = input.query
-      ? new Set(tokenSet(input.query))
+    //    matchedIn uses the keyword (possibly rewritten) query so the badge
+    //    reflects the tokens that actually drove the search.
+    const queryTokens = keywordQuery
+      ? new Set(tokenSet(keywordQuery))
       : new Set<string>();
 
     const kwHits: KeywordHit[] = [];
@@ -127,19 +171,32 @@ export class RecallService {
     }
 
     // 4. Finalize per mode.
+    let result: RecallResult;
     if (mode === "keyword") {
-      return finalize(input.query, entity, kind, mode, limit, kwHits.map(toKeywordHit));
+      result = finalize(input.query, entity, kind, mode, limit, kwHits.map(toKeywordHit));
+    } else if (mode === "semantic") {
+      result = finalize(input.query, entity, kind, mode, limit, semHits.map(toSemanticHit));
+    } else {
+      const merged = mergeHybrid(kwHits, semHits);
+      const shape = detectQueryShape(input.query);
+      const forceIncluded = (shape.hasTemporal && shape.hasNamedEntity)
+        ? forceIncludeKeywordTop(merged, kwHits, limit)
+        : merged;
+      result = finalize(input.query, entity, kind, mode, limit, forceIncluded);
+      if (semError) result = { ...result, modeUnavailable: semError };
     }
-    if (mode === "semantic") {
-      return finalize(input.query, entity, kind, mode, limit, semHits.map(toSemanticHit));
+
+    // 5. Spec G.2: optionally attach high-confidence facts about top entities.
+    //    Only runs when the caller opts in AND a FactStore is wired. Failures
+    //    silently no-op so recall never breaks because of fact lookup.
+    if (input.withRelatedFacts === true && this.deps.factStore && isFactInjectionEnabled()) {
+      const relatedFacts = await pickRelatedFacts(result.results, this.deps.factStore);
+      if (relatedFacts.length > 0) {
+        result = { ...result, relatedFacts };
+      }
     }
-    const merged = mergeHybrid(kwHits, semHits);
-    const shape = detectQueryShape(input.query);
-    const forceIncluded = (shape.hasTemporal && shape.hasNamedEntity)
-      ? forceIncludeKeywordTop(merged, kwHits, limit)
-      : merged;
-    const result = finalize(input.query, entity, kind, mode, limit, forceIncluded);
-    return semError ? { ...result, modeUnavailable: semError } : result;
+
+    return result;
   }
 }
 
@@ -276,14 +333,26 @@ function finalize(
   limit: number,
   hits: ReadonlyArray<RecallHit>,
 ): RecallResult {
+  // Apply recency decay to every hit, then re-sort by adjusted score so
+  // newer sessions surface ahead of equally-relevant older ones. The decay
+  // is multiplicative; within a single query all hits use the same scale
+  // (BM25, similarity, or RRF) so the multiplier preserves intra-mode
+  // ranking when ages are similar and skews recent when ages diverge.
+  // Disable per-deployment with NLM_RECALL_DECAY_HALF_LIFE_DAYS=0.
+  const now = Date.now();
+  const adjusted: RecallHit[] = hits.map((h) => ({
+    ...h,
+    matchScore: round4(h.matchScore * recencyMultiplier(h.startedAt, now)),
+  }));
+  adjusted.sort((a, b) => b.matchScore - a.matchScore);
   return {
     query,
     entity,
     kind,
     mode,
     limit,
-    total: hits.length,
-    results: hits.slice(0, limit),
+    total: adjusted.length,
+    results: adjusted.slice(0, limit),
   };
 }
 

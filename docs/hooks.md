@@ -2,7 +2,9 @@
 
 > What every NLM hook does, when it fires, what it logs, and how it stays out of the way when something goes wrong.
 
-NLM ships hooks into three runtimes today: Claude Code, Hermes Agent, and pi.dev. Each runtime has a different host shape — Claude Code reads `~/.claude/settings.json`, Hermes Agent reads `~/.hermes/config.yaml`, and pi.dev loads a TypeScript extension declared in `~/.pi/agent/settings.json`'s `packages` array — but the orchestration is identical: classify the prompt, query the local daemon, format a pointer block, return it (live mode) or log only (shadow mode).
+NLM ships hooks into four runtimes today: Claude Code, Codex CLI, Hermes Agent, and pi.dev. Each runtime has a different host shape — Claude Code reads `~/.claude/settings.json`, Codex CLI loads a marketplace plugin that registers `UserPromptSubmit` + `Stop`, Hermes Agent reads `~/.hermes/config.yaml`, and pi.dev loads a TypeScript extension declared in `~/.pi/agent/settings.json`'s `packages` array — but the orchestration is identical: classify the prompt, query the local daemon, format a pointer block, return it (live mode) or log only (shadow mode).
+
+Cursor, Windsurf, and OpenCode don't expose a pre-prompt event today, so they get a `--with-rules` install path instead: a short static instruction is written into the runtime's rules-file convention (`.cursor/rules/nlm-recall.mdc`, `~/.codeium/windsurf/memories/global_rules.md`, `~/.config/opencode/AGENTS.md`) asking the agent to call `recall_sessions` via MCP on history-flavored prompts. Not as reliable as a true hook — the agent has to choose to call — but it converts "agent forgets recall exists" into "agent calls recall on the prompts where it matters." See [Rules-file nudge](#rules-file-nudge-cursor-windsurf-opencode) below.
 
 The hook surface is **fail-open by design**: any error yields a clean exit with no output. A broken hook never blocks the model's response. This matters because the alternative is silently breaking the user's primary tool for the sake of a memory layer's telemetry.
 
@@ -125,3 +127,31 @@ Other runtimes (Cursor, Windsurf, OpenCode, Aider) integrate via MCP only — th
 - `src/core/hook/memo.ts` — per-conversation surfaced-IDs state
 - `src/core/hook/claude-settings.ts` — settings.json read/write (cross-platform command formatting)
 - `src/core/digest/hook-liveness.ts` — daily canary check
+
+## Rules-file nudge (Cursor, Windsurf, OpenCode)
+
+Cursor, Windsurf, and OpenCode don't expose a pre-prompt event we can subscribe to, so they can't get a true hook. The closest equivalent is a static rules file written into each runtime's documented rules-file convention, instructing the agent to call the `recall_sessions` MCP tool itself on history-flavored prompts.
+
+Install with the `--with-rules` flag on the corresponding connect command:
+
+```sh
+nlm connect cursor   --with-rules   # writes .cursor/rules/nlm-recall.mdc in cwd (workspace-scope)
+nlm connect windsurf --with-rules   # writes ~/.codeium/windsurf/memories/global_rules.md (user-global)
+nlm connect opencode --with-rules   # writes ~/.config/opencode/AGENTS.md (user-global)
+```
+
+The disconnect commands take the same flag and remove the nudge.
+
+**Content (conservative wording, single source-of-truth in `src/install/rules-content.ts`):**
+
+> If the user references prior work, prior decisions, ongoing projects, or asks "what did we figure out about X" / "where did we leave Y" / "is Z still open" — call the `recall_sessions` MCP tool first with the relevant keywords and treat its output as primary context. Cite returned session IDs when you reference them.
+>
+> Skip recall on greenfield prompts: drafting new content from scratch, naming, brainstorming, or any forward-looking task with no plausible prior context.
+
+**Per-runtime quirks:**
+
+- **Cursor** is workspace-scoped only. Current Cursor builds don't expose a documented file path for user-global rules — the UI manages them. The `.mdc` file includes YAML frontmatter (`alwaysApply: true`) so Cursor applies it on every prompt.
+- **Windsurf** writes to the canonical global memories file and is sentinel-wrapped (`<!-- nlm-memory:start -->` / `<!-- nlm-memory:end -->`) so re-running install is idempotent and disconnect leaves any other user content intact.
+- **OpenCode** writes the same sentinel-wrapped block to the user-global `AGENTS.md`. The OpenCode source adapter is already wired via migration 010; `nlm connect opencode` exists only to install the rules nudge.
+
+**Why this isn't a hook:** the agent has to choose to call `recall_sessions`. The rules file makes that choice more reliable but doesn't guarantee it. Compare with Claude Code / Codex / Hermes Agent / pi.dev where the daemon dictates injection unconditionally on every user prompt.
