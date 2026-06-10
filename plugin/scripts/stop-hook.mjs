@@ -396,7 +396,7 @@ async function postCitationOverHttp(conversationId, citedId, kind, responsePrevi
       method: "POST",
       headers: hookAuthHeaders({ "content-type": "application/json" }),
       body: JSON.stringify({
-        conversation_id: conversationId,
+        ...conversationId !== "unknown" ? { conversation_id: conversationId } : {},
         cited_id: citedId,
         kind,
         response_preview: responsePreview

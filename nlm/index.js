@@ -191,11 +191,11 @@ function extractRecallQuery(prompt) {
 // src/hook/recall-over-http.ts
 var RECALL_LIMIT = 5;
 var RECALL_TIMEOUT_MS = 2e3;
-async function recallOverHttp(prompt, runtime) {
+async function recallOverHttp(prompt, runtime, conversationId) {
   const query = extractRecallQuery(prompt);
   if (query === null) return { hits: [], facts: [] };
   const portValue = process.env["NLM_PORT"] ?? "3940";
-  const url = `http://localhost:${portValue}/api/recall?q=${encodeURIComponent(query)}&mode=keyword&limit=${RECALL_LIMIT}&withFacts=true`;
+  const url = `http://localhost:${portValue}/api/recall?q=${encodeURIComponent(query)}&mode=keyword&limit=${RECALL_LIMIT}&withFacts=true` + (conversationId ? `&conversation_id=${encodeURIComponent(conversationId)}` : "");
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), RECALL_TIMEOUT_MS);
   try {
@@ -216,7 +216,8 @@ async function recallOverHttp(prompt, runtime) {
       id: r.id,
       label: r.label,
       startedAt: r.startedAt,
-      matchScore: r.matchScore
+      matchScore: r.matchScore,
+      ...r.summary !== void 0 ? { summary: r.summary } : {}
     }));
     const facts = (body.relatedFacts ?? []).map((f) => ({
       subject: f.subject,
@@ -300,7 +301,12 @@ function formatPointerBlock(hits, facts = []) {
   if (hits.length > 0) {
     out.push("## Possibly-relevant prior sessions (nlm-memory)");
     for (const h of hits) {
-      out.push(`- ${h.id} \xB7 ${h.label} (${h.startedAt.slice(0, 10)})`);
+      const datePart = h.startedAt.slice(0, 10);
+      if (h.summary) {
+        out.push(`- ${h.id} \xB7 ${h.label} (${datePart}) \u2014 ${h.summary.slice(0, 120)}`);
+      } else {
+        out.push(`- ${h.id} \xB7 ${h.label} (${datePart})`);
+      }
     }
   }
   if (facts.length > 0) {
@@ -406,7 +412,7 @@ async function main() {
     const mode = process.env["NLM_HOOK_MODE"] === "live" ? "live" : "shadow";
     const out = await runHook(
       { prompt, conversationId },
-      { mode, recall: (q) => recallOverHttp(q, "claude-code") }
+      { mode, recall: (q) => recallOverHttp(q, "claude-code", conversationId === "unknown" ? void 0 : conversationId) }
     );
     if (out) process.stdout.write(out);
   } catch {
