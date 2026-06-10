@@ -70,7 +70,8 @@ export function PulsePage() {
 
   const recent = useMemo(() => {
     if (!data) return [];
-    return [...data.sessions]
+    return data.sessions
+      .filter((s) => s.status !== "replaced")
       .sort((a, b) => (b.started_at ?? "").localeCompare(a.started_at ?? ""))
       .slice(0, 20);
   }, [data]);

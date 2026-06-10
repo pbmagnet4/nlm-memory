@@ -7,6 +7,8 @@ import { MarkerActionMenu, type MarkerActionOption } from "../components/MarkerA
 import { SessionListSkeleton, Skeleton } from "../components/Skeleton.js";
 import { readViewSettings, type ThreadSort } from "../lib/view-settings.js";
 import { postAction } from "../lib/actions.js";
+import { groupByReplaceChain } from "../lib/thread-groups.js";
+import { fmt } from "../lib/format.js";
 
 export function ThreadPage() {
   const { data, loading, error, refetch } = useDataset();
@@ -172,7 +174,7 @@ export function ThreadPage() {
             title="Rename this topic. Recall still resolves the original name."
           >rename</button>
         )}
-        <span className="muted">{thread.length} session{thread.length === 1 ? "" : "s"}</span>
+        <span className="muted">{fmt.plural(thread.filter((s) => s.status !== "replaced").length, "session")}</span>
         <span className="header-spacer" />
         <div className="filter-group" role="group" aria-label="Sort order">
           {(["recent", "oldest"] as const).map((s) => (
@@ -293,6 +295,8 @@ function ThreadSessionList({
   const [markers, setMarkers] = useState<MarkerFilter>("all");
   const [pageSize, setPageSize] = useState<number>(25);
   const [page, setPage] = useState(0);
+  // Track which chain-heads have their earlier versions expanded.
+  const [expandedChains, setExpandedChains] = useState<Set<string>>(new Set());
 
   const threadRuntimes = useMemo(() => {
     const counts = new Map<string, number>();
@@ -300,9 +304,13 @@ function ThreadSessionList({
     return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([r]) => r);
   }, [thread]);
 
+  // Filter across all visible sessions (live + already-expanded replaced).
+  // Replaced sessions that are collapsed are excluded from filter matching
+  // and count tallies, consistent with the "noise" framing.
   const filtered = useMemo(() => {
     const q = query.toLowerCase().trim();
     return thread.filter((s) => {
+      if (s.status === "replaced") return false;
       if (runtimeFilter !== "all" && s.runtime !== runtimeFilter) return false;
       if (status !== "all" && s.status !== status) return false;
       if (markers === "decisions" && s.decisions.length === 0) return false;
@@ -327,6 +335,18 @@ function ThreadSessionList({
   const currentPage = Math.min(page, pageCount - 1);
   const start = currentPage * pageSize;
   const slice = filtered.slice(start, start + pageSize);
+
+  // Build replace-chain groups for the current page slice only.
+  const groups = useMemo(() => groupByReplaceChain(slice), [slice]);
+
+  const toggleChain = (headId: string) => {
+    setExpandedChains((prev) => {
+      const next = new Set(prev);
+      if (next.has(headId)) next.delete(headId);
+      else next.add(headId);
+      return next;
+    });
+  };
 
   return (
     <>
@@ -357,7 +377,7 @@ function ThreadSessionList({
               onClick={() => setRuntimeFilter("all")}
             >all</button>
             {threadRuntimes.map((r) => {
-              const count = thread.filter((s) => s.runtime === r).length;
+              const count = thread.filter((s) => s.status !== "replaced" && s.runtime === r).length;
               return (
                 <button
                   key={r}
@@ -371,7 +391,9 @@ function ThreadSessionList({
         )}
         <div className="filter-group" role="group" aria-label="Status filter">
           {(["all", "active", "idle", "closed", "superseded"] as const).map((s) => {
-            const count = s === "all" ? thread.length : thread.filter((x) => x.status === s).length;
+            const count = s === "all"
+              ? thread.filter((x) => x.status !== "replaced").length
+              : thread.filter((x) => x.status === s).length;
             return (
               <button
                 key={s}
@@ -386,8 +408,8 @@ function ThreadSessionList({
         <div className="filter-group" role="group" aria-label="Marker filter">
           {(["all", "decisions", "open"] as const).map((m) => {
             const count = m === "decisions"
-              ? thread.filter((s) => s.decisions.length > 0).length
-              : thread.filter((s) => s.open_questions.length > 0).length;
+              ? thread.filter((s) => s.status !== "replaced" && s.decisions.length > 0).length
+              : thread.filter((s) => s.status !== "replaced" && s.open_questions.length > 0).length;
             return (
               <button
                 key={m}
@@ -404,17 +426,69 @@ function ThreadSessionList({
       </div>
 
       <ul className="session-list">
-        {slice.map((s) => (
-          <li key={s.id} className="session-row session-row-detail clickable" onClick={() => onOpenSession(s.id)}>
-            <span className={`chip-inline status-${s.status}`}>{s.status}</span>
-            <div className="session-row-main">
-              <span className="session-label">{s.label}</span>
-              <span className="session-meta">{s.summary}</span>
-            </div>
-            <span className="muted small mono">{relativeAge(s.started_at)}</span>
-          </li>
-        ))}
-        {slice.length === 0 && (
+        {groups.map((item) => {
+          if (item.kind === "orphan") {
+            const s = item.session;
+            return (
+              <li key={s.id} className="session-row session-row-detail clickable" onClick={() => onOpenSession(s.id)}>
+                <span className={`chip-inline status-${s.status}`}>{s.status}</span>
+                <div className="session-row-main">
+                  <span className="session-label">{s.label}</span>
+                  <span className="session-meta">{s.summary}</span>
+                </div>
+                <span className="muted small mono">{relativeAge(s.started_at)}</span>
+              </li>
+            );
+          }
+
+          const { live, earlier } = item.group;
+          const isExpanded = expandedChains.has(live.id);
+
+          return (
+            <li key={live.id}>
+              <div className="session-row session-row-detail clickable" onClick={() => onOpenSession(live.id)}>
+                <span className={`chip-inline status-${live.status}`}>{live.status}</span>
+                <div className="session-row-main">
+                  <span className="session-label">{live.label}</span>
+                  <span className="session-meta">{live.summary}</span>
+                </div>
+                <div className="session-row-end" onClick={(e) => e.stopPropagation()}>
+                  {earlier.length > 0 && (
+                    <button
+                      type="button"
+                      className="chip earlier-versions-btn"
+                      onClick={() => toggleChain(live.id)}
+                      aria-expanded={isExpanded}
+                      aria-label={`${isExpanded ? "Collapse" : "Expand"} ${fmt.plural(earlier.length, "earlier version")}`}
+                    >
+                      {isExpanded ? "hide" : fmt.plural(earlier.length, "earlier version")}
+                    </button>
+                  )}
+                  <span className="muted small mono">{relativeAge(live.started_at)}</span>
+                </div>
+              </div>
+              {isExpanded && earlier.length > 0 && (
+                <ul className="earlier-versions-list">
+                  {earlier.map((s) => (
+                    <li
+                      key={s.id}
+                      className="session-row session-row-detail clickable is-replaced"
+                      onClick={() => onOpenSession(s.id)}
+                    >
+                      <span className="chip-inline status-replaced">replaced</span>
+                      <div className="session-row-main">
+                        <span className="session-label">{s.label}</span>
+                        <span className="session-meta">{s.summary}</span>
+                      </div>
+                      <span className="muted small mono">{relativeAge(s.started_at)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </li>
+          );
+        })}
+        {groups.length === 0 && (
           <li className="muted empty-row">
             {thread.length === 0 ? "No sessions yet." : "No sessions match the current filters."}
           </li>

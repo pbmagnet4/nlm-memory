@@ -134,6 +134,7 @@ export function SearchPage() {
     if (!data) return [];
 
     const filtered = data.sessions.filter((s) => {
+      if (s.status === "replaced") return false;
       if (entityFilter && !s.entities.includes(entityFilter)) return false;
       if (runtimeFilter !== "all" && s.runtime !== runtimeFilter) return false;
       if (statusFilter !== "all" && s.status !== statusFilter) return false;
