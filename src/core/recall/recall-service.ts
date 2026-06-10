@@ -34,6 +34,7 @@ import { readCitationLog } from "./citation-log.js";
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
+const CITATION_LOOKBACK_DAYS = 90;
 
 function isFactInjectionEnabled(): boolean {
   const raw = process.env["NLM_HOOK_INJECT_FACTS"];
@@ -193,7 +194,7 @@ export class RecallService {
     //    scores. Failures gracefully no-op so recall never breaks because of
     //    missing or unreadable citation log.
     try {
-      const citations = await readCitationLog(90);
+      const citations = await readCitationLog(CITATION_LOOKBACK_DAYS);
       const boosts = buildCitationBoosts(citations);
       if (boosts.size > 0) {
         const reranked = applyBoosts(result.results, boosts);
