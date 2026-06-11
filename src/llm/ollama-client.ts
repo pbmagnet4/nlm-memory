@@ -75,6 +75,13 @@ export interface OllamaClientOptions {
   readonly classifyModel?: string;
   readonly timeoutMs?: number;
   readonly classifyTimeoutMs?: number;
+  /**
+   * Ollama context window for classify/rewrite. Ollama defaults num_ctx to
+   * 4096; the classifier prompt for a median session is ~4.5K tokens, so the
+   * default silently HTTP-400s every long session. Sized to cover a 20K-char
+   * body plus system prompt and JSON output headroom.
+   */
+  readonly numCtx?: number;
   /** Inject a fake fetch for tests. Defaults to global fetch. */
   readonly fetchImpl?: FetchImpl;
 }
@@ -93,6 +100,7 @@ export class OllamaClient implements LLMClient {
   private readonly classifyModel: string;
   private readonly timeoutMs: number;
   private readonly classifyTimeoutMs: number;
+  private readonly numCtx: number;
   private readonly fetchImpl: FetchImpl;
 
   constructor(opts: OllamaClientOptions = {}) {
@@ -101,6 +109,7 @@ export class OllamaClient implements LLMClient {
     this.classifyModel = opts.classifyModel ?? "qwen3:4b-instruct-2507-q4_K_M";
     this.timeoutMs = opts.timeoutMs ?? 10_000;
     this.classifyTimeoutMs = opts.classifyTimeoutMs ?? 180_000;
+    this.numCtx = opts.numCtx ?? 16_384;
     this.fetchImpl = opts.fetchImpl ?? fetch;
   }
 
@@ -162,7 +171,7 @@ export class OllamaClient implements LLMClient {
           ],
           stream: false,
           format: "json",
-          options: { temperature: 0.1 },
+          options: { temperature: 0.1, num_ctx: this.numCtx },
         }),
         signal: controller.signal,
       });
@@ -205,7 +214,7 @@ export class OllamaClient implements LLMClient {
           ],
           stream: false,
           format: "json",
-          options: { temperature: 0.1 },
+          options: { temperature: 0.1, num_ctx: this.numCtx },
         }),
         signal: controller.signal,
       });

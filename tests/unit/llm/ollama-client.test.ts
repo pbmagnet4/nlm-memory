@@ -53,6 +53,28 @@ describe("OllamaClient.classify", () => {
     expect(result.confidence).toBeCloseTo(0.85);
   });
 
+  it("sets num_ctx so long sessions don't hit Ollama's 4096 default", async () => {
+    let opts: { temperature?: number; num_ctx?: number } = {};
+    const fetchImpl = makeFetch(({ body }) => {
+      opts = (body as { options: { temperature?: number; num_ctx?: number } }).options;
+      return jsonResponse({ message: { content: JSON.stringify(VALID_PAYLOAD) } });
+    });
+    const client = new OllamaClient({ fetchImpl });
+    await client.classify("user: build the classifier\nassistant: done");
+    expect(opts.num_ctx).toBe(16_384);
+
+    let customOpts: { num_ctx?: number } = {};
+    const client2 = new OllamaClient({
+      numCtx: 32_768,
+      fetchImpl: makeFetch(({ body }) => {
+        customOpts = (body as { options: { num_ctx?: number } }).options;
+        return jsonResponse({ message: { content: JSON.stringify(VALID_PAYLOAD) } });
+      }),
+    });
+    await client2.classify("x");
+    expect(customOpts.num_ctx).toBe(32_768);
+  });
+
   it("threads priorContext into the user prompt when supplied", async () => {
     let userContent = "";
     const fetchImpl = makeFetch(({ body }) => {
