@@ -471,20 +471,16 @@ program
       return;
     }
 
-    if (result.precisionAtK === null) {
-      console.log("No scoreable conversations in the last " + opts.days + " day(s).");
-      console.log(
-        "  Precision joins hook-surfaced sessions (hook-log.jsonl) against explicit",
-      );
-      console.log(
-        "  citations (citation-log.jsonl). If citations are empty, run: nlm help close-loop",
-      );
-      return;
-    }
-
-    const pct = (result.precisionAtK * 100).toFixed(1);
     console.log(`Recall precision@k — last ${opts.days} day(s)`);
-    console.log(`  Blended: ${pct}%  (${result.conversationCount} conversations scored)`);
+    if (result.precisionAtK === null) {
+      console.log("  Blended: no hook-lane conversations to score (hook-log.jsonl empty for this window).");
+      if (citationEntries.length === 0) {
+        console.log("  No citations recorded — run: nlm help close-loop");
+      }
+    } else {
+      const pct = (result.precisionAtK * 100).toFixed(1);
+      console.log(`  Blended: ${pct}%  (${result.conversationCount} conversations scored)`);
+    }
 
     if (perSource.length > 0) {
       console.log("\n  Per source:");
