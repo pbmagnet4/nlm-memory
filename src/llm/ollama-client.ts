@@ -22,6 +22,7 @@ import type {
 import { LLMUnreachableError } from "@ports/llm-client.js";
 import {
   CLASSIFIER_SYSTEM_PROMPT,
+  CLASSIFIER_JSON_SCHEMA,
   buildUserPrompt,
   coerceClassifyResult,
   stripJsonFences,
@@ -181,7 +182,7 @@ export class OllamaClient implements LLMClient {
             { role: "user", content: userPrompt },
           ],
           stream: false,
-          format: "json",
+          format: CLASSIFIER_JSON_SCHEMA,
           ...(this.think !== undefined ? { think: this.think } : {}),
           options: { temperature: 0.1, num_ctx: this.numCtx },
         }),

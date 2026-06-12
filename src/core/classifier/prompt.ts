@@ -76,7 +76,16 @@ Field requirements:
 - label: 4-10 word string title describing what the session was about. Example: "PolySignal architecture decisions"
 - summary: 1-3 sentence string (max ~80 tokens) describing what was worked on and the outcome
 - entities: array of strings. Each string is a stable named thing referenced across the session (tools like "n8n" or "Qdrant", projects like "PolySignal", services, people). NOT topics, NOT decisions.
-- decisions: array of strings. Each string is one commitment the user made. Example: "Use HTTP polling instead of Kafka". Skip if no commitments were made.
+- decisions: array of strings. Each string is ONE decision that changed what was built or done in this session. A decision counts if the user chose it, OR the agent proposed it and the user accepted — explicitly ("yes", "do it", "go with that") or implicitly (the agent stated the proposal and then proceeded under it with no user objection). Implicit acceptance applies ONLY to proposals that changed the direction of the work — never to the agent's routine implementation choices (helper names, file layout, minor refactors) that were never surfaced as a choice. Capture the decision AND its reason when given ("X instead of Y because Z"). Do NOT include: options discussed but not chosen, approaches considered and rejected, next-step suggestions the agent raised at the end that the user never acted on, or decisions already listed in PRIOR CONTEXT unless they were reversed this session. Scan the WHOLE transcript, including the middle, for decision signals such as (not only): "let's", "go with", "instead of", "switch to", "actually,", "agreed", and any point where one approach was abandoned and replaced. Return [] if no commitments were made.
+  CAPTURE (examples):
+  - "Use HTTP polling instead of Kafka for the event pipeline (lower ops overhead)"  [user choice]
+  - "Ship v1 without the auth layer; defer it to a follow-up"  [scope cut]
+  - "Abandoned the Redis cache mid-session and moved dedup into the Postgres write path"  [mid-session reversal]
+  - "Store sessions in SQLite instead of a flat JSON file"  [agent proposed, user let it proceed — implicit acceptance]
+  DO NOT capture (examples):
+  - User and agent compared Tailwind vs plain CSS but made no choice by the end  [discussed, not decided]
+  - At the end the agent suggested "we could add rate limiting next" and the user didn't respond  [unratified next-step]
+  - The agent picked a helper-function name and file layout without asking  [routine implementation, not a decision]
 - open: array of strings. Each string is one unresolved question. Skip if none.
 - confidence: number between 0.0 and 1.0. How sure you are the extraction is good. Use 0.4 or below for routine/trivial sessions.
 - facts: array of objects. Each object has exactly these keys: kind, subject, predicate, value, sourceQuote (optional).
@@ -96,6 +105,30 @@ Predicate disambiguation (these confuse models, follow exactly):
 - description vs status: description = what a thing IS ("rich text editor framework by Meta"). status = what state it's in right now ("running via pm2", "not yet started", "blocked on review").
 
 Return ONLY the JSON object. No markdown code fences. No prose before or after.`;
+
+export const CLASSIFIER_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    label: { type: "string" },
+    summary: { type: "string" },
+    entities: { type: "array", items: { type: "string" } },
+    decisions: { type: "array", items: { type: "string" } },
+    open: { type: "array", items: { type: "string" } },
+    confidence: { type: "number", minimum: 0, maximum: 1 },
+    facts: { type: "array", items: {
+      type: "object",
+      properties: {
+        kind: { type: "string", enum: ["decision", "open", "attribute"] },
+        subject: { type: "string" },
+        predicate: { type: "string", enum: [...PREDICATE_VOCABULARY] },
+        value: { type: "string" },
+        sourceQuote: { type: "string" },
+      },
+      required: ["kind", "subject", "predicate", "value"],
+    } },
+  },
+  required: ["label", "summary", "entities", "decisions", "open", "confidence", "facts"],
+} as const;
 
 export const MAX_TRANSCRIPT_CHARS = 15_000;
 
@@ -192,7 +225,7 @@ export function coerceClassifyResult(data: Record<string, unknown>): {
   const decisions = strArray(data["decisions"]);
   const open = strArray(data["open"]);
   const conf = Number(data["confidence"] ?? 0.5);
-  const confidence = Number.isFinite(conf) ? conf : 0.5;
+  const confidence = Number.isFinite(conf) ? Math.min(1, Math.max(0, conf)) : 0.5;
   const facts = coerceFacts(data["facts"]);
   return { label, summary, entities, decisions, open, confidence, facts };
 }

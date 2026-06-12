@@ -38,8 +38,8 @@ describe("OllamaClient.classify", () => {
   it("parses a valid JSON payload through the Ollama chat envelope", async () => {
     const fetchImpl = makeFetch(({ url, body }) => {
       expect(url).toContain("/api/chat");
-      const b = body as { model: string; messages: { role: string; content: string }[]; format: string };
-      expect(b.format).toBe("json");
+      const b = body as { model: string; messages: { role: string; content: string }[]; format: unknown };
+      expect(b.format).toEqual(expect.objectContaining({ type: "object", properties: expect.any(Object) }));
       expect(b.messages[0]?.role).toBe("system");
       expect(b.messages[0]?.content).toContain("session classifier");
       expect(b.messages[1]?.content).toContain("TRANSCRIPT TO CLASSIFY");
