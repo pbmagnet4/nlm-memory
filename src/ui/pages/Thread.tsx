@@ -408,9 +408,14 @@ function ThreadSessionList({
         </div>
         <div className="filter-group" role="group" aria-label="Marker filter">
           {(["all", "decisions", "open"] as const).map((m) => {
-            const count = m === "decisions"
-              ? thread.filter((s) => s.status !== "replaced" && s.decisions.length > 0).length
-              : thread.filter((s) => s.status !== "replaced" && s.open_questions.length > 0).length;
+            let count = thread.length;
+            if (m === "decisions") {
+              count = thread.filter((s) => s.status !== "replaced" && s.decisions.length > 0).length;
+            } else if (m === "open") {
+              count = thread.filter((s) => s.status !== "replaced" && s.open_questions.length > 0).length;
+            } else {
+              count = thread.filter((s) => s.status !== "replaced").length;
+            }
             return (
               <button
                 key={m}
@@ -418,7 +423,7 @@ function ThreadSessionList({
                 className={`chip${markers === m ? " active" : ""}`}
                 data-marker={m === "all" ? undefined : m}
                 onClick={() => setMarkers(m)}
-              >{m === "all" ? "all" : `${m} · ${count}`}</button>
+              >{m} · {count}</button>
             );
           })}
         </div>
@@ -600,7 +605,7 @@ function EntityPicker({ data }: { data: Dataset }) {
         </div>
         <span className="header-spacer" />
         <span className="muted small">
-          {entitySearch
+          {filtered.length < data.entities.length
             ? `${filtered.length} of ${data.entities.length} topics`
             : `${data.entities.length} topics`}
         </span>
