@@ -261,7 +261,10 @@ function buildCandidates(): CandidateConfig[] {
     {
       key: "ollama:qwen3.5:4b",
       label: "audition ollama qwen3.5:4b",
-      client: new OllamaClient({ baseUrl: ollamaUrl, classifyModel: "qwen3.5:4b" }),
+      // think:false disables extended CoT for this thinking-capable model.
+      // Without it, qwen3.5:4b spends 30–180s on the think phase even for
+      // trivial prompts, causing the 180s classify timeout on ~27% of sessions.
+      client: new OllamaClient({ baseUrl: ollamaUrl, classifyModel: "qwen3.5:4b", think: false }),
     },
     {
       key: "studio:Qwen3.5-9B-MLX-8bit",

@@ -82,6 +82,15 @@ export interface OllamaClientOptions {
    * body plus system prompt and JSON output headroom.
    */
   readonly numCtx?: number;
+  /**
+   * Disable extended chain-of-thought thinking for models that support it
+   * (e.g. qwen3.5:4b). Passed as top-level `think: false` in the Ollama
+   * /api/chat request body. When omitted, Ollama uses the model's default
+   * (thinking ON for thinking-capable models, which causes 30–180s latency
+   * even on trivial prompts and triggers timeouts on the 180s classify wall).
+   * Set to false for qwen3.5 variants; leave unset for the incumbent.
+   */
+  readonly think?: boolean;
   /** Inject a fake fetch for tests. Defaults to global fetch. */
   readonly fetchImpl?: FetchImpl;
 }
@@ -101,6 +110,7 @@ export class OllamaClient implements LLMClient {
   private readonly timeoutMs: number;
   private readonly classifyTimeoutMs: number;
   private readonly numCtx: number;
+  private readonly think: boolean | undefined;
   private readonly fetchImpl: FetchImpl;
 
   constructor(opts: OllamaClientOptions = {}) {
@@ -110,6 +120,7 @@ export class OllamaClient implements LLMClient {
     this.timeoutMs = opts.timeoutMs ?? 10_000;
     this.classifyTimeoutMs = opts.classifyTimeoutMs ?? 180_000;
     this.numCtx = opts.numCtx ?? 16_384;
+    this.think = opts.think;
     this.fetchImpl = opts.fetchImpl ?? fetch;
   }
 
@@ -171,6 +182,7 @@ export class OllamaClient implements LLMClient {
           ],
           stream: false,
           format: "json",
+          ...(this.think !== undefined ? { think: this.think } : {}),
           options: { temperature: 0.1, num_ctx: this.numCtx },
         }),
         signal: controller.signal,
@@ -214,6 +226,7 @@ export class OllamaClient implements LLMClient {
           ],
           stream: false,
           format: "json",
+          ...(this.think !== undefined ? { think: this.think } : {}),
           options: { temperature: 0.1, num_ctx: this.numCtx },
         }),
         signal: controller.signal,
