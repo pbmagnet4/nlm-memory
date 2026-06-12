@@ -1,11 +1,22 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "NLM_HOOK_RUNTIME=codex node \"${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/scripts/session-start-hook.mjs\"",
+            "statusMessage": "nlm-memory: cold-start recall"
+          }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/prompt-recall-hook.mjs\"",
+            "command": "NLM_HOOK_RUNTIME=codex node \"${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/scripts/prompt-recall-hook.mjs\"",
             "statusMessage": "nlm-memory: recalling prior sessions"
           }
         ]
@@ -16,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/stop-hook.mjs\""
+            "command": "NLM_HOOK_RUNTIME=codex node \"${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/scripts/stop-hook.mjs\""
           }
         ]
       }

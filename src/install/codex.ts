@@ -188,11 +188,20 @@ export function writeLegacyHooks(
   const hooks = (file.hooks ??= {});
 
   const ourEntries: Record<string, CodexHookGroup> = {
+    SessionStart: {
+      hooks: [
+        {
+          type: "command",
+          command: `NLM_HOOK_RUNTIME=codex node "${join(pluginScriptsDir, "session-start-hook.mjs")}"`,
+          statusMessage: "nlm-memory: cold-start recall",
+        },
+      ],
+    },
     UserPromptSubmit: {
       hooks: [
         {
           type: "command",
-          command: `node "${join(pluginScriptsDir, "prompt-recall-hook.mjs")}"`,
+          command: `NLM_HOOK_RUNTIME=codex node "${join(pluginScriptsDir, "prompt-recall-hook.mjs")}"`,
           statusMessage: "nlm-memory: recalling prior sessions",
         },
       ],
@@ -201,7 +210,7 @@ export function writeLegacyHooks(
       hooks: [
         {
           type: "command",
-          command: `node "${join(pluginScriptsDir, "stop-hook.mjs")}"`,
+          command: `NLM_HOOK_RUNTIME=codex node "${join(pluginScriptsDir, "stop-hook.mjs")}"`,
         },
       ],
     },
