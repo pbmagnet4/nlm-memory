@@ -2,7 +2,7 @@
  * OllamaClient — LLMClient backed by a local Ollama HTTP endpoint.
  *
  * embed()    → POST /api/embeddings  (nomic-embed-text by default)
- * classify() → POST /api/chat        (qwen3:4b-instruct-2507 by default, format=json)
+ * classify() → POST /api/chat        (qwen3.5:4b by default, format=json)
  *
  * Network/HTTP failure maps to LLMUnreachableError so RecallService can
  * degrade to keyword mode without crashing. Classification parse failures
@@ -116,7 +116,7 @@ export class OllamaClient implements LLMClient {
   constructor(opts: OllamaClientOptions = {}) {
     this.baseUrl = (opts.baseUrl ?? "http://localhost:11434").replace(/\/+$/, "");
     this.embedModel = opts.embedModel ?? "nomic-embed-text";
-    this.classifyModel = opts.classifyModel ?? "qwen3:4b-instruct-2507-q4_K_M";
+    this.classifyModel = opts.classifyModel ?? "qwen3.5:4b";
     this.timeoutMs = opts.timeoutMs ?? 10_000;
     this.classifyTimeoutMs = opts.classifyTimeoutMs ?? 180_000;
     this.numCtx = opts.numCtx ?? 16_384;

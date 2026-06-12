@@ -120,16 +120,16 @@ function ollamaUrl(): string {
 }
 
 function buildClassifier(): ClassifierBox {
-  // qwen3:4b-instruct-2507-q4_K_M is the recommended local classifier per the
-  // 2026-06-02 head-to-head bench (reports/classifier-comparison/2026-06-02-deepseek-v4-vs-qwen3.md):
-  // statistical tie with DeepSeek V4 Flash on schema validity and entity/decision
-  // counts, with better open-question coverage (100% vs 75%). Ollama is the
-  // default to keep the daemon local-first and key-free; DeepSeek remains
-  // available via NLM_CLASSIFIER=deepseek for users who prioritize speed.
+  // qwen3.5:4b is the production classifier as of 2026-06-12 (NLM task #320).
+  // Scored 74.4% decision-precision vs qwen3:4b-instruct-2507-q4_K_M's 58.7% in
+  // the 2026-06-11 eval. Requires think:false (handled by ClassifierBox via
+  // classifierNeedsThinkDisabled) to stay within the 180s classify timeout.
+  // Ollama is the default to keep the daemon local-first and key-free; DeepSeek
+  // remains available via NLM_CLASSIFIER=deepseek for users who prioritize speed.
   const provider = ((process.env["NLM_CLASSIFIER"] ?? "ollama").toLowerCase() as ClassifierProvider);
   if (provider !== "ollama") autoloadEnv();
   const model = process.env["NLM_CLASSIFIER_MODEL"]
-    ?? (provider === "ollama" ? "qwen3:4b-instruct-2507-q4_K_M" : "deepseek-v4-flash");
+    ?? (provider === "ollama" ? "qwen3.5:4b" : "deepseek-v4-flash");
   return new ClassifierBox({ provider, model, ollamaUrl: ollamaUrl() });
 }
 
@@ -524,11 +524,11 @@ program
   .description("Run TS classifier against ~/.nlm/canonical.sqlite and diff vs persisted Python output")
   .option("-l, --limit <n>", "sessions to sample", (v) => Number.parseInt(v, 10), 10)
   .option("-p, --provider <name>", "deepseek | ollama", "deepseek")
-  .option("-m, --model <name>", "model tag (default: deepseek-v4-flash for deepseek, qwen3:4b-instruct-2507-q4_K_M for ollama)")
+  .option("-m, --model <name>", "model tag (default: deepseek-v4-flash for deepseek, qwen3.5:4b for ollama)")
   .option("-v, --verbose", "per-session diff lines on stderr")
   .action(async (opts) => {
     const provider = opts.provider === "ollama" ? "ollama" : "deepseek";
-    const defaultModel = provider === "deepseek" ? "deepseek-v4-flash" : "qwen3:4b-instruct-2507-q4_K_M";
+    const defaultModel = provider === "deepseek" ? "deepseek-v4-flash" : "qwen3.5:4b";
     const report = await runParity({
       limit: opts.limit,
       dbPath: dbPath(),

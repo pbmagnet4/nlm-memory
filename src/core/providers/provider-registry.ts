@@ -92,7 +92,7 @@ const DEFAULT_BASE_URLS: Record<ProviderKind, string | null> = {
 
 const DEFAULT_MODELS: Record<ProviderKind, string | null> = {
   deepseek: "deepseek-v4-flash",
-  ollama: "qwen3:4b-instruct-2507-q4_K_M",
+  ollama: "qwen3.5:4b",
   openai: "gpt-4o-mini",
   anthropic: "claude-haiku-4-5-20251001",
   openrouter: "anthropic/claude-haiku-4-5",

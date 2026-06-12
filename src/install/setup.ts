@@ -39,7 +39,7 @@ import {
   writeClassifierConfig,
 } from "./ollama.js";
 
-const RECOMMENDED_OLLAMA_CLASSIFIER = "qwen3:4b-instruct-2507-q4_K_M";
+const RECOMMENDED_OLLAMA_CLASSIFIER = "qwen3.5:4b";
 import { installClaudeCodeHooks } from "./claude-code.js";
 import { hardenNlmDirPermissions } from "./nlm-dir-perms.js";
 

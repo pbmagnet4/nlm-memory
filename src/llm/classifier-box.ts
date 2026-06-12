@@ -20,6 +20,13 @@ import { OllamaClient } from "./ollama-client.js";
 
 export type ClassifierProvider = "deepseek" | "ollama";
 
+/** Qwen 3.5+ models default to extended chain-of-thought, which blows the
+ * classify timeout. Disable thinking for them; non-thinking models like
+ * qwen3:4b-instruct are unaffected. */
+export function classifierNeedsThinkDisabled(model: string): boolean {
+  return /qwen3\.5/i.test(model);
+}
+
 export interface ClassifierBoxOptions {
   readonly provider: ClassifierProvider;
   readonly model: string;
@@ -62,7 +69,7 @@ export class ClassifierBox implements LLMClient {
 
   private construct(provider: ClassifierProvider, model: string): LLMClient {
     if (provider === "ollama") {
-      return new OllamaClient({ baseUrl: this.ollamaUrl, classifyModel: model });
+      return new OllamaClient({ baseUrl: this.ollamaUrl, classifyModel: model, ...(classifierNeedsThinkDisabled(model) ? { think: false } : {}) });
     }
     return new DeepSeekClient({ classifyModel: model });
   }

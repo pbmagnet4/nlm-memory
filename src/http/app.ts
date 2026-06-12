@@ -1110,7 +1110,7 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
 function registerClassifierRoutes(app: Hono, deps: HttpDeps): void {
   app.get("/api/classifier/info", (c) => {
     const provider = deps.classifier?.provider ?? "ollama";
-    const model = deps.classifier?.model ?? "qwen3:4b-instruct-2507-q4_K_M";
+    const model = deps.classifier?.model ?? "qwen3.5:4b";
     return c.json({
       provider,
       model,
@@ -1121,7 +1121,7 @@ function registerClassifierRoutes(app: Hono, deps: HttpDeps): void {
       },
       default_models: {
         deepseek: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat"],
-        ollama: ["qwen3:4b-instruct-2507-q4_K_M", "qwen2.5:3b-instruct", "llama3.2:3b", "mistral:7b"],
+        ollama: ["qwen3.5:4b", "qwen3:4b-instruct-2507-q4_K_M", "qwen2.5:3b-instruct", "llama3.2:3b", "mistral:7b"],
       },
       embedder: deps.embedderInfo ?? { provider: "ollama", model: "nomic-embed-text", dims: 768 },
     });

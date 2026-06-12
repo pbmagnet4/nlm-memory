@@ -82,7 +82,7 @@ function parseArgs(argv: string[]): CliOptions {
   const limit = Number.parseInt(flag("--limit", "10") ?? "10", 10);
   const providerRaw = (flag("--provider", "deepseek") ?? "deepseek").toLowerCase();
   const provider: Provider = providerRaw === "ollama" ? "ollama" : "deepseek";
-  const defaultModel = provider === "deepseek" ? "deepseek-v4-flash" : "qwen3:4b-instruct-2507-q4_K_M";
+  const defaultModel = provider === "deepseek" ? "deepseek-v4-flash" : "qwen3.5:4b";
   return {
     limit: Number.isFinite(limit) && limit > 0 ? limit : 10,
     dbPath:
