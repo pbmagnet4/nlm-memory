@@ -1,13 +1,13 @@
 /**
- * Claude Code UserPromptSubmit hook entrypoint for NLM recall.
+ * UserPromptSubmit hook entrypoint for NLM recall.
  *
  * runHook is the testable orchestration; main() is the thin process wrapper
  * (stdin / stdout / fetch / env). Every path is fail-open: any error yields
  * no output and a clean exit, so the hook can never block or fail a prompt.
  *
- * Mode is read from NLM_HOOK_MODE (default "shadow"). In shadow mode the
- * hook logs what it would inject and emits nothing; in live mode it emits a
- * pointer block and records the per-conversation memo.
+ * Mode is read from NLM_HOOK_MODE (default "shadow"). Runtime attribution is
+ * read from NLM_HOOK_RUNTIME (default "claude-code") so packaged hooks can
+ * share this entrypoint without polluting query logs.
  */
 
 import { pathToFileURL } from "node:url";
@@ -29,6 +29,13 @@ const PER_CONVERSATION_CAP = 10;
 const PROMPT_PREVIEW_CHARS = 200;
 
 export type HookMode = "shadow" | "live";
+
+export function hookRuntimeFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const raw = env["NLM_HOOK_RUNTIME"]?.trim();
+  return raw ? raw : "claude-code";
+}
 
 export interface HookInput {
   readonly prompt: string;
@@ -127,8 +134,8 @@ function readStdin(): Promise<string> {
 async function main(): Promise<void> {
   try {
     // Load ~/.nlm/.env so NLM_MCP_TOKEN is available before we hit /api/recall.
-    // Hooks run as short-lived processes spawned by Claude Code with no shell
-    // env beyond what the parent passed — explicit .env load is required.
+    // Hooks run as short-lived processes spawned by host runtimes with no shell
+    // env beyond what the parent passed, so explicit .env load is required.
     autoloadEnv();
     const raw = await readStdin();
     const payload = JSON.parse(raw) as {
@@ -141,9 +148,10 @@ async function main(): Promise<void> {
     if (!prompt) return;
 
     const mode: HookMode = process.env["NLM_HOOK_MODE"] === "live" ? "live" : "shadow";
+    const runtime = hookRuntimeFromEnv();
     const out = await runHook(
       { prompt, conversationId },
-      { mode, recall: (q) => recallOverHttp(q, "claude-code", conversationId === "unknown" ? undefined : conversationId) },
+      { mode, recall: (q) => recallOverHttp(q, runtime, conversationId === "unknown" ? undefined : conversationId) },
     );
     if (out) process.stdout.write(out);
   } catch {

@@ -339,6 +339,10 @@ var SCORE_THRESHOLD = 0;
 var PER_FIRE_CAP = 3;
 var PER_CONVERSATION_CAP = 10;
 var PROMPT_PREVIEW_CHARS = 200;
+function hookRuntimeFromEnv(env = process.env) {
+  const raw = env["NLM_HOOK_RUNTIME"]?.trim();
+  return raw ? raw : "claude-code";
+}
 function normalizeRecall(raw) {
   if (Array.isArray(raw)) return { hits: raw, facts: [] };
   return raw;
@@ -410,9 +414,10 @@ async function main() {
     const conversationId = typeof payload.session_id === "string" ? payload.session_id : "unknown";
     if (!prompt) return;
     const mode = process.env["NLM_HOOK_MODE"] === "live" ? "live" : "shadow";
+    const runtime = hookRuntimeFromEnv();
     const out = await runHook(
       { prompt, conversationId },
-      { mode, recall: (q) => recallOverHttp(q, "claude-code", conversationId === "unknown" ? void 0 : conversationId) }
+      { mode, recall: (q) => recallOverHttp(q, runtime, conversationId === "unknown" ? void 0 : conversationId) }
     );
     if (out) process.stdout.write(out);
   } catch {

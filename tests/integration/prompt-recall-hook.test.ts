@@ -2,7 +2,7 @@ import { mkdtempSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { runHook } from "../../src/hook/prompt-recall-hook.js";
+import { hookRuntimeFromEnv, runHook } from "../../src/hook/prompt-recall-hook.js";
 import type { RecallHitInput } from "../../src/core/hook/select.js";
 
 const hits = (...ids: string[]): ReadonlyArray<RecallHitInput> =>
@@ -84,5 +84,19 @@ describe("runHook", () => {
       { mode: "live", recall: async () => { throw new Error("daemon down"); } },
     );
     expect(out).toBe("");
+  });
+});
+
+describe("hookRuntimeFromEnv", () => {
+  it("defaults to claude-code for the Claude Code hook install", () => {
+    expect(hookRuntimeFromEnv({})).toBe("claude-code");
+  });
+
+  it("uses NLM_HOOK_RUNTIME for packaged runtimes like Codex", () => {
+    expect(hookRuntimeFromEnv({ NLM_HOOK_RUNTIME: "codex" })).toBe("codex");
+  });
+
+  it("ignores blank runtime overrides", () => {
+    expect(hookRuntimeFromEnv({ NLM_HOOK_RUNTIME: "  " })).toBe("claude-code");
   });
 });
