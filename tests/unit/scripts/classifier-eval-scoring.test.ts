@@ -121,9 +121,9 @@ describe("judgeTranscript", () => {
   });
 
   it("keeps head and tail and drops the middle when over the cap", () => {
-    const head = "H".repeat(8_000);
-    const tail = "T".repeat(8_000);
-    const middle = "M".repeat(8_000);
+    const head = "H".repeat(12_000);
+    const tail = "T".repeat(12_000);
+    const middle = "M".repeat(12_000);
     const out = judgeTranscript(head + middle + tail);
     expect(out.length).toBeLessThanOrEqual(JUDGE_TRANSCRIPT_CAP + 80);
     expect(out.startsWith("H")).toBe(true);
