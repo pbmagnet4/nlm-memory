@@ -11,6 +11,7 @@
  * See docs/plans/2026-05-30-factstore-storage-port.md.
  */
 
+import type { CodeExemplarStore } from "./code-exemplar-store.js";
 import type { FactStore } from "./fact-store.js";
 import type { SessionStore } from "./session-store.js";
 import type { SignalStore } from "./signal-store.js";
@@ -24,6 +25,7 @@ export interface Storage {
   readonly facts: FactStore;
   readonly sessions: SessionStore;
   readonly signals: SignalStore;
+  readonly exemplars: CodeExemplarStore;
 
   /**
    * Run `fn` inside an adapter-defined transaction. The handles on the

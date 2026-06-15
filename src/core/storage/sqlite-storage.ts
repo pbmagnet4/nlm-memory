@@ -16,6 +16,7 @@
 
 import type Database from "better-sqlite3";
 import type { Storage, StorageContext } from "@ports/storage.js";
+import { SqliteCodeExemplarStore } from "./sqlite-code-exemplar-store.js";
 import { SqliteFactStore } from "./sqlite-fact-store.js";
 import { SqliteSessionStore } from "./sqlite-session-store.js";
 import { SqliteSignalStore } from "./sqlite-signal-store.js";
@@ -29,23 +30,27 @@ export class SqliteStorage implements Storage {
   readonly sessions: SqliteSessionStore;
   readonly facts: SqliteFactStore;
   readonly signals: SqliteSignalStore;
+  readonly exemplars: SqliteCodeExemplarStore;
   private inTxn = false;
 
   private constructor(
     sessions: SqliteSessionStore,
     facts: SqliteFactStore,
     signals: SqliteSignalStore,
+    exemplars: SqliteCodeExemplarStore,
   ) {
     this.sessions = sessions;
     this.facts = facts;
     this.signals = signals;
+    this.exemplars = exemplars;
   }
 
   static create(opts: SqliteStorageOptions): SqliteStorage {
     const sessions = new SqliteSessionStore(opts);
     const facts = new SqliteFactStore(sessions.rawDb());
     const signals = new SqliteSignalStore(sessions.rawDb());
-    return new SqliteStorage(sessions, facts, signals);
+    const exemplars = new SqliteCodeExemplarStore(sessions.rawDb());
+    return new SqliteStorage(sessions, facts, signals, exemplars);
   }
 
   async init(): Promise<void> {

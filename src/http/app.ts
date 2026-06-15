@@ -91,7 +91,11 @@ import type {
   RecallQuery,
 } from "@shared/types.js";
 import type { SignalStore } from "@ports/signal-store.js";
+import type { CodeExemplarStore } from "@ports/code-exemplar-store.js";
+import type { CodeEmbedder } from "@ports/code-embedder.js";
 import { normalizeSignal } from "@core/signals/ingest-signal.js";
+import { normalizeExemplar } from "@core/exemplars/ingest-exemplar.js";
+import { recallCode } from "@core/exemplars/recall-code.js";
 import { buildFailureModeBlock } from "@core/signals/failure-mode-recall.js";
 import { aggregateFailureModes } from "@core/signals/aggregate.js";
 
@@ -132,6 +136,10 @@ export interface HttpDeps {
   readonly signalStore?: SignalStore;
   /** Per-install scope stamped on every ingested signal. */
   readonly installScope?: string;
+  /** Code exemplar store — wire to enable POST /api/exemplar + GET /api/recall-code. */
+  readonly exemplarStore?: CodeExemplarStore;
+  /** Optional code embedder for semantic recall-code queries. */
+  readonly codeEmbedder?: CodeEmbedder;
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -1564,6 +1572,73 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
     const rows = await deps.signalStore.listForAggregation({ installScope: deps.installScope, sinceTs });
     const modes = aggregateFailureModes(rows);
     return c.json({ days, total: rows.length, modes });
+  });
+
+  // ── Code exemplar routes (NLM_CODE_EXEMPLARS_ENABLED=1) ───────────────────
+
+  app.post("/api/exemplar", async (c) => {
+    if (!deps.exemplarStore || deps.installScope === undefined) {
+      return c.json({ error: "exemplar store not wired in this deployment" }, 503);
+    }
+    if (process.env["NLM_CODE_EXEMPLARS_ENABLED"] !== "1") {
+      return c.json({ error: "code exemplars disabled" }, 403);
+    }
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "body must be JSON" }, 400);
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return c.json({ error: "body must be a JSON object" }, 400);
+    }
+    let inp;
+    try {
+      inp = normalizeExemplar({ ...(body as Record<string, unknown>), installScope: deps.installScope } as Parameters<typeof normalizeExemplar>[0]);
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : "invalid exemplar" }, 400);
+    }
+    const { id, skipped } = await deps.exemplarStore.insert(inp);
+    if (!skipped && deps.codeEmbedder) {
+      // Best-effort embedding: fire-and-forget, never blocks the response.
+      deps.codeEmbedder.embed(inp.taskContext + "\n" + inp.code, "document")
+        .then((r) => deps.exemplarStore!.upsertEmbedding(id, r.vector))
+        .catch(() => { /* degraded; exemplar is still stored without a vector */ });
+    }
+    return c.json({ id, skipped, status: "accepted" }, 202);
+  });
+
+  app.get("/api/recall-code", async (c) => {
+    if (!deps.exemplarStore || deps.installScope === undefined) {
+      return c.json({ error: "exemplar store not wired in this deployment" }, 503);
+    }
+    if (process.env["NLM_CODE_EXEMPLARS_ENABLED"] !== "1") {
+      return c.json({ error: "code exemplars disabled" }, 403);
+    }
+    const query = c.req.query("q");
+    if (!query) return c.json({ error: "q (query) is required" }, 400);
+    const kStr = c.req.query("k") ?? "5";
+    const k = Math.max(1, Math.min(20, Number.parseInt(kStr, 10) || 5));
+    const repo = c.req.query("repo");
+    const lang = c.req.query("lang");
+    const model = c.req.query("model");
+    const includeNegatives = c.req.query("negatives") !== "0";
+
+    const result = await recallCode(
+      {
+        query,
+        installScope: deps.installScope,
+        ...(repo ? { repo } : {}),
+        ...(lang ? { lang } : {}),
+        ...(model ? { model } : {}),
+        includeNegatives,
+        k,
+      },
+      deps.exemplarStore,
+      deps.codeEmbedder ?? null,
+      null,
+    );
+    return c.json(result);
   });
 }
 

@@ -406,6 +406,61 @@ program
   });
 
 program
+  .command("recall-code")
+  .description("Semantic search over code exemplars (requires NLM_CODE_EXEMPLARS_ENABLED=1)")
+  .argument("<query>", "natural-language description of the task you are about to implement")
+  .option("-r, --repo <path>", "filter by repository path")
+  .option("-l, --lang <lang>", "filter by language (ts, py, go, ...)")
+  .option("-k <n>", "max results", (v) => Number.parseInt(v, 10), 5)
+  .option("--no-negatives", "exclude fail/exhausted exemplars from results")
+  .option("--json", "emit the raw JSON result")
+  .action(async (query, opts) => {
+    if (process.env["NLM_CODE_EXEMPLARS_ENABLED"] !== "1") {
+      process.stderr.write("recall-code requires NLM_CODE_EXEMPLARS_ENABLED=1\n");
+      process.exit(1);
+    }
+    const { storage } = await buildStack();
+    const { OllamaCodeEmbedder } = await import("../llm/ollama-code-embedder.js");
+    const { recallCode } = await import("../core/exemplars/recall-code.js");
+    const { installScope: getScope } = await import("../core/signals/install-scope.js");
+    try {
+      const embedder = new OllamaCodeEmbedder();
+      const result = await recallCode(
+        {
+          query,
+          installScope: getScope(),
+          ...(opts.repo ? { repo: opts.repo } : {}),
+          ...(opts.lang ? { lang: opts.lang } : {}),
+          k: opts.k ?? 5,
+          includeNegatives: opts.negatives !== false,
+        },
+        storage.exemplars,
+        embedder,
+        null,
+      );
+      if (opts.json) {
+        process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+      } else {
+        const printHits = (label: string, hits: typeof result.positives) => {
+          if (hits.length === 0) return;
+          process.stdout.write(`\n── ${label} ──\n`);
+          for (const h of hits) {
+            process.stdout.write(`[${h.outcome}] ${h.taskContext} (${h.repo}, dist=${h.distance.toFixed(4)})\n`);
+            process.stdout.write(h.code.slice(0, 400) + (h.code.length > 400 ? "\n…" : "") + "\n\n");
+          }
+        };
+        printHits("Positives (pass / fix)", result.positives);
+        printHits("Negatives (fail / exhausted) — avoid these patterns", result.negatives);
+        if (result.positives.length === 0 && result.negatives.length === 0) {
+          process.stdout.write("(no exemplars found)\n");
+        }
+      }
+    } finally {
+      await storage.close();
+    }
+  });
+
+program
   .command("misses")
   .description("Show sessions the agent explicitly fetched but the hook never surfaced (recall miss log)")
   .option("-d, --days <n>", "lookback window", (v) => Number.parseInt(v, 10), 7)
