@@ -374,3 +374,81 @@ export function disconnectCodex(opts: DisconnectOptions): DisconnectReport {
 export function pluginScriptsDir(repoRoot: string): string {
   return resolve(repoRoot, "plugin", "scripts");
 }
+
+// Pre-rename name. Installs of 0.3.x and earlier registered the plugin,
+// marketplace, and MCP table under "nlm-memory-ts". `--repair` strips these.
+const LEGACY_NAME = "nlm-memory-ts";
+
+/**
+ * Remove a stale `nlm-memory-ts` MCP table (and any sentinel comment lines
+ * referencing it) from a config.toml string. Line-based and tolerant of the
+ * unknown legacy sentinel format: it drops the `[mcp_servers.nlm-memory-ts]`
+ * table (quoted or bare) up to the next table header, plus any `#`-comment
+ * line mentioning the legacy name. Pure — the caller owns IO.
+ */
+export function stripStaleCodexEntry(content: string): string {
+  const lines = content.split("\n");
+  const out: string[] = [];
+  let inStaleTable = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("#") && trimmed.includes(LEGACY_NAME)) continue;
+    if (trimmed === `[mcp_servers.${LEGACY_NAME}]` || trimmed === `[mcp_servers."${LEGACY_NAME}"]`) {
+      inStaleTable = true;
+      continue;
+    }
+    if (inStaleTable) {
+      if (trimmed.startsWith("[")) inStaleTable = false; // next table — keep it
+      else continue; // skip key=value / blank lines inside the stale table
+    }
+    out.push(line);
+  }
+  return out.join("\n");
+}
+
+export interface RepairReport {
+  readonly staleMcpRemovedFromConfig: boolean;
+  readonly oldPluginRemove: CodexCommandResult | null;
+  readonly oldMarketplaceRemove: CodexCommandResult | null;
+  readonly connect: ConnectReport;
+  readonly dryRun: boolean;
+}
+
+/**
+ * Convert a stale pre-rename Codex install (nlm-memory-ts) into the current
+ * pbmagnet4/nlm-memory wiring without hand-editing config.toml: strip the
+ * legacy MCP table, best-effort remove the legacy plugin + marketplace from
+ * codex's registry, then run the normal connect.
+ */
+export function repairCodex(opts: ConnectOptions, scriptsDir: string): RepairReport {
+  const configPath = codexConfigPath();
+
+  if (opts.dryRun) {
+    return {
+      staleMcpRemovedFromConfig: existsSync(configPath) && readFileSync(configPath, "utf8").includes(LEGACY_NAME),
+      oldPluginRemove: null,
+      oldMarketplaceRemove: null,
+      connect: connectCodex(opts, scriptsDir),
+      dryRun: true,
+    };
+  }
+
+  let staleMcpRemovedFromConfig = false;
+  if (existsSync(configPath)) {
+    const existing = readFileSync(configPath, "utf8");
+    const cleaned = stripStaleCodexEntry(existing);
+    if (cleaned !== existing) {
+      writeFileSync(configPath, cleaned, "utf8");
+      staleMcpRemovedFromConfig = true;
+    }
+  }
+
+  // Best-effort: the legacy entries may live only in config.toml, not in
+  // codex's registry, so a non-zero exit here is not a repair failure.
+  const oldPluginRemove = runCodex(["plugin", "remove", `${LEGACY_NAME}@${LEGACY_NAME}`]);
+  const oldMarketplaceRemove = runCodex(["plugin", "marketplace", "remove", LEGACY_NAME]);
+
+  const connect = connectCodex(opts, scriptsDir);
+
+  return { staleMcpRemovedFromConfig, oldPluginRemove, oldMarketplaceRemove, connect, dryRun: false };
+}

@@ -53,6 +53,7 @@ import {
   codexBinaryAvailable,
   connectCodex,
   disconnectCodex,
+  repairCodex,
   pluginScriptsDir,
 } from "../install/codex.js";
 import { connectClaudeCode, disconnectClaudeCode, installClaudeCodeHooks, mcpConfigPath } from "../install/claude-code.js";
@@ -1164,6 +1165,7 @@ connect
   .option("--source <source>", "marketplace source (owner/repo, git URL, or local path)", "pbmagnet4/nlm-memory")
   .option("--local", "shortcut for --source <repo-root>; use during dev")
   .option("--with-hooks", "additionally write absolute paths to ~/.codex/hooks.json (Codex Desktop fallback for openai/codex#16430)")
+  .option("--repair", "first strip a stale pre-rename nlm-memory-ts install (config block + plugin + marketplace), then connect")
   .option("--dry-run", "print what would happen without invoking codex")
   .action((opts) => {
     if (!opts.dryRun && !codexBinaryAvailable()) {
@@ -1171,12 +1173,22 @@ connect
       process.exit(1);
     }
     const source = opts.local ? REPO_ROOT : opts.source;
-    const report = connectCodex(
-      { source, withHooks: Boolean(opts.withHooks), dryRun: Boolean(opts.dryRun) },
-      pluginScriptsDir(REPO_ROOT),
-    );
+    const connectOpts = { source, withHooks: Boolean(opts.withHooks), dryRun: Boolean(opts.dryRun) };
+    const repair = opts.repair
+      ? repairCodex(connectOpts, pluginScriptsDir(REPO_ROOT))
+      : null;
+    const report = repair ? repair.connect : connectCodex(connectOpts, pluginScriptsDir(REPO_ROOT));
+
+    if (repair && !repair.dryRun) {
+      console.error(
+        repair.staleMcpRemovedFromConfig
+          ? "nlm connect codex --repair: stripped stale nlm-memory-ts MCP block from config.toml"
+          : "nlm connect codex --repair: no stale nlm-memory-ts MCP block found",
+      );
+    }
 
     if (report.dryRun) {
+      if (repair) console.error("  --repair: would strip any stale nlm-memory-ts block, then:");
       console.error("nlm connect codex (dry run):");
       console.error(`  codex plugin marketplace add ${report.source}`);
       console.error(`  codex plugin add ${report.pluginName}@${report.marketplaceName}`);
