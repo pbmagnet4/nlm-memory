@@ -27,7 +27,7 @@
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { homedir } from "node:os";
-import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, copyFileSync } from "node:fs";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { Command } from "commander";
 import pkg from "../../package.json" with { type: "json" };
@@ -41,7 +41,8 @@ import { SqliteStorage } from "../core/storage/sqlite-storage.js";
 import { PgStorage } from "../core/storage/pg-storage.js";
 import { PgSourceRegistry } from "../core/sources/source-registry.js";
 import { PgProviderRegistry } from "../core/providers/provider-registry.js";
-import { applyPendingRestore } from "../core/storage/db-restore.js";
+import { applyPendingRestore, stageRestore } from "../core/storage/db-restore.js";
+import { listBackupDates, resolveBackup, runRollingBackup } from "../core/storage/backup-rotation.js";
 import { createApp } from "../http/app.js";
 import { createMcpServer } from "../mcp/server.js";
 import { ClassifierBox, type ClassifierProvider } from "../llm/classifier-box.js";
@@ -1842,6 +1843,68 @@ program
     const warns = checks.filter((c) => c.status === "warn").length;
     console.log(anyFail ? "\nVERIFY: FAIL" : warns > 0 ? `\nVERIFY: PASS (${warns} warning(s))` : "\nVERIFY: PASS");
     if (anyFail) process.exit(1);
+  });
+
+program
+  .command("backup")
+  .description("Write a dated snapshot to ~/.nlm/backups/ and prune ones past the retention window")
+  .option("--retention <days>", "keep snapshots from the last N days", "7")
+  .action(async (opts) => {
+    const retention = Number.parseInt(opts.retention, 10);
+    if (!Number.isFinite(retention) || retention < 1) {
+      console.error("nlm backup: --retention must be a positive integer");
+      process.exit(1);
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const storage = await buildStorage(dbPath());
+    try {
+      if (storage instanceof PgStorage) {
+        console.error("nlm backup: only the SQLite backend is supported (Postgres: use pg_dump)");
+        process.exit(1);
+      }
+      const result = runRollingBackup((storage as SqliteStorage).rawDb(), dbPath(), today, retention);
+      console.log(`Wrote ${result.written} (${(result.bytes / 1_048_576).toFixed(1)} MiB)`);
+      if (result.pruned.length > 0) console.log(`Pruned ${result.pruned.length} snapshot(s) older than ${retention}d`);
+    } finally {
+      await storage.close();
+    }
+  });
+
+program
+  .command("restore")
+  .description("Stage a dated backup for restore on next daemon start (does not overwrite the live DB in place)")
+  .option("--from <date>", "backup date to restore (YYYY-MM-DD)")
+  .option("--list", "list available backup dates")
+  .action((opts) => {
+    if (opts.list || !opts.from) {
+      const dates = listBackupDates(dbPath());
+      if (dates.length === 0) {
+        console.log("No backups found. Run `nlm backup` (or wait for the daily job).");
+        return;
+      }
+      console.log("Available backups:");
+      for (const d of dates) console.log(`  ${d}`);
+      if (!opts.from) console.log("\nRestore one with: nlm restore --from <date>");
+      return;
+    }
+
+    const backup = resolveBackup(dbPath(), opts.from);
+    if (!backup) {
+      console.error(`nlm restore: no backup for ${opts.from}. Run \`nlm restore --list\` to see options.`);
+      process.exit(1);
+    }
+
+    // Copy (not move) the snapshot to a scratch candidate so the backup is
+    // preserved; stageRestore renames the candidate into the pending slot.
+    const candidate = `${dbPath()}.restore-candidate`;
+    copyFileSync(backup, candidate);
+    const validation = stageRestore(dbPath(), candidate);
+    if (!validation.ok) {
+      console.error(`nlm restore: ${opts.from} is not a usable backup: ${validation.error}`);
+      process.exit(1);
+    }
+    console.log(`Staged ${opts.from} (${validation.sessions} sessions, schema v${validation.schemaVersion}).`);
+    console.log("Run `nlm restart` to apply — the current DB is archived aside, not deleted.");
   });
 
 program.parseAsync().catch((e) => {
