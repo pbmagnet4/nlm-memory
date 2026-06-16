@@ -56,6 +56,9 @@ import {
   pluginScriptsDir,
 } from "../install/codex.js";
 import { connectClaudeCode, disconnectClaudeCode, installClaudeCodeHooks, mcpConfigPath } from "../install/claude-code.js";
+import { evaluateInstallHealth } from "../install/health.js";
+import type { InstallProbe } from "../install/health.js";
+import { codexConfigPath } from "../install/codex.js";
 import { hardenNlmDirPermissions } from "../install/nlm-dir-perms.js";
 import { ensureMcpToken } from "../install/ollama.js";
 import { connectCursor, disconnectCursor } from "../install/cursor.js";
@@ -1640,9 +1643,72 @@ program
     }
   });
 
+// Codex's managed MCP block opens with this sentinel (see src/install/codex.ts
+// MCP_SENTINEL_BEGIN). Used to detect whether `nlm connect codex` has run.
+const CODEX_MCP_SENTINEL = "# >>> nlm-memory (managed by nlm connect codex)";
+
+async function gatherInstallProbe(): Promise<InstallProbe> {
+  autoloadEnv();
+
+  let reachable = false;
+  let version: string | null = null;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 1_500);
+    const res = await fetch(`http://localhost:${port()}/api/health`, { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (res.ok) {
+      const body = (await res.json()) as { version?: string };
+      reachable = true;
+      version = typeof body.version === "string" ? body.version : null;
+    }
+  } catch {
+    // unreachable — reported as a FAIL by the evaluator
+  }
+
+  const mcpPath = mcpConfigPath();
+  let claudeMcp = false;
+  try {
+    if (existsSync(mcpPath)) {
+      const cfg = JSON.parse(readFileSync(mcpPath, "utf8")) as { mcpServers?: Record<string, unknown> };
+      claudeMcp = Boolean(cfg.mcpServers && "nlm-memory" in cfg.mcpServers);
+    }
+  } catch {
+    // malformed config → treat as unconfigured (connect will rewrite it)
+  }
+
+  const codexPath = codexConfigPath();
+  let codexPresent = false;
+  let codexMcp = false;
+  let codexStale = false;
+  if (existsSync(codexPath)) {
+    codexPresent = true;
+    const txt = readFileSync(codexPath, "utf8");
+    codexMcp = txt.includes(CODEX_MCP_SENTINEL);
+    codexStale = txt.includes("nlm-memory-ts");
+  }
+
+  const envPath = join(homedir(), ".nlm", ".env");
+  return {
+    daemon: { reachable, version, expectedVersion: pkg.version },
+    env: {
+      path: envPath,
+      exists: existsSync(envPath),
+      hasMcpToken: Boolean(process.env["NLM_MCP_TOKEN"]),
+    },
+    claudeCode: { configPath: mcpPath, mcpConfigured: claudeMcp },
+    codex: {
+      configPath: codexPath,
+      configPresent: codexPresent,
+      mcpConfigured: codexMcp,
+      staleNlmMemoryTs: codexStale,
+    },
+  };
+}
+
 program
   .command("doctor")
-  .description("Check database integrity invariants and optionally repair safe violations")
+  .description("Check database integrity invariants and install/runtime health, optionally repair safe violations")
   .option("--fix", "repair mechanically safe violations: delete self-loop edges (I1), restore orphaned superseded/replaced sessions to closed (I2)")
   .action(async (opts) => {
     const storage = await buildStorage(dbPath());
@@ -1677,6 +1743,7 @@ program
     const ALL_CHECKS = ["I1", "I2", "I3", "I4", "I5a", "I5b", "I6"];
     const byId = new Map(violations.map((v) => [v.id, v]));
     let anyFail = false;
+    console.log("Database integrity:");
     for (const id of ALL_CHECKS) {
       const v = byId.get(id);
       if (v) {
@@ -1686,6 +1753,15 @@ program
       } else {
         console.log(`PASS ${id}`);
       }
+    }
+
+    console.log("\nInstall & runtime health:");
+    const health = evaluateInstallHealth(await gatherInstallProbe());
+    for (const c of health) {
+      if (c.status === "fail") anyFail = true;
+      const label = c.status === "ok" ? "PASS" : c.status === "warn" ? "WARN" : "FAIL";
+      const fix = c.fix ? `\n  → fix: ${c.fix}` : "";
+      console.log(`${label} ${c.id}  ${c.detail}${fix}`);
     }
 
     if (anyFail) process.exit(1);
