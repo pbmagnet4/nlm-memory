@@ -1216,6 +1216,8 @@ connect
     console.error(`nlm: connected to Codex via marketplace ${report.marketplaceName}, plugin ${report.pluginName}.`);
     if (report.mcpServerWritten) {
       console.error(`  Wrote [mcp_servers.nlm-memory] to ${report.mcpServerWritten}`);
+    } else if (report.mcpServerAlreadyPresent) {
+      console.error("  Left your existing [mcp_servers.nlm-memory] block in place (not overwriting it)");
     }
     if (report.legacyHooksWritten) {
       console.error(`  Wrote hooks.json fallback to ${report.legacyHooksWritten}`);
@@ -1656,10 +1658,6 @@ program
     }
   });
 
-// Codex's managed MCP block opens with this sentinel (see src/install/codex.ts
-// MCP_SENTINEL_BEGIN). Used to detect whether `nlm connect codex` has run.
-const CODEX_MCP_SENTINEL = "# >>> nlm-memory (managed by nlm connect codex)";
-
 async function gatherInstallProbe(): Promise<InstallProbe> {
   autoloadEnv();
 
@@ -1697,8 +1695,12 @@ async function gatherInstallProbe(): Promise<InstallProbe> {
   if (existsSync(codexPath)) {
     codexPresent = true;
     const txt = readFileSync(codexPath, "utf8");
-    codexMcp = txt.includes(CODEX_MCP_SENTINEL);
-    codexStale = txt.includes("nlm-memory-ts");
+    // Recognize the MCP table whether it's our managed (sentineled) block or a
+    // hand-authored bare one — both wire the server.
+    codexMcp = txt.split("\n").some((l) => l.trim() === "[mcp_servers.nlm-memory]");
+    // Match the marketplace suffix, not the bare name — a legit local project
+    // path like [projects."…/nlm-memory-ts"] must not trip the stale check.
+    codexStale = txt.includes("@nlm-memory-ts");
   }
 
   const envPath = join(homedir(), ".nlm", ".env");
