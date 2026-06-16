@@ -72,6 +72,17 @@ export class PgFactStore implements FactStore {
     return result.rows[0] ? rowToFact(result.rows[0]) : null;
   }
 
+  async getByIds(ids: ReadonlyArray<string>): Promise<ReadonlyArray<Fact>> {
+    if (ids.length === 0) return [];
+    const result = await this.pool.query<FactRow>(
+      `SELECT id, kind, subject, predicate, value, source_session_id,
+              source_quote, created_at, superseded_by, confidence
+       FROM facts WHERE id = ANY($1)`,
+      [ids as string[]],
+    );
+    return result.rows.map(rowToFact);
+  }
+
   async findCurrent(subject: string, predicate: string): Promise<Fact | null> {
     const result = await this.pool.query<FactRow>(
       `SELECT id, kind, subject, predicate, value, source_session_id,

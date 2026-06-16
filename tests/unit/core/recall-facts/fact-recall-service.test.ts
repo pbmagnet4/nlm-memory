@@ -25,6 +25,10 @@ class InMemoryFactStore implements FactStore {
   async getById(id: string): Promise<Fact | null> {
     return this.facts.find((f) => f.id === id) ?? null;
   }
+  async getByIds(ids: ReadonlyArray<string>): Promise<ReadonlyArray<Fact>> {
+    const set = new Set(ids);
+    return this.facts.filter((f) => set.has(f.id));
+  }
   async findCurrent(subject: string, predicate: string): Promise<Fact | null> {
     return this.facts.find(
       (f) =>
@@ -244,6 +248,42 @@ describe("FactRecallService.search (semantic)", () => {
     const result = await svc.search({ query: "anything", mode: "semantic" });
     expect(result.modeUnavailable).toBe("ollama_unreachable");
     expect(result.total).toBe(0);
+  });
+
+  it("returns a semantic neighbour that falls outside the keyword candidate window", async () => {
+    // Simulates the real recency-capped listForRecall: the gold fact is NOT in
+    // the keyword candidate window, but IS the top vector neighbour and is
+    // resolvable via getByIds. Before the coverage fix it was silently dropped.
+    const old = makeFact({
+      id: "f_old_decision",
+      kind: "decision",
+      subject: "legacy-service",
+      predicate: "datastore",
+      value: "Postgres",
+      confidence: 0.9,
+    });
+    const store = new InMemoryFactStore([...corpus, old], [{ factId: "f_old_decision", distance: 0.1 }]);
+    // Force the window to exclude the old fact (only the original corpus is "recent").
+    store.listForRecall = async () => corpus;
+    const svc = new FactRecallService({ factStore: store, llm: new StubEmbedder() });
+    const result = await svc.search({ query: "legacy datastore choice", mode: "semantic" });
+    expect(result.results.map((r) => r.id)).toContain("f_old_decision");
+  });
+
+  it("excludes a semantic neighbour that fails the confidence floor when fetched outside the window", async () => {
+    const lowConf = makeFact({
+      id: "f_old_lowconf",
+      kind: "decision",
+      subject: "legacy-service",
+      predicate: "cache",
+      value: "Redis",
+      confidence: 0.4,
+    });
+    const store = new InMemoryFactStore([...corpus, lowConf], [{ factId: "f_old_lowconf", distance: 0.1 }]);
+    store.listForRecall = async () => corpus;
+    const svc = new FactRecallService({ factStore: store, llm: new StubEmbedder() });
+    const result = await svc.search({ query: "legacy cache choice", mode: "semantic" });
+    expect(result.results.map((r) => r.id)).not.toContain("f_old_lowconf");
   });
 });
 

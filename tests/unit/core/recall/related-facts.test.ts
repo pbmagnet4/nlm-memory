@@ -48,6 +48,7 @@ class ScriptedFactStore implements FactStore {
   async insert() {}
   async insertMany() {}
   async getById() { return null; }
+  async getByIds() { return []; }
   async findCurrent() { return null; }
   async list(query: FactQuery) {
     return this.bySubject.get(query.subject) ?? [];
@@ -171,6 +172,7 @@ describe("pickRelatedFacts (Spec G.2)", () => {
       async insert() {}
       async insertMany() {}
       async getById() { return null; }
+      async getByIds() { return []; }
       async findCurrent() { return null; }
       async list(): Promise<Fact[]> { throw new Error("db down"); }
       async listBySession() { return []; }

@@ -94,6 +94,7 @@ export class PgTxBoundFactStore implements FactStore {
   }
 
   getById(_id: string): Promise<Fact | null> { return noRead("FactStore.getById"); }
+  getByIds(_ids: ReadonlyArray<string>): Promise<ReadonlyArray<Fact>> { return noRead("FactStore.getByIds"); }
   findCurrent(_s: string, _p: string): Promise<Fact | null> { return noRead("FactStore.findCurrent"); }
   list(_q: FactQuery): Promise<ReadonlyArray<Fact>> { return noRead("FactStore.list"); }
   listBySession(_id: string): Promise<ReadonlyArray<Fact>> { return noRead("FactStore.listBySession"); }
