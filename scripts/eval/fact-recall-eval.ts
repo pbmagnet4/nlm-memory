@@ -18,7 +18,16 @@
  *        [--modes=keyword,semantic,hybrid] [--db=<path>] [--json=<out>]
  */
 
-import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,12 +39,23 @@ import type { Fact, RecallMode } from "@shared/types.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 
+type GoldMode = "topic" | "paraphrase";
+
 interface Args {
   limit: number;
   probe: number;
   modes: RecallMode[];
   dbPath: string;
   jsonOut: string | null;
+  gold: GoldMode;
+  refresh: boolean;
+}
+
+interface GoldQuery {
+  goldId: string;
+  query: string;
+  subject: string;
+  predicate: string;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -50,7 +70,91 @@ function parseArgs(argv: string[]): Args {
     modes: modesRaw.split(",").map((m) => m.trim() as RecallMode),
     dbPath: get("db") ?? join(homedir(), ".nlm", "canonical.sqlite"),
     jsonOut: get("json") ?? null,
+    gold: (get("gold") ?? "topic") as GoldMode,
+    refresh: argv.includes("--refresh"),
   };
+}
+
+/**
+ * Topic gold: the query is the fact's own subject+predicate (the value, the
+ * answer, is held out). Favours semantic recall — see report caveat.
+ */
+function topicGold(facts: ReadonlyArray<Fact>): GoldQuery[] {
+  return facts.map((f) => ({
+    goldId: f.id,
+    query: `${f.subject} ${f.predicate}`,
+    subject: f.subject,
+    predicate: f.predicate,
+  }));
+}
+
+const PARAPHRASE_CACHE = join(homedir(), ".cache", "nlm-fact-recall", "paraphrase-gold.jsonl");
+
+/**
+ * Paraphrase gold: an LLM writes the natural question a user would ask to
+ * recall each fact, with the answer (value) held out. Harder and more
+ * realistic than topic gold. Cached by factId (gitignored — may contain
+ * project/client names) so re-runs are free.
+ */
+async function paraphraseGold(
+  facts: ReadonlyArray<Fact>,
+  ollamaUrl: string,
+  model: string,
+  refresh: boolean,
+): Promise<GoldQuery[]> {
+  mkdirSync(dirname(PARAPHRASE_CACHE), { recursive: true });
+  const cache = new Map<string, string>();
+  if (!refresh && existsSync(PARAPHRASE_CACHE)) {
+    for (const line of readFileSync(PARAPHRASE_CACHE, "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      const row = JSON.parse(line) as { factId: string; query: string };
+      cache.set(row.factId, row.query);
+    }
+  }
+
+  const out: GoldQuery[] = [];
+  let generated = 0;
+  for (const f of facts) {
+    let query = cache.get(f.id);
+    if (query === undefined) {
+      query = await generateQuestion(f, ollamaUrl, model);
+      appendFileSync(PARAPHRASE_CACHE, JSON.stringify({ factId: f.id, query }) + "\n");
+      generated += 1;
+    }
+    out.push({ goldId: f.id, query, subject: f.subject, predicate: f.predicate });
+  }
+  if (generated > 0) console.error(`fact-recall-eval: generated ${generated} new paraphrase queries`);
+  return out;
+}
+
+async function generateQuestion(fact: Fact, ollamaUrl: string, model: string): Promise<string> {
+  const res = await fetch(`${ollamaUrl}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model,
+      stream: false,
+      think: false,
+      format: { type: "object", properties: { question: { type: "string" } }, required: ["question"] },
+      options: { temperature: 0.3 },
+      messages: [
+        {
+          role: "system",
+          content:
+            "You write the natural question a user would later ask to recall a past decision. " +
+            "Output JSON {\"question\": \"...\"}. The question must be about the topic but MUST NOT " +
+            "contain or paraphrase the answer itself — recall is being tested.",
+        },
+        {
+          role: "user",
+          content: `Topic: ${fact.subject}\nAspect: ${fact.predicate}\nAnswer (do NOT include): ${fact.value}`,
+        },
+      ],
+    }),
+  });
+  const data = (await res.json()) as { message?: { content?: string } };
+  const parsed = JSON.parse(data.message?.content ?? "{}") as { question?: string };
+  return (parsed.question ?? `${fact.subject} ${fact.predicate}`).trim();
 }
 
 /** Copy the corpus (+ WAL/SHM if present) into a throwaway sandbox dir. */
@@ -113,15 +217,13 @@ async function main(): Promise<void> {
   });
   const gold = sample(pool, args.limit);
   console.error(
-    `fact-recall-eval: ${pool.length} current decision facts; sampled ${gold.length} gold queries`,
+    `fact-recall-eval: ${pool.length} current decision facts; sampled ${gold.length} gold (mode=${args.gold})`,
   );
 
-  const queries = gold.map((f) => ({
-    goldId: f.id,
-    query: `${f.subject} ${f.predicate}`,
-    subject: f.subject,
-    predicate: f.predicate,
-  }));
+  const queries =
+    args.gold === "paraphrase"
+      ? await paraphraseGold(gold, "http://localhost:11434", "qwen3.5:4b", args.refresh)
+      : topicGold(gold);
 
   const allMetrics: ModeMetrics[] = [];
   for (const mode of args.modes) {

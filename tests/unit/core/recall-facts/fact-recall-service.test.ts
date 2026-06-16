@@ -288,25 +288,41 @@ describe("FactRecallService.search (semantic)", () => {
 });
 
 describe("FactRecallService.search (hybrid)", () => {
-  it("merges keyword + semantic scores with 0.4/0.6 weights", async () => {
-    const neighbors: FactSemanticNeighbor[] = [
-      { factId: "f_endpoint", distance: 0.1 },
-      { factId: "f_hono", distance: 1.4 },
-    ];
+  it("ranks semantic hits above keyword-only backfill and exposes both subscores", async () => {
+    // f_endpoint is a strong semantic neighbour but does NOT keyword-match
+    // "Hono"; f_hono keyword-matches but is a weak semantic neighbour. Under
+    // semantic-primary merge, the semantic hits occupy the upper band and the
+    // keyword-only hit backfills below them.
+    const neighbors: FactSemanticNeighbor[] = [{ factId: "f_endpoint", distance: 0.1 }];
     const svc = new FactRecallService({
       factStore: new InMemoryFactStore(corpus, neighbors),
       llm: new StubEmbedder(),
     });
     const result = await svc.search({ query: "Hono", mode: "hybrid" });
-    // Result should include both. Top result depends on weights — keyword
-    // scores "Hono" strongly for f_hono; semantic scores f_endpoint strongly.
     const ids = result.results.map((r) => r.id);
-    expect(ids).toContain("f_hono");
-    expect(ids).toContain("f_endpoint");
-    // Hybrid hits expose both subscores.
+    expect(ids).toContain("f_endpoint"); // semantic
+    expect(ids).toContain("f_hono"); // keyword-only backfill
+    // Semantic hit ranks above the keyword-only backfill.
+    expect(ids.indexOf("f_endpoint")).toBeLessThan(ids.indexOf("f_hono"));
+    const semHit = result.results.find((r) => r.id === "f_endpoint")!;
+    const kwHit = result.results.find((r) => r.id === "f_hono")!;
+    expect(semHit.matchScore).toBeGreaterThan(0.5); // strong semantic neighbour
+    expect(kwHit.matchScore).toBeLessThanOrEqual(0.5); // backfill band ceiling
+    expect(kwHit.semanticScore).toBe(0);
     for (const hit of result.results) {
       expect(hit.keywordScore).toBeDefined();
       expect(hit.semanticScore).toBeDefined();
     }
+  });
+
+  it("degrades to keyword-only when the embedder is unreachable", async () => {
+    const svc = new FactRecallService({
+      factStore: new InMemoryFactStore(corpus),
+      llm: new StubEmbedder(true),
+    });
+    const result = await svc.search({ query: "Hono", mode: "hybrid" });
+    expect(result.modeUnavailable).toBe("ollama_unreachable");
+    // Keyword leg still returns the match — recall is not empty.
+    expect(result.results.map((r) => r.id)).toContain("f_hono");
   });
 });

@@ -73,19 +73,55 @@ Decouple semantic recall from the keyword candidate window
 Semantic R@5 15% → **98.8%**; all 80 facts now reachable. Keyword unchanged
 (still windowed — expected; keyword-only is the degraded fallback mode).
 
-## Follow-up finding (not yet fixed)
+## Part 2 — semantic-primary hybrid (default-mode fix)
 
-Post-fix, **pure semantic (98.8%) now beats hybrid (87.5%)** — the MCP default
-is hybrid. Cause: the keyword leg is still recency-windowed, so for corpus-wide
-queries it contributes high-normalised scores for recent-but-wrong facts
-(`kwNorm` up to 1.0 → `0.4` combined) that dilute the correct semantic-only
-match (`0.6 * semNorm`). Options: (a) make the keyword candidate set
-corpus-wide via an FTS index rather than recency cap, or (b) down-weight or
-skip the keyword leg when it is window-bounded and the query is free-text.
-Filed as the next #277 increment.
+The coverage fix surfaced a second problem: post-fix, **pure semantic beat
+hybrid** — and hybrid is the MCP default. The equal-weight blend
+(`0.6·sem + 0.4·kw`) let high keyword scores on recent-but-wrong facts dilute
+strong semantic hits.
+
+**Why facts differ from sessions:** the #307/#308 session-recall work found
+keyword/BM25 is the *strong* leg and RRF/semantic blends regressed. Facts invert
+this — they are short `(subject, predicate, value)` triples, so keyword has few
+tokens to match and semantic over the fact embedding dominates. The right blend
+is therefore domain-specific.
+
+**Fix:** `mergeHybrid` is now **semantic-primary** — semantic hits occupy the
+upper score band `[0.5, 1.0]` (ranked by similarity); keyword-only hits (facts
+semantic never surfaced) backfill `[0, 0.5)`. Co-occurrence is not rewarded
+(that was the dilution source). When the embedder is down, `semHits` is empty
+and hybrid degrades to pure keyword — the graceful-degradation contract holds.
+
+### Hybrid before vs after the merge fix
+
+| Gold set | metric | weighted blend | semantic-primary | pure semantic (ref) |
+|----------|--------|----------------|------------------|---------------------|
+| paraphrase | R@5 | 73.8% | **85.0%** | 87.5% |
+| paraphrase | R@1 | 26.3% | **36.3%** | 48.8% |
+| topic | R@5 | 87.5% | **92.5%** | 98.8% |
+| topic | R@1 | 47.5% | **47.5%** | 57.5% |
+
+Hybrid (the default) now tracks semantic closely and keeps the keyword fallback.
+
+**Residual gap (documented, not chased):** hybrid R@1 still trails semantic
+because `applyCorroboration` multiplies matchScore by up to 2×, which can lift a
+highly-corroborated keyword-only backfill across the 0.5 band boundary and ahead
+of the correct semantic top hit. Eliminating it means banding *after* the
+corroboration boost rather than before. Low value vs complexity at current
+quality; left as a future refinement.
+
+## Gold sets
+
+- **topic** (`--gold=topic`, default): query = `subject predicate`, value held
+  out. Deterministic, no LLM. Favours semantic.
+- **paraphrase** (`--gold=paraphrase`): an LLM (qwen3.5:4b) writes the natural
+  question a user would ask, value held out. Harder, realistic. Cached at
+  `~/.cache/nlm-fact-recall/paraphrase-gold.jsonl` (gitignored — may contain
+  project/client names).
 
 ## Reproduce
 
 ```
-npx tsx scripts/eval/fact-recall-eval.ts --limit=80 --probe=50 --json=/tmp/out.json
+npx tsx scripts/eval/fact-recall-eval.ts --gold=topic --limit=80 --probe=50
+npx tsx scripts/eval/fact-recall-eval.ts --gold=paraphrase --limit=80 --probe=50
 ```

@@ -37,8 +37,6 @@ const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 100;
 const DEFAULT_MIN_CONFIDENCE = 0.6;
 const STORAGE_FETCH_CAP = 500;
-const HYBRID_KW_WEIGHT = 0.4;
-const HYBRID_SEM_WEIGHT = 0.6;
 const SEMANTIC_OVERFETCH = 3;
 const DEFAULT_BOOST_CAP = 2.0;
 
@@ -309,40 +307,56 @@ function scoreFact(
   return { score, matchedIn };
 }
 
+/**
+ * Semantic-primary hybrid merge.
+ *
+ * For short fact triples, semantic similarity is the dominant quality signal
+ * and the keyword leg is both recency-windowed (see listForRecall) and noisy
+ * (few tokens to match on). An equal-weight blend let high keyword scores on
+ * recent-but-wrong facts dilute strong semantic hits — measured ~14pts of R@5
+ * lost vs pure semantic on the paraphrase gold set (2026-06-16 report).
+ *
+ * So semantic hits occupy the upper score band [0.5, 1.0] (ranked by
+ * similarity); keyword-only hits — facts semantic never surfaced — backfill the
+ * lower band [0, 0.5). Co-occurrence isn't rewarded (that was the dilution
+ * source). When semantic is unavailable (Ollama down) semHits is empty and this
+ * degrades to pure keyword, preserving the graceful-degradation contract.
+ */
 function mergeHybrid(
   kwHits: ReadonlyArray<KeywordHit>,
   semHits: ReadonlyArray<SemanticHit>,
 ): ReadonlyArray<FactHit> {
-  const maxKw = Math.max(1, ...kwHits.map((h) => h.score));
   const maxSem = Math.max(1, ...semHits.map((h) => h.similarity));
-
+  const maxKw = Math.max(1, ...kwHits.map((h) => h.score));
   const kwMap = new Map<string, KeywordHit>(kwHits.map((h) => [h.fact.id, h]));
-  const semMap = new Map<string, SemanticHit>(semHits.map((h) => [h.fact.id, h]));
-  const allIds = new Set<string>([...kwMap.keys(), ...semMap.keys()]);
 
   const rows: FactHit[] = [];
-  for (const id of allIds) {
-    const kw = kwMap.get(id);
-    // Both hit shapes carry the resolved fact; semantic hits may reference
-    // facts outside the keyword candidate window, so resolve from the hits.
-    const fact = kw?.fact ?? semMap.get(id)?.fact;
-    if (!fact) continue;
-    const sem = semMap.get(id);
-    const kwNorm = kw ? kw.score / maxKw : 0;
-    const semNorm = sem ? sem.similarity / maxSem : 0;
-    const combined = round4(HYBRID_SEM_WEIGHT * semNorm + HYBRID_KW_WEIGHT * kwNorm);
-    const matchedIn = uniqueFields(
-      kw?.matchedIn ?? [],
-      sem ? (["semantic"] as FactMatchField[]) : [],
-    );
+  const seen = new Set<string>();
+
+  for (const sem of semHits) {
+    const semNorm = sem.similarity / maxSem;
+    const kw = kwMap.get(sem.fact.id);
     rows.push({
-      ...fact,
-      matchScore: combined,
-      matchedIn,
-      keywordScore: round4(kwNorm),
+      ...sem.fact,
+      matchScore: round4(0.5 + 0.5 * semNorm),
+      matchedIn: uniqueFields(kw?.matchedIn ?? [], ["semantic"]),
+      keywordScore: round4(kw ? kw.score / maxKw : 0),
       semanticScore: round4(semNorm),
     });
+    seen.add(sem.fact.id);
   }
+
+  for (const kw of kwHits) {
+    if (seen.has(kw.fact.id)) continue;
+    rows.push({
+      ...kw.fact,
+      matchScore: round4(0.5 * (kw.score / maxKw)),
+      matchedIn: kw.matchedIn,
+      keywordScore: round4(kw.score / maxKw),
+      semanticScore: 0,
+    });
+  }
+
   rows.sort((a, b) => b.matchScore - a.matchScore);
   return rows;
 }
