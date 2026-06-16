@@ -25,6 +25,7 @@ import type {
 import type { ClassifyResult, EmbedResult, LLMClient } from "../../src/ports/llm-client.js";
 import type { Fact } from "../../src/shared/types.js";
 import type { IngestRecord } from "../../src/core/storage/sqlite-session-store.js";
+import { ingestSession } from "../../src/core/ingest/ingest-session.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
 const MIGRATIONS_DIR = join(
@@ -224,5 +225,68 @@ describe.skipIf(!PG_TEST_URL)("ScanScheduler tick over PG", () => {
       "SELECT session_id FROM adapter_state WHERE source_path = $1", [fixturePath],
     );
     expect(state.rows[0]?.session_id).toBe("sess_tick_1");
+  });
+});
+
+// Drives the webhook push path — ingestSession() — over PG. Proves the
+// `deps.store instanceof PgSessionStore` branch in ingest-session.ts runs at
+// runtime and atomically persists session + facts (NLM #324).
+describe.skipIf(!PG_TEST_URL)("ingestSession webhook path over PG", () => {
+  let storage: PgStorage;
+  let pool: Pool;
+
+  beforeAll(async () => {
+    storage = PgStorage.create({ connectionString: PG_TEST_URL!, migrationsDir: MIGRATIONS_DIR });
+    await storage.init();
+    pool = storage.pgPool();
+  });
+  afterAll(async () => { await storage.close(); });
+  beforeEach(async () => { await pool.query(TRUNCATE_SQL); });
+
+  it("classifies, persists session + facts through the PgSessionStore branch", async () => {
+    const result = await ingestSession(
+      {
+        id: "webhook_pg_1",
+        runtime: "webhook",
+        text: "session body text",
+        startedAt: "2026-05-19T10:00:00Z",
+        sourceId: 1,
+      },
+      {
+        classifier: new FactClassifier(),
+        embedder: new StubEmbedder(),
+        store: storage.sessions,
+        factStore: storage.facts,
+        log: () => {},
+      },
+    );
+
+    expect(result.status).toBe("ingested");
+    expect(result.id).toBe("webhook_pg_1");
+
+    const session = await storage.sessions.getById("webhook_pg_1");
+    expect(session?.label).toBe("Stub label");
+    expect(session?.transcriptKind).toBe("webhook");
+    const current = await storage.facts.findCurrent("PolySignal", "framework");
+    expect(current?.value).toBe("Hono");
+    expect(current?.sourceSessionId).toBe("webhook_pg_1");
+  });
+
+  it("short-circuits below the confidence floor without persisting", async () => {
+    class LowConfidence implements LLMClient {
+      async embed(): Promise<never> { throw new Error("not used"); }
+      async rewriteForRecall(): Promise<never> { throw new Error("not used"); }
+      async classify(): Promise<ClassifyResult> {
+        return { label: "x", summary: "x", entities: [], decisions: [], open: [], confidence: 0.1, facts: [] };
+      }
+    }
+
+    const result = await ingestSession(
+      { id: "webhook_pg_low", runtime: "webhook", text: "noise", startedAt: "2026-05-19T10:00:00Z" },
+      { classifier: new LowConfidence(), embedder: new StubEmbedder(), store: storage.sessions, factStore: storage.facts, log: () => {} },
+    );
+
+    expect(result.status).toBe("low_confidence");
+    expect(await storage.sessions.getById("webhook_pg_low")).toBeNull();
   });
 });
