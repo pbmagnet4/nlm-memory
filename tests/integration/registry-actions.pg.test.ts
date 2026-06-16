@@ -196,6 +196,9 @@ describe.skipIf(!PG_TEST_URL)("data-management routes (PG backend)", () => {
   let app: Hono;
 
   beforeAll(async () => {
+    // The backup/restore routes gate on NLM_MCP_TOKEN before the PG guard; clear
+    // it so the 501 assertions don't get pre-empted by a 401 in a token'd env.
+    delete process.env["NLM_MCP_TOKEN"];
     storage = PgStorage.create({ connectionString: PG_TEST_URL!, migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     store = storage.sessions;
