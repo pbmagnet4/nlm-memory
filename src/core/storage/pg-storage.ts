@@ -100,8 +100,11 @@ export class PgStorage implements Storage {
   }
 
   /**
-   * @deprecated Escape hatch for callers not yet ported to the Storage
-   * interface. Tracked for removal in #215a (PG branch).
+   * Raw pool accessor. The #215a escape-hatch callers (registries, actions,
+   * scheduler, ingest, backfill) have all been ported to the Storage port /
+   * adapter methods. The one remaining caller is `nlm check-invariants`, which
+   * deliberately runs backend-specific invariant SQL through `runChecksOnPg` /
+   * `applyFixOnPg` — a dual-backend diagnostic API, not an un-ported leak.
    */
   pgPool(): Pool {
     return this._pool;

@@ -116,6 +116,23 @@ export interface RecentMarker {
   createdAt: string;
 }
 
+/** Filter for the fact-backfill candidate query (backfill-facts.ts). */
+export interface BackfillCandidateFilter {
+  /** Only sessions with started_at strictly before this cutoff (avoid racing live ingest). */
+  readonly cutoff: string;
+  /** Resume marker: only sessions with id lexicographically greater than this. */
+  readonly from?: string;
+  /** When false, exclude sessions that already have any facts. */
+  readonly reprocess: boolean;
+}
+
+/** One eligible session for fact backfill. */
+export interface BackfillCandidate {
+  readonly id: string;
+  readonly startedAt: string;
+  readonly body: string | null;
+}
+
 export class SqliteSessionStore implements SessionStore {
   private readonly db: Database.Database;
 
@@ -415,6 +432,30 @@ export class SqliteSessionStore implements SessionStore {
     db.prepare(
       "INSERT INTO session_chunk_map (chunk_id, session_id, chunk_idx) VALUES (?, ?, ?)",
     ).run(chunkId, sessionId, chunkIdx);
+  }
+
+  /**
+   * Eligible sessions for fact backfill, ordered (started_at, id) ascending.
+   * Non-empty body required (the classifier needs transcript text). When
+   * `reprocess` is false, sessions that already have facts are excluded.
+   */
+  async listBackfillCandidates(filter: BackfillCandidateFilter): Promise<BackfillCandidate[]> {
+    const sql = filter.reprocess
+      ? `SELECT id, started_at, body FROM sessions
+         WHERE started_at < ? AND body IS NOT NULL AND length(body) > 0
+           ${filter.from ? "AND id > ?" : ""}
+         ORDER BY started_at ASC, id ASC`
+      : `SELECT s.id, s.started_at, s.body FROM sessions s
+         WHERE s.started_at < ? AND s.body IS NOT NULL AND length(s.body) > 0
+           AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.source_session_id = s.id)
+           ${filter.from ? "AND s.id > ?" : ""}
+         ORDER BY s.started_at ASC, s.id ASC`;
+    const rows = filter.from
+      ? this.db.prepare<[string, string], { id: string; started_at: string; body: string | null }>(sql)
+          .all(filter.cutoff, filter.from)
+      : this.db.prepare<[string], { id: string; started_at: string; body: string | null }>(sql)
+          .all(filter.cutoff);
+    return rows.map((r) => ({ id: r.id, startedAt: r.started_at, body: r.body }));
   }
 
   /**

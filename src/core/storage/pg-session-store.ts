@@ -15,7 +15,7 @@ import type {
   SessionStore,
 } from "@ports/session-store.js";
 import type { Fact, Session, SessionStatus } from "@shared/types.js";
-import type { IngestRecord, RecentMarker, RecentWrite, Supersedes } from "./sqlite-session-store.js";
+import type { BackfillCandidate, BackfillCandidateFilter, IngestRecord, RecentMarker, RecentWrite, Supersedes } from "./sqlite-session-store.js";
 import type { PgFactStore } from "./pg-fact-store.js";
 import { chunkSessionText } from "@core/embedding/chunk-body.js";
 
@@ -490,6 +490,84 @@ export class PgSessionStore implements SessionStore {
         "INSERT INTO markers (session_id, kind, text, position) VALUES ($1, 'open', $2, $3)",
         [session.id, session.open[i], i],
       );
+    }
+  }
+
+  /** PG counterpart of SqliteSessionStore.listBackfillCandidates. */
+  async listBackfillCandidates(filter: BackfillCandidateFilter): Promise<BackfillCandidate[]> {
+    const params: unknown[] = [filter.cutoff];
+    let fromClause = "";
+    if (filter.from) { params.push(filter.from); fromClause = `AND s.id > $${params.length}`; }
+    const existingFactsClause = filter.reprocess
+      ? ""
+      : "AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.source_session_id = s.id)";
+    const result = await this.pool.query<{ id: string; started_at: string; body: string | null }>(
+      `SELECT s.id, s.started_at, s.body FROM sessions s
+       WHERE s.started_at < $1 AND s.body IS NOT NULL AND length(s.body) > 0
+         ${existingFactsClause}
+         ${fromClause}
+       ORDER BY s.started_at ASC, s.id ASC`,
+      params,
+    );
+    return result.rows.map((r) => ({ id: r.id, startedAt: r.started_at, body: r.body }));
+  }
+
+  /** PG counterpart of SqliteSessionStore.insertFactsForSession — writes facts
+   *  for an EXISTING session row (deterministic supersedence + best-effort
+   *  embeddings) in one transaction. Used by the fact backfill. */
+  async insertFactsForSession(
+    sessionId: string,
+    factStore: PgFactStore,
+    facts: ReadonlyArray<Fact>,
+    embedder: import("@ports/llm-client.js").LLMClient | null = null,
+  ): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("DELETE FROM facts WHERE source_session_id = $1", [sessionId]);
+      if (facts.length > 0) {
+        for (const f of facts) {
+          await client.query(
+            `INSERT INTO facts (id, kind, subject, predicate, value, source_session_id,
+               source_quote, created_at, superseded_by, confidence)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+            [f.id, f.kind, f.subject, f.predicate, f.value, f.sourceSessionId,
+             f.sourceQuote, f.createdAt, f.supersededBy, f.confidence],
+          );
+        }
+        const values = facts.map((_, i) => `($${i * 3 + 1}, $${i * 3 + 2}, $${i * 3 + 3})`).join(", ");
+        const supersedeParams: unknown[] = [];
+        for (const f of facts) supersedeParams.push(f.subject, f.predicate, f.id);
+        await client.query(
+          `UPDATE facts AS old
+           SET superseded_by = new_f.new_id
+           FROM (VALUES ${values}) AS new_f(subject, predicate, new_id)
+           WHERE old.subject = new_f.subject
+             AND old.predicate = new_f.predicate
+             AND old.superseded_by IS NULL
+             AND old.id != new_f.new_id`,
+          supersedeParams,
+        );
+      }
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+    if (embedder) {
+      for (const fact of facts) {
+        const factText = `${fact.subject} ${fact.predicate} ${fact.value}`.trim();
+        if (!factText) continue;
+        try {
+          const { vector } = await embedder.embed(factText, "document");
+          await factStore.upsertEmbedding(fact.id, vector);
+        } catch {
+          // Best-effort; a per-fact embed failure leaves the fact current but
+          // semantically unreachable until a future re-ingest.
+        }
+      }
     }
   }
 

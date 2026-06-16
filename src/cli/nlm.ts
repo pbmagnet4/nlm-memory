@@ -629,9 +629,8 @@ program
     const { storage, store, facts, embedder, classifier } = await buildStack();
     try {
       const report = await backfillFacts({
-        // TODO(#215a): PgStorage backfill port; SQLite-only until then
-        store: store as import("../core/storage/sqlite-session-store.js").SqliteSessionStore,
-        factStore: facts as import("../core/storage/sqlite-fact-store.js").SqliteFactStore,
+        store,
+        factStore: facts,
         classifier,
         embedder: opts.embed === false ? null : embedder,
         ...(opts.state ? { statePath: opts.state } : {}),
