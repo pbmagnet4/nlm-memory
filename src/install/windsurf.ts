@@ -9,7 +9,7 @@
 
 import { existsSync } from "node:fs";
 import { defaultUserDir } from "../core/adapters/windsurf.js";
-import type { SourceRegistry } from "../core/sources/source-registry.js";
+import type { SourceRegistryPort } from "../core/sources/source-registry.js";
 
 export interface ConnectWindsurfOptions {
   readonly userDir?: string;
@@ -26,10 +26,10 @@ export interface DisconnectWindsurfReport {
   readonly action: "disabled" | "not-found" | "dry-run";
 }
 
-export function connectWindsurf(
-  registry: SourceRegistry,
+export async function connectWindsurf(
+  registry: SourceRegistryPort,
   opts: ConnectWindsurfOptions = {},
-): ConnectWindsurfReport {
+): Promise<ConnectWindsurfReport> {
   const userDir = opts.userDir ?? defaultUserDir();
   const dirExists = existsSync(userDir);
 
@@ -37,16 +37,16 @@ export function connectWindsurf(
     return { userDir, dirExists, action: "dry-run" };
   }
 
-  const existing = registry.getByName("Windsurf");
+  const existing = await registry.getByName("Windsurf");
   if (existing) {
     if (existing.enabled && existing.pathOrUrl === userDir) {
       return { userDir, dirExists, action: "already-active" };
     }
-    registry.update(existing.id, { enabled: true, pathOrUrl: userDir });
+    await registry.update(existing.id, { enabled: true, pathOrUrl: userDir });
     return { userDir, dirExists, action: "enabled" };
   }
 
-  registry.insert({
+  await registry.insert({
     kind: "windsurf",
     name: "Windsurf",
     pathOrUrl: userDir,
@@ -56,13 +56,13 @@ export function connectWindsurf(
   return { userDir, dirExists, action: "created" };
 }
 
-export function disconnectWindsurf(
-  registry: SourceRegistry,
+export async function disconnectWindsurf(
+  registry: SourceRegistryPort,
   opts: { dryRun?: boolean } = {},
-): DisconnectWindsurfReport {
+): Promise<DisconnectWindsurfReport> {
   if (opts.dryRun) return { action: "dry-run" };
-  const existing = registry.getByName("Windsurf");
+  const existing = await registry.getByName("Windsurf");
   if (!existing) return { action: "not-found" };
-  registry.update(existing.id, { enabled: false });
+  await registry.update(existing.id, { enabled: false });
   return { action: "disabled" };
 }

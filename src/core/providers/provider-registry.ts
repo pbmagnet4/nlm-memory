@@ -99,24 +99,43 @@ const DEFAULT_MODELS: Record<ProviderKind, string | null> = {
   "openai-compatible": null,
 };
 
-export class ProviderRegistry {
+/**
+ * ProviderRegistryPort — the backend-agnostic provider-registry contract that
+ * SqliteStorage and PgStorage expose as `storage.providers`. Async across both
+ * backends (the SQLite impl declares async methods with sync bodies, matching
+ * the SignalStore/FactStore convention). `seedDefaults` is intentionally NOT on
+ * the port: it bridges from the local `DEEPSEEK_API_KEY` env, which is a
+ * single-user SQLite concern — seeding a hosted multi-tenant PG from one
+ * operator's env would be wrong, so the PG adapter never seeds providers.
+ */
+export interface ProviderRegistryPort {
+  list(): Promise<ProviderRow[]>;
+  get(id: number): Promise<ProviderRow | null>;
+  getByName(name: string): Promise<ProviderRow | null>;
+  getSecret(id: number): Promise<string | null>;
+  insert(input: ProviderInsert): Promise<ProviderRow>;
+  update(id: number, patch: ProviderUpdate): Promise<ProviderRow | null>;
+  delete(id: number): Promise<boolean>;
+}
+
+export class ProviderRegistry implements ProviderRegistryPort {
   constructor(private readonly db: Database.Database) {}
 
-  list(): ProviderRow[] {
+  async list(): Promise<ProviderRow[]> {
     const rows = this.db.prepare<[], ProviderDbRow>(
       `SELECT * FROM providers ORDER BY id ASC`,
     ).all();
     return rows.map((r) => rowFromDb(r, false));
   }
 
-  get(id: number): ProviderRow | null {
+  async get(id: number): Promise<ProviderRow | null> {
     const row = this.db.prepare<[number], ProviderDbRow>(
       `SELECT * FROM providers WHERE id = ?`,
     ).get(id);
     return row ? rowFromDb(row, false) : null;
   }
 
-  getByName(name: string): ProviderRow | null {
+  async getByName(name: string): Promise<ProviderRow | null> {
     const row = this.db.prepare<[string], ProviderDbRow>(
       `SELECT * FROM providers WHERE name = ?`,
     ).get(name);
@@ -124,14 +143,14 @@ export class ProviderRegistry {
   }
 
   /** Returns the secret. Use only inside the daemon — never echo to HTTP. */
-  getSecret(id: number): string | null {
+  async getSecret(id: number): Promise<string | null> {
     const row = this.db.prepare<[number], ProviderDbRow>(
       `SELECT * FROM providers WHERE id = ?`,
     ).get(id);
     return row?.api_key ?? null;
   }
 
-  insert(input: ProviderInsert): ProviderRow {
+  async insert(input: ProviderInsert): Promise<ProviderRow> {
     const baseUrl = input.baseUrl ?? DEFAULT_BASE_URLS[input.kind];
     const defaultModel = input.defaultModel ?? DEFAULT_MODELS[input.kind];
     const result = this.db.prepare(`
@@ -146,12 +165,12 @@ export class ProviderRegistry {
       enabled: input.enabled === false ? 0 : 1,
     });
     const id = Number(result.lastInsertRowid);
-    const row = this.get(id);
+    const row = await this.get(id);
     if (!row) throw new Error(`ProviderRegistry.insert: row ${id} not found after insert`);
     return row;
   }
 
-  update(id: number, patch: ProviderUpdate): ProviderRow | null {
+  async update(id: number, patch: ProviderUpdate): Promise<ProviderRow | null> {
     const fields: string[] = [];
     const params: Record<string, unknown> = { id };
     if (patch.name !== undefined) { fields.push("name = @name"); params["name"] = patch.name; }
@@ -165,7 +184,7 @@ export class ProviderRegistry {
     return this.get(id);
   }
 
-  delete(id: number): boolean {
+  async delete(id: number): Promise<boolean> {
     const result = this.db.prepare(`DELETE FROM providers WHERE id = ?`).run(id);
     return result.changes > 0;
   }
@@ -173,20 +192,21 @@ export class ProviderRegistry {
   /**
    * Seed defaults on an empty registry. Bridges from the legacy env-var
    * setup: if DEEPSEEK_API_KEY is present, the DeepSeek row carries it
-   * forward; Ollama is always seeded since it needs no key.
+   * forward; Ollama is always seeded since it needs no key. SQLite-only —
+   * not on ProviderRegistryPort (see the port's doc comment).
    */
-  seedDefaults(): void {
+  async seedDefaults(): Promise<void> {
     const count = this.db.prepare<[], { c: number }>(`SELECT COUNT(*) AS c FROM providers`).get();
     if ((count?.c ?? 0) > 0) return;
 
-    this.insert({
+    await this.insert({
       kind: "ollama",
       name: "Ollama (local)",
       baseUrl: process.env["NLM_OLLAMA_URL"] ?? "http://localhost:11434",
     });
 
     const deepseekKey = process.env["DEEPSEEK_API_KEY"];
-    this.insert({
+    await this.insert({
       kind: "deepseek",
       name: "DeepSeek",
       apiKey: deepseekKey ?? null,
@@ -201,7 +221,7 @@ import type { Pool } from "pg";
  * PgProviderRegistry — CRUD over `providers` for the PG storage path.
  * API mirrors ProviderRegistry exactly.
  */
-export class PgProviderRegistry {
+export class PgProviderRegistry implements ProviderRegistryPort {
   constructor(private readonly pool: Pool) {}
 
   async list(): Promise<ProviderRow[]> {

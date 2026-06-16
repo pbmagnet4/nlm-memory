@@ -98,31 +98,50 @@ function mintToken(): string {
   return `nlm_${randomBytes(24).toString("hex")}`;
 }
 
-export class SourceRegistry {
+/**
+ * SourceRegistryPort — the backend-agnostic source-registry contract that
+ * SqliteStorage and PgStorage expose as `storage.sources`. Async across both
+ * backends (the SQLite impl declares async methods with sync bodies, matching
+ * the SignalStore/FactStore convention). `getToken` is intentionally NOT on the
+ * port — only the not-yet-ported scheduler reads it, via rawDb directly.
+ */
+export interface SourceRegistryPort {
+  list(): Promise<SourceRow[]>;
+  get(id: number): Promise<SourceRow | null>;
+  getByName(name: string): Promise<SourceRow | null>;
+  insert(input: SourceInsert): Promise<SourceRow>;
+  findByToken(token: string): Promise<SourceRow | null>;
+  regenerateToken(id: number): Promise<string | null>;
+  update(id: number, patch: SourceUpdate): Promise<SourceRow | null>;
+  delete(id: number): Promise<boolean>;
+  seedDefaults(): Promise<void>;
+}
+
+export class SourceRegistry implements SourceRegistryPort {
   constructor(private readonly db: Database.Database) {}
 
-  list(): SourceRow[] {
+  async list(): Promise<SourceRow[]> {
     const rows = this.db.prepare<[], SourceDbRow>(
       `SELECT * FROM sources ORDER BY id ASC`,
     ).all();
     return rows.map((r) => rowFromDb(r));
   }
 
-  get(id: number): SourceRow | null {
+  async get(id: number): Promise<SourceRow | null> {
     const row = this.db.prepare<[number], SourceDbRow>(
       `SELECT * FROM sources WHERE id = ?`,
     ).get(id);
     return row ? rowFromDb(row) : null;
   }
 
-  getByName(name: string): SourceRow | null {
+  async getByName(name: string): Promise<SourceRow | null> {
     const row = this.db.prepare<[string], SourceDbRow>(
       `SELECT * FROM sources WHERE name = ?`,
     ).get(name);
     return row ? rowFromDb(row) : null;
   }
 
-  insert(input: SourceInsert): SourceRow {
+  async insert(input: SourceInsert): Promise<SourceRow> {
     const token = input.kind === "webhook" ? mintToken() : null;
     const stmt = this.db.prepare(`
       INSERT INTO sources (kind, name, path_or_url, runtime_label, parse_config, enabled, token)
@@ -148,7 +167,7 @@ export class SourceRegistry {
   }
 
   /** Daemon-internal: resolve a bearer token to its owning source. */
-  findByToken(token: string): SourceRow | null {
+  async findByToken(token: string): Promise<SourceRow | null> {
     if (!token) return null;
     const row = this.db.prepare<[string], SourceDbRow>(
       `SELECT * FROM sources WHERE token = ?`,
@@ -156,7 +175,8 @@ export class SourceRegistry {
     return row ? rowFromDb(row) : null;
   }
 
-  /** Daemon-internal: returns the raw token. Never echo to HTTP responses. */
+  /** Daemon-internal: returns the raw token. Never echo to HTTP responses.
+   *  Not on SourceRegistryPort — only the (unported) scheduler reads it. */
   getToken(id: number): string | null {
     const row = this.db.prepare<[number], SourceDbRow>(
       `SELECT token FROM sources WHERE id = ?`,
@@ -165,8 +185,8 @@ export class SourceRegistry {
   }
 
   /** Mint a fresh token, invalidating any previous one. */
-  regenerateToken(id: number): string | null {
-    const current = this.get(id);
+  async regenerateToken(id: number): Promise<string | null> {
+    const current = await this.get(id);
     if (!current || current.kind !== "webhook") return null;
     const token = mintToken();
     this.db.prepare(`UPDATE sources SET token = ?, updated_at = datetime('now') WHERE id = ?`)
@@ -174,7 +194,7 @@ export class SourceRegistry {
     return token;
   }
 
-  update(id: number, patch: SourceUpdate): SourceRow | null {
+  async update(id: number, patch: SourceUpdate): Promise<SourceRow | null> {
     const fields: string[] = [];
     const params: Record<string, unknown> = { id };
     if (patch.name !== undefined) { fields.push("name = @name"); params["name"] = patch.name; }
@@ -188,7 +208,7 @@ export class SourceRegistry {
     return this.get(id);
   }
 
-  delete(id: number): boolean {
+  async delete(id: number): Promise<boolean> {
     const result = this.db.prepare(`DELETE FROM sources WHERE id = ?`).run(id);
     return result.changes > 0;
   }
@@ -198,7 +218,7 @@ export class SourceRegistry {
    * registry. Subsequent boots are no-ops. Respects per-runtime env
    * overrides so existing installs don't lose their custom paths.
    */
-  seedDefaults(): void {
+  async seedDefaults(): Promise<void> {
     const count = this.db.prepare<[], { c: number }>(`SELECT COUNT(*) AS c FROM sources`).get();
     if ((count?.c ?? 0) > 0) return;
 
@@ -282,7 +302,7 @@ export class SourceRegistry {
         enabled: existsSync(piPath),
       },
     ];
-    for (const p of presets) this.insert(p);
+    for (const p of presets) await this.insert(p);
   }
 }
 
@@ -315,7 +335,7 @@ function pgRowToSource(r: PgSourceDbRow): SourceRow {
  * Takes a pg.Pool instead of better-sqlite3.Database.
  * API mirrors SourceRegistry exactly so callers swap the constructor arg.
  */
-export class PgSourceRegistry {
+export class PgSourceRegistry implements SourceRegistryPort {
   constructor(private readonly pool: Pool) {}
 
   async list(): Promise<SourceRow[]> {

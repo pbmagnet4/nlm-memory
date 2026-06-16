@@ -36,11 +36,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { FactRecallService } from "../core/recall-facts/fact-recall-service.js";
 import { RecallService } from "../core/recall/recall-service.js";
 import { ProviderRegistry } from "../core/providers/provider-registry.js";
-import { SourceRegistry } from "../core/sources/source-registry.js";
+import type { SourceRegistryPort } from "../core/sources/source-registry.js";
 import { SqliteStorage } from "../core/storage/sqlite-storage.js";
 import { PgStorage } from "../core/storage/pg-storage.js";
-import { PgSourceRegistry } from "../core/sources/source-registry.js";
-import { PgProviderRegistry } from "../core/providers/provider-registry.js";
 import { applyPendingRestore, stageRestore } from "../core/storage/db-restore.js";
 import { listBackupDates, resolveBackup, runRollingBackup } from "../core/storage/backup-rotation.js";
 import { createApp } from "../http/app.js";
@@ -138,7 +136,7 @@ function buildClassifier(): ClassifierBox {
   return new ClassifierBox({ provider, model, ollamaUrl: ollamaUrl() });
 }
 
-async function buildAdapters(sources: SourceRegistry | PgSourceRegistry): Promise<TranscriptAdapter[]> {
+async function buildAdapters(sources: SourceRegistryPort): Promise<TranscriptAdapter[]> {
   // Sources table is the source of truth. Each enabled row maps to one
   // adapter via adapterFromSource(). Detection still gates registration —
   // a row pointing at a missing dir won't poll. NLM_ADAPTERS keeps working
@@ -187,16 +185,13 @@ async function buildStack() {
   const facts = storage.facts;
   const signals = storage.signals;
   const scope = installScope();
-  // TODO(#215a): replace storage.rawDb() with port methods
-  const sources = storage instanceof PgStorage
-    ? new PgSourceRegistry(storage.pgPool())
-    : new SourceRegistry((storage as SqliteStorage).rawDb());
+  const sources = storage.sources;
   await sources.seedDefaults();
-  // TODO(#215a): replace storage.rawDb() with port methods
-  const providers = storage instanceof PgStorage
-    ? new PgProviderRegistry(storage.pgPool())
-    : new ProviderRegistry((storage as SqliteStorage).rawDb());
-  if (providers instanceof ProviderRegistry) providers.seedDefaults();
+  const providers = storage.providers;
+  // Provider seeding is SQLite-only: it bridges from the local DEEPSEEK_API_KEY
+  // env, which is wrong for a hosted multi-tenant PG. PgProviderRegistry has no
+  // seedDefaults (not on ProviderRegistryPort), so this narrows to the SQLite case.
+  if (providers instanceof ProviderRegistry) await providers.seedDefaults();
   // Recall only uses embed(). Embeddings live on Ollama; DeepSeek doesn't
   // expose them. Classifier is wired separately for Phase D ingest.
   const embedder = new OllamaClient({ baseUrl: ollamaUrl() });
@@ -1306,9 +1301,7 @@ connect
     const storage = SqliteStorage.create({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     try {
-      // TODO(#215a): replace storage.rawDb() with port methods
-      const registry = new SourceRegistry(storage.rawDb());
-      const report = connectCursor(registry, {
+      const report = await connectCursor(storage.sources, {
         ...(opts.dbPath ? { dbPath: opts.dbPath as string } : {}),
         dryRun: Boolean(opts.dryRun),
       });
@@ -1339,9 +1332,7 @@ connect
     const storage = SqliteStorage.create({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     try {
-      // TODO(#215a): replace storage.rawDb() with port methods
-      const registry = new SourceRegistry(storage.rawDb());
-      const report = connectWindsurf(registry, {
+      const report = await connectWindsurf(storage.sources, {
         ...(opts.userDir ? { userDir: opts.userDir as string } : {}),
         dryRun: Boolean(opts.dryRun),
       });
@@ -1508,9 +1499,7 @@ disconnect
     const storage = SqliteStorage.create({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     try {
-      // TODO(#215a): replace storage.rawDb() with port methods
-      const registry = new SourceRegistry(storage.rawDb());
-      const report = disconnectCursor(registry, { dryRun: Boolean(opts.dryRun) });
+      const report = await disconnectCursor(storage.sources, { dryRun: Boolean(opts.dryRun) });
       if (opts.dryRun) {
         console.error("nlm disconnect cursor (dry run): disable Cursor source in registry");
         if (opts.withRules) console.error("  also remove ./.cursor/rules/nlm-recall.mdc");
@@ -1537,9 +1526,7 @@ disconnect
     const storage = SqliteStorage.create({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     try {
-      // TODO(#215a): replace storage.rawDb() with port methods
-      const registry = new SourceRegistry(storage.rawDb());
-      const report = disconnectWindsurf(registry, { dryRun: Boolean(opts.dryRun) });
+      const report = await disconnectWindsurf(storage.sources, { dryRun: Boolean(opts.dryRun) });
       if (opts.dryRun) {
         console.error("nlm disconnect windsurf (dry run): disable Windsurf source in registry");
         if (opts.withRules) console.error("  also strip rules nudge from ~/.codeium/windsurf/memories/global_rules.md");
