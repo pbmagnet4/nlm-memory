@@ -16,11 +16,12 @@ import { z } from "zod";
 import { logQuery } from "@core/recall/query-log.js";
 import { logFactQuery } from "@core/recall-facts/fact-query-log.js";
 import { appendCitation } from "@core/recall/citation-log.js";
-import { appendSupersedence, readSupersedenceLog } from "@core/storage/supersedence-log.js";
+import { appendFactSupersedence, appendSupersedence, readSupersedenceLog } from "@core/storage/supersedence-log.js";
 import type { FactRecallService } from "@core/recall-facts/fact-recall-service.js";
 import type { RecallService } from "@core/recall/recall-service.js";
 import type { FactStore } from "@ports/fact-store.js";
 import type { SessionStore } from "@ports/session-store.js";
+import { recallCode } from "@core/exemplars/recall-code.js";
 import type {
   FactKind,
   FactRecallQuery,
@@ -44,6 +45,11 @@ export interface McpDeps {
   /** Optional — when absent, fact tools are not registered. */
   readonly factRecall?: FactRecallService;
   readonly factStore?: FactStore;
+  /** Optional — when present, recall_code tool is registered. */
+  readonly exemplarStore?: import("@ports/code-exemplar-store.js").CodeExemplarStore;
+  /** Optional code embedder for recall_code semantic search. */
+  readonly codeEmbedder?: import("@ports/code-embedder.js").CodeEmbedder;
+  readonly installScope?: string;
 }
 
 export interface ToolResult {
@@ -457,6 +463,60 @@ export async function markSupersededHandler(
   }
 }
 
+const SUPERSEDE_FACT_DESCRIPTION = `Retroactively mark a specific NLM fact as superseded when the operator states
+that a previously-stored decision or attribute no longer holds.
+
+Use this when the user says things like "that's wrong now," "we changed the
+framework to X," "that decision is stale," or corrects a specific fact that
+recall_facts returned. Pass the fact id returned by recall_facts.
+
+Unlike mark_superseded (session-level), this targets a single (subject,
+predicate, value) row. The fact remains in the store for history but is
+excluded from future recall_facts results (superseded_by is set to null,
+meaning retired without a known successor — the replacement will be ingested
+from the current conversation when it closes).
+
+Deterministic: no LLM in the loop, immediate state change.
+
+Args:
+  - fact_id: the id field returned by recall_facts for the stale fact.
+  - reason:  optional human-readable rationale. Logged for provenance.
+
+Idempotent: calling it twice on the same id is a no-op. Errors if fact_id
+is unknown.`;
+
+export interface SupersedeFactInput {
+  readonly fact_id: string;
+  readonly reason?: string | undefined;
+}
+
+export async function supersedeFactHandler(
+  deps: McpDeps,
+  input: SupersedeFactInput,
+): Promise<ToolResult> {
+  if (!input.fact_id || input.fact_id.length < 4) {
+    return err(new Error("fact_id is required"));
+  }
+  if (!deps.factStore) {
+    return err(new Error("fact store not available"));
+  }
+  try {
+    await deps.factStore.markSuperseded(input.fact_id, null);
+    void appendFactSupersedence({
+      factId: input.fact_id,
+      source: "mcp",
+      ...(input.reason !== undefined ? { reason: input.reason } : {}),
+    });
+    return ok({
+      marked: true,
+      fact_id: input.fact_id,
+      ...(input.reason !== undefined ? { reason: input.reason } : {}),
+    });
+  } catch (e) {
+    return err(e);
+  }
+}
+
 export async function citeSessionHandler(
   input: CiteSessionInput,
 ): Promise<ToolResult> {
@@ -622,6 +682,31 @@ export function createMcpServer(deps: McpDeps): McpServer {
       },
       async (args) => getFactHistoryHandler(deps, args) as never,
     );
+
+    server.registerTool(
+      "supersede_fact",
+      {
+        title: "Supersede a Stale NLM Fact",
+        description: SUPERSEDE_FACT_DESCRIPTION,
+        inputSchema: {
+          fact_id: z
+            .string()
+            .min(4)
+            .describe("Fact ID returned by recall_facts for the stale fact."),
+          reason: z
+            .string()
+            .optional()
+            .describe("Why this fact is being retired. Optional but encouraged for audit trail."),
+        },
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async (args) => supersedeFactHandler(deps, args) as never,
+    );
   }
 
   server.registerTool(
@@ -679,5 +764,85 @@ export function createMcpServer(deps: McpDeps): McpServer {
     async (args) => markSupersededHandler(deps, args) as never,
   );
 
+  if (
+    deps.exemplarStore &&
+    deps.installScope &&
+    process.env["NLM_CODE_EXEMPLARS_ENABLED"] === "1"
+  ) {
+    const exemplarStore = deps.exemplarStore;
+    const codeEmbedder = deps.codeEmbedder ?? null;
+    const installScope = deps.installScope;
+
+    server.registerTool(
+      "recall_code",
+      {
+        title: "Recall Code Exemplars",
+        description: RECALL_CODE_DESCRIPTION,
+        inputSchema: {
+          query: z
+            .string()
+            .min(1)
+            .describe("Natural-language description of the task you are about to implement."),
+          repo: z
+            .string()
+            .optional()
+            .describe("Narrow to one repository path."),
+          lang: z
+            .string()
+            .optional()
+            .describe("Filter by language (ts, py, go, etc.)."),
+          k: z
+            .number()
+            .int()
+            .min(1)
+            .max(20)
+            .optional()
+            .describe("Max results to return (default 5)."),
+          include_negatives: z
+            .boolean()
+            .optional()
+            .describe("Include fail/exhausted exemplars as labeled cautionary examples (default true)."),
+        },
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async (args) => {
+        const result = await recallCode(
+          {
+            query: args.query,
+            installScope,
+            ...(args.repo ? { repo: args.repo } : {}),
+            ...(args.lang ? { lang: args.lang } : {}),
+            k: args.k ?? 5,
+            includeNegatives: args.include_negatives ?? true,
+          },
+          exemplarStore,
+          codeEmbedder,
+          null,
+        );
+        return { content: [{ type: "text" as const, text: format(result) }] };
+      },
+    );
+  }
+
   return server;
 }
+
+const RECALL_CODE_DESCRIPTION = `\
+Retrieve code exemplars — concrete chunks of code from past sessions with \
+deterministic outcome labels (pass/fail/fix/exhausted). Use when you are \
+about to implement something and want to see what code passed or failed the \
+gate for a similar task in this repository.
+
+Returns two lists:
+- **positives**: code that passed or was fixed to a passing state
+- **negatives**: code that failed or was exhausted (labeled "avoid")
+
+Outcome labels come from git-survival and test exit codes, not LLM judgment. \
+Model-agnostic: exemplars from any agent or model vendor are included. \
+Scoped to your install by default; narrow by repo or lang as needed.`;
+

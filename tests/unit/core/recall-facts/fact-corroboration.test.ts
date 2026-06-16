@@ -44,6 +44,10 @@ class ScriptedFactStore implements FactStore {
   async getById(id: string) {
     return this.candidates.find((f) => f.id === id) ?? null;
   }
+  async getByIds(ids: ReadonlyArray<string>) {
+    const set = new Set(ids);
+    return this.candidates.filter((f) => set.has(f.id));
+  }
   async findCurrent() {
     return null;
   }

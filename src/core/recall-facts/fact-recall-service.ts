@@ -37,8 +37,6 @@ const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 100;
 const DEFAULT_MIN_CONFIDENCE = 0.6;
 const STORAGE_FETCH_CAP = 500;
-const HYBRID_KW_WEIGHT = 0.4;
-const HYBRID_SEM_WEIGHT = 0.6;
 const SEMANTIC_OVERFETCH = 3;
 const DEFAULT_BOOST_CAP = 2.0;
 
@@ -99,10 +97,16 @@ export class FactRecallService {
     };
 
     const candidates = await this.deps.factStore.listForRecall(filter);
-    if (candidates.length === 0) return empty;
 
     const byId = new Map<string, Fact>(candidates.map((f) => [f.id, f]));
     const queryTokens = queryText ? new Set(tokenSet(queryText)) : new Set<string>();
+
+    // The keyword candidate set is recency-capped (listForRecall ORDER BY
+    // created_at DESC LIMIT STORAGE_FETCH_CAP). Semantic recall must reach the
+    // whole corpus, so it resolves vector neighbours independently of this
+    // window and re-applies the same filters via `accept`. Without this, ~93%
+    // of facts (everything older than the recent cap) were silently unreachable.
+    const accept = makeFilterPredicate(filter);
 
     const kwHits =
       mode === "keyword" || mode === "hybrid"
@@ -113,7 +117,7 @@ export class FactRecallService {
     let semError: "ollama_unreachable" | null = null;
     if ((mode === "semantic" || mode === "hybrid") && queryText) {
       try {
-        semHits = await this.runSemantic(queryText, byId, limit * SEMANTIC_OVERFETCH);
+        semHits = await this.runSemantic(queryText, byId, accept, limit * SEMANTIC_OVERFETCH);
       } catch (err) {
         if (err instanceof LLMUnreachableError) {
           semError = "ollama_unreachable";
@@ -152,7 +156,7 @@ export class FactRecallService {
     }
 
     // hybrid
-    const merged = mergeHybrid(kwHits, semHits, byId);
+    const merged = mergeHybrid(kwHits, semHits);
     const boosted = await this.applyCorroboration(merged);
     const result = finalize(queryText, subject, predicate, kind, mode, limit, boosted);
     return semError ? { ...result, modeUnavailable: semError } : result;
@@ -209,18 +213,45 @@ export class FactRecallService {
   private async runSemantic(
     query: string,
     byId: ReadonlyMap<string, Fact>,
+    accept: (fact: Fact) => boolean,
     fetchLimit: number,
   ): Promise<ReadonlyArray<SemanticHit>> {
     const embedding = await this.deps.llm.embed(query, "query");
     const neighbors = await this.deps.factStore.semanticSearch(embedding.vector, fetchLimit);
+
+    // Resolve neighbours that fall outside the recency-capped keyword window
+    // in one batch, then apply the same filters the SQL pre-filter would have.
+    const missingIds = neighbors.filter((n) => !byId.has(n.factId)).map((n) => n.factId);
+    const fetched = missingIds.length > 0 ? await this.deps.factStore.getByIds(missingIds) : [];
+    const fetchedById = new Map<string, Fact>(fetched.map((f) => [f.id, f]));
+
     const hits: SemanticHit[] = [];
     for (const n of neighbors) {
-      const fact = byId.get(n.factId);
-      if (!fact) continue; // candidate was filtered out by subject/predicate/conf
+      const fact = byId.get(n.factId) ?? fetchedById.get(n.factId);
+      if (!fact || !accept(fact)) continue;
       hits.push({ fact, similarity: cosineFromL2(n.distance) });
     }
     return hits;
   }
+}
+
+/**
+ * Replicates the SQL pre-filter (listForRecall) so semantic neighbours fetched
+ * outside the keyword candidate window are held to the same standard:
+ * non-superseded (unless requested), at/above the confidence floor, and
+ * matching any structured subject/predicate/kind constraint.
+ */
+function makeFilterPredicate(
+  filter: Parameters<FactStore["listForRecall"]>[0],
+): (fact: Fact) => boolean {
+  return (f: Fact): boolean => {
+    if (filter.includeSuperseded !== true && f.supersededBy !== null) return false;
+    if (filter.minConfidence !== undefined && f.confidence < filter.minConfidence) return false;
+    if (filter.kind !== undefined && f.kind !== filter.kind) return false;
+    if (filter.subject !== undefined && f.subject !== filter.subject) return false;
+    if (filter.predicate !== undefined && f.predicate !== filter.predicate) return false;
+    return true;
+  };
 }
 
 interface KeywordHit {
@@ -276,39 +307,56 @@ function scoreFact(
   return { score, matchedIn };
 }
 
+/**
+ * Semantic-primary hybrid merge.
+ *
+ * For short fact triples, semantic similarity is the dominant quality signal
+ * and the keyword leg is both recency-windowed (see listForRecall) and noisy
+ * (few tokens to match on). An equal-weight blend let high keyword scores on
+ * recent-but-wrong facts dilute strong semantic hits — measured ~14pts of R@5
+ * lost vs pure semantic on the paraphrase gold set (2026-06-16 report).
+ *
+ * So semantic hits occupy the upper score band [0.5, 1.0] (ranked by
+ * similarity); keyword-only hits — facts semantic never surfaced — backfill the
+ * lower band [0, 0.5). Co-occurrence isn't rewarded (that was the dilution
+ * source). When semantic is unavailable (Ollama down) semHits is empty and this
+ * degrades to pure keyword, preserving the graceful-degradation contract.
+ */
 function mergeHybrid(
   kwHits: ReadonlyArray<KeywordHit>,
   semHits: ReadonlyArray<SemanticHit>,
-  byId: ReadonlyMap<string, Fact>,
 ): ReadonlyArray<FactHit> {
-  const maxKw = Math.max(1, ...kwHits.map((h) => h.score));
   const maxSem = Math.max(1, ...semHits.map((h) => h.similarity));
-
+  const maxKw = Math.max(1, ...kwHits.map((h) => h.score));
   const kwMap = new Map<string, KeywordHit>(kwHits.map((h) => [h.fact.id, h]));
-  const semMap = new Map<string, SemanticHit>(semHits.map((h) => [h.fact.id, h]));
-  const allIds = new Set<string>([...kwMap.keys(), ...semMap.keys()]);
 
   const rows: FactHit[] = [];
-  for (const id of allIds) {
-    const fact = byId.get(id);
-    if (!fact) continue;
-    const kw = kwMap.get(id);
-    const sem = semMap.get(id);
-    const kwNorm = kw ? kw.score / maxKw : 0;
-    const semNorm = sem ? sem.similarity / maxSem : 0;
-    const combined = round4(HYBRID_SEM_WEIGHT * semNorm + HYBRID_KW_WEIGHT * kwNorm);
-    const matchedIn = uniqueFields(
-      kw?.matchedIn ?? [],
-      sem ? (["semantic"] as FactMatchField[]) : [],
-    );
+  const seen = new Set<string>();
+
+  for (const sem of semHits) {
+    const semNorm = sem.similarity / maxSem;
+    const kw = kwMap.get(sem.fact.id);
     rows.push({
-      ...fact,
-      matchScore: combined,
-      matchedIn,
-      keywordScore: round4(kwNorm),
+      ...sem.fact,
+      matchScore: round4(0.5 + 0.5 * semNorm),
+      matchedIn: uniqueFields(kw?.matchedIn ?? [], ["semantic"]),
+      keywordScore: round4(kw ? kw.score / maxKw : 0),
       semanticScore: round4(semNorm),
     });
+    seen.add(sem.fact.id);
   }
+
+  for (const kw of kwHits) {
+    if (seen.has(kw.fact.id)) continue;
+    rows.push({
+      ...kw.fact,
+      matchScore: round4(0.5 * (kw.score / maxKw)),
+      matchedIn: kw.matchedIn,
+      keywordScore: round4(kw.score / maxKw),
+      semanticScore: 0,
+    });
+  }
+
   rows.sort((a, b) => b.matchScore - a.matchScore);
   return rows;
 }

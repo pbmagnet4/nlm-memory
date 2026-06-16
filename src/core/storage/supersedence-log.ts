@@ -63,6 +63,36 @@ export async function readSupersedenceLog(): Promise<
   return results;
 }
 
+export interface FactSupersedenceEntry {
+  readonly factId: string;
+  readonly reason?: string;
+  readonly source?: string;
+}
+
+/** Append a fact-level supersedence event to the shared audit JSONL.
+ *  Entries carry `kind: "fact"` so the session-scoped reader skips them. */
+export async function appendFactSupersedence(
+  entry: FactSupersedenceEntry,
+  logPath: string = defaultLogPath(),
+): Promise<void> {
+  try {
+    await mkdir(dirname(logPath), { recursive: true });
+    const payload = {
+      ts: new Date().toISOString(),
+      kind: "fact",
+      fact_id: entry.factId,
+      ...(entry.reason !== undefined ? { reason: entry.reason } : {}),
+      ...(entry.source !== undefined ? { source: entry.source } : {}),
+    };
+    await appendFile(logPath, JSON.stringify(payload) + "\n", "utf8");
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    process.stderr.write(
+      `nlm-memory: failed to append fact-supersedence-log entry at ${logPath}: ${msg}\n`,
+    );
+  }
+}
+
 export async function appendSupersedence(
   entry: SupersedenceEntry,
   logPath: string = defaultLogPath(),

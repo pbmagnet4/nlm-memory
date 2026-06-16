@@ -82,6 +82,19 @@ export class SqliteFactStore implements FactStore {
     return row ? this.rowToFact(row) : null;
   }
 
+  async getByIds(ids: ReadonlyArray<string>): Promise<ReadonlyArray<Fact>> {
+    if (ids.length === 0) return [];
+    const placeholders = ids.map(() => "?").join(",");
+    const rows = this.db
+      .prepare<string[], FactRow>(
+        `SELECT id, kind, subject, predicate, value, source_session_id,
+                source_quote, created_at, superseded_by, confidence
+         FROM facts WHERE id IN (${placeholders})`,
+      )
+      .all(...ids);
+    return rows.map((r) => this.rowToFact(r));
+  }
+
   async findCurrent(subject: string, predicate: string): Promise<Fact | null> {
     const row = this.db
       .prepare<[string, string], FactRow>(

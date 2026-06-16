@@ -27,7 +27,7 @@
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { homedir } from "node:os";
-import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, copyFileSync } from "node:fs";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { Command } from "commander";
 import pkg from "../../package.json" with { type: "json" };
@@ -41,7 +41,8 @@ import { SqliteStorage } from "../core/storage/sqlite-storage.js";
 import { PgStorage } from "../core/storage/pg-storage.js";
 import { PgSourceRegistry } from "../core/sources/source-registry.js";
 import { PgProviderRegistry } from "../core/providers/provider-registry.js";
-import { applyPendingRestore } from "../core/storage/db-restore.js";
+import { applyPendingRestore, stageRestore } from "../core/storage/db-restore.js";
+import { listBackupDates, resolveBackup, runRollingBackup } from "../core/storage/backup-rotation.js";
 import { createApp } from "../http/app.js";
 import { createMcpServer } from "../mcp/server.js";
 import { ClassifierBox, type ClassifierProvider } from "../llm/classifier-box.js";
@@ -53,11 +54,15 @@ import {
   codexBinaryAvailable,
   connectCodex,
   disconnectCodex,
+  repairCodex,
   pluginScriptsDir,
 } from "../install/codex.js";
 import { connectClaudeCode, disconnectClaudeCode, installClaudeCodeHooks, mcpConfigPath } from "../install/claude-code.js";
+import { evaluateInstallHealth, evaluateModelHealth, evaluateRecallSmoke } from "../install/health.js";
+import type { HealthCheck, InstallProbe } from "../install/health.js";
+import { codexConfigPath } from "../install/codex.js";
 import { hardenNlmDirPermissions } from "../install/nlm-dir-perms.js";
-import { ensureMcpToken } from "../install/ollama.js";
+import { embeddingModelPresent, ensureMcpToken, ollamaModelPresent } from "../install/ollama.js";
 import { connectCursor, disconnectCursor } from "../install/cursor.js";
 import {
   describeRemove,
@@ -399,6 +404,61 @@ program
           );
         }
         if (result.results.length === 0) process.stdout.write("(no matches)\n");
+      }
+    } finally {
+      await storage.close();
+    }
+  });
+
+program
+  .command("recall-code")
+  .description("Semantic search over code exemplars (requires NLM_CODE_EXEMPLARS_ENABLED=1)")
+  .argument("<query>", "natural-language description of the task you are about to implement")
+  .option("-r, --repo <path>", "filter by repository path")
+  .option("-l, --lang <lang>", "filter by language (ts, py, go, ...)")
+  .option("-k <n>", "max results", (v) => Number.parseInt(v, 10), 5)
+  .option("--no-negatives", "exclude fail/exhausted exemplars from results")
+  .option("--json", "emit the raw JSON result")
+  .action(async (query, opts) => {
+    if (process.env["NLM_CODE_EXEMPLARS_ENABLED"] !== "1") {
+      process.stderr.write("recall-code requires NLM_CODE_EXEMPLARS_ENABLED=1\n");
+      process.exit(1);
+    }
+    const { storage } = await buildStack();
+    const { OllamaCodeEmbedder } = await import("../llm/ollama-code-embedder.js");
+    const { recallCode } = await import("../core/exemplars/recall-code.js");
+    const { installScope: getScope } = await import("../core/signals/install-scope.js");
+    try {
+      const embedder = new OllamaCodeEmbedder();
+      const result = await recallCode(
+        {
+          query,
+          installScope: getScope(),
+          ...(opts.repo ? { repo: opts.repo } : {}),
+          ...(opts.lang ? { lang: opts.lang } : {}),
+          k: opts.k ?? 5,
+          includeNegatives: opts.negatives !== false,
+        },
+        storage.exemplars,
+        embedder,
+        null,
+      );
+      if (opts.json) {
+        process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+      } else {
+        const printHits = (label: string, hits: typeof result.positives) => {
+          if (hits.length === 0) return;
+          process.stdout.write(`\n── ${label} ──\n`);
+          for (const h of hits) {
+            process.stdout.write(`[${h.outcome}] ${h.taskContext} (${h.repo}, dist=${h.distance.toFixed(4)})\n`);
+            process.stdout.write(h.code.slice(0, 400) + (h.code.length > 400 ? "\n…" : "") + "\n\n");
+          }
+        };
+        printHits("Positives (pass / fix)", result.positives);
+        printHits("Negatives (fail / exhausted) — avoid these patterns", result.negatives);
+        if (result.positives.length === 0 && result.negatives.length === 0) {
+          process.stdout.write("(no exemplars found)\n");
+        }
       }
     } finally {
       await storage.close();
@@ -1106,6 +1166,7 @@ connect
   .option("--source <source>", "marketplace source (owner/repo, git URL, or local path)", "pbmagnet4/nlm-memory")
   .option("--local", "shortcut for --source <repo-root>; use during dev")
   .option("--with-hooks", "additionally write absolute paths to ~/.codex/hooks.json (Codex Desktop fallback for openai/codex#16430)")
+  .option("--repair", "first strip a stale pre-rename nlm-memory-ts install (config block + plugin + marketplace), then connect")
   .option("--dry-run", "print what would happen without invoking codex")
   .action((opts) => {
     if (!opts.dryRun && !codexBinaryAvailable()) {
@@ -1113,12 +1174,22 @@ connect
       process.exit(1);
     }
     const source = opts.local ? REPO_ROOT : opts.source;
-    const report = connectCodex(
-      { source, withHooks: Boolean(opts.withHooks), dryRun: Boolean(opts.dryRun) },
-      pluginScriptsDir(REPO_ROOT),
-    );
+    const connectOpts = { source, withHooks: Boolean(opts.withHooks), dryRun: Boolean(opts.dryRun) };
+    const repair = opts.repair
+      ? repairCodex(connectOpts, pluginScriptsDir(REPO_ROOT))
+      : null;
+    const report = repair ? repair.connect : connectCodex(connectOpts, pluginScriptsDir(REPO_ROOT));
+
+    if (repair && !repair.dryRun) {
+      console.error(
+        repair.staleMcpRemovedFromConfig
+          ? "nlm connect codex --repair: stripped stale nlm-memory-ts MCP block from config.toml"
+          : "nlm connect codex --repair: no stale nlm-memory-ts MCP block found",
+      );
+    }
 
     if (report.dryRun) {
+      if (repair) console.error("  --repair: would strip any stale nlm-memory-ts block, then:");
       console.error("nlm connect codex (dry run):");
       console.error(`  codex plugin marketplace add ${report.source}`);
       console.error(`  codex plugin add ${report.pluginName}@${report.marketplaceName}`);
@@ -1145,6 +1216,8 @@ connect
     console.error(`nlm: connected to Codex via marketplace ${report.marketplaceName}, plugin ${report.pluginName}.`);
     if (report.mcpServerWritten) {
       console.error(`  Wrote [mcp_servers.nlm-memory] to ${report.mcpServerWritten}`);
+    } else if (report.mcpServerAlreadyPresent) {
+      console.error("  Left your existing [mcp_servers.nlm-memory] block in place (not overwriting it)");
     }
     if (report.legacyHooksWritten) {
       console.error(`  Wrote hooks.json fallback to ${report.legacyHooksWritten}`);
@@ -1585,9 +1658,72 @@ program
     }
   });
 
+async function gatherInstallProbe(): Promise<InstallProbe> {
+  autoloadEnv();
+
+  let reachable = false;
+  let version: string | null = null;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 1_500);
+    const res = await fetch(`http://localhost:${port()}/api/health`, { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (res.ok) {
+      const body = (await res.json()) as { version?: string };
+      reachable = true;
+      version = typeof body.version === "string" ? body.version : null;
+    }
+  } catch {
+    // unreachable — reported as a FAIL by the evaluator
+  }
+
+  const mcpPath = mcpConfigPath();
+  let claudeMcp = false;
+  try {
+    if (existsSync(mcpPath)) {
+      const cfg = JSON.parse(readFileSync(mcpPath, "utf8")) as { mcpServers?: Record<string, unknown> };
+      claudeMcp = Boolean(cfg.mcpServers && "nlm-memory" in cfg.mcpServers);
+    }
+  } catch {
+    // malformed config → treat as unconfigured (connect will rewrite it)
+  }
+
+  const codexPath = codexConfigPath();
+  let codexPresent = false;
+  let codexMcp = false;
+  let codexStale = false;
+  if (existsSync(codexPath)) {
+    codexPresent = true;
+    const txt = readFileSync(codexPath, "utf8");
+    // Recognize the MCP table whether it's our managed (sentineled) block or a
+    // hand-authored bare one — both wire the server.
+    codexMcp = txt.split("\n").some((l) => l.trim() === "[mcp_servers.nlm-memory]");
+    // Match the marketplace suffix, not the bare name: a [projects."…/nlm-memory-ts"]
+    // trust entry is Codex's registry (not nlm's), so it must not trip this check.
+    codexStale = txt.includes("@nlm-memory-ts");
+  }
+
+  const envPath = join(homedir(), ".nlm", ".env");
+  return {
+    daemon: { reachable, version, expectedVersion: pkg.version },
+    env: {
+      path: envPath,
+      exists: existsSync(envPath),
+      hasMcpToken: Boolean(process.env["NLM_MCP_TOKEN"]),
+    },
+    claudeCode: { configPath: mcpPath, mcpConfigured: claudeMcp },
+    codex: {
+      configPath: codexPath,
+      configPresent: codexPresent,
+      mcpConfigured: codexMcp,
+      staleNlmMemoryTs: codexStale,
+    },
+  };
+}
+
 program
   .command("doctor")
-  .description("Check database integrity invariants and optionally repair safe violations")
+  .description("Check database integrity invariants and install/runtime health, optionally repair safe violations")
   .option("--fix", "repair mechanically safe violations: delete self-loop edges (I1), restore orphaned superseded/replaced sessions to closed (I2)")
   .action(async (opts) => {
     const storage = await buildStorage(dbPath());
@@ -1622,6 +1758,7 @@ program
     const ALL_CHECKS = ["I1", "I2", "I3", "I4", "I5a", "I5b", "I6"];
     const byId = new Map(violations.map((v) => [v.id, v]));
     let anyFail = false;
+    console.log("Database integrity:");
     for (const id of ALL_CHECKS) {
       const v = byId.get(id);
       if (v) {
@@ -1633,7 +1770,143 @@ program
       }
     }
 
+    console.log("\nInstall & runtime health:");
+    if (printHealthChecks(evaluateInstallHealth(await gatherInstallProbe()))) anyFail = true;
+
     if (anyFail) process.exit(1);
+  });
+
+function printHealthChecks(checks: ReadonlyArray<HealthCheck>): boolean {
+  let anyFail = false;
+  for (const c of checks) {
+    if (c.status === "fail") anyFail = true;
+    const label = c.status === "ok" ? "PASS" : c.status === "warn" ? "WARN" : "FAIL";
+    const fix = c.fix ? `\n  → fix: ${c.fix}` : "";
+    console.log(`${label} ${c.id}  ${c.detail}${fix}`);
+  }
+  return anyFail;
+}
+
+async function dbIntegrityCheck(): Promise<HealthCheck> {
+  const storage = await buildStorage(dbPath());
+  try {
+    const violations =
+      storage instanceof PgStorage
+        ? await runChecksOnPg(storage.pgPool())
+        : runChecksOnSqlite((storage as SqliteStorage).rawDb());
+    if (violations.length === 0) return { id: "db-integrity", status: "ok", detail: "all invariants hold" };
+    return {
+      id: "db-integrity",
+      status: "fail",
+      detail: `violations: ${violations.map((v) => v.id).join(", ")}`,
+      fix: "nlm doctor --fix",
+    };
+  } finally {
+    await storage.close();
+  }
+}
+
+async function recallSmokeCheck(): Promise<HealthCheck> {
+  let reachable = false;
+  let status: number | null = null;
+  let wellFormed = false;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 3_000);
+    const res = await fetch(`http://localhost:${port()}/api/recall?q=verify&limit=1`, { signal: ctrl.signal });
+    clearTimeout(timer);
+    reachable = true;
+    status = res.status;
+    const body = (await res.json().catch(() => null)) as { results?: unknown } | null;
+    wellFormed = Boolean(body && Array.isArray(body.results));
+  } catch {
+    // unreachable — evaluateRecallSmoke reports the fail
+  }
+  return evaluateRecallSmoke(reachable, status, wellFormed);
+}
+
+program
+  .command("verify")
+  .description("Release-gate: verify the install is wired and recall works end-to-end. Exit 1 on any failure.")
+  .action(async () => {
+    const provider = (process.env["NLM_CLASSIFIER"] ?? "ollama").toLowerCase();
+    const classifierModel =
+      process.env["NLM_CLASSIFIER_MODEL"] ?? (provider === "ollama" ? "qwen3.5:4b" : "deepseek-v4-flash");
+    const classifierPresent = provider === "ollama" ? ollamaModelPresent(classifierModel) : true;
+
+    const checks: HealthCheck[] = [
+      ...evaluateInstallHealth(await gatherInstallProbe()),
+      evaluateModelHealth(embeddingModelPresent(), classifierModel, classifierPresent),
+      await dbIntegrityCheck(),
+      await recallSmokeCheck(),
+    ];
+
+    const anyFail = printHealthChecks(checks);
+    const warns = checks.filter((c) => c.status === "warn").length;
+    console.log(anyFail ? "\nVERIFY: FAIL" : warns > 0 ? `\nVERIFY: PASS (${warns} warning(s))` : "\nVERIFY: PASS");
+    if (anyFail) process.exit(1);
+  });
+
+program
+  .command("backup")
+  .description("Write a dated snapshot to ~/.nlm/backups/ and prune ones past the retention window")
+  .option("--retention <days>", "keep snapshots from the last N days", "7")
+  .action(async (opts) => {
+    const retention = Number.parseInt(opts.retention, 10);
+    if (!Number.isFinite(retention) || retention < 1) {
+      console.error("nlm backup: --retention must be a positive integer");
+      process.exit(1);
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const storage = await buildStorage(dbPath());
+    try {
+      if (storage instanceof PgStorage) {
+        console.error("nlm backup: only the SQLite backend is supported (Postgres: use pg_dump)");
+        process.exit(1);
+      }
+      const result = runRollingBackup((storage as SqliteStorage).rawDb(), dbPath(), today, retention);
+      console.log(`Wrote ${result.written} (${(result.bytes / 1_048_576).toFixed(1)} MiB)`);
+      if (result.pruned.length > 0) console.log(`Pruned ${result.pruned.length} snapshot(s) older than ${retention}d`);
+    } finally {
+      await storage.close();
+    }
+  });
+
+program
+  .command("restore")
+  .description("Stage a dated backup for restore on next daemon start (does not overwrite the live DB in place)")
+  .option("--from <date>", "backup date to restore (YYYY-MM-DD)")
+  .option("--list", "list available backup dates")
+  .action((opts) => {
+    if (opts.list || !opts.from) {
+      const dates = listBackupDates(dbPath());
+      if (dates.length === 0) {
+        console.log("No backups found. Run `nlm backup` (or wait for the daily job).");
+        return;
+      }
+      console.log("Available backups:");
+      for (const d of dates) console.log(`  ${d}`);
+      if (!opts.from) console.log("\nRestore one with: nlm restore --from <date>");
+      return;
+    }
+
+    const backup = resolveBackup(dbPath(), opts.from);
+    if (!backup) {
+      console.error(`nlm restore: no backup for ${opts.from}. Run \`nlm restore --list\` to see options.`);
+      process.exit(1);
+    }
+
+    // Copy (not move) the snapshot to a scratch candidate so the backup is
+    // preserved; stageRestore renames the candidate into the pending slot.
+    const candidate = `${dbPath()}.restore-candidate`;
+    copyFileSync(backup, candidate);
+    const validation = stageRestore(dbPath(), candidate);
+    if (!validation.ok) {
+      console.error(`nlm restore: ${opts.from} is not a usable backup: ${validation.error}`);
+      process.exit(1);
+    }
+    console.log(`Staged ${opts.from} (${validation.sessions} sessions, schema v${validation.schemaVersion}).`);
+    console.log("Run `nlm restart` to apply — the current DB is archived aside, not deleted.");
   });
 
 program.parseAsync().catch((e) => {

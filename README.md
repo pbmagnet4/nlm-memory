@@ -335,7 +335,7 @@ recall: prompt / query
 | `NLM_MCP_TOKEN` | auto-generated | 256-bit bearer for `/api/*` (non-browser) and `/mcp` |
 | `NLM_MCP_CONFIG` | `~/.mcp.json` | Path the `connect`/`disconnect` commands modify |
 | `NLM_CLASSIFIER` | `ollama` | `ollama` (local, default), `deepseek`, `openai`, `anthropic`, `openrouter`, or `openai-compatible` |
-| `NLM_CLASSIFIER_MODEL` | `qwen3:4b-instruct-2507-q4_K_M` | Model id for the chosen provider. See [classifier bench](reports/classifier-comparison/2026-06-02-deepseek-v4-vs-qwen3.md) for why this is the recommended local default. |
+| `NLM_CLASSIFIER_MODEL` | `qwen3.5:4b` | Model id for the chosen provider. `qwen3.5:4b` (Q4_K_M, 4.7B) is the recommended local default — scored 74.4% decision-precision vs 58.7% for `qwen3:4b-instruct-2507-q4_K_M` (task #320, 2026-06-12). |
 | `NLM_OLLAMA_URL` | `http://localhost:11434` | Override Ollama endpoint |
 | `NLM_ADAPTERS` | all | Comma-separated allowlist of adapters to enable |
 | `DEEPSEEK_API_KEY` | — | Required only when classifier=deepseek |

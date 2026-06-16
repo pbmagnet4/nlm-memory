@@ -137,7 +137,11 @@ function asMissedCount(o: Record<string, unknown>): number {
  * that anchor a fact-check. Recall prompts don't embed the body, so they're
  * unaffected.
  */
-export const JUDGE_TRANSCRIPT_CAP = 12_000;
+// Raised 12K→30K (R5): the 12K cap existed only because the old 122B judge's
+// prefill ceiling forced it, which truncated the judge MORE than the classifier
+// (15K) and mismeasured recall. With the 27B oMLX judge (large context) the full
+// 20K-capped gold bodies fit, so the judge sees everything the classifier could.
+export const JUDGE_TRANSCRIPT_CAP = 30_000;
 
 export function judgeTranscript(body: string): string {
   if (body.length <= JUDGE_TRANSCRIPT_CAP) return body;

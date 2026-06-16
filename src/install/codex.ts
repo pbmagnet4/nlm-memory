@@ -102,15 +102,31 @@ export function codexConfigPath(): string {
  * system's .mcp.json indirection (which we can't currently verify works
  * outside the upstream plugin pipeline).
  */
-export function writeMcpServerToConfig(configPath: string): void {
+export type McpWriteResult = "written" | "skipped-existing";
+
+export function writeMcpServerToConfig(configPath: string): McpWriteResult {
   mkdirSync(dirname(configPath), { recursive: true });
   const existing = existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
+  const next = stripSentinelBlock(existing);
+
+  // An un-sentineled [mcp_servers.nlm-memory] table — hand-authored, or left by
+  // a pre-rename install — already wires the server. Appending our managed
+  // block would create a duplicate TOML key and break codex's parser, so leave
+  // the user's block untouched (and persist the sentinel-strip if we did one).
+  if (hasNlmMcpTable(next)) {
+    if (next !== existing) writeFileSync(configPath, next, "utf8");
+    return "skipped-existing";
+  }
 
   const block = `${MCP_SENTINEL_BEGIN}\n[mcp_servers.nlm-memory]\ncommand = "nlm"\nargs = ["mcp"]\n${MCP_SENTINEL_END}\n`;
-
-  const next = stripSentinelBlock(existing);
   const sep = next.length > 0 && !next.endsWith("\n\n") ? (next.endsWith("\n") ? "\n" : "\n\n") : "";
   writeFileSync(configPath, next + sep + block, "utf8");
+  return "written";
+}
+
+/** True if the config already declares an `[mcp_servers.nlm-memory]` table. */
+export function hasNlmMcpTable(content: string): boolean {
+  return content.split("\n").some((line) => line.trim() === "[mcp_servers.nlm-memory]");
 }
 
 export function removeMcpServerFromConfig(configPath: string): boolean {
@@ -258,6 +274,8 @@ export interface ConnectReport {
   readonly pluginAdd: CodexCommandResult | null;
   readonly legacyHooksWritten: string | null;
   readonly mcpServerWritten: string | null;
+  /** A pre-existing un-sentineled MCP table was found and left untouched. */
+  readonly mcpServerAlreadyPresent: boolean;
   readonly dryRun: boolean;
 }
 
@@ -278,6 +296,7 @@ export function connectCodex(
       pluginAdd: null,
       legacyHooksWritten: opts.withHooks ? codexHooksPath() : null,
       mcpServerWritten: codexConfigPath(),
+      mcpServerAlreadyPresent: false,
       dryRun: true,
     };
   }
@@ -304,7 +323,7 @@ export function connectCodex(
   // universal infrastructure that should work whether or not the plugin
   // system honors the bundled .mcp.json indirection.
   const configPath = codexConfigPath();
-  writeMcpServerToConfig(configPath);
+  const mcpResult = writeMcpServerToConfig(configPath);
 
   return {
     source,
@@ -313,7 +332,8 @@ export function connectCodex(
     marketplaceAdd,
     pluginAdd,
     legacyHooksWritten,
-    mcpServerWritten: configPath,
+    mcpServerWritten: mcpResult === "written" ? configPath : null,
+    mcpServerAlreadyPresent: mcpResult === "skipped-existing",
     dryRun: false,
   };
 }
@@ -373,4 +393,105 @@ export function disconnectCodex(opts: DisconnectOptions): DisconnectReport {
 
 export function pluginScriptsDir(repoRoot: string): string {
   return resolve(repoRoot, "plugin", "scripts");
+}
+
+// Pre-rename marketplace name. Installs of 0.3.x and earlier registered the
+// marketplace as "nlm-memory-ts", so their plugin id is "nlm-memory@nlm-memory-ts"
+// and their hook-state keys carry the same suffix. `--repair` strips these.
+const LEGACY_NAME = "nlm-memory-ts";
+// The marketplace suffix uniquely identifies nlm-owned stale entries
+// (plugin/marketplace/mcp/hooks). Matching on it rather than the bare name
+// keeps repair scoped to nlm's own config: a `[projects."…/nlm-memory-ts"]`
+// trust entry is Codex's registry to prune (even when stale from the rename),
+// not nlm's to rewrite.
+const LEGACY_SUFFIX = `@${LEGACY_NAME}`;
+
+/** True for a config.toml table header that belongs to the pre-rename install. */
+function isStaleTableHeader(trimmed: string): boolean {
+  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return false;
+  // [plugins."nlm-memory@nlm-memory-ts"], [hooks.state."…@nlm-memory-ts:…"]
+  if (trimmed.includes(LEGACY_SUFFIX)) return true;
+  // legacy MCP table, if a pre-rename version wrote one
+  return trimmed === `[mcp_servers.${LEGACY_NAME}]` || trimmed === `[mcp_servers."${LEGACY_NAME}"]`;
+}
+
+/**
+ * Remove pre-rename `nlm-memory-ts` tables from a config.toml string: the
+ * `[plugins."nlm-memory@nlm-memory-ts"]` registration, its `[hooks.state.…]`
+ * entries, and a legacy `[mcp_servers.nlm-memory-ts]` table if present — each up
+ * to the next table header. A legitimate `[projects."…/nlm-memory-ts"]` path is
+ * preserved (it lacks the `@nlm-memory-ts` marketplace suffix). Old managed
+ * sentinel comments are dropped too. Pure — the caller owns IO.
+ */
+export function stripStaleCodexEntry(content: string): string {
+  const lines = content.split("\n");
+  const out: string[] = [];
+  let inStaleTable = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if ((trimmed.startsWith("# >>>") || trimmed.startsWith("# <<<")) && trimmed.includes(LEGACY_NAME)) {
+      continue; // our old managed sentinel comments
+    }
+    if (isStaleTableHeader(trimmed)) {
+      inStaleTable = true;
+      continue;
+    }
+    if (inStaleTable) {
+      if (trimmed.startsWith("[")) inStaleTable = false; // next table — re-evaluate below
+      else continue; // skip key=value / blank lines inside the stale table
+    }
+    out.push(line);
+  }
+  return out.join("\n");
+}
+
+export interface RepairReport {
+  readonly staleMcpRemovedFromConfig: boolean;
+  readonly oldPluginRemove: CodexCommandResult | null;
+  readonly oldMarketplaceRemove: CodexCommandResult | null;
+  readonly connect: ConnectReport;
+  readonly dryRun: boolean;
+}
+
+/**
+ * Convert a stale pre-rename Codex install (nlm-memory-ts) into the current
+ * pbmagnet4/nlm-memory wiring without hand-editing config.toml: strip the
+ * legacy MCP table, best-effort remove the legacy plugin + marketplace from
+ * codex's registry, then run the normal connect.
+ */
+export function repairCodex(opts: ConnectOptions, scriptsDir: string): RepairReport {
+  const configPath = codexConfigPath();
+
+  if (opts.dryRun) {
+    const wouldStrip =
+      existsSync(configPath) &&
+      stripStaleCodexEntry(readFileSync(configPath, "utf8")) !== readFileSync(configPath, "utf8");
+    return {
+      staleMcpRemovedFromConfig: wouldStrip,
+      oldPluginRemove: null,
+      oldMarketplaceRemove: null,
+      connect: connectCodex(opts, scriptsDir),
+      dryRun: true,
+    };
+  }
+
+  let staleMcpRemovedFromConfig = false;
+  if (existsSync(configPath)) {
+    const existing = readFileSync(configPath, "utf8");
+    const cleaned = stripStaleCodexEntry(existing);
+    if (cleaned !== existing) {
+      writeFileSync(configPath, cleaned, "utf8");
+      staleMcpRemovedFromConfig = true;
+    }
+  }
+
+  // Best-effort: the legacy entries may live only in config.toml, not in
+  // codex's registry, so a non-zero exit here is not a repair failure. The
+  // legacy plugin id is plugin "nlm-memory" from marketplace "nlm-memory-ts".
+  const oldPluginRemove = runCodex(["plugin", "remove", `${PLUGIN_NAME}@${LEGACY_NAME}`]);
+  const oldMarketplaceRemove = runCodex(["plugin", "marketplace", "remove", LEGACY_NAME]);
+
+  const connect = connectCodex(opts, scriptsDir);
+
+  return { staleMcpRemovedFromConfig, oldPluginRemove, oldMarketplaceRemove, connect, dryRun: false };
 }

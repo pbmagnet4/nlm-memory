@@ -268,3 +268,47 @@ export interface Signal {
   readonly ts: string;
   readonly createdAt: string;
 }
+
+// ── Code exemplars (code-recall lane) ──────────────────────────────────────
+//
+// Concrete code chunks with deterministic outcome labels (git-survival +
+// test exit code). Sibling to signals; gated behind NLM_CODE_EXEMPLARS_ENABLED.
+
+export type CodeExemplarOutcome = "pass" | "fail" | "fix" | "exhausted";
+
+/** Producer-side payload for a single code chunk. */
+export interface CodeExemplarInput {
+  readonly installScope: string;
+  readonly signalId: string | null;
+  readonly sessionId: string | null;
+  readonly repo: string;
+  readonly model: string;
+  readonly lang: string | null;
+  readonly taskContext: string;
+  readonly code: string;
+  readonly codeHash: string;
+  readonly outcome: CodeExemplarOutcome;
+  readonly gitSha: string | null;
+  readonly survived: 0 | 1 | null;
+  readonly ts: string;
+}
+
+/** Stored exemplar. */
+export interface CodeExemplar extends CodeExemplarInput {
+  readonly id: string;
+  readonly createdAt: string;
+}
+
+/** One result row from recall_code. */
+export interface CodeExemplarHit {
+  readonly id: string;
+  readonly code: string;
+  readonly taskContext: string;
+  readonly outcome: CodeExemplarOutcome;
+  readonly repo: string;
+  readonly model: string;
+  readonly lang: string | null;
+  readonly survived: 0 | 1 | null;
+  readonly gitSha: string | null;
+  readonly distance: number;
+}
