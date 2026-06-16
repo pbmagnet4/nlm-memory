@@ -9,7 +9,7 @@
 
 import { existsSync } from "node:fs";
 import { defaultDbPath } from "../core/adapters/cursor.js";
-import type { SourceRegistry } from "../core/sources/source-registry.js";
+import type { SourceRegistryPort } from "../core/sources/source-registry.js";
 
 export interface ConnectCursorOptions {
   readonly dbPath?: string;
@@ -26,10 +26,10 @@ export interface DisconnectCursorReport {
   readonly action: "disabled" | "not-found" | "dry-run";
 }
 
-export function connectCursor(
-  registry: SourceRegistry,
+export async function connectCursor(
+  registry: SourceRegistryPort,
   opts: ConnectCursorOptions = {},
-): ConnectCursorReport {
+): Promise<ConnectCursorReport> {
   const adapterDbPath = opts.dbPath ?? defaultDbPath();
   const adapterExists = existsSync(adapterDbPath);
 
@@ -37,16 +37,16 @@ export function connectCursor(
     return { adapterDbPath, adapterExists, action: "dry-run" };
   }
 
-  const existing = registry.getByName("Cursor");
+  const existing = await registry.getByName("Cursor");
   if (existing) {
     if (existing.enabled && existing.pathOrUrl === adapterDbPath) {
       return { adapterDbPath, adapterExists, action: "already-active" };
     }
-    registry.update(existing.id, { enabled: true, pathOrUrl: adapterDbPath });
+    await registry.update(existing.id, { enabled: true, pathOrUrl: adapterDbPath });
     return { adapterDbPath, adapterExists, action: "enabled" };
   }
 
-  registry.insert({
+  await registry.insert({
     kind: "cursor",
     name: "Cursor",
     pathOrUrl: adapterDbPath,
@@ -56,13 +56,13 @@ export function connectCursor(
   return { adapterDbPath, adapterExists, action: "created" };
 }
 
-export function disconnectCursor(
-  registry: SourceRegistry,
+export async function disconnectCursor(
+  registry: SourceRegistryPort,
   opts: { dryRun?: boolean } = {},
-): DisconnectCursorReport {
+): Promise<DisconnectCursorReport> {
   if (opts.dryRun) return { action: "dry-run" };
-  const existing = registry.getByName("Cursor");
+  const existing = await registry.getByName("Cursor");
   if (!existing) return { action: "not-found" };
-  registry.update(existing.id, { enabled: false });
+  await registry.update(existing.id, { enabled: false });
   return { action: "disabled" };
 }

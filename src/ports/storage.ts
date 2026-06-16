@@ -15,6 +15,10 @@ import type { CodeExemplarStore } from "./code-exemplar-store.js";
 import type { FactStore } from "./fact-store.js";
 import type { SessionStore } from "./session-store.js";
 import type { SignalStore } from "./signal-store.js";
+// Registry ports are defined alongside their adapters (the SourceRow/ProviderRow
+// domain types live there); these are type-only imports.
+import type { SourceRegistryPort } from "@core/sources/source-registry.js";
+import type { ProviderRegistryPort } from "@core/providers/provider-registry.js";
 
 export interface StorageContext {
   readonly facts: FactStore;
@@ -26,6 +30,10 @@ export interface Storage {
   readonly sessions: SessionStore;
   readonly signals: SignalStore;
   readonly exemplars: CodeExemplarStore;
+  /** Transcript-source registry (claude-code/hermes/webhook/…). */
+  readonly sources: SourceRegistryPort;
+  /** LLM-provider registry (ollama/deepseek/openai/…). */
+  readonly providers: ProviderRegistryPort;
 
   /**
    * Run `fn` inside an adapter-defined transaction. The handles on the

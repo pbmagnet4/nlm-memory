@@ -19,6 +19,8 @@ import { PgSessionStore } from "./pg-session-store.js";
 import { PgSignalStore } from "./pg-signal-store.js";
 import { NullCodeExemplarStore } from "./null-code-exemplar-store.js";
 import { PgTxBoundFactStore, PgTxBoundSessionStore, type QueuedOp } from "./pg-tx-context.js";
+import { PgSourceRegistry } from "@core/sources/source-registry.js";
+import { PgProviderRegistry } from "@core/providers/provider-registry.js";
 
 export interface PgStorageOptions {
   readonly connectionString: string;
@@ -30,6 +32,8 @@ export class PgStorage implements Storage {
   readonly sessions: PgSessionStore;
   readonly signals: PgSignalStore;
   readonly exemplars: NullCodeExemplarStore;
+  readonly sources: PgSourceRegistry;
+  readonly providers: PgProviderRegistry;
   private readonly _pool: Pool;
   private readonly _migrationsDir: string;
   // Guards against re-entrant (synchronous) nesting only. Not concurrent-call-safe.
@@ -42,6 +46,8 @@ export class PgStorage implements Storage {
     this.sessions = new PgSessionStore(pool);
     this.signals = new PgSignalStore(pool);
     this.exemplars = new NullCodeExemplarStore();
+    this.sources = new PgSourceRegistry(pool);
+    this.providers = new PgProviderRegistry(pool);
   }
 
   static create(opts: PgStorageOptions): PgStorage {

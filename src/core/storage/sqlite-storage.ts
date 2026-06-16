@@ -20,6 +20,8 @@ import { SqliteCodeExemplarStore } from "./sqlite-code-exemplar-store.js";
 import { SqliteFactStore } from "./sqlite-fact-store.js";
 import { SqliteSessionStore } from "./sqlite-session-store.js";
 import { SqliteSignalStore } from "./sqlite-signal-store.js";
+import { SourceRegistry } from "@core/sources/source-registry.js";
+import { ProviderRegistry } from "@core/providers/provider-registry.js";
 
 export interface SqliteStorageOptions {
   readonly dbPath: string;
@@ -31,6 +33,8 @@ export class SqliteStorage implements Storage {
   readonly facts: SqliteFactStore;
   readonly signals: SqliteSignalStore;
   readonly exemplars: SqliteCodeExemplarStore;
+  readonly sources: SourceRegistry;
+  readonly providers: ProviderRegistry;
   private inTxn = false;
 
   private constructor(
@@ -38,11 +42,15 @@ export class SqliteStorage implements Storage {
     facts: SqliteFactStore,
     signals: SqliteSignalStore,
     exemplars: SqliteCodeExemplarStore,
+    sources: SourceRegistry,
+    providers: ProviderRegistry,
   ) {
     this.sessions = sessions;
     this.facts = facts;
     this.signals = signals;
     this.exemplars = exemplars;
+    this.sources = sources;
+    this.providers = providers;
   }
 
   static create(opts: SqliteStorageOptions): SqliteStorage {
@@ -50,7 +58,9 @@ export class SqliteStorage implements Storage {
     const facts = new SqliteFactStore(sessions.rawDb());
     const signals = new SqliteSignalStore(sessions.rawDb());
     const exemplars = new SqliteCodeExemplarStore(sessions.rawDb());
-    return new SqliteStorage(sessions, facts, signals, exemplars);
+    const sources = new SourceRegistry(sessions.rawDb());
+    const providers = new ProviderRegistry(sessions.rawDb());
+    return new SqliteStorage(sessions, facts, signals, exemplars, sources, providers);
   }
 
   async init(): Promise<void> {
