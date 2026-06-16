@@ -86,6 +86,7 @@ import {
 import type { SessionStore } from "@ports/session-store.js";
 import type { SqliteSessionStore } from "@core/storage/sqlite-session-store.js";
 import { PgSessionStore } from "@core/storage/pg-session-store.js";
+import type { Pool } from "pg";
 import type { McpDeps } from "../mcp/server.js";
 import type {
   FactKind,
@@ -171,6 +172,105 @@ const DATA_STAT_TABLES = [
   "sources",
   "providers",
 ] as const;
+
+interface DataStats {
+  dbPath: string;
+  dbBytes: number;
+  dbPresent: boolean;
+  schemaVersion: number | null;
+  migrations: Array<{ version: number; name: string; applied_at: string }>;
+  tables: Array<{ name: string; rows: number }>;
+  runtimes: Array<{ runtime: string; n: number }>;
+}
+
+function sqliteDataStats(
+  db: import("better-sqlite3").Database,
+  dbPath: string,
+): DataStats {
+  const countOf = (table: string): number => {
+    try {
+      const row = db.prepare<[], { n: number }>(`SELECT COUNT(*) AS n FROM ${table}`).get();
+      return row?.n ?? 0;
+    } catch {
+      return 0;
+    }
+  };
+  const tables = DATA_STAT_TABLES.map((name) => ({ name, rows: countOf(name) }));
+  const migrations = db
+    .prepare<[], { version: number; name: string; applied_at: string }>(
+      "SELECT version, name, applied_at FROM schema_migrations ORDER BY version",
+    )
+    .all();
+  const runtimes = db
+    .prepare<[], { runtime: string; n: number }>(
+      "SELECT runtime, COUNT(*) AS n FROM sessions GROUP BY runtime ORDER BY n DESC",
+    )
+    .all();
+
+  let dbBytes = 0;
+  let dbPresent = false;
+  try {
+    dbBytes = statSync(dbPath).size;
+    dbPresent = true;
+  } catch { /* file absent */ }
+  for (const sidecar of [`${dbPath}-wal`, `${dbPath}-shm`]) {
+    try { dbBytes += statSync(sidecar).size; } catch { /* no sidecar */ }
+  }
+
+  return {
+    dbPath,
+    dbBytes,
+    dbPresent,
+    schemaVersion: migrations.length > 0 ? migrations[migrations.length - 1]!.version : null,
+    migrations,
+    tables,
+    runtimes,
+  };
+}
+
+async function pgDataStats(pool: Pool): Promise<DataStats> {
+  const countOf = async (table: string): Promise<number> => {
+    try {
+      const r = await pool.query<{ n: string }>(`SELECT COUNT(*) AS n FROM ${table}`);
+      return Number(r.rows[0]?.n ?? 0);
+    } catch {
+      return 0;
+    }
+  };
+  const tables = await Promise.all(
+    DATA_STAT_TABLES.map(async (name) => ({ name, rows: await countOf(name) })),
+  );
+  const migrationsResult = await pool.query<{ version: number; name: string; applied_at: string }>(
+    "SELECT version, name, applied_at FROM schema_migrations ORDER BY version",
+  );
+  const migrations = migrationsResult.rows.map((r) => ({
+    version: r.version,
+    name: r.name,
+    applied_at: String(r.applied_at),
+  }));
+  const runtimesResult = await pool.query<{ runtime: string; n: string }>(
+    "SELECT runtime, COUNT(*) AS n FROM sessions GROUP BY runtime ORDER BY n DESC",
+  );
+  const runtimes = runtimesResult.rows.map((r) => ({ runtime: r.runtime, n: Number(r.n) }));
+
+  let dbBytes = 0;
+  try {
+    const sizeResult = await pool.query<{ bytes: string }>(
+      "SELECT pg_database_size(current_database()) AS bytes",
+    );
+    dbBytes = Number(sizeResult.rows[0]?.bytes ?? 0);
+  } catch { /* size unavailable */ }
+
+  return {
+    dbPath: "postgresql",
+    dbBytes,
+    dbPresent: true,
+    schemaVersion: migrations.length > 0 ? migrations[migrations.length - 1]!.version : null,
+    migrations,
+    tables,
+    runtimes,
+  };
+}
 
 function parseLimit(raw: string | undefined, fallback: number, max: number): number {
   if (raw === undefined) return fallback;
@@ -951,53 +1051,17 @@ function registerDatasetRoute(app: Hono, deps: HttpDeps): void {
 // ── Data management ─────────────────────────────────────────────
 // Storage stats, live-safe backup snapshot, and staged restore.
 function registerDataManagementRoutes(app: Hono, deps: HttpDeps): void {
-  app.get("/api/data/stats", (c) => {
+  app.get("/api/data/stats", async (c) => {
     if (!deps.liveStore || !deps.dbPath) {
       return c.json({ error: "data stats require liveStore + dbPath" }, 503);
     }
-    // TODO(#215a): replace rawDb() with port methods; cast until then
-    const db = (deps.liveStore as import("@core/storage/sqlite-session-store.js").SqliteSessionStore).rawDb();
-    const countOf = (table: string): number => {
-      try {
-        const row = db.prepare<[], { n: number }>(`SELECT COUNT(*) AS n FROM ${table}`).get();
-        return row?.n ?? 0;
-      } catch {
-        return 0;
-      }
-    };
-    const tables = DATA_STAT_TABLES.map((name) => ({ name, rows: countOf(name) }));
-
-    const migrations = db
-      .prepare<[], { version: number; name: string; applied_at: string }>(
-        "SELECT version, name, applied_at FROM schema_migrations ORDER BY version",
-      )
-      .all();
-
-    const runtimes = db
-      .prepare<[], { runtime: string; n: number }>(
-        "SELECT runtime, COUNT(*) AS n FROM sessions GROUP BY runtime ORDER BY n DESC",
-      )
-      .all();
-
-    let dbBytes = 0;
-    let dbPresent = false;
-    try {
-      dbBytes = statSync(deps.dbPath).size;
-      dbPresent = true;
-    } catch { /* file absent */ }
-    for (const sidecar of [`${deps.dbPath}-wal`, `${deps.dbPath}-shm`]) {
-      try { dbBytes += statSync(sidecar).size; } catch { /* no sidecar */ }
-    }
-
-    return c.json({
-      dbPath: deps.dbPath,
-      dbBytes,
-      dbPresent,
-      schemaVersion: migrations.length > 0 ? migrations[migrations.length - 1]!.version : null,
-      migrations,
-      tables,
-      runtimes,
-    });
+    const stats = deps.liveStore instanceof PgSessionStore
+      ? await pgDataStats(deps.liveStore.pool)
+      : sqliteDataStats(
+          (deps.liveStore as import("@core/storage/sqlite-session-store.js").SqliteSessionStore).rawDb(),
+          deps.dbPath,
+        );
+    return c.json(stats);
   });
 
   app.get("/api/data/backup", (c) => {
@@ -1014,9 +1078,16 @@ function registerDataManagementRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.liveStore || !deps.dbPath) {
       return c.json({ error: "backup requires liveStore + dbPath" }, 503);
     }
+    // VACUUM INTO is a SQLite-only mechanism. PostgreSQL backups are delegated
+    // to the database layer (pg_dump / managed-PG snapshots / WAL archiving),
+    // not produced in-process by the daemon.
+    if (deps.liveStore instanceof PgSessionStore) {
+      return c.json({
+        error: "daemon backup is SQLite-only; for PostgreSQL use pg_dump or your managed-PG snapshot facility",
+      }, 501);
+    }
     const scratch = snapshotScratchPath(deps.dbPath);
     try {
-      // TODO(#215a): replace rawDb() with port methods; cast until then
       vacuumSnapshot((deps.liveStore as import("@core/storage/sqlite-session-store.js").SqliteSessionStore).rawDb(), scratch);
       const bytes = readFileSync(scratch);
       const stamp = new Date().toISOString().slice(0, 10);
@@ -1042,6 +1113,13 @@ function registerDataManagementRoutes(app: Hono, deps: HttpDeps): void {
       }
     }
     if (!deps.dbPath) return c.json({ error: "restore requires dbPath" }, 503);
+    // Staged restore swaps the SQLite file on restart — SQLite-only. PG restores
+    // go through pg_restore / managed-PG point-in-time recovery.
+    if (deps.liveStore instanceof PgSessionStore) {
+      return c.json({
+        error: "daemon restore is SQLite-only; for PostgreSQL use pg_restore or your managed-PG recovery facility",
+      }, 501);
+    }
     const form = await c.req.parseBody().catch(() => null);
     const file = form?.["file"];
     if (!(file instanceof File)) {

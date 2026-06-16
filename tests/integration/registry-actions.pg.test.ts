@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { PgStorage } from "../../src/core/storage/pg-storage.js";
+import { PgSessionStore } from "../../src/core/storage/pg-session-store.js";
 import { PgSourceRegistry } from "../../src/core/sources/source-registry.js";
 import { PgProviderRegistry } from "../../src/core/providers/provider-registry.js";
 import {
@@ -23,6 +24,22 @@ import {
   undoActionPg,
   writeActionPg,
 } from "../../src/core/actions/actions-log.js";
+import { createApp } from "../../src/http/app.js";
+import { RecallService } from "../../src/core/recall/recall-service.js";
+import type { EmbedResult, LLMClient } from "../../src/ports/llm-client.js";
+import type { Hono } from "hono";
+
+class FixedEmbedder implements LLMClient {
+  async embed(): Promise<EmbedResult> {
+    return { vector: new Float32Array(768), model: "fixed-test" };
+  }
+  async rewriteForRecall(): Promise<never> {
+    throw new Error("not used in tests");
+  }
+  async classify(): Promise<never> {
+    throw new Error("not used in tests");
+  }
+}
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
 const MIGRATIONS_DIR = join(
@@ -170,5 +187,79 @@ describe.skipIf(!PG_TEST_URL)("PG actions-log", () => {
     expect(undo?.originalKind).toBe("dismiss");
     // The original is now reverted; undoing it again returns null.
     expect(await undoActionPg(pool, id)).toBeNull();
+  });
+});
+
+describe.skipIf(!PG_TEST_URL)("data-management routes (PG backend)", () => {
+  let storage: PgStorage;
+  let store: PgSessionStore;
+  let app: Hono;
+
+  beforeAll(async () => {
+    storage = PgStorage.create({ connectionString: PG_TEST_URL!, migrationsDir: MIGRATIONS_DIR });
+    await storage.init();
+    store = storage.sessions;
+    const recall = new RecallService({ store, llm: new FixedEmbedder() });
+    app = createApp({ recall, store, liveStore: store, dbPath: "/tmp/nlm-pg-stats-test.sqlite" });
+  });
+
+  afterAll(async () => {
+    await storage.close();
+  });
+
+  beforeEach(async () => {
+    await storage.pgPool().query(TRUNCATE_SQL);
+    await storage.pgPool().query("TRUNCATE TABLE sessions RESTART IDENTITY CASCADE");
+  });
+
+  it("GET /api/data/stats reports PG-native size + counts", async () => {
+    await store.insertSessionForTest({
+      id: "sess_stats_1",
+      runtime: "claude-code",
+      runtimeSessionId: "rt_1",
+      startedAt: "2026-06-16T00:00:00Z",
+      endedAt: null,
+      durationMin: null,
+      label: "stats fixture",
+      summary: "a session for the stats test",
+      status: "closed",
+      transcriptKind: "claude-code",
+      transcriptPath: null,
+      body: "body text",
+      entities: [],
+      decisions: [],
+      open: [],
+    });
+
+    const res = await app.request("/api/data/stats");
+    expect(res.status).toBe(200);
+    const stats = (await res.json()) as {
+      dbPath: string;
+      dbBytes: number;
+      dbPresent: boolean;
+      schemaVersion: number | null;
+      tables: Array<{ name: string; rows: number }>;
+      runtimes: Array<{ runtime: string; n: number }>;
+    };
+    expect(stats.dbPath).toBe("postgresql");
+    expect(stats.dbPresent).toBe(true);
+    expect(stats.dbBytes).toBeGreaterThan(0);
+    expect(stats.schemaVersion).toBe(1);
+    expect(stats.tables.find((t) => t.name === "sessions")?.rows).toBe(1);
+    expect(stats.runtimes).toContainEqual({ runtime: "claude-code", n: 1 });
+  });
+
+  it("GET /api/data/backup is 501 on PG with delegation guidance", async () => {
+    const res = await app.request("/api/data/backup");
+    expect(res.status).toBe(501);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/pg_dump/);
+  });
+
+  it("POST /api/data/restore is 501 on PG with delegation guidance", async () => {
+    const res = await app.request("/api/data/restore", { method: "POST" });
+    expect(res.status).toBe(501);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/pg_restore/);
   });
 });
