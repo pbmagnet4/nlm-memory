@@ -11,7 +11,10 @@ import { createHash } from "node:crypto";
 import { extractFacts } from "@core/facts/extract-facts.js";
 import type { SqliteFactStore } from "@core/storage/sqlite-fact-store.js";
 import type { IngestRecord, SqliteSessionStore } from "@core/storage/sqlite-session-store.js";
+import { PgSessionStore } from "@core/storage/pg-session-store.js";
+import type { PgFactStore } from "@core/storage/pg-fact-store.js";
 import type { LLMClient } from "@ports/llm-client.js";
+import type { Fact } from "@shared/types.js";
 
 const BODY_CAP = 200_000;
 const CONFIDENCE_FLOOR = 0.3;
@@ -32,8 +35,8 @@ export interface IngestInput {
 export interface IngestDeps {
   readonly classifier: LLMClient;
   readonly embedder: LLMClient;
-  readonly store: SqliteSessionStore;
-  readonly factStore?: SqliteFactStore;
+  readonly store: SqliteSessionStore | PgSessionStore;
+  readonly factStore?: SqliteFactStore | PgFactStore;
   /** Optional logger — defaults to console.error. */
   readonly log?: (msg: string) => void;
 }
@@ -102,10 +105,18 @@ export async function ingestSession(input: IngestInput, deps: IngestDeps): Promi
     openQuestions: classification.open,
   };
 
-  const factSink = deps.factStore
-    ? { factStore: deps.factStore, facts: extractFacts(classification, id, startedAt) }
-    : null;
+  const facts: ReadonlyArray<Fact> = deps.factStore
+    ? extractFacts(classification, id, startedAt)
+    : [];
 
-  await deps.store.insertSession(record, deps.embedder, null, factSink);
+  // Store + factStore come from the same backend (see buildStack); the cast
+  // is sound — TS can't correlate the two union members at one call site.
+  if (deps.store instanceof PgSessionStore) {
+    await deps.store.insertSession(record, deps.embedder, null,
+      deps.factStore ? { factStore: deps.factStore as PgFactStore, facts } : null);
+  } else {
+    await deps.store.insertSession(record, deps.embedder, null,
+      deps.factStore ? { factStore: deps.factStore as SqliteFactStore, facts } : null);
+  }
   return { id, status: "ingested", latencyMs: Date.now() - t0, confidence: classification.confidence };
 }

@@ -14,8 +14,9 @@ import type {
   SessionFilter,
   SessionStore,
 } from "@ports/session-store.js";
-import type { Session, SessionStatus } from "@shared/types.js";
+import type { Fact, Session, SessionStatus } from "@shared/types.js";
 import type { IngestRecord, RecentMarker, RecentWrite, Supersedes } from "./sqlite-session-store.js";
+import type { PgFactStore } from "./pg-fact-store.js";
 import { chunkSessionText } from "@core/embedding/chunk-body.js";
 
 type SessionRow = {
@@ -301,6 +302,7 @@ export class PgSessionStore implements SessionStore {
     record: IngestRecord,
     embedder: import("@ports/llm-client.js").LLMClient | null = null,
     supersedes: Supersedes | null = null,
+    factSink: { factStore: PgFactStore; facts: ReadonlyArray<Fact> } | null = null,
   ): Promise<void> {
     const client = await this.pool.connect();
     try {
@@ -370,6 +372,42 @@ export class PgSessionStore implements SessionStore {
           [predecessorStatus, supersedes.priorSessionId],
         );
       }
+
+      // Atomic session+facts ingest. Mirrors the SQLite factSink path
+      // (sqlite-session-store.insertSession) and PgFactStore.ingestSessionFacts,
+      // but runs on the session's own client so facts commit with the row.
+      // Re-ingest is idempotent: DELETE-by-session clears prior facts, then the
+      // batch UPDATE re-collapses every active (subject, predicate) sibling.
+      if (factSink !== null) {
+        await client.query("DELETE FROM facts WHERE source_session_id = $1", [record.id]);
+        if (factSink.facts.length > 0) {
+          for (const f of factSink.facts) {
+            await client.query(
+              `INSERT INTO facts (id, kind, subject, predicate, value, source_session_id,
+                 source_quote, created_at, superseded_by, confidence)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+              [f.id, f.kind, f.subject, f.predicate, f.value, f.sourceSessionId,
+               f.sourceQuote, f.createdAt, f.supersededBy, f.confidence],
+            );
+          }
+          const values = factSink.facts
+            .map((_, i) => `($${i * 3 + 1}, $${i * 3 + 2}, $${i * 3 + 3})`)
+            .join(", ");
+          const params: unknown[] = [];
+          for (const f of factSink.facts) params.push(f.subject, f.predicate, f.id);
+          await client.query(
+            `UPDATE facts AS old
+             SET superseded_by = new_f.new_id
+             FROM (VALUES ${values}) AS new_f(subject, predicate, new_id)
+             WHERE old.subject = new_f.subject
+               AND old.predicate = new_f.predicate
+               AND old.superseded_by IS NULL
+               AND old.id != new_f.new_id`,
+            params,
+          );
+        }
+      }
+
       await client.query("COMMIT");
     } catch (err) {
       await client.query("ROLLBACK");
@@ -398,6 +436,22 @@ export class PgSessionStore implements SessionStore {
           );
         } catch (err) {
           process.stderr.write(`[nlm] embedding chunk failed session=${record.id} chunk=${chunkIdx}: ${String(err)}\n`);
+        }
+      }
+
+      // Fact embeddings are best-effort and live outside the txn, mirroring the
+      // SQLite path. A per-fact embed failure leaves the fact current but
+      // semantically unreachable until a future re-ingest.
+      if (factSink !== null) {
+        for (const fact of factSink.facts) {
+          const factText = `${fact.subject} ${fact.predicate} ${fact.value}`.trim();
+          if (!factText) continue;
+          try {
+            const { vector } = await embedder.embed(factText, "document");
+            await factSink.factStore.upsertEmbedding(fact.id, vector);
+          } catch {
+            // Tolerated; see comment above.
+          }
         }
       }
     }
@@ -481,11 +535,14 @@ export class PgSessionStore implements SessionStore {
   ): Promise<Map<string, { supersededBy: string | null; supersedes: string[] }>> {
     if (ids.length === 0) return new Map();
     const placeholders = ids.map((_, i) => `$${i + 1}`).join(",");
+    // Both IN clauses reference the same $1..$n placeholders, so bind `ids`
+    // once — not twice. (Passing [...ids, ...ids] over-supplies parameters and
+    // PG rejects the bind: "supplies N parameters but requires M".)
     const result = await this.pool.query<{ from_session: string; to_session: string }>(
       `SELECT from_session, to_session FROM session_edges
        WHERE kind = 'supersedes'
          AND (from_session IN (${placeholders}) OR to_session IN (${placeholders}))`,
-      [...ids, ...ids],
+      [...ids],
     );
     const out = new Map<string, { supersededBy: string | null; supersedes: string[] }>();
     for (const id of ids) out.set(id, { supersededBy: null, supersedes: [] });
