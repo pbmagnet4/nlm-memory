@@ -22,6 +22,8 @@ import { homedir } from "node:os";
 import { extractFacts } from "@core/facts/extract-facts.js";
 import type { SqliteFactStore } from "@core/storage/sqlite-fact-store.js";
 import type { SqliteSessionStore } from "@core/storage/sqlite-session-store.js";
+import { PgSessionStore } from "@core/storage/pg-session-store.js";
+import type { PgFactStore } from "@core/storage/pg-fact-store.js";
 import type { LLMClient } from "@ports/llm-client.js";
 import { LLMUnreachableError } from "@ports/llm-client.js";
 
@@ -29,8 +31,8 @@ const DEFAULT_STATE_PATH = join(homedir(), ".nlm", "backfill_facts.state");
 const SAVE_EVERY = 25;
 
 export interface BackfillFactsOptions {
-  readonly store: SqliteSessionStore;
-  readonly factStore: SqliteFactStore;
+  readonly store: SqliteSessionStore | PgSessionStore;
+  readonly factStore: SqliteFactStore | PgFactStore;
   readonly classifier: LLMClient;
   /** Optional embedder. When omitted, facts are written without semantic vectors. */
   readonly embedder?: LLMClient | null;
@@ -81,12 +83,6 @@ export interface BackfillFactsReport {
   readonly storageFailures: number;
 }
 
-interface CandidateRow {
-  id: string;
-  started_at: string;
-  body: string | null;
-}
-
 function loadState(path: string): Set<string> {
   if (!existsSync(path)) return new Set();
   try {
@@ -110,35 +106,16 @@ export async function backfillFacts(
   const statePath = opts.statePath ?? DEFAULT_STATE_PATH;
   const done = opts.dryRun ? new Set<string>() : loadState(statePath);
 
-  const db = opts.store.rawDb();
-
   // Eligible sessions: started strictly before this run's cutoff (don't
   // race with live ingest), with a non-empty body (the classifier needs
   // transcript text). When reprocess=false, exclude sessions that already
-  // have facts attributed to them.
-  const sql = opts.reprocess
-    ? `
-      SELECT id, started_at, body
-      FROM sessions
-      WHERE started_at < ?
-        AND body IS NOT NULL AND length(body) > 0
-        ${opts.from ? "AND id > ?" : ""}
-      ORDER BY started_at ASC, id ASC
-    `
-    : `
-      SELECT s.id, s.started_at, s.body
-      FROM sessions s
-      WHERE s.started_at < ?
-        AND s.body IS NOT NULL AND length(s.body) > 0
-        AND NOT EXISTS (
-          SELECT 1 FROM facts f WHERE f.source_session_id = s.id
-        )
-        ${opts.from ? "AND s.id > ?" : ""}
-      ORDER BY s.started_at ASC, s.id ASC
-    `;
-  const rows: CandidateRow[] = opts.from
-    ? db.prepare<[string, string], CandidateRow>(sql).all(startedAtCutoff, opts.from)
-    : db.prepare<[string], CandidateRow>(sql).all(startedAtCutoff);
+  // have facts attributed to them. SQL lives in each adapter's
+  // listBackfillCandidates so backfill is backend-agnostic.
+  const rows = await opts.store.listBackfillCandidates({
+    cutoff: startedAtCutoff,
+    ...(opts.from ? { from: opts.from } : {}),
+    reprocess: opts.reprocess ?? false,
+  });
 
   // Filter state-file-known done ids BEFORE applying limit. Without this,
   // a dense cluster of previously-skipped (low-confidence) sessions would
@@ -193,7 +170,7 @@ export async function backfillFacts(
       continue;
     }
 
-    const facts = extractFacts(classification, sid, row.started_at);
+    const facts = extractFacts(classification, sid, row.startedAt);
     if (facts.length === 0) {
       skippedLowConfidence += 1;
       opts.onProgress?.(
@@ -218,12 +195,14 @@ export async function backfillFacts(
     }
 
     try {
-      await opts.store.insertFactsForSession(
-        sid,
-        opts.factStore,
-        facts,
-        opts.embedder ?? null,
-      );
+      // store + factStore share a backend (composed together in buildStorage),
+      // so the factStore cast is sound — TS just can't correlate the two union
+      // members at one call site.
+      if (opts.store instanceof PgSessionStore) {
+        await opts.store.insertFactsForSession(sid, opts.factStore as PgFactStore, facts, opts.embedder ?? null);
+      } else {
+        await opts.store.insertFactsForSession(sid, opts.factStore as SqliteFactStore, facts, opts.embedder ?? null);
+      }
     } catch (err) {
       storageFailures += 1;
       const detail = err instanceof Error ? err.message : String(err);
