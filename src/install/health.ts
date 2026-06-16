@@ -123,6 +123,43 @@ function codexStaleName(p: InstallProbe): HealthCheck {
   };
 }
 
+/**
+ * Verdict for `nlm verify`'s synthetic recall smoke test: a GET /api/recall
+ * round-trip that proves the HTTP -> store -> response path works. `wellFormed`
+ * is whether the body parsed to an object with a `results` array.
+ */
+export function evaluateRecallSmoke(reachable: boolean, status: number | null, wellFormed: boolean): HealthCheck {
+  if (!reachable) {
+    return { id: "recall-smoke", status: "fail", detail: "daemon unreachable — cannot run recall smoke test", fix: "nlm start" };
+  }
+  if (status === 200 && wellFormed) {
+    return { id: "recall-smoke", status: "ok", detail: "GET /api/recall returned a well-formed result set" };
+  }
+  return {
+    id: "recall-smoke",
+    status: "fail",
+    detail: `recall smoke test failed (status ${status ?? "none"}, well-formed=${wellFormed})`,
+    fix: "nlm restart; check nlm logs",
+  };
+}
+
+/** Verdict for the classifier + embedding model presence (Ollama backend). */
+export function evaluateModelHealth(embeddingPresent: boolean, classifierModel: string, classifierPresent: boolean): HealthCheck {
+  if (embeddingPresent && classifierPresent) {
+    return { id: "models", status: "ok", detail: `embedding + classifier (${classifierModel}) present` };
+  }
+  const missing = [
+    embeddingPresent ? null : "embedding",
+    classifierPresent ? null : `classifier (${classifierModel})`,
+  ].filter(Boolean).join(", ");
+  return {
+    id: "models",
+    status: "fail",
+    detail: `missing Ollama model(s): ${missing}`,
+    fix: "nlm setup",
+  };
+}
+
 function codexWiring(p: InstallProbe): HealthCheck {
   // Codex is optional. Only warn when its config exists but lacks the MCP block;
   // a user with no Codex config at all isn't misconfigured, just not using it.

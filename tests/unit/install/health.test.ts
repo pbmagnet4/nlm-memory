@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { evaluateInstallHealth } from "../../../src/install/health.js";
+import {
+  evaluateInstallHealth,
+  evaluateModelHealth,
+  evaluateRecallSmoke,
+} from "../../../src/install/health.js";
 import type { InstallProbe } from "../../../src/install/health.js";
 
 function baseProbe(overrides: Partial<InstallProbe> = {}): InstallProbe {
@@ -89,5 +93,32 @@ describe("evaluateInstallHealth", () => {
     );
     expect(c.get("codex")?.status).toBe("warn");
     expect(c.get("codex")?.fix).toBe("nlm connect codex");
+  });
+});
+
+describe("evaluateRecallSmoke", () => {
+  it("passes on 200 + well-formed body", () => {
+    expect(evaluateRecallSmoke(true, 200, true).status).toBe("ok");
+  });
+  it("fails when daemon is unreachable", () => {
+    const c = evaluateRecallSmoke(false, null, false);
+    expect(c.status).toBe("fail");
+    expect(c.fix).toBe("nlm start");
+  });
+  it("fails on non-200 or malformed body", () => {
+    expect(evaluateRecallSmoke(true, 500, false).status).toBe("fail");
+    expect(evaluateRecallSmoke(true, 200, false).status).toBe("fail");
+  });
+});
+
+describe("evaluateModelHealth", () => {
+  it("passes when both models present", () => {
+    expect(evaluateModelHealth(true, "qwen3.5:4b", true).status).toBe("ok");
+  });
+  it("fails and names the missing model(s)", () => {
+    const c = evaluateModelHealth(false, "qwen3.5:4b", true);
+    expect(c.status).toBe("fail");
+    expect(c.detail).toContain("embedding");
+    expect(c.fix).toBe("nlm setup");
   });
 });

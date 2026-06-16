@@ -57,11 +57,11 @@ import {
   pluginScriptsDir,
 } from "../install/codex.js";
 import { connectClaudeCode, disconnectClaudeCode, installClaudeCodeHooks, mcpConfigPath } from "../install/claude-code.js";
-import { evaluateInstallHealth } from "../install/health.js";
-import type { InstallProbe } from "../install/health.js";
+import { evaluateInstallHealth, evaluateModelHealth, evaluateRecallSmoke } from "../install/health.js";
+import type { HealthCheck, InstallProbe } from "../install/health.js";
 import { codexConfigPath } from "../install/codex.js";
 import { hardenNlmDirPermissions } from "../install/nlm-dir-perms.js";
-import { ensureMcpToken } from "../install/ollama.js";
+import { embeddingModelPresent, ensureMcpToken, ollamaModelPresent } from "../install/ollama.js";
 import { connectCursor, disconnectCursor } from "../install/cursor.js";
 import {
   describeRemove,
@@ -1768,14 +1768,79 @@ program
     }
 
     console.log("\nInstall & runtime health:");
-    const health = evaluateInstallHealth(await gatherInstallProbe());
-    for (const c of health) {
-      if (c.status === "fail") anyFail = true;
-      const label = c.status === "ok" ? "PASS" : c.status === "warn" ? "WARN" : "FAIL";
-      const fix = c.fix ? `\n  → fix: ${c.fix}` : "";
-      console.log(`${label} ${c.id}  ${c.detail}${fix}`);
-    }
+    if (printHealthChecks(evaluateInstallHealth(await gatherInstallProbe()))) anyFail = true;
 
+    if (anyFail) process.exit(1);
+  });
+
+function printHealthChecks(checks: ReadonlyArray<HealthCheck>): boolean {
+  let anyFail = false;
+  for (const c of checks) {
+    if (c.status === "fail") anyFail = true;
+    const label = c.status === "ok" ? "PASS" : c.status === "warn" ? "WARN" : "FAIL";
+    const fix = c.fix ? `\n  → fix: ${c.fix}` : "";
+    console.log(`${label} ${c.id}  ${c.detail}${fix}`);
+  }
+  return anyFail;
+}
+
+async function dbIntegrityCheck(): Promise<HealthCheck> {
+  const storage = await buildStorage(dbPath());
+  try {
+    const violations =
+      storage instanceof PgStorage
+        ? await runChecksOnPg(storage.pgPool())
+        : runChecksOnSqlite((storage as SqliteStorage).rawDb());
+    if (violations.length === 0) return { id: "db-integrity", status: "ok", detail: "all invariants hold" };
+    return {
+      id: "db-integrity",
+      status: "fail",
+      detail: `violations: ${violations.map((v) => v.id).join(", ")}`,
+      fix: "nlm doctor --fix",
+    };
+  } finally {
+    await storage.close();
+  }
+}
+
+async function recallSmokeCheck(): Promise<HealthCheck> {
+  let reachable = false;
+  let status: number | null = null;
+  let wellFormed = false;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 3_000);
+    const res = await fetch(`http://localhost:${port()}/api/recall?q=verify&limit=1`, { signal: ctrl.signal });
+    clearTimeout(timer);
+    reachable = true;
+    status = res.status;
+    const body = (await res.json().catch(() => null)) as { results?: unknown } | null;
+    wellFormed = Boolean(body && Array.isArray(body.results));
+  } catch {
+    // unreachable — evaluateRecallSmoke reports the fail
+  }
+  return evaluateRecallSmoke(reachable, status, wellFormed);
+}
+
+program
+  .command("verify")
+  .description("Release-gate: verify the install is wired and recall works end-to-end. Exit 1 on any failure.")
+  .action(async () => {
+    const provider = (process.env["NLM_CLASSIFIER"] ?? "ollama").toLowerCase();
+    const classifierModel =
+      process.env["NLM_CLASSIFIER_MODEL"] ?? (provider === "ollama" ? "qwen3.5:4b" : "deepseek-v4-flash");
+    const classifierPresent = provider === "ollama" ? ollamaModelPresent(classifierModel) : true;
+
+    const checks: HealthCheck[] = [
+      ...evaluateInstallHealth(await gatherInstallProbe()),
+      evaluateModelHealth(embeddingModelPresent(), classifierModel, classifierPresent),
+      await dbIntegrityCheck(),
+      await recallSmokeCheck(),
+    ];
+
+    const anyFail = printHealthChecks(checks);
+    const warns = checks.filter((c) => c.status === "warn").length;
+    console.log(anyFail ? "\nVERIFY: FAIL" : warns > 0 ? `\nVERIFY: PASS (${warns} warning(s))` : "\nVERIFY: PASS");
     if (anyFail) process.exit(1);
   });
 
