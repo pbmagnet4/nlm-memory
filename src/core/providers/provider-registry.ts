@@ -241,6 +241,26 @@ export class PgProviderRegistry {
     };
   }
 
+  async getByName(name: string): Promise<ProviderRow | null> {
+    const result = await this.pool.query<{
+      id: number; kind: ProviderKind; name: string; base_url: string | null;
+      api_key: string | null; default_model: string | null; enabled: boolean;
+      created_at: string; updated_at: string;
+    }>(
+      `SELECT id, kind, name, base_url, api_key, default_model, enabled, created_at, updated_at
+       FROM providers WHERE name = $1`,
+      [name],
+    );
+    if (!result.rows[0]) return null;
+    const r = result.rows[0];
+    return {
+      id: r.id, kind: r.kind, name: r.name, baseUrl: r.base_url,
+      apiKey: null, hasApiKey: r.api_key !== null && r.api_key.length > 0,
+      defaultModel: r.default_model, enabled: r.enabled,
+      createdAt: r.created_at, updatedAt: r.updated_at,
+    };
+  }
+
   async getSecret(id: number): Promise<string | null> {
     const result = await this.pool.query<{ api_key: string | null }>(
       "SELECT api_key FROM providers WHERE id = $1", [id],

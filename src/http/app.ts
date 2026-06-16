@@ -75,13 +75,18 @@ import { listModels } from "@core/providers/provider-models.js";
 import { ingestSession, deriveSessionId, type IngestDeps } from "@core/ingest/ingest-session.js";
 import {
   listActions,
+  listActionsPg,
   undoAction,
+  undoActionPg,
   writeAction,
+  writeActionPg,
   writeActionsBatch,
+  writeActionsBatchPg,
 } from "@core/actions/actions-log.js";
 import type { SessionStore } from "@ports/session-store.js";
 import type { SqliteSessionStore } from "@core/storage/sqlite-session-store.js";
-import type { PgSessionStore } from "@core/storage/pg-session-store.js";
+import { PgSessionStore } from "@core/storage/pg-session-store.js";
+import type { Pool } from "pg";
 import type { McpDeps } from "../mcp/server.js";
 import type {
   FactKind,
@@ -167,6 +172,105 @@ const DATA_STAT_TABLES = [
   "sources",
   "providers",
 ] as const;
+
+interface DataStats {
+  dbPath: string;
+  dbBytes: number;
+  dbPresent: boolean;
+  schemaVersion: number | null;
+  migrations: Array<{ version: number; name: string; applied_at: string }>;
+  tables: Array<{ name: string; rows: number }>;
+  runtimes: Array<{ runtime: string; n: number }>;
+}
+
+function sqliteDataStats(
+  db: import("better-sqlite3").Database,
+  dbPath: string,
+): DataStats {
+  const countOf = (table: string): number => {
+    try {
+      const row = db.prepare<[], { n: number }>(`SELECT COUNT(*) AS n FROM ${table}`).get();
+      return row?.n ?? 0;
+    } catch {
+      return 0;
+    }
+  };
+  const tables = DATA_STAT_TABLES.map((name) => ({ name, rows: countOf(name) }));
+  const migrations = db
+    .prepare<[], { version: number; name: string; applied_at: string }>(
+      "SELECT version, name, applied_at FROM schema_migrations ORDER BY version",
+    )
+    .all();
+  const runtimes = db
+    .prepare<[], { runtime: string; n: number }>(
+      "SELECT runtime, COUNT(*) AS n FROM sessions GROUP BY runtime ORDER BY n DESC",
+    )
+    .all();
+
+  let dbBytes = 0;
+  let dbPresent = false;
+  try {
+    dbBytes = statSync(dbPath).size;
+    dbPresent = true;
+  } catch { /* file absent */ }
+  for (const sidecar of [`${dbPath}-wal`, `${dbPath}-shm`]) {
+    try { dbBytes += statSync(sidecar).size; } catch { /* no sidecar */ }
+  }
+
+  return {
+    dbPath,
+    dbBytes,
+    dbPresent,
+    schemaVersion: migrations.length > 0 ? migrations[migrations.length - 1]!.version : null,
+    migrations,
+    tables,
+    runtimes,
+  };
+}
+
+async function pgDataStats(pool: Pool): Promise<DataStats> {
+  const countOf = async (table: string): Promise<number> => {
+    try {
+      const r = await pool.query<{ n: string }>(`SELECT COUNT(*) AS n FROM ${table}`);
+      return Number(r.rows[0]?.n ?? 0);
+    } catch {
+      return 0;
+    }
+  };
+  const tables = await Promise.all(
+    DATA_STAT_TABLES.map(async (name) => ({ name, rows: await countOf(name) })),
+  );
+  const migrationsResult = await pool.query<{ version: number; name: string; applied_at: string }>(
+    "SELECT version, name, applied_at FROM schema_migrations ORDER BY version",
+  );
+  const migrations = migrationsResult.rows.map((r) => ({
+    version: r.version,
+    name: r.name,
+    applied_at: String(r.applied_at),
+  }));
+  const runtimesResult = await pool.query<{ runtime: string; n: string }>(
+    "SELECT runtime, COUNT(*) AS n FROM sessions GROUP BY runtime ORDER BY n DESC",
+  );
+  const runtimes = runtimesResult.rows.map((r) => ({ runtime: r.runtime, n: Number(r.n) }));
+
+  let dbBytes = 0;
+  try {
+    const sizeResult = await pool.query<{ bytes: string }>(
+      "SELECT pg_database_size(current_database()) AS bytes",
+    );
+    dbBytes = Number(sizeResult.rows[0]?.bytes ?? 0);
+  } catch { /* size unavailable */ }
+
+  return {
+    dbPath: "postgresql",
+    dbBytes,
+    dbPresent: true,
+    schemaVersion: migrations.length > 0 ? migrations[migrations.length - 1]!.version : null,
+    migrations,
+    tables,
+    runtimes,
+  };
+}
 
 function parseLimit(raw: string | undefined, fallback: number, max: number): number {
   if (raw === undefined) return fallback;
@@ -947,53 +1051,17 @@ function registerDatasetRoute(app: Hono, deps: HttpDeps): void {
 // ── Data management ─────────────────────────────────────────────
 // Storage stats, live-safe backup snapshot, and staged restore.
 function registerDataManagementRoutes(app: Hono, deps: HttpDeps): void {
-  app.get("/api/data/stats", (c) => {
+  app.get("/api/data/stats", async (c) => {
     if (!deps.liveStore || !deps.dbPath) {
       return c.json({ error: "data stats require liveStore + dbPath" }, 503);
     }
-    // TODO(#215a): replace rawDb() with port methods; cast until then
-    const db = (deps.liveStore as import("@core/storage/sqlite-session-store.js").SqliteSessionStore).rawDb();
-    const countOf = (table: string): number => {
-      try {
-        const row = db.prepare<[], { n: number }>(`SELECT COUNT(*) AS n FROM ${table}`).get();
-        return row?.n ?? 0;
-      } catch {
-        return 0;
-      }
-    };
-    const tables = DATA_STAT_TABLES.map((name) => ({ name, rows: countOf(name) }));
-
-    const migrations = db
-      .prepare<[], { version: number; name: string; applied_at: string }>(
-        "SELECT version, name, applied_at FROM schema_migrations ORDER BY version",
-      )
-      .all();
-
-    const runtimes = db
-      .prepare<[], { runtime: string; n: number }>(
-        "SELECT runtime, COUNT(*) AS n FROM sessions GROUP BY runtime ORDER BY n DESC",
-      )
-      .all();
-
-    let dbBytes = 0;
-    let dbPresent = false;
-    try {
-      dbBytes = statSync(deps.dbPath).size;
-      dbPresent = true;
-    } catch { /* file absent */ }
-    for (const sidecar of [`${deps.dbPath}-wal`, `${deps.dbPath}-shm`]) {
-      try { dbBytes += statSync(sidecar).size; } catch { /* no sidecar */ }
-    }
-
-    return c.json({
-      dbPath: deps.dbPath,
-      dbBytes,
-      dbPresent,
-      schemaVersion: migrations.length > 0 ? migrations[migrations.length - 1]!.version : null,
-      migrations,
-      tables,
-      runtimes,
-    });
+    const stats = deps.liveStore instanceof PgSessionStore
+      ? await pgDataStats(deps.liveStore.pool)
+      : sqliteDataStats(
+          (deps.liveStore as import("@core/storage/sqlite-session-store.js").SqliteSessionStore).rawDb(),
+          deps.dbPath,
+        );
+    return c.json(stats);
   });
 
   app.get("/api/data/backup", (c) => {
@@ -1010,9 +1078,16 @@ function registerDataManagementRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.liveStore || !deps.dbPath) {
       return c.json({ error: "backup requires liveStore + dbPath" }, 503);
     }
+    // VACUUM INTO is a SQLite-only mechanism. PostgreSQL backups are delegated
+    // to the database layer (pg_dump / managed-PG snapshots / WAL archiving),
+    // not produced in-process by the daemon.
+    if (deps.liveStore instanceof PgSessionStore) {
+      return c.json({
+        error: "daemon backup is SQLite-only; for PostgreSQL use pg_dump or your managed-PG snapshot facility",
+      }, 501);
+    }
     const scratch = snapshotScratchPath(deps.dbPath);
     try {
-      // TODO(#215a): replace rawDb() with port methods; cast until then
       vacuumSnapshot((deps.liveStore as import("@core/storage/sqlite-session-store.js").SqliteSessionStore).rawDb(), scratch);
       const bytes = readFileSync(scratch);
       const stamp = new Date().toISOString().slice(0, 10);
@@ -1038,6 +1113,13 @@ function registerDataManagementRoutes(app: Hono, deps: HttpDeps): void {
       }
     }
     if (!deps.dbPath) return c.json({ error: "restore requires dbPath" }, 503);
+    // Staged restore swaps the SQLite file on restart — SQLite-only. PG restores
+    // go through pg_restore / managed-PG point-in-time recovery.
+    if (deps.liveStore instanceof PgSessionStore) {
+      return c.json({
+        error: "daemon restore is SQLite-only; for PostgreSQL use pg_restore or your managed-PG recovery facility",
+      }, 501);
+    }
     const form = await c.req.parseBody().catch(() => null);
     const file = form?.["file"];
     if (!(file instanceof File)) {
@@ -1073,8 +1155,10 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
     const body = await c.req.json().catch(() => null);
     const parsed = parseActionInput(body);
     if (!parsed) return c.json({ error: "invalid action payload" }, 400);
-    // TODO(#215a): replace rawDb() with port methods; cast until then
-    const id = writeAction((deps.liveStore as import("@core/storage/sqlite-session-store.js").SqliteSessionStore).rawDb(), parsed);
+    const store = deps.liveStore;
+    const id = store instanceof PgSessionStore
+      ? await writeActionPg(store.pool, parsed)
+      : writeAction(store.rawDb(), parsed);
     return c.json({ id, timestamp: new Date().toISOString() });
   });
 
@@ -1086,31 +1170,38 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
       .map(parseActionInput)
       .filter((x): x is NonNullable<ReturnType<typeof parseActionInput>> => x !== null);
     if (inputs.length === 0) return c.json({ accepted: 0, ids: [] });
-    // TODO(#215a): replace rawDb() with port methods; cast until then
-    const ids = writeActionsBatch((deps.liveStore as import("@core/storage/sqlite-session-store.js").SqliteSessionStore).rawDb(), inputs);
+    const store = deps.liveStore;
+    const ids = store instanceof PgSessionStore
+      ? await writeActionsBatchPg(store.pool, inputs)
+      : writeActionsBatch(store.rawDb(), inputs);
     return c.json({ accepted: ids.length, ids });
   });
 
-  app.post("/api/action/:id/undo", (c) => {
+  app.post("/api/action/:id/undo", async (c) => {
     if (!deps.liveStore) return c.json({ error: "actions require liveStore" }, 503);
-    // TODO(#215a): replace rawDb() with port methods; cast until then
-    const result = undoAction((deps.liveStore as import("@core/storage/sqlite-session-store.js").SqliteSessionStore).rawDb(), c.req.param("id"));
+    const store = deps.liveStore;
+    const result = store instanceof PgSessionStore
+      ? await undoActionPg(store.pool, c.req.param("id"))
+      : undoAction(store.rawDb(), c.req.param("id"));
     if (!result) return c.json({ error: "action not found or already undone" }, 404);
     return c.json({ id: result.undoId, timestamp: new Date().toISOString() });
   });
 
-  app.get("/api/actions", (c) => {
+  app.get("/api/actions", async (c) => {
     if (!deps.liveStore) return c.json({ actions: [] });
     const limitRaw = c.req.query("limit");
     const subjectId = c.req.query("subject_id");
     const kind = c.req.query("kind");
     const limit = limitRaw ? Math.max(1, Math.min(500, Number.parseInt(limitRaw, 10))) : 100;
-    // TODO(#215a): replace rawDb() with port methods; cast until then
-    const rows = listActions((deps.liveStore as import("@core/storage/sqlite-session-store.js").SqliteSessionStore).rawDb(), {
+    const opts = {
       limit,
       ...(subjectId ? { subjectId } : {}),
       ...(kind ? { kind } : {}),
-    });
+    };
+    const store = deps.liveStore;
+    const rows = store instanceof PgSessionStore
+      ? await listActionsPg(store.pool, opts)
+      : listActions(store.rawDb(), opts);
     return c.json({ actions: rows });
   });
 }
@@ -1158,9 +1249,9 @@ function registerClassifierRoutes(app: Hono, deps: HttpDeps): void {
 // Each row = one transcript origin the daemon scans. UI uses these
 // endpoints to surface existing sources + let users add custom ones.
 function registerSourceRoutes(app: Hono, deps: HttpDeps): void {
-  app.get("/api/sources", (c) => {
+  app.get("/api/sources", async (c) => {
     if (!deps.sources) return c.json({ sources: [] });
-    return c.json({ sources: deps.sources.list() });
+    return c.json({ sources: await deps.sources.list() });
   });
 
   app.post("/api/sources", async (c) => {
@@ -1168,11 +1259,10 @@ function registerSourceRoutes(app: Hono, deps: HttpDeps): void {
     const body = (await c.req.json().catch(() => null)) as Partial<SourceInsert> | null;
     const parsed = parseSourceInsert(body);
     if (!parsed) return c.json({ error: "invalid source payload" }, 400);
-    // TODO(#215a): PgSourceRegistry port; cast until then
-    if ((deps.sources as SourceRegistry).getByName(parsed.name)) {
+    if (await deps.sources.getByName(parsed.name)) {
       return c.json({ error: `source named '${parsed.name}' already exists` }, 409);
     }
-    return c.json(deps.sources.insert(parsed), 201);
+    return c.json(await deps.sources.insert(parsed), 201);
   });
 
   app.patch("/api/sources/:id", async (c) => {
@@ -1182,26 +1272,25 @@ function registerSourceRoutes(app: Hono, deps: HttpDeps): void {
     const body = (await c.req.json().catch(() => null)) as Partial<SourceUpdate> | null;
     const patch = parseSourceUpdate(body);
     if (!patch) return c.json({ error: "invalid patch payload" }, 400);
-    const updated = deps.sources.update(id, patch);
+    const updated = await deps.sources.update(id, patch);
     if (!updated) return c.json({ error: `source ${id} not found` }, 404);
     return c.json(updated);
   });
 
-  app.delete("/api/sources/:id", (c) => {
+  app.delete("/api/sources/:id", async (c) => {
     if (!deps.sources) return c.json({ error: "sources registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    const ok = deps.sources.delete(id);
+    const ok = await deps.sources.delete(id);
     if (!ok) return c.json({ error: `source ${id} not found` }, 404);
     return c.json({ deleted: id });
   });
 
-  app.post("/api/sources/:id/regenerate-token", (c) => {
+  app.post("/api/sources/:id/regenerate-token", async (c) => {
     if (!deps.sources) return c.json({ error: "sources registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    // TODO(#215a): PgSourceRegistry port; cast until then
-    const token = (deps.sources as SourceRegistry).regenerateToken(id);
+    const token = await deps.sources.regenerateToken(id);
     if (!token) return c.json({ error: "regenerate-token only applies to webhook sources" }, 400);
     return c.json({ token });
   });
@@ -1217,8 +1306,7 @@ function registerIngestRoute(app: Hono, deps: HttpDeps): void {
     const auth = c.req.header("authorization") ?? "";
     const match = /^Bearer\s+(\S+)$/i.exec(auth);
     if (!match || !match[1]) return c.json({ error: "missing or malformed bearer token" }, 401);
-    // TODO(#215a): PgSourceRegistry port; cast until then
-    const source = (deps.sources as SourceRegistry).findByToken(match[1]);
+    const source = await deps.sources.findByToken(match[1]);
     if (!source || source.kind !== "webhook") return c.json({ error: "invalid token" }, 401);
     if (!source.enabled) return c.json({ error: "source is disabled" }, 403);
 
@@ -1256,9 +1344,9 @@ function registerIngestRoute(app: Hono, deps: HttpDeps): void {
 // Each row = one LLM endpoint. Keys are redacted on every response
 // (rows carry hasApiKey:boolean instead).
 function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
-  app.get("/api/providers", (c) => {
+  app.get("/api/providers", async (c) => {
     if (!deps.providers) return c.json({ providers: [] });
-    return c.json({ providers: deps.providers.list() });
+    return c.json({ providers: await deps.providers.list() });
   });
 
   app.post("/api/providers", async (c) => {
@@ -1266,11 +1354,10 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
     const body = (await c.req.json().catch(() => null)) as Partial<ProviderInsert> | null;
     const parsed = parseProviderInsert(body);
     if (!parsed) return c.json({ error: "invalid provider payload" }, 400);
-    // TODO(#215a): PgProviderRegistry port; cast until then
-    if ((deps.providers as ProviderRegistry).getByName(parsed.name)) {
+    if (await deps.providers.getByName(parsed.name)) {
       return c.json({ error: `provider named '${parsed.name}' already exists` }, 409);
     }
-    return c.json(deps.providers.insert(parsed), 201);
+    return c.json(await deps.providers.insert(parsed), 201);
   });
 
   app.patch("/api/providers/:id", async (c) => {
@@ -1280,16 +1367,16 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
     const body = (await c.req.json().catch(() => null)) as Partial<ProviderUpdate> | null;
     const patch = parseProviderUpdate(body);
     if (!patch) return c.json({ error: "invalid patch payload" }, 400);
-    const updated = deps.providers.update(id, patch);
+    const updated = await deps.providers.update(id, patch);
     if (!updated) return c.json({ error: `provider ${id} not found` }, 404);
     return c.json(updated);
   });
 
-  app.delete("/api/providers/:id", (c) => {
+  app.delete("/api/providers/:id", async (c) => {
     if (!deps.providers) return c.json({ error: "providers registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    const ok = deps.providers.delete(id);
+    const ok = await deps.providers.delete(id);
     if (!ok) return c.json({ error: `provider ${id} not found` }, 404);
     return c.json({ deleted: id });
   });
@@ -1298,10 +1385,9 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.providers) return c.json({ error: "providers registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    // TODO(#215a): PgProviderRegistry port; cast until then
-    const provider = (deps.providers as ProviderRegistry).get(id);
+    const provider = await deps.providers.get(id);
     if (!provider) return c.json({ error: `provider ${id} not found` }, 404);
-    const key = (deps.providers as ProviderRegistry).getSecret(id);
+    const key = await deps.providers.getSecret(id);
     try {
       const models = await listModels(provider, { apiKey: key });
       return c.json({ models });
@@ -1315,10 +1401,9 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.providers) return c.json({ error: "providers registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    // TODO(#215a): PgProviderRegistry port; cast until then
-    const provider = (deps.providers as ProviderRegistry).get(id);
+    const provider = await deps.providers.get(id);
     if (!provider) return c.json({ error: `provider ${id} not found` }, 404);
-    const key = (deps.providers as ProviderRegistry).getSecret(id);
+    const key = await deps.providers.getSecret(id);
     const startedAt = Date.now();
     try {
       const models = await listModels(provider, { apiKey: key });
