@@ -30,7 +30,9 @@ import type {
   IngestRecord,
   SqliteSessionStore,
 } from "@core/storage/sqlite-session-store.js";
-import type { Signal } from "@shared/types.js";
+import { PgSessionStore } from "@core/storage/pg-session-store.js";
+import type { PgFactStore } from "@core/storage/pg-fact-store.js";
+import type { Fact, Signal } from "@shared/types.js";
 import { MAX_CLASSIFY_FAILURES, getFileSize, recordClassified, recordClassifiedPg, recordFailed, recordFailedPg, recordSkippedLowConfidence, recordSkippedLowConfidencePg, scanOnce, scanOncePg } from "./scan-once.js";
 import { runCheapChecksOnSqlite } from "@core/integrity/check-invariants.js";
 
@@ -73,7 +75,7 @@ function markIntegrityCheckRan(now: number): void {
 }
 
 export interface SchedulerOptions {
-  readonly store: SqliteSessionStore;
+  readonly store: SqliteSessionStore | PgSessionStore;
   readonly adapters: ReadonlyArray<TranscriptAdapter>;
   readonly classifier: LLMClient;
   readonly embedder?: LLMClient | null;
@@ -84,7 +86,7 @@ export interface SchedulerOptions {
    * with no facts written (backwards-compatible default for tests not yet
    * updated, and for any future caller that wants facts off).
    */
-  readonly factStore?: SqliteFactStore | null;
+  readonly factStore?: SqliteFactStore | PgFactStore | null;
   /** SignalStore for the self-improvement lane. When set, the tick drains
    *  each chunk's embedded nlm.signal payloads, decoupled from classification. */
   readonly signalStore?: SignalStore | null;
@@ -109,7 +111,7 @@ export interface TickReport {
 export class ScanScheduler {
   private readonly opts: Required<Omit<SchedulerOptions, "embedder" | "factStore" | "signalStore" | "installScope">> & {
     readonly embedder: LLMClient | null;
-    readonly factStore: SqliteFactStore | null;
+    readonly factStore: SqliteFactStore | PgFactStore | null;
     readonly signalStore: SignalStore | null;
     readonly installScope: string;
   };
@@ -162,10 +164,14 @@ export class ScanScheduler {
     let chunksSeen = 0;
 
     const now = Date.now();
-    const _pgPool = (this.opts.store as { pgPool?: () => import("pg").Pool }).pgPool?.();
+    // Backend split: exactly one of (_pgPool, sqliteDb) is non-null. PG branches
+    // use the pool; SQLite branches use the raw better-sqlite3 handle.
+    const store = this.opts.store;
+    const _pgPool = store instanceof PgSessionStore ? store.pool : null;
+    const sqliteDb = store instanceof PgSessionStore ? null : store.rawDb();
     if (!_pgPool && shouldRunIntegrityCheck(now)) {
       try {
-        const violations = runCheapChecksOnSqlite(this.opts.store.rawDb());
+        const violations = runCheapChecksOnSqlite(sqliteDb!);
         markIntegrityCheckRan(now);
         for (const v of violations) {
           this.opts.logger(`[integrity] FAIL ${v.id} count=${v.count} ${v.description}  run \`nlm doctor\` to inspect or \`nlm doctor --fix\` to repair`);
@@ -180,7 +186,7 @@ export class ScanScheduler {
       try {
         results = _pgPool
           ? await scanOncePg(adapter, this.opts.idleMinutes, _pgPool)
-          : await scanOnce(adapter, this.opts.idleMinutes, this.opts.store.rawDb());
+          : await scanOnce(adapter, this.opts.idleMinutes, sqliteDb!);
       } catch (e) {
         this.opts.logger(
           `[scheduler] scanOnce error for ${adapter.name}: ${e instanceof Error ? e.message : String(e)}`,
@@ -205,8 +211,8 @@ export class ScanScheduler {
           if (_pgPool) {
             count = await recordFailedPg(_pgPool, adapter.name, chunk.sourcePath, getFileSize(chunk.sourcePath));
           } else {
-            recordFailed(this.opts.store.rawDb(), adapter.name, chunk.sourcePath);
-            count = this.opts.store.rawDb()
+            recordFailed(sqliteDb!, adapter.name, chunk.sourcePath);
+            count = sqliteDb!
               .prepare<[string, string], { failure_count: number }>(
                 "SELECT COALESCE(failure_count, 0) AS failure_count FROM adapter_state WHERE adapter_name = ? AND source_path = ?",
               )
@@ -222,7 +228,7 @@ export class ScanScheduler {
           if (_pgPool) {
             await recordSkippedLowConfidencePg(_pgPool, adapter.name, chunk.sourcePath);
           } else {
-            recordSkippedLowConfidence(this.opts.store.rawDb(), adapter.name, chunk.sourcePath);
+            recordSkippedLowConfidence(sqliteDb!, adapter.name, chunk.sourcePath);
           }
           this.opts.logger(
             `[scheduler] low-confidence (${classification.confidence} < ${this.opts.confidenceFloor}) for ${chunk.id} - skipping until file grows`,
@@ -250,29 +256,26 @@ export class ScanScheduler {
           openQuestions: classification.open,
         };
 
-        const factSink = this.opts.factStore
-          ? {
-              factStore: this.opts.factStore,
-              facts: extractFacts(classification, chunk.id, chunk.startedAt),
-            }
-          : null;
+        const supersedesArg = supersedes ? { priorSessionId: supersedes, kind: "replaces" as const } : null;
+        const facts: ReadonlyArray<Fact> = this.opts.factStore
+          ? extractFacts(classification, chunk.id, chunk.startedAt)
+          : [];
 
         try {
-          await this.opts.store.insertSession(
-            record,
-            this.opts.embedder,
-            supersedes ? { priorSessionId: supersedes, kind: "replaces" } : null,
-            factSink,
-          );
+          // Store + factStore are constructed from the same backend, so the
+          // factStore cast below is sound — TS just can't correlate the two
+          // union members across a single call site.
+          if (store instanceof PgSessionStore) {
+            await store.insertSession(record, this.opts.embedder, supersedesArg,
+              this.opts.factStore ? { factStore: this.opts.factStore as PgFactStore, facts } : null);
+          } else {
+            await store.insertSession(record, this.opts.embedder, supersedesArg,
+              this.opts.factStore ? { factStore: this.opts.factStore as SqliteFactStore, facts } : null);
+          }
           if (_pgPool) {
             await recordClassifiedPg(_pgPool, adapter.name, chunk.sourcePath, chunk.id);
           } else {
-            recordClassified(
-              this.opts.store.rawDb(),
-              adapter.name,
-              chunk.sourcePath,
-              chunk.id,
-            );
+            recordClassified(sqliteDb!, adapter.name, chunk.sourcePath, chunk.id);
           }
           inserted += 1;
         } catch (e) {
@@ -280,7 +283,7 @@ export class ScanScheduler {
           if (_pgPool) {
             await recordFailedPg(_pgPool, adapter.name, chunk.sourcePath, getFileSize(chunk.sourcePath));
           } else {
-            recordFailed(this.opts.store.rawDb(), adapter.name, chunk.sourcePath);
+            recordFailed(sqliteDb!, adapter.name, chunk.sourcePath);
           }
           this.opts.logger(
             `[scheduler] storage error for ${chunk.id}: ${e instanceof Error ? e.message : String(e)}`,
