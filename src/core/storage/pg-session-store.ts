@@ -34,7 +34,9 @@ type SessionRow = {
 };
 
 export class PgSessionStore implements SessionStore {
-  constructor(private readonly pool: Pool) {}
+  // `pool` is public-readonly so PG-native sibling helpers (actions-log Pg
+  // functions) can share the same connection pool. See docs/plans/2026-05-31-pg-adapter.md.
+  constructor(readonly pool: Pool) {}
 
   async list(filter?: SessionFilter): Promise<ReadonlyArray<Session>> {
     const result = await this.pool.query<SessionRow>(

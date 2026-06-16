@@ -288,6 +288,28 @@ export class SourceRegistry {
 
 import type { Pool } from "pg";
 
+interface PgSourceDbRow {
+  id: number; kind: SourceKind; name: string; path_or_url: string | null;
+  runtime_label: string; parse_config: string; enabled: boolean;
+  token: string | null; created_at: string; updated_at: string;
+}
+
+function pgRowToSource(r: PgSourceDbRow): SourceRow {
+  return {
+    id: r.id,
+    kind: r.kind,
+    name: r.name,
+    pathOrUrl: r.path_or_url,
+    runtimeLabel: r.runtime_label,
+    parseConfig: (() => { try { return JSON.parse(r.parse_config) as Record<string, unknown>; } catch { return {} as Record<string, unknown>; } })(),
+    enabled: r.enabled,
+    token: null,
+    hasToken: r.token !== null && r.token.length > 0,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
 /**
  * PgSourceRegistry — CRUD over `sources` for the PG storage path.
  * Takes a pg.Pool instead of better-sqlite3.Database.
@@ -297,51 +319,57 @@ export class PgSourceRegistry {
   constructor(private readonly pool: Pool) {}
 
   async list(): Promise<SourceRow[]> {
-    const result = await this.pool.query<{
-      id: number; kind: SourceKind; name: string; path_or_url: string | null;
-      runtime_label: string; parse_config: string; enabled: boolean;
-      token: string | null; created_at: string; updated_at: string;
-    }>(
+    const result = await this.pool.query<PgSourceDbRow>(
       `SELECT id, kind, name, path_or_url, runtime_label, parse_config,
               enabled, token, created_at, updated_at
        FROM sources ORDER BY id`,
     );
-    return result.rows.map((r) => ({
-      id: r.id,
-      kind: r.kind,
-      name: r.name,
-      pathOrUrl: r.path_or_url,
-      runtimeLabel: r.runtime_label,
-      parseConfig: (() => { try { return JSON.parse(r.parse_config) as Record<string, unknown>; } catch { return {} as Record<string, unknown>; } })(),
-      enabled: r.enabled,
-      token: null,
-      hasToken: r.token !== null && r.token.length > 0,
-      createdAt: r.created_at,
-      updatedAt: r.updated_at,
-    }));
+    return result.rows.map(pgRowToSource);
   }
 
   async get(id: number): Promise<SourceRow | null> {
-    const result = await this.pool.query<{
-      id: number; kind: SourceKind; name: string; path_or_url: string | null;
-      runtime_label: string; parse_config: string; enabled: boolean;
-      token: string | null; created_at: string; updated_at: string;
-    }>(
+    const result = await this.pool.query<PgSourceDbRow>(
       `SELECT id, kind, name, path_or_url, runtime_label, parse_config,
               enabled, token, created_at, updated_at
        FROM sources WHERE id = $1`,
       [id],
     );
     if (!result.rows[0]) return null;
-    const r = result.rows[0];
-    return {
-      id: r.id, kind: r.kind, name: r.name, pathOrUrl: r.path_or_url,
-      runtimeLabel: r.runtime_label,
-      parseConfig: (() => { try { return JSON.parse(r.parse_config) as Record<string, unknown>; } catch { return {} as Record<string, unknown>; } })(),
-      enabled: r.enabled, token: null,
-      hasToken: r.token !== null && r.token.length > 0,
-      createdAt: r.created_at, updatedAt: r.updated_at,
-    };
+    return pgRowToSource(result.rows[0]);
+  }
+
+  async getByName(name: string): Promise<SourceRow | null> {
+    const result = await this.pool.query<PgSourceDbRow>(
+      `SELECT id, kind, name, path_or_url, runtime_label, parse_config,
+              enabled, token, created_at, updated_at
+       FROM sources WHERE name = $1`,
+      [name],
+    );
+    return result.rows[0] ? pgRowToSource(result.rows[0]) : null;
+  }
+
+  /** Daemon-internal: resolve a bearer token to its owning source. */
+  async findByToken(token: string): Promise<SourceRow | null> {
+    if (!token) return null;
+    const result = await this.pool.query<PgSourceDbRow>(
+      `SELECT id, kind, name, path_or_url, runtime_label, parse_config,
+              enabled, token, created_at, updated_at
+       FROM sources WHERE token = $1`,
+      [token],
+    );
+    return result.rows[0] ? pgRowToSource(result.rows[0]) : null;
+  }
+
+  /** Mint a fresh token, invalidating any previous one. Webhook sources only. */
+  async regenerateToken(id: number): Promise<string | null> {
+    const current = await this.get(id);
+    if (!current || current.kind !== "webhook") return null;
+    const token = mintToken();
+    await this.pool.query(
+      "UPDATE sources SET token = $1, updated_at = NOW() WHERE id = $2",
+      [token, id],
+    );
+    return token;
   }
 
   async insert(input: SourceInsert): Promise<SourceRow> {
