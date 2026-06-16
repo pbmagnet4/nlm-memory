@@ -233,15 +233,12 @@ program
       classifier,
       sources,
       providers,
-      // TODO(#215a): PgStorage ingest port; cast until then
-      ...(!(storage instanceof PgStorage) ? {
-        ingest: {
-          classifier,
-          embedder,
-          store: store as import("../core/storage/sqlite-session-store.js").SqliteSessionStore,
-          ...(facts ? { factStore: facts as import("../core/storage/sqlite-fact-store.js").SqliteFactStore } : {}),
-        },
-      } : {}),
+      ingest: {
+        classifier,
+        embedder,
+        store,
+        ...(facts ? { factStore: facts } : {}),
+      },
       signalStore: signals,
       installScope: scope,
       embedderInfo: { provider: "ollama", model: "nomic-embed-text", dims: 768 },
@@ -318,18 +315,17 @@ program
     memoSweep.start();
     console.error("  memo sweep: dormant cleanup every 5m (threshold 24h)");
 
-    if (opts.scheduler !== false && !(storage instanceof PgStorage)) {
+    if (opts.scheduler !== false) {
       const adapters = await buildAdapters(sources);
       if (adapters.length === 0) {
         console.error("  scheduler: no adapters detected (set NLM_ADAPTERS to force-enable)");
       } else {
         const scheduler = new ScanScheduler({
-          // TODO(#215a): PgStorage scheduler port; SQLite-only until then
-          store: store as import("../core/storage/sqlite-session-store.js").SqliteSessionStore,
+          store,
           adapters,
           classifier,
           embedder,
-          factStore: (facts as import("../core/storage/sqlite-fact-store.js").SqliteFactStore | null | undefined) ?? null,
+          factStore: facts ?? null,
           signalStore: signals,
           installScope: scope,
           intervalMs: opts.intervalMin * 60_000,
