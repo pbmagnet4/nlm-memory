@@ -42,7 +42,7 @@ describe("stripStaleCodexEntry", () => {
     expect(out).toContain("x = 1");
   });
 
-  it("preserves a legitimate local project path containing nlm-memory-ts", () => {
+  it("leaves [projects.*] trust entries alone (Codex's registry, not nlm's to rewrite)", () => {
     const toml = [
       '[plugins."nlm-memory@nlm-memory-ts"]',
       "enabled = true",

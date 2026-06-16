@@ -1698,8 +1698,8 @@ async function gatherInstallProbe(): Promise<InstallProbe> {
     // Recognize the MCP table whether it's our managed (sentineled) block or a
     // hand-authored bare one — both wire the server.
     codexMcp = txt.split("\n").some((l) => l.trim() === "[mcp_servers.nlm-memory]");
-    // Match the marketplace suffix, not the bare name — a legit local project
-    // path like [projects."…/nlm-memory-ts"] must not trip the stale check.
+    // Match the marketplace suffix, not the bare name: a [projects."…/nlm-memory-ts"]
+    // trust entry is Codex's registry (not nlm's), so it must not trip this check.
     codexStale = txt.includes("@nlm-memory-ts");
   }
 

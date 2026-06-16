@@ -399,9 +399,11 @@ export function pluginScriptsDir(repoRoot: string): string {
 // marketplace as "nlm-memory-ts", so their plugin id is "nlm-memory@nlm-memory-ts"
 // and their hook-state keys carry the same suffix. `--repair` strips these.
 const LEGACY_NAME = "nlm-memory-ts";
-// The marketplace suffix is what uniquely identifies stale entries. Matching on
-// it (rather than the bare name) avoids false-flagging a legitimate local
-// project path like `[projects."…/nlm-memory-ts"]`.
+// The marketplace suffix uniquely identifies nlm-owned stale entries
+// (plugin/marketplace/mcp/hooks). Matching on it rather than the bare name
+// keeps repair scoped to nlm's own config: a `[projects."…/nlm-memory-ts"]`
+// trust entry is Codex's registry to prune (even when stale from the rename),
+// not nlm's to rewrite.
 const LEGACY_SUFFIX = `@${LEGACY_NAME}`;
 
 /** True for a config.toml table header that belongs to the pre-rename install. */
