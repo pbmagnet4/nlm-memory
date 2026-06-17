@@ -58,6 +58,7 @@ class ScriptedFactStore implements FactStore {
     return [];
   }
   async markSuperseded() {}
+  async retire() {}
   async upsertEmbedding() {}
   async ingestSessionFacts() {}
   async listForRecall(_f: FactListFilter) {

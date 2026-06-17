@@ -175,6 +175,38 @@ interface CoercedFact {
   sourceQuote?: string;
 }
 
+const NON_ANSWER_EXACT = new Set(["unknown", "n/a", "na", "tbd", "tbc", "?"]);
+const NON_ANSWER_SUBSTRINGS = [
+  "not provided",
+  "no output",
+  "did not run",
+  "never ran",
+  "command not found",
+  "command executed but",
+  "result not provided",
+  "unable to determine",
+  "could not determine",
+  "not yet determined",
+  "not yet provided",
+  "unconfirmed",
+];
+
+/**
+ * A fact VALUE that records a failed observation or transient null result, not
+ * durable knowledge — e.g. "ssh command executed but result not provided",
+ * "unknown number of open tasks", "failed (gemini: command not found)". The
+ * classifier (especially a weak local model) emits these from process noise;
+ * stored at 0.85+ confidence they dominate recall and misguide later sessions
+ * (NLM #325). Deterministic gate — we do not trust the model to self-police.
+ */
+export function isNonAnswerValue(value: string): boolean {
+  const v = value.trim().toLowerCase();
+  if (v === "") return true;
+  if (NON_ANSWER_EXACT.has(v)) return true;
+  if (v.startsWith("unknown ")) return true;
+  return NON_ANSWER_SUBSTRINGS.some((p) => v.includes(p));
+}
+
 function coerceFacts(raw: unknown): CoercedFact[] {
   if (!Array.isArray(raw)) return [];
   const out: CoercedFact[] = [];
@@ -187,6 +219,9 @@ function coerceFacts(raw: unknown): CoercedFact[] {
     const predicateRaw = String(o["predicate"] ?? "").toLowerCase().trim();
     const value = String(o["value"] ?? "").trim();
     if (!subject || !predicateRaw || !value) continue;
+    // Drop failed-observation / null-result values — they are process noise,
+    // not knowledge, and pollute recall at high confidence (NLM #325).
+    if (isNonAnswerValue(value)) continue;
     // Closed vocab — drop the fact entirely if the predicate isn't recognized.
     // Pilot data (Phase B.5) showed `other` was 43% of writes and almost all
     // slop; the prompt now instructs the model to leave such observations in
