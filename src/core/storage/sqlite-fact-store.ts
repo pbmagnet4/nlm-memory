@@ -101,7 +101,7 @@ export class SqliteFactStore implements FactStore {
         `SELECT id, kind, subject, predicate, value, source_session_id,
                 source_quote, created_at, superseded_by, confidence
          FROM facts
-         WHERE subject = ? AND predicate = ? AND superseded_by IS NULL
+         WHERE subject = ? AND predicate = ? AND superseded_by IS NULL AND retired_at IS NULL
          ORDER BY created_at DESC
          LIMIT 1`,
       )
@@ -119,7 +119,10 @@ export class SqliteFactStore implements FactStore {
       where.push("predicate = ?");
       params.push(query.predicate);
     }
-    if (!includeSuperseded) where.push("superseded_by IS NULL");
+    if (!includeSuperseded) {
+      where.push("superseded_by IS NULL");
+      where.push("retired_at IS NULL");
+    }
     params.push(limit);
 
     const rows = this.db
@@ -169,6 +172,7 @@ export class SqliteFactStore implements FactStore {
     }
     if (filter.includeSuperseded !== true) {
       where.push("superseded_by IS NULL");
+      where.push("retired_at IS NULL");
     }
     const limit = Math.max(1, Math.trunc(filter.limit ?? 500));
     params.push(limit);
@@ -315,6 +319,20 @@ export class SqliteFactStore implements FactStore {
       this.db
         .prepare("UPDATE facts SET superseded_by = ? WHERE id = ?")
         .run(newId, oldId);
+    });
+    txn();
+  }
+
+  async retire(factId: string): Promise<void> {
+    const txn = this.db.transaction(() => {
+      const row = this.db
+        .prepare<[string], { id: string }>("SELECT id FROM facts WHERE id = ?")
+        .get(factId);
+      if (!row) throw new Error(`Fact ${factId} not found`);
+      this.db
+        .prepare("UPDATE facts SET retired_at = ? WHERE id = ?")
+        .run(new Date().toISOString(), factId);
+      this.db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ?").run(factId);
     });
     txn();
   }

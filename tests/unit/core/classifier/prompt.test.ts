@@ -9,7 +9,40 @@ import {
   CLASSIFIER_SYSTEM_PROMPT,
   PREDICATE_VOCABULARY,
   coerceClassifyResult,
+  isNonAnswerValue,
 } from "../../../../src/core/classifier/prompt.js";
+
+describe("isNonAnswerValue", () => {
+  it("flags failed-observation / null-result values seen polluting the store", () => {
+    for (const v of [
+      "ssh command executed but result not provided",
+      "unconfirmed via failed search commands",
+      "did not run due to missing logs/content-neuro-score/ directory",
+      "failed (gemini: command not found)",
+      "Chat ID not provided",
+      "unconfirmed existence of hello@example.com",
+      "unknown number of open tasks",
+      "unknown",
+      "n/a",
+      "TBD",
+    ]) {
+      expect(isNonAnswerValue(v), v).toBe(true);
+    }
+  });
+
+  it("does NOT flag legitimate characterized facts", () => {
+    for (const v of [
+      "Hono",
+      "produces malformed JSON on create_record calls",
+      "http://macpro:8080/v1",
+      "$35/mo (Solo), $65/mo (Pro, 3 locations)",
+      "Next.js + TypeScript",
+      "running via pm2 on port 3940",
+    ]) {
+      expect(isNonAnswerValue(v), v).toBe(false);
+    }
+  });
+});
 
 describe("coerceClassifyResult — facts", () => {
   function baseFields() {
@@ -43,6 +76,18 @@ describe("coerceClassifyResult — facts", () => {
     expect(out.facts).toEqual([
       { kind: "decision", subject: "nlm-memory-ts", predicate: "framework", value: "Hono" },
     ]);
+  });
+
+  it("drops facts whose value is a non-answer / null result (NLM #325)", () => {
+    const out = coerceClassifyResult({
+      ...baseFields(),
+      facts: [
+        { kind: "attribute", subject: "acme-app", predicate: "status", value: "unknown number of open tasks" },
+        { kind: "decision", subject: "acme-app-location", predicate: "decided-on", value: "ssh command executed but result not provided" },
+        { kind: "attribute", subject: "nlm-memory-ts", predicate: "framework", value: "Hono" },
+      ],
+    });
+    expect(out.facts.map((f) => f.value)).toEqual(["Hono"]);
   });
 
   it("drops facts with predicates outside the closed vocabulary (no 'other' escape hatch)", () => {

@@ -55,6 +55,7 @@ class ScriptedFactStore implements FactStore {
   }
   async listBySession() { return []; }
   async markSuperseded() {}
+  async retire() {}
   async upsertEmbedding() {}
   async ingestSessionFacts() {}
   async listForRecall() { return []; }
@@ -177,6 +178,7 @@ describe("pickRelatedFacts (Spec G.2)", () => {
       async list(): Promise<Fact[]> { throw new Error("db down"); }
       async listBySession() { return []; }
       async markSuperseded() {}
+      async retire() {}
       async upsertEmbedding() {}
       async ingestSessionFacts() {}
       async listForRecall() { return []; }

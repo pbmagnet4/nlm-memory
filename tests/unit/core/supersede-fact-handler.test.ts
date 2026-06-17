@@ -12,7 +12,7 @@ import { supersedeFactHandler } from "../../../src/mcp/server.js";
 import type { McpDeps } from "../../../src/mcp/server.js";
 import type { FactStore } from "../../../src/ports/fact-store.js";
 
-function makeStubFactStore(markSupersededImpl?: (id: string, newId: string | null) => Promise<void>): FactStore {
+function makeStubFactStore(retireImpl?: (id: string) => Promise<void>): FactStore {
   return {
     insert: vi.fn(),
     insertMany: vi.fn(),
@@ -20,7 +20,8 @@ function makeStubFactStore(markSupersededImpl?: (id: string, newId: string | nul
     findCurrent: vi.fn(),
     list: vi.fn(),
     listBySession: vi.fn(),
-    markSuperseded: vi.fn(markSupersededImpl ?? (() => Promise.resolve())),
+    markSuperseded: vi.fn(() => Promise.resolve()),
+    retire: vi.fn(retireImpl ?? (() => Promise.resolve())),
     upsertEmbedding: vi.fn(),
     ingestSessionFacts: vi.fn(),
     listForRecall: vi.fn(),
@@ -34,7 +35,7 @@ function makeDeps(factStore?: FactStore): McpDeps {
   return {
     recall: {} as McpDeps["recall"],
     store: {} as McpDeps["store"],
-    factStore,
+    ...(factStore ? { factStore } : {}),
   };
 }
 
@@ -58,7 +59,7 @@ describe("supersedeFactHandler", () => {
     vi.restoreAllMocks();
   });
 
-  it("calls markSuperseded(fact_id, null) and returns marked=true", async () => {
+  it("calls retire(fact_id) and returns marked=true", async () => {
     const factStore = makeStubFactStore();
     const result = await supersedeFactHandler(makeDeps(factStore), {
       fact_id: "fact_abc123",
@@ -70,7 +71,9 @@ describe("supersedeFactHandler", () => {
     expect(body["marked"]).toBe(true);
     expect(body["fact_id"]).toBe("fact_abc123");
     expect(body["reason"]).toBe("outdated decision");
-    expect(vi.mocked(factStore.markSuperseded)).toHaveBeenCalledWith("fact_abc123", null);
+    expect(vi.mocked(factStore.retire)).toHaveBeenCalledWith("fact_abc123");
+    // The old no-op path must not be used.
+    expect(vi.mocked(factStore.markSuperseded)).not.toHaveBeenCalled();
   });
 
   it("omits reason from response when not provided", async () => {

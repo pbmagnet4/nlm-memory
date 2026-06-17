@@ -172,7 +172,7 @@ class FactClassifier implements LLMClient {
       decisions: ["chose Hono"],
       open: [],
       confidence: 0.9,
-      facts: [{ kind: "decision", subject: "PolySignal", predicate: "framework", value: "Hono", sourceQuote: null }],
+      facts: [{ kind: "decision", subject: "PolySignal", predicate: "framework", value: "Hono" }],
     };
   }
 }
