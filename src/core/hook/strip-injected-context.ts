@@ -14,12 +14,18 @@
  * dropping to end-of-text could eat the user's actual message.
  */
 
-const BLOCK_HEADERS = [
+/**
+ * The recall pointer block's marker strings — the single source of truth.
+ * The shipped pi recall hook (nlm/index.js) carries its own copy of these in
+ * its self-contained formatPointerBlock; recall-marker-contract.test.ts asserts
+ * the hook still emits these so marker drift can't silently reopen the loop.
+ */
+export const BLOCK_HEADERS = [
   "## Possibly-relevant prior sessions (nlm-memory)",
   "## Known facts about top entities",
 ];
 
-const FOOTER_PREFIX = "NLM tools:";
+export const FOOTER_PREFIX = "NLM tools:";
 
 export function stripInjectedContext(text: string): string {
   if (!text.includes(FOOTER_PREFIX)) return text;
