@@ -193,6 +193,65 @@ export function runFactStoreContract(h: FactStoreContractHarness): void {
       expect((await storage.facts.getById("a"))?.supersededBy).toBeNull();
     });
 
+    describe("retire", () => {
+      it("hides a retired fact from findCurrent, list, and listForRecall", async () => {
+        await storage.facts.insert(
+          makeFact({
+            id: "f_bad",
+            subject: "acme-app",
+            predicate: "owner",
+            value: "user",
+            confidence: 0.9,
+            sourceSessionId: "sess_parent",
+          }),
+        );
+
+        await storage.facts.retire("f_bad");
+
+        expect(await storage.facts.findCurrent("acme-app", "owner")).toBeNull();
+        expect((await storage.facts.list({ subject: "acme-app" })).map((f) => f.id)).toEqual([]);
+        expect(
+          (await storage.facts.listForRecall({ subject: "acme-app", minConfidence: 0 })).map((f) => f.id),
+        ).toEqual([]);
+      });
+
+      it("keeps a retired fact visible when includeSuperseded is set (audit trail)", async () => {
+        await storage.facts.insert(
+          makeFact({ id: "f_bad", subject: "acme-app", predicate: "owner", value: "user", sourceSessionId: "sess_parent" }),
+        );
+        await storage.facts.retire("f_bad");
+
+        const all = await storage.facts.list({ subject: "acme-app", includeSuperseded: true });
+        expect(all.map((f) => f.id)).toEqual(["f_bad"]);
+        // getById is an unfiltered primitive — retired facts remain fetchable by id.
+        expect(await storage.facts.getById("f_bad")).not.toBeNull();
+      });
+
+      it("removes the embedding so semanticSearch no longer surfaces a retired fact", async () => {
+        await storage.facts.insert(makeFact({ id: "f_bad", sourceSessionId: "sess_parent" }));
+        const vec = new Float32Array(768);
+        vec[0] = 1;
+        await storage.facts.upsertEmbedding("f_bad", vec);
+
+        await storage.facts.retire("f_bad");
+
+        const query = new Float32Array(768);
+        query[0] = 1;
+        const neighbors = await storage.facts.semanticSearch(query, 5);
+        expect(neighbors.map((n) => n.factId)).not.toContain("f_bad");
+      });
+
+      it("throws when the fact does not exist", async () => {
+        await expect(storage.facts.retire("nope")).rejects.toThrow(/not found/);
+      });
+
+      it("is idempotent — retiring an already-retired fact is a no-op", async () => {
+        await storage.facts.insert(makeFact({ id: "f_bad", sourceSessionId: "sess_parent" }));
+        await storage.facts.retire("f_bad");
+        await expect(storage.facts.retire("f_bad")).resolves.toBeUndefined();
+      });
+    });
+
     it("CHECK constraints reject invalid kind", async () => {
       await expect(
         storage.facts.insert(

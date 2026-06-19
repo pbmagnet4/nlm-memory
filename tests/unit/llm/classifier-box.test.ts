@@ -1,5 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { classifierNeedsThinkDisabled } from "../../../src/llm/classifier-box.js";
+import { ClassifierBox, classifierNeedsThinkDisabled } from "../../../src/llm/classifier-box.js";
+import { formatPointerBlock } from "../../../src/core/hook/pointer-block.js";
+import type { ClassifyResult, LLMClient } from "../../../src/ports/llm-client.js";
+
+describe("ClassifierBox.classify", () => {
+  it("strips the injected recall pointer block before delegating to the inner classifier", async () => {
+    const box = new ClassifierBox({ provider: "ollama", model: "qwen3:4b-instruct" });
+    let seen = "";
+    const empty: ClassifyResult = {
+      label: "", summary: "", entities: [], decisions: [], open: [], confidence: 0.9, facts: [],
+    };
+    const fakeInner: LLMClient = {
+      classify: async (t: string) => { seen = t; return empty; },
+      embed: async () => { throw new Error("unused"); },
+      rewriteForRecall: async () => { throw new Error("unused"); },
+    };
+    (box as unknown as { inner: LLMClient }).inner = fakeInner;
+
+    const block = formatPointerBlock([{ id: "pi_1", label: "Prior", startedAt: "2026-06-16" }]);
+    await box.classify(`${block}\n\nreal user message`);
+
+    expect(seen).not.toContain("NLM tools:");
+    expect(seen).not.toContain("Possibly-relevant prior sessions");
+    expect(seen).toContain("real user message");
+  });
+});
 
 describe("classifierNeedsThinkDisabled", () => {
   it("returns true for qwen3.5:4b", () => {

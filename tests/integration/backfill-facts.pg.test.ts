@@ -74,8 +74,8 @@ describe.skipIf(!PG_TEST_URL)("backfillFacts (PG backend)", () => {
     await storage.sessions.insertSessionForTest(session("s1", "body one", "2026-05-01T00:00:00Z"));
     await storage.sessions.insertSessionForTest(session("s2", "body two", "2026-05-02T00:00:00Z"));
     const classifier = new ScriptedClassifier(new Map([
-      ["body one", classifyResult([{ kind: "decision", subject: "PolySignal", predicate: "framework", value: "Hono", sourceQuote: null }])],
-      ["body two", classifyResult([{ kind: "decision", subject: "PolySignal", predicate: "db", value: "Postgres", sourceQuote: null }])],
+      ["body one", classifyResult([{ kind: "decision", subject: "PolySignal", predicate: "framework", value: "Hono" }])],
+      ["body two", classifyResult([{ kind: "decision", subject: "PolySignal", predicate: "db", value: "Postgres" }])],
     ]));
 
     const report = await backfillFacts({ store: storage.sessions, factStore: storage.facts, classifier, statePath });
@@ -89,7 +89,7 @@ describe.skipIf(!PG_TEST_URL)("backfillFacts (PG backend)", () => {
   it("skips sessions that already have facts (reprocess=false) and is resumable", async () => {
     await storage.sessions.insertSessionForTest(session("s1", "body one", "2026-05-01T00:00:00Z"));
     const classifier = new ScriptedClassifier(new Map([
-      ["body one", classifyResult([{ kind: "decision", subject: "PolySignal", predicate: "framework", value: "Hono", sourceQuote: null }])],
+      ["body one", classifyResult([{ kind: "decision", subject: "PolySignal", predicate: "framework", value: "Hono" }])],
     ]));
 
     const r1 = await backfillFacts({ store: storage.sessions, factStore: storage.facts, classifier, statePath });
@@ -106,7 +106,7 @@ describe.skipIf(!PG_TEST_URL)("backfillFacts (PG backend)", () => {
     await backfillFacts({
       store: storage.sessions, factStore: storage.facts, statePath,
       classifier: new ScriptedClassifier(new Map([
-        ["body v1", classifyResult([{ kind: "decision", subject: "PolySignal", predicate: "framework", value: "Express", sourceQuote: null }])],
+        ["body v1", classifyResult([{ kind: "decision", subject: "PolySignal", predicate: "framework", value: "Express" }])],
       ])),
     });
 
@@ -114,7 +114,7 @@ describe.skipIf(!PG_TEST_URL)("backfillFacts (PG backend)", () => {
     await backfillFacts({
       store: storage.sessions, factStore: storage.facts, statePath: join(tmp, "state2.json"),
       classifier: new ScriptedClassifier(new Map([
-        ["body v2", classifyResult([{ kind: "decision", subject: "PolySignal", predicate: "framework", value: "Hono", sourceQuote: null }])],
+        ["body v2", classifyResult([{ kind: "decision", subject: "PolySignal", predicate: "framework", value: "Hono" }])],
       ])),
     });
 

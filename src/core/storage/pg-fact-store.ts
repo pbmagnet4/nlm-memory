@@ -88,7 +88,7 @@ export class PgFactStore implements FactStore {
       `SELECT id, kind, subject, predicate, value, source_session_id,
               source_quote, created_at, superseded_by, confidence
        FROM facts
-       WHERE subject = $1 AND predicate = $2 AND superseded_by IS NULL
+       WHERE subject = $1 AND predicate = $2 AND superseded_by IS NULL AND retired_at IS NULL
        ORDER BY created_at DESC
        LIMIT 1`,
       [subject, predicate],
@@ -106,7 +106,10 @@ export class PgFactStore implements FactStore {
       where.push(`predicate = $${idx++}`);
       params.push(query.predicate);
     }
-    if (!includeSuperseded) where.push("superseded_by IS NULL");
+    if (!includeSuperseded) {
+      where.push("superseded_by IS NULL");
+      where.push("retired_at IS NULL");
+    }
     params.push(limit);
     const result = await this.pool.query<FactRow>(
       `SELECT id, kind, subject, predicate, value, source_session_id,
@@ -140,7 +143,10 @@ export class PgFactStore implements FactStore {
     if (filter.predicate !== undefined) { where.push(`predicate = $${idx++}`); params.push(filter.predicate); }
     if (filter.kind !== undefined) { where.push(`kind = $${idx++}`); params.push(filter.kind); }
     if (filter.minConfidence !== undefined) { where.push(`confidence >= $${idx++}`); params.push(filter.minConfidence); }
-    if (filter.includeSuperseded !== true) where.push("superseded_by IS NULL");
+    if (filter.includeSuperseded !== true) {
+      where.push("superseded_by IS NULL");
+      where.push("retired_at IS NULL");
+    }
     const limit = Math.max(1, Math.trunc(filter.limit ?? 500));
     params.push(limit);
     const sql = `
@@ -175,6 +181,28 @@ export class PgFactStore implements FactStore {
       await client.query(
         "UPDATE facts SET superseded_by = $1 WHERE id = $2", [newId, oldId],
       );
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async retire(factId: string): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const row = await client.query<{ id: string }>(
+        "SELECT id FROM facts WHERE id = $1", [factId],
+      );
+      if (row.rows.length === 0) throw new Error(`Fact ${factId} not found`);
+      await client.query(
+        "UPDATE facts SET retired_at = $1 WHERE id = $2",
+        [new Date().toISOString(), factId],
+      );
+      await client.query("DELETE FROM fact_embeddings WHERE fact_id = $1", [factId]);
       await client.query("COMMIT");
     } catch (err) {
       await client.query("ROLLBACK");
