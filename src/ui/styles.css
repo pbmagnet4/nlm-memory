@@ -1707,6 +1707,16 @@ a.session-label:hover { color: var(--accent); }
   z-index: var(--z-raised);
 }
 
+/* Drag-to-zoom date-range chip: text + dismiss icon, replaces the active preset */
+.river-range-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-transform: none;
+}
+.river-range-chip-x { opacity: 0.6; transition: opacity var(--ease); }
+.river-range-chip:hover .river-range-chip-x { opacity: 1; }
+
 .river-lane-label {
   background: none;
   border: none;

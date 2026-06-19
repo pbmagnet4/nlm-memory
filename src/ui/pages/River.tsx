@@ -42,13 +42,21 @@ export function RiverPage() {
   const gridRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const [dragRange, setDragRange] = useState<{ from: number; to: number } | null>(null);
+  // Drag-to-zoom selects an exact date window; it takes precedence over the
+  // preset spans. Picking a preset clears it.
+  const [customRange, setCustomRange] = useState<{ from: string; to: string } | null>(null);
 
   const view = useMemo(() => {
     if (!data) return null;
     const days = SPAN_DAYS[span];
     const sessions = data.sessions.filter((s) => s.started_at !== null);
     const now = Date.now();
-    const filtered = days
+    const filtered = customRange
+      ? sessions.filter((s) => {
+          const d = (s.started_at ?? "").slice(0, 10);
+          return d >= customRange.from && d <= customRange.to;
+        })
+      : days
       ? sessions.filter((s) => (now - Date.parse(s.started_at!)) / 86_400_000 <= days)
       : sessions;
     const lanes = new Map<string, Map<string, number>>();
@@ -91,7 +99,7 @@ export function RiverPage() {
         .flatMap(s => s.entities)
     );
     return { dates, laneRows, total: filtered.length, recentEntities };
-  }, [data, span]);
+  }, [data, span, customRange]);
 
   const onCellClick = (entity: string, date: string) => {
     if (!data) return;
@@ -150,8 +158,7 @@ export function RiverPage() {
     const startDate = view.dates[startIdx];
     const endDate = view.dates[endIdx];
     if (startDate && endDate) {
-      const days = Math.max(1, Math.ceil((Date.parse(endDate) - Date.parse(startDate)) / 86_400_000));
-      setSpan(days <= 7 ? "7d" : days <= 30 ? "30d" : days <= 90 ? "90d" : "all");
+      setCustomRange({ from: startDate, to: endDate });
     }
     dragRef.current = null;
     setDragRange(null);
@@ -183,10 +190,22 @@ export function RiverPage() {
           <button
             key={s}
             type="button"
-            className={`ctrl-btn${s === span ? " active" : ""}`}
-            onClick={() => setSpan(s)}
+            className={`ctrl-btn${!customRange && s === span ? " active" : ""}`}
+            onClick={() => { setSpan(s); setCustomRange(null); }}
           >{s}</button>
         ))}
+        {customRange && (
+          <button
+            type="button"
+            className="ctrl-btn active river-range-chip"
+            onClick={() => setCustomRange(null)}
+            aria-label={`Clear date range ${fmtRange(customRange.from, customRange.to)}`}
+            title="Clear date range"
+          >
+            <span>{fmtRange(customRange.from, customRange.to)}</span>
+            {closeIcon()}
+          </button>
+        )}
         <div className="river-legend" aria-label="Activity scale">
           <span className="muted small">less</span>
           {([0, 1, 2, 3, 4] as const).map((t) => (
@@ -219,10 +238,18 @@ export function RiverPage() {
               const stride = len <= 60 ? 1 : len <= 120 ? 2 : len <= 250 ? 7 : 14;
               return view.dates.map((d, index) => {
                 const isMonthStart = d.slice(8, 10) === "01";
-                const cls = ["river-date-cell", isMonthStart ? "river-date-cell--month-start" : ""].filter(Boolean).join(" ");
+                // Month starts always anchor a month name regardless of stride,
+                // so wide spans stay readable; other on-stride cells show the day.
+                const label = isMonthStart
+                  ? MONTHS[Number(d.slice(5, 7)) - 1]
+                  : index % stride === 0 ? d.slice(8, 10) : "";
+                const cls = [
+                  "river-date-cell",
+                  isMonthStart ? "river-date-cell--month-start" : "",
+                ].filter(Boolean).join(" ");
                 return (
                   <div key={d} className={cls} title={d}>
-                    {index % stride === 0 ? d.slice(5) : ""}
+                    {label}
                   </div>
                 );
               });
@@ -364,4 +391,36 @@ function tier(v: number): 0 | 1 | 2 | 3 | 4 {
   if (v <= 3) return 2;
   if (v <= 6) return 3;
   return 4;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// Formats an ISO date (YYYY-MM-DD) straight from its parts — no Date object,
+// so the label never drifts a day across timezones.
+function fmtDay(iso: string): string {
+  const month = MONTHS[Number(iso.slice(5, 7)) - 1] ?? "";
+  return `${month} ${Number(iso.slice(8, 10))}`;
+}
+
+function fmtRange(from: string, to: string): string {
+  return from === to ? fmtDay(from) : `${fmtDay(from)} – ${fmtDay(to)}`;
+}
+
+function closeIcon() {
+  return (
+    <svg
+      className="river-range-chip-x"
+      width={13}
+      height={13}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M18 6 6 18M6 6l12 12" />
+    </svg>
+  );
 }
