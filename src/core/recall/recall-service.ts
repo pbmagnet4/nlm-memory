@@ -6,6 +6,8 @@
  * no SQLite, no HTTP. Tests substitute fake adapters.
  */
 
+import type { CodeEmbedder } from "@ports/code-embedder.js";
+import type { CodeExemplarStore } from "@ports/code-exemplar-store.js";
 import type { FactStore } from "@ports/fact-store.js";
 import type { LLMClient } from "@ports/llm-client.js";
 import { LLMUnreachableError } from "@ports/llm-client.js";
@@ -27,6 +29,7 @@ import { keywordMatchFields } from "./match-fields.js";
 import { detectQueryShape } from "./query-shape.js";
 import { recencyMultiplier } from "./recency.js";
 import { pickRelatedFacts } from "./related-facts.js";
+import { pickRelatedExemplars } from "./related-exemplars.js";
 import { RewriteCache } from "./rewrite-cache.js";
 import { tokenSet } from "./tokenize.js";
 import { buildCitationBoosts, applyBoosts } from "./reranker.js";
@@ -34,6 +37,7 @@ import { readCitationLog } from "./citation-log.js";
 import { tiebreakFactor } from "./metadata-tiebreaker.js";
 
 const DEFAULT_LIMIT = 20;
+const EXEMPLAR_RECALL_TIMEOUT_MS = 800;
 const MAX_LIMIT = 100;
 const CITATION_LOOKBACK_DAYS = 90;
 
@@ -67,6 +71,11 @@ export interface RecallServiceDeps {
    * core recall functionality.
    */
   readonly factStore?: FactStore;
+  /** Passive code-exemplar recall: when all three are present + the flag is
+   *  on, search() attaches relatedExemplars for callers that opt in. */
+  readonly exemplarStore?: CodeExemplarStore;
+  readonly codeEmbedder?: CodeEmbedder;
+  readonly installScope?: string;
 }
 
 export class RecallService {
@@ -221,6 +230,32 @@ export class RecallService {
       const relatedFacts = await pickRelatedFacts(result.results, this.deps.factStore);
       if (relatedFacts.length > 0) {
         result = { ...result, relatedFacts };
+      }
+    }
+
+    // 6b. Passive code-exemplar recall. Flag-gated, opt-in, and wrapped in a
+    //     timeout so a slow/cold CodeRankEmbed call can never blow the hook's
+    //     latency budget — on timeout or error we simply omit exemplars.
+    if (
+      input.withRelatedExemplars === true &&
+      this.deps.exemplarStore &&
+      this.deps.codeEmbedder &&
+      this.deps.installScope &&
+      process.env["NLM_CODE_EXEMPLARS_ENABLED"] === "1" &&
+      (semanticQuery || input.query)
+    ) {
+      const store = this.deps.exemplarStore;
+      const embedder = this.deps.codeEmbedder;
+      const scope = this.deps.installScope;
+      const q = semanticQuery || input.query;
+      const timeout = new Promise<never>((_, rej) =>
+        setTimeout(() => rej(new Error("exemplar recall timeout")), EXEMPLAR_RECALL_TIMEOUT_MS),
+      );
+      try {
+        const related = await Promise.race([pickRelatedExemplars(q, store, embedder, scope), timeout]);
+        if (related.length > 0) result = { ...result, relatedExemplars: related };
+      } catch {
+        // timed out or failed — proceed without exemplars
       }
     }
 

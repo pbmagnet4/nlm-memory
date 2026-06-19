@@ -197,7 +197,14 @@ async function buildStack() {
   // expose them. Classifier is wired separately for Phase D ingest.
   const embedder = new OllamaClient({ baseUrl: ollamaUrl() });
   const classifier = buildClassifier();
-  const recall = new RecallService({ store, llm: embedder, factStore: facts });
+  const recall = new RecallService({
+    store,
+    llm: embedder,
+    factStore: facts,
+    exemplarStore: storage.exemplars,
+    codeEmbedder: new OllamaCodeEmbedder({ baseUrl: ollamaUrl() }),
+    installScope: scope,
+  });
   const factRecall = new FactRecallService({ factStore: facts, llm: embedder });
   return { storage, store, facts, signals, scope, sources, providers, recall, factRecall, embedder, classifier };
 }
