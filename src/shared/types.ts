@@ -312,6 +312,8 @@ export interface CodeExemplarInput {
 export interface CodeExemplar extends CodeExemplarInput {
   readonly id: string;
   readonly createdAt: string;
+  readonly retiredAt: string | null;
+  readonly labelSource: "llm" | "human";
 }
 
 /** One result row from recall_code. */

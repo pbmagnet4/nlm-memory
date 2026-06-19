@@ -20,7 +20,8 @@ const VEC_DIM = 768;
 
 const COLUMNS =
   "id, install_scope, signal_id, session_id, repo, model, lang, " +
-  "task_context, code, code_hash, outcome, git_sha, survived, ts, created_at";
+  "task_context, code, code_hash, outcome, git_sha, survived, ts, created_at, " +
+  "retired_at, label_source";
 
 interface ExemplarRow {
   id: string;
@@ -38,6 +39,8 @@ interface ExemplarRow {
   survived: number | null;
   ts: string;
   created_at: string;
+  retired_at: string | null;
+  label_source: "llm" | "human";
 }
 
 function insertParams(input: CodeExemplarInput): unknown[] {
@@ -229,6 +232,8 @@ export class PgCodeExemplarStore implements CodeExemplarStore {
       survived: row.survived as 0 | 1 | null,
       ts: row.ts,
       createdAt: row.created_at,
+      retiredAt: row.retired_at,
+      labelSource: row.label_source,
     };
   }
 }

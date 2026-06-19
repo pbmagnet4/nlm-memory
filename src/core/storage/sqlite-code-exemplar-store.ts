@@ -31,6 +31,8 @@ type ExemplarRow = {
   survived: number | null;
   ts: string;
   created_at: string;
+  retired_at: string | null;
+  label_source: "llm" | "human";
 };
 
 /**
@@ -168,7 +170,8 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
     const row = this.db
       .prepare<[string], ExemplarRow>(
         `SELECT id, install_scope, signal_id, session_id, repo, model, lang,
-                task_context, code, code_hash, outcome, git_sha, survived, ts, created_at
+                task_context, code, code_hash, outcome, git_sha, survived, ts, created_at,
+                retired_at, label_source
          FROM code_exemplars WHERE id = ?`,
       )
       .get(id);
@@ -287,6 +290,8 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
       survived: inp.survived,
       ts: inp.ts,
       created_at: new Date().toISOString(),
+      retired_at: null,
+      label_source: "llm",
     };
   }
 
@@ -307,6 +312,8 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
       survived: row.survived as 0 | 1 | null,
       ts: row.ts,
       createdAt: row.created_at,
+      retiredAt: row.retired_at,
+      labelSource: row.label_source,
     };
   }
 }

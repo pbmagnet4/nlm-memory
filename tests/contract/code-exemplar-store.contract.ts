@@ -102,6 +102,14 @@ export function runCodeExemplarStoreContract(h: CodeExemplarStoreContractHarness
       expect(await storage.exemplars.getById(newId)).not.toBeNull();
     });
 
+    it("a freshly inserted exemplar is active, llm-sourced", async () => {
+      const { id } = await storage.exemplars.insert(makeExemplarInput());
+      const fetched = await storage.exemplars.getById(id);
+      expect(fetched).not.toBeNull();
+      expect(fetched!.retiredAt).toBeNull();
+      expect(fetched!.labelSource).toBe("llm");
+    });
+
     it("applyBucketCap evicts oldest rows beyond the cap", async () => {
       const makeN = async (n: number) => {
         for (let i = 0; i < n; i++) {
