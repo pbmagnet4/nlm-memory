@@ -56,8 +56,8 @@ Per runtime:
 
 - [ ] **Pointer block fires.** Sessions section appears (sanity check the hook fired at all).
 - [ ] **Facts section renders.** "Known facts about top entities" appears beneath the sessions when the corpus has corroborated facts about the prompt's entities.
-- [ ] **Liveness canary updates.** `tail -1 ~/.nlm/hook-log.jsonl` shows a fresh entry with `kind: "user_prompt_submit"` and your `conversationId`.
-- [ ] **useful_hit_rate doesn't regress.** Run `nlm stats --days 7` before and after. The recall-citation correlation should hold or improve.
+- [ ] **Liveness canary updates.** `tail -1 ~/.nlm/hook-log.jsonl` shows a fresh prompt-submit entry — a gate-tagged record carrying your `conversationId` and `promptPreview` (the hook log keys prompt fires by `gate`, not a `kind: "user_prompt_submit"` field).
+- [ ] **useful_hit_rate doesn't regress.** Run `nlm precision --days 7` before and after. The recall-citation precision should hold or improve.
 
 ## Rules-file runtimes (Cursor / Windsurf / OpenCode)
 
