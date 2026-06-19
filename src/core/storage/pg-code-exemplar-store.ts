@@ -12,7 +12,7 @@
  */
 
 import type { Pool } from "pg";
-import type { CodeExemplarSearchFilter, CodeExemplarStore } from "@ports/code-exemplar-store.js";
+import type { CodeExemplarSearchFilter, CodeExemplarStore, ExemplarVerdictPatch, ExemplarVerdictResult, ExemplarVerdictSource } from "@ports/code-exemplar-store.js";
 import type { CodeExemplar, CodeExemplarHit, CodeExemplarInput, CodeExemplarOutcome } from "@shared/types.js";
 import { exemplarId } from "./sqlite-code-exemplar-store.js";
 
@@ -20,7 +20,8 @@ const VEC_DIM = 768;
 
 const COLUMNS =
   "id, install_scope, signal_id, session_id, repo, model, lang, " +
-  "task_context, code, code_hash, outcome, git_sha, survived, ts, created_at";
+  "task_context, code, code_hash, outcome, git_sha, survived, ts, created_at, " +
+  "retired_at, label_source";
 
 interface ExemplarRow {
   id: string;
@@ -38,6 +39,8 @@ interface ExemplarRow {
   survived: number | null;
   ts: string;
   created_at: string;
+  retired_at: string | null;
+  label_source: "llm" | "human";
 }
 
 function insertParams(input: CodeExemplarInput): unknown[] {
@@ -131,7 +134,7 @@ export class PgCodeExemplarStore implements CodeExemplarStore {
               e.embedding <-> $1::vector AS distance
        FROM code_exemplar_embeddings e
        JOIN code_exemplars ce ON ce.id = e.exemplar_id
-       WHERE ce.install_scope = $2
+       WHERE ce.install_scope = $2 AND ce.retired_at IS NULL
        ORDER BY e.embedding <-> $1::vector
        LIMIT $3`,
       [vecStr, filter.installScope, overFetch],
@@ -204,6 +207,36 @@ export class PgCodeExemplarStore implements CodeExemplarStore {
     return res.rowCount ?? 0;
   }
 
+  async setVerdict(
+    id: string,
+    patch: ExemplarVerdictPatch,
+    source: ExemplarVerdictSource,
+  ): Promise<ExemplarVerdictResult> {
+    const cur = await this.pool.query<{ label_source: "llm" | "human" }>(
+      "SELECT label_source FROM code_exemplars WHERE id = $1",
+      [id],
+    );
+    if (cur.rows.length === 0) return { status: "not_found" };
+    if (source === "llm" && cur.rows[0]!.label_source === "human") return { status: "human_locked" };
+
+    const sets: string[] = [];
+    const values: unknown[] = [];
+    let n = 1;
+    sets.push(`label_source = $${n++}`);
+    values.push(source);
+    if (patch.retired !== undefined) {
+      sets.push(`retired_at = $${n++}`);
+      values.push(patch.retired ? new Date().toISOString() : null);
+    }
+    if (patch.outcome !== undefined) {
+      sets.push(`outcome = $${n++}`);
+      values.push(patch.outcome);
+    }
+    values.push(id);
+    await this.pool.query(`UPDATE code_exemplars SET ${sets.join(", ")} WHERE id = $${n}`, values);
+    return { status: "applied" };
+  }
+
   async pruneOlderThan(olderThanTs: string): Promise<number> {
     const res = await this.pool.query(
       "DELETE FROM code_exemplars WHERE ts < $1",
@@ -229,6 +262,8 @@ export class PgCodeExemplarStore implements CodeExemplarStore {
       survived: row.survived as 0 | 1 | null,
       ts: row.ts,
       createdAt: row.created_at,
+      retiredAt: row.retired_at,
+      labelSource: row.label_source,
     };
   }
 }

@@ -89,6 +89,7 @@ function fakeStore(): CodeExemplarStore & { inserted: CodeExemplarInput[]; embed
     async applyBucketCap() { return 0; },
     async pruneReverted() { return 0; },
     async pruneOlderThan() { return 0; },
+    async setVerdict() { return { status: "not_found" as const }; },
   };
 }
 const fakeEmbedder: CodeEmbedder = { async embed() { return { vector: new Float32Array(768), dim: 768 }; } };

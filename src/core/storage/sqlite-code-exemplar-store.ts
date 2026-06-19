@@ -10,7 +10,7 @@
 
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
-import type { CodeExemplarSearchFilter, CodeExemplarStore } from "@ports/code-exemplar-store.js";
+import type { CodeExemplarSearchFilter, CodeExemplarStore, ExemplarVerdictPatch, ExemplarVerdictResult, ExemplarVerdictSource } from "@ports/code-exemplar-store.js";
 import type { CodeExemplar, CodeExemplarHit, CodeExemplarInput, CodeExemplarOutcome } from "@shared/types.js";
 
 const VEC_DIM = 768;
@@ -31,6 +31,8 @@ type ExemplarRow = {
   survived: number | null;
   ts: string;
   created_at: string;
+  retired_at: string | null;
+  label_source: "llm" | "human";
 };
 
 /**
@@ -130,7 +132,7 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
         `SELECT id, install_scope, signal_id, session_id, repo, model, lang,
                 task_context, code, code_hash, outcome, git_sha, survived, ts, created_at
          FROM code_exemplars
-         WHERE id IN (${placeholders}) AND install_scope = ?`,
+         WHERE id IN (${placeholders}) AND install_scope = ? AND retired_at IS NULL`,
       )
       .all(...ids, filter.installScope) as ExemplarRow[];
 
@@ -168,7 +170,8 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
     const row = this.db
       .prepare<[string], ExemplarRow>(
         `SELECT id, install_scope, signal_id, session_id, repo, model, lang,
-                task_context, code, code_hash, outcome, git_sha, survived, ts, created_at
+                task_context, code, code_hash, outcome, git_sha, survived, ts, created_at,
+                retired_at, label_source
          FROM code_exemplars WHERE id = ?`,
       )
       .get(id);
@@ -240,6 +243,33 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
     return deleted;
   }
 
+  async setVerdict(
+    id: string,
+    patch: ExemplarVerdictPatch,
+    source: ExemplarVerdictSource,
+  ): Promise<ExemplarVerdictResult> {
+    const row = this.db
+      .prepare<[string], { label_source: "llm" | "human" }>(
+        "SELECT label_source FROM code_exemplars WHERE id = ?",
+      )
+      .get(id);
+    if (!row) return { status: "not_found" };
+    if (source === "llm" && row.label_source === "human") return { status: "human_locked" };
+
+    const sets: string[] = ["label_source = @source"];
+    const params: Record<string, unknown> = { id, source };
+    if (patch.retired !== undefined) {
+      sets.push("retired_at = @retiredAt");
+      params["retiredAt"] = patch.retired ? new Date().toISOString() : null;
+    }
+    if (patch.outcome !== undefined) {
+      sets.push("outcome = @outcome");
+      params["outcome"] = patch.outcome;
+    }
+    this.db.prepare(`UPDATE code_exemplars SET ${sets.join(", ")} WHERE id = @id`).run(params);
+    return { status: "applied" };
+  }
+
   async pruneOlderThan(olderThanTs: string): Promise<number> {
     type IdRow = { id: string };
     const ids = this.db
@@ -287,6 +317,8 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
       survived: inp.survived,
       ts: inp.ts,
       created_at: new Date().toISOString(),
+      retired_at: null,
+      label_source: "llm",
     };
   }
 
@@ -307,6 +339,8 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
       survived: row.survived as 0 | 1 | null,
       ts: row.ts,
       createdAt: row.created_at,
+      retiredAt: row.retired_at,
+      labelSource: row.label_source,
     };
   }
 }

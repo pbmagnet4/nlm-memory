@@ -8,6 +8,12 @@ import type { Storage } from "../../src/ports/storage.js";
 import type { CodeExemplarInput } from "../../src/shared/types.js";
 import { codeHash } from "../../src/core/exemplars/ingest-exemplar.js";
 
+function unitVec(i: number): Float32Array {
+  const v = new Float32Array(768);
+  v[i] = 1;
+  return v;
+}
+
 function makeExemplarInput(overrides: Partial<CodeExemplarInput> = {}): CodeExemplarInput {
   const code = overrides.code ?? "function add(a, b) {\n  return a + b;\n}";
   return {
@@ -102,6 +108,56 @@ export function runCodeExemplarStoreContract(h: CodeExemplarStoreContractHarness
       expect(await storage.exemplars.getById(newId)).not.toBeNull();
     });
 
+    it("a freshly inserted exemplar is active, llm-sourced", async () => {
+      const { id } = await storage.exemplars.insert(makeExemplarInput());
+      const fetched = await storage.exemplars.getById(id);
+      expect(fetched).not.toBeNull();
+      expect(fetched!.retiredAt).toBeNull();
+      expect(fetched!.labelSource).toBe("llm");
+    });
+
+    it("setVerdict retire sets retired_at + label_source", async () => {
+      const { id } = await storage.exemplars.insert(makeExemplarInput());
+      const res = await storage.exemplars.setVerdict(id, { retired: true }, "human");
+      expect(res.status).toBe("applied");
+      const fetched = await storage.exemplars.getById(id);
+      expect(fetched!.retiredAt).not.toBeNull();
+      expect(fetched!.labelSource).toBe("human");
+    });
+
+    it("setVerdict can relabel outcome and un-retire", async () => {
+      const { id } = await storage.exemplars.insert(makeExemplarInput());
+      await storage.exemplars.setVerdict(id, { retired: true, outcome: "fail" }, "human");
+      const res = await storage.exemplars.setVerdict(id, { retired: false }, "human");
+      expect(res.status).toBe("applied");
+      const fetched = await storage.exemplars.getById(id);
+      expect(fetched!.retiredAt).toBeNull();
+      expect(fetched!.outcome).toBe("fail");
+      expect(fetched!.labelSource).toBe("human");
+    });
+
+    it("human wins: an llm verdict no-ops on a human-sourced row", async () => {
+      const { id } = await storage.exemplars.insert(makeExemplarInput());
+      await storage.exemplars.setVerdict(id, { retired: true }, "human");
+      const res = await storage.exemplars.setVerdict(id, { retired: false }, "llm");
+      expect(res.status).toBe("human_locked");
+      const fetched = await storage.exemplars.getById(id);
+      expect(fetched!.retiredAt).not.toBeNull(); // unchanged — human verdict held
+      expect(fetched!.labelSource).toBe("human");
+    });
+
+    it("an llm verdict applies on an llm-sourced (default) row", async () => {
+      const { id } = await storage.exemplars.insert(makeExemplarInput());
+      const res = await storage.exemplars.setVerdict(id, { retired: true }, "llm");
+      expect(res.status).toBe("applied");
+      expect((await storage.exemplars.getById(id))!.labelSource).toBe("llm");
+    });
+
+    it("setVerdict on a missing id reports not_found", async () => {
+      const res = await storage.exemplars.setVerdict("nope", { retired: true }, "human");
+      expect(res.status).toBe("not_found");
+    });
+
     it("applyBucketCap evicts oldest rows beyond the cap", async () => {
       const makeN = async (n: number) => {
         for (let i = 0; i < n; i++) {
@@ -119,6 +175,20 @@ export function runCodeExemplarStoreContract(h: CodeExemplarStoreContractHarness
       await makeN(5);
       const deleted = await storage.exemplars.applyBucketCap("install-test", 3);
       expect(deleted).toBe(2);
+    });
+
+    it("searchByVector excludes retired exemplars but getById still returns them", async () => {
+      const inp = makeExemplarInput();
+      const { id } = await storage.exemplars.insert(inp);
+      await storage.exemplars.upsertEmbedding(id, unitVec(0));
+      // present before retire
+      const before = await storage.exemplars.searchByVector(unitVec(0), { installScope: inp.installScope, k: 5 });
+      expect(before.map((h) => h.id)).toContain(id);
+      // retire → excluded from search, still in getById
+      await storage.exemplars.setVerdict(id, { retired: true }, "human");
+      const after = await storage.exemplars.searchByVector(unitVec(0), { installScope: inp.installScope, k: 5 });
+      expect(after.map((h) => h.id)).not.toContain(id);
+      expect(await storage.exemplars.getById(id)).not.toBeNull();
     });
   });
 }

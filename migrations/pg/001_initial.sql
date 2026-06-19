@@ -237,7 +237,9 @@ CREATE TABLE IF NOT EXISTS code_exemplars (
   git_sha       TEXT,
   survived      INTEGER,
   ts            TEXT NOT NULL,
-  created_at    TEXT NOT NULL DEFAULT (now()::text)
+  created_at    TEXT NOT NULL DEFAULT (now()::text),
+  retired_at    TEXT,
+  label_source  TEXT NOT NULL DEFAULT 'llm'
 );
 CREATE INDEX IF NOT EXISTS idx_exemplars_scope_repo ON code_exemplars(install_scope, repo, outcome);
 CREATE INDEX IF NOT EXISTS idx_exemplars_ts ON code_exemplars(ts);
