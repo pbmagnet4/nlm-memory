@@ -51,7 +51,7 @@ import { clearSurfaced, loadSurfaced, recordSurfaced } from "@core/hook/memo.js"
 import { clearCited } from "@core/hook/cite-memo.js";
 import { classifyPrompt } from "@core/hook/gate.js";
 import { selectHits, type RecallHitInput } from "@core/hook/select.js";
-import { formatPointerBlock } from "@core/hook/pointer-block.js";
+import { formatPointerBlock, type PointerExemplar } from "@core/hook/pointer-block.js";
 import type { FactRecallService } from "@core/recall-facts/fact-recall-service.js";
 import { factRecallStats, logFactQuery } from "@core/recall-facts/fact-query-log.js";
 import type { FactStore } from "@ports/fact-store.js";
@@ -613,6 +613,9 @@ function registerRecallRoutes(app: Hono, deps: HttpDeps): void {
       withRelatedFacts = true;
     }
 
+    // Spec §E: `?withExemplars=true` attaches relatedExemplars (passive code exemplar recall).
+    const withExemplars = c.req.query("withExemplars") === "true";
+
     // Task #303: superseded sessions are opt-in over HTTP and DEFAULT OFF.
     // The prompt + session-start hooks call this endpoint and pass no
     // `include_superseded`, so their strict exclusion (d9ee06b) is preserved.
@@ -628,6 +631,7 @@ function registerRecallRoutes(app: Hono, deps: HttpDeps): void {
       ...(kind !== undefined ? { kind: kind as RecallKindFilter } : {}),
       ...(rewrite !== undefined ? { rewrite } : {}),
       ...(withRelatedFacts !== undefined ? { withRelatedFacts } : {}),
+      ...(withExemplars ? { withRelatedExemplars: true } : {}),
       ...(includeSuperseded !== undefined ? { includeSuperseded } : {}),
     };
     const result = await deps.recall.search(query);
@@ -855,6 +859,7 @@ function registerHermesAgentHookRoutes(app: Hono, deps: HttpDeps): void {
         mode: "keyword",
         limit: 5,
         withRelatedFacts: true,
+        withRelatedExemplars: true,
       });
       const hits: ReadonlyArray<RecallHitInput> = result.results.map((r) => ({
         id: r.id,
@@ -864,13 +869,25 @@ function registerHermesAgentHookRoutes(app: Hono, deps: HttpDeps): void {
       }));
       const surfaced = loadSurfaced(sessionId);
       const selected = selectHits({ hits, surfaced, scoreThreshold: 0, perFireCap: 3, perConversationCap: 10 });
-      if (selected.length === 0 && (result.relatedFacts ?? []).length === 0) {
+      if (
+        selected.length === 0 &&
+        (result.relatedFacts ?? []).length === 0 &&
+        (result.relatedExemplars ?? []).length === 0
+      ) {
         return c.json({ context: null });
       }
       if (selected.length > 0) {
         recordSurfaced(sessionId, selected.map((h) => h.id));
       }
-      return c.json({ context: formatPointerBlock(selected, result.relatedFacts ?? []) });
+      return c.json({
+        context: formatPointerBlock(
+          selected,
+          result.relatedFacts ?? [],
+          (result.relatedExemplars ?? []).map((e): PointerExemplar => ({
+            outcome: e.outcome, lang: e.lang, repo: e.repo, taskContext: e.taskContext,
+          })),
+        ),
+      });
     } catch {
       return c.json({ context: null });
     }

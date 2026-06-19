@@ -8,10 +8,13 @@
  * high-confidence facts about the entities in the top hits). The HTTP
  * handler returns this whenever a hook source asks for it; callers that
  * don't want facts simply ignore the second return value.
+ *
+ * Spec §E: also extracts the optional `relatedExemplars` array (passive
+ * code exemplar recall). The HTTP handler returns this when &withExemplars=true.
  */
 
 import type { RecallHitInput } from "@core/hook/select.js";
-import type { PointerFact } from "@core/hook/pointer-block.js";
+import type { PointerExemplar, PointerFact } from "@core/hook/pointer-block.js";
 import { hookAuthHeaders } from "./hook-auth.js";
 import { extractRecallQuery } from "@core/hook/query-extract.js";
 
@@ -21,6 +24,7 @@ export const RECALL_TIMEOUT_MS = 2000;
 export interface RecallOverHttpResult {
   readonly hits: ReadonlyArray<RecallHitInput>;
   readonly facts: ReadonlyArray<PointerFact>;
+  readonly exemplars: ReadonlyArray<PointerExemplar>;
 }
 
 export async function recallOverHttp(
@@ -29,11 +33,11 @@ export async function recallOverHttp(
   conversationId?: string,
 ): Promise<RecallOverHttpResult> {
   const query = extractRecallQuery(prompt);
-  if (query === null) return { hits: [], facts: [] };
+  if (query === null) return { hits: [], facts: [], exemplars: [] };
   const portValue = process.env["NLM_PORT"] ?? "3940";
   const url =
     `http://localhost:${portValue}/api/recall` +
-    `?q=${encodeURIComponent(query)}&mode=keyword&limit=${RECALL_LIMIT}&withFacts=true` +
+    `?q=${encodeURIComponent(query)}&mode=keyword&limit=${RECALL_LIMIT}&withFacts=true&withExemplars=true` +
     (conversationId ? `&conversation_id=${encodeURIComponent(conversationId)}` : "");
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), RECALL_TIMEOUT_MS);
@@ -44,7 +48,7 @@ export async function recallOverHttp(
       headers: hookAuthHeaders(extra),
       signal: controller.signal,
     });
-    if (!res.ok) return { hits: [], facts: [] };
+    if (!res.ok) return { hits: [], facts: [], exemplars: [] };
     type RecallBody = {
       results?: ReadonlyArray<{
         id: string;
@@ -59,12 +63,18 @@ export async function recallOverHttp(
         value: string;
         corroborationCount: number;
       }>;
+      relatedExemplars?: ReadonlyArray<{
+        outcome: string;
+        lang: string | null;
+        repo: string;
+        taskContext: string;
+      }>;
     };
     let body: RecallBody;
     try {
       body = (await res.json()) as RecallBody;
     } catch {
-      return { hits: [], facts: [] };
+      return { hits: [], facts: [], exemplars: [] };
     }
     const hits = (body.results ?? []).map((r) => ({
       id: r.id,
@@ -79,7 +89,13 @@ export async function recallOverHttp(
       value: f.value,
       corroborationCount: f.corroborationCount,
     }));
-    return { hits, facts };
+    const exemplars = (body.relatedExemplars ?? []).map((e) => ({
+      outcome: e.outcome,
+      lang: e.lang,
+      repo: e.repo,
+      taskContext: e.taskContext,
+    }));
+    return { hits, facts, exemplars };
   } finally {
     clearTimeout(timer);
   }
