@@ -7,6 +7,10 @@ import {
   captureExemplarsFromSession,
   composeTaskContext,
 } from "../../src/core/exemplars/capture-from-session.js";
+import type { CodeExemplarStore } from "../../src/ports/code-exemplar-store.js";
+import type { CodeEmbedder } from "../../src/ports/code-embedder.js";
+import type { CodeExemplarInput } from "../../src/shared/types.js";
+import { drainSessionExemplars } from "../../src/core/exemplars/capture-from-session.js";
 
 function git(repo: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
@@ -69,5 +73,73 @@ describe("captureExemplarsFromSession", () => {
     expect(composeTaskContext("Added a throttle utility", ["chose throttle over debounce"]))
       .toBe("Added a throttle utility — chose throttle over debounce");
     expect(composeTaskContext("Just a summary", [])).toBe("Just a summary");
+  });
+});
+
+function fakeStore(): CodeExemplarStore & { inserted: CodeExemplarInput[]; embedded: string[] } {
+  const inserted: CodeExemplarInput[] = [];
+  const embedded: string[] = [];
+  return {
+    inserted, embedded,
+    async insert(i) { inserted.push(i); return { id: `ex_${inserted.length}`, skipped: false }; },
+    async insertMany(is) { for (const i of is) inserted.push(i); return is.length; },
+    async upsertEmbedding(id) { embedded.push(id); },
+    async searchByVector() { return []; },
+    async getById() { return null; },
+    async applyBucketCap() { return 0; },
+    async pruneReverted() { return 0; },
+    async pruneOlderThan() { return 0; },
+  };
+}
+const fakeEmbedder: CodeEmbedder = { async embed() { return { vector: new Float32Array(768), dim: 768 }; } };
+
+describe("drainSessionExemplars", () => {
+  let repo: string;
+  const prev = process.env["NLM_CODE_EXEMPLARS_ENABLED"];
+  beforeEach(() => {
+    delete process.env["NLM_CODE_EXEMPLARS_ENABLED"];
+    repo = mkdtempSync(join(tmpdir(), "nlm-drain-"));
+    git(repo, "init", "-q");
+    git(repo, "config", "user.email", "t@t.test");
+    git(repo, "config", "user.name", "t");
+    writeFileSync(join(repo, "x.ts"), "export const x = () => {\n  const v = 1 + 1;\n  return v;\n};\n");
+    git(repo, "add", "x.ts");
+    git(repo, "commit", "-q", "-m", "add x");
+  });
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+    if (prev === undefined) delete process.env["NLM_CODE_EXEMPLARS_ENABLED"];
+    else process.env["NLM_CODE_EXEMPLARS_ENABLED"] = prev;
+  });
+
+  function ctx() {
+    const sha = git(repo, "rev-parse", "--short", "HEAD");
+    return {
+      sessionId: "s", projectDir: repo, text: `[main ${sha}] add x`,
+      startedAt: "2026-06-19T12:00:00.000Z", summary: "add x", decisions: [], installScope: "install-test",
+    };
+  }
+
+  it("is a no-op when the flag is off", async () => {
+    const store = fakeStore();
+    const n = await drainSessionExemplars(ctx(), { exemplarStore: store, codeEmbedder: fakeEmbedder });
+    expect(n).toBe(0);
+    expect(store.inserted).toHaveLength(0);
+  });
+
+  it("inserts + embeds when the flag is on", async () => {
+    process.env["NLM_CODE_EXEMPLARS_ENABLED"] = "1";
+    const store = fakeStore();
+    const n = await drainSessionExemplars(ctx(), { exemplarStore: store, codeEmbedder: fakeEmbedder });
+    expect(n).toBe(1);
+    expect(store.inserted).toHaveLength(1);
+    await new Promise((r) => setTimeout(r, 10)); // let the fire-and-forget embed resolve
+    expect(store.embedded).toEqual(["ex_1"]);
+  });
+
+  it("never throws when the store fails", async () => {
+    process.env["NLM_CODE_EXEMPLARS_ENABLED"] = "1";
+    const broken: CodeExemplarStore = { ...fakeStore(), async insert() { throw new Error("db down"); } };
+    await expect(drainSessionExemplars(ctx(), { exemplarStore: broken })).resolves.toBe(0);
   });
 });

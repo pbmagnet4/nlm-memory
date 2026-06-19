@@ -13,6 +13,8 @@
  */
 
 import type { CodeExemplarInput } from "@shared/types.js";
+import type { CodeExemplarStore } from "@ports/code-exemplar-store.js";
+import type { CodeEmbedder } from "@ports/code-embedder.js";
 import { detectCommitShas } from "./detect-commits.js";
 import { extractFromGitSha } from "./extract-exemplar.js";
 
@@ -52,4 +54,36 @@ export function captureExemplarsFromSession(ctx: SessionExemplarContext): CodeEx
     if (exemplar) out.push(exemplar);
   }
   return out;
+}
+
+export interface DrainExemplarDeps {
+  readonly exemplarStore: CodeExemplarStore;
+  readonly codeEmbedder?: CodeEmbedder | null;
+  readonly logger?: (msg: string) => void;
+}
+
+export async function drainSessionExemplars(
+  ctx: SessionExemplarContext,
+  deps: DrainExemplarDeps,
+): Promise<number> {
+  if (process.env["NLM_CODE_EXEMPLARS_ENABLED"] !== "1") return 0;
+  let count = 0;
+  try {
+    for (const input of captureExemplarsFromSession(ctx)) {
+      const { id, skipped } = await deps.exemplarStore.insert(input);
+      if (skipped) continue;
+      count += 1;
+      if (deps.codeEmbedder) {
+        const embedder = deps.codeEmbedder;
+        const store = deps.exemplarStore;
+        void embedder
+          .embed(input.taskContext + "\n" + input.code, "document")
+          .then((r) => store.upsertEmbedding(id, r.vector))
+          .catch(() => { /* degraded; exemplar stored without a vector */ });
+      }
+    }
+  } catch (e) {
+    deps.logger?.(`exemplar capture failed for ${ctx.sessionId}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return count;
 }
