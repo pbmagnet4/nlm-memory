@@ -71,7 +71,7 @@ describe("captureExemplarsFromSession", () => {
 
   it("composeTaskContext prefers the decision when present", () => {
     expect(composeTaskContext("Added a throttle utility", ["chose throttle over debounce"]))
-      .toBe("Added a throttle utility — chose throttle over debounce");
+      .toBe("Added a throttle utility - chose throttle over debounce");
     expect(composeTaskContext("Just a summary", [])).toBe("Just a summary");
   });
 });

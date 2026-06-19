@@ -33,7 +33,7 @@ export interface SessionExemplarContext {
 export function composeTaskContext(summary: string, decisions: ReadonlyArray<string>): string {
   const base = summary.trim();
   const decision = decisions[0]?.trim();
-  const text = decision ? `${base} — ${decision}` : base;
+  const text = decision ? `${base} - ${decision}` : base;
   return text.slice(0, TASK_CONTEXT_CAP);
 }
 
