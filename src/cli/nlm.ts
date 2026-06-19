@@ -253,7 +253,19 @@ program
       // mounts, zero attack surface. Present = token-gated Streamable-HTTP MCP
       // endpoint for container agents (e.g. Hermes WebUI).
       ...(hasMcpToken
-        ? { mcpDeps: { recall, store, factRecall, factStore: facts } }
+        ? {
+            mcpDeps: {
+              recall,
+              store,
+              factRecall,
+              factStore: facts,
+              // Parity with the stdio `nlm mcp` server: remote/container MCP
+              // clients hitting POST /mcp get recall_code too when the flag is on.
+              exemplarStore: storage.exemplars,
+              codeEmbedder: new OllamaCodeEmbedder({ baseUrl: ollamaUrl() }),
+              installScope: scope,
+            },
+          }
         : {}),
     });
     const p = port();
