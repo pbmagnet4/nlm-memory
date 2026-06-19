@@ -86,3 +86,27 @@ describe("formatPointerBlock", () => {
     expect(block).not.toContain("A".repeat(121));
   });
 });
+
+describe("formatPointerBlock — code exemplars section", () => {
+  it("renders a Related code exemplars section after facts", () => {
+    const out = formatPointerBlock(
+      [],
+      [],
+      [{ outcome: "pass", lang: "ts", repo: "/repo/app", taskContext: "throttle the scroll handler" }],
+    );
+    expect(out).toContain("## Related code exemplars (nlm-memory)");
+    expect(out).toContain("throttle the scroll handler");
+    expect(out).toContain("pass");
+    // footer teaches recall_code when exemplars are present
+    expect(out).toContain("recall_code");
+  });
+
+  it("omits the section when there are no exemplars", () => {
+    const out = formatPointerBlock([{ id: "s1", label: "L", startedAt: "2026-06-19T00:00:00Z" }], [], []);
+    expect(out).not.toContain("Related code exemplars");
+  });
+
+  it("returns empty string when hits, facts, and exemplars are all empty", () => {
+    expect(formatPointerBlock([], [], [])).toBe("");
+  });
+});
