@@ -127,6 +127,7 @@ export function runCodeExemplarStoreContract(h: CodeExemplarStoreContractHarness
       const fetched = await storage.exemplars.getById(id);
       expect(fetched!.retiredAt).toBeNull();
       expect(fetched!.outcome).toBe("fail");
+      expect(fetched!.labelSource).toBe("human");
     });
 
     it("human wins: an llm verdict no-ops on a human-sourced row", async () => {
