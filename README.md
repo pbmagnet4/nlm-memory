@@ -216,6 +216,12 @@ Signals are local-only. They are stamped with a per-install ID from `~/.nlm/inst
 
 The pi `quality-gate` extension (in the `pi-sandbox` repo) is a ~10-line integration that emits `nlm.signal` per gate step and again on retry exhaustion. It is the canonical example of the session-embedded transport.
 
+### Code exemplar recall
+
+Built on the signals lane: a code-bearing signal — one carrying a `git_sha` or `detail.code` with a `pass`/`fail`/`fix` outcome — is captured as a **code exemplar**, a concrete chunk that worked (or didn't) for a task. At implementation time an agent calls `recall_code` to pull "code that passed a gate like this," with positives ranked first and labeled negatives surfaced as anti-patterns.
+
+Off by default — enable with `NLM_CODE_EXEMPLARS_ENABLED=1`. Capture rides the existing `/api/signal` path (no separate producer wiring); retrieval is exposed on every transport: the `recall_code` MCP tool (stdio and `/mcp`), `GET /api/recall-code`, and the `nlm recall-code "<task>"` CLI. Code embeddings use CodeRankEmbed (`hf.co/awhiteside/CodeRankEmbed-Q8_0-GGUF` via Ollama, 768-dim; override with `NLM_CODE_EMBED_MODEL`). Works on both the SQLite and Postgres+pgvector backends.
+
 ---
 
 ## MCP Tools
@@ -231,6 +237,7 @@ The pi `quality-gate` extension (in the `pi-sandbox` repo) is a ~10-line integra
 **When to call `cite_session`:** Call it when a surfaced session actually changes what you say — you referenced it explicitly, it corrected a decision, or you called `get_session` to read the full body. Do not call it for sessions you scanned and discarded. The Stop hook auto-detects citation when a session ID appears verbatim in your response; `cite_session` covers the deliberate case where the session influenced your reasoning without being quoted directly. Both paths feed the same signal loop.
 
 | `mark_superseded` | Retroactively retire a stale session and point it at the newer one that replaces it. The editable-timeline write path — see [docs/supersedence.md](docs/supersedence.md). |
+| `recall_code` | Semantic search over captured code exemplars — "code that passed/failed a gate like this task." Returns positives plus labeled negatives. Registered only when `NLM_CODE_EXEMPLARS_ENABLED=1`. |
 
 ---
 
@@ -255,6 +262,8 @@ Daemon binds `127.0.0.1:3940` (override with `NLM_PORT`). Selected endpoints:
 | POST | `/api/citation/explicit` | Bearer/Origin | Log an explicit session citation (the route backing the `cite_session` MCP tool; payload `{id, conversation_id?, reason?}`) |
 | POST | `/api/hook/pre-compact` | Bearer/Origin | Hook endpoint; flushes the surfaced-IDs memo |
 | ALL | `/mcp` | Bearer required | Streamable-HTTP MCP transport for container agents |
+| GET | `/api/recall-code` | Bearer/Origin | Semantic code-exemplar search — `?q=`, `?repo=`, `?lang=`, `?k=`, `?negatives=0`. Requires `NLM_CODE_EXEMPLARS_ENABLED=1`. |
+| POST | `/api/exemplar` | Bearer/Origin | Direct code-exemplar push (capture also happens automatically from code-bearing signals). Requires the flag. |
 
 `/api/*` is gated by three layers: 127.0.0.1 Host check (defeats DNS rebinding), Origin check when the browser sends one (defeats cross-origin drive-by), Bearer fallback when Origin is absent (server-to-server clients).
 
@@ -337,6 +346,8 @@ recall: prompt / query
 | `NLM_CLASSIFIER` | `ollama` | `ollama` (local, default), `deepseek`, `openai`, `anthropic`, `openrouter`, or `openai-compatible` |
 | `NLM_CLASSIFIER_MODEL` | `qwen3.5:4b` | Model id for the chosen provider. `qwen3.5:4b` (Q4_K_M, 4.7B) is the recommended local default — scored 74.4% decision-precision vs 58.7% for `qwen3:4b-instruct-2507-q4_K_M` (task #320, 2026-06-12). |
 | `NLM_OLLAMA_URL` | `http://localhost:11434` | Override Ollama endpoint |
+| `NLM_CODE_EXEMPLARS_ENABLED` | — | Set to `1` to enable the code-exemplar lane (capture from code-bearing signals + the `recall_code` tool/routes). Off by default. |
+| `NLM_CODE_EMBED_MODEL` | `hf.co/awhiteside/CodeRankEmbed-Q8_0-GGUF` | Ollama model for code-exemplar embeddings (768-dim). Only used when the exemplar lane is enabled. |
 | `NLM_ADAPTERS` | all | Comma-separated allowlist of adapters to enable |
 | `DEEPSEEK_API_KEY` | — | Required only when classifier=deepseek |
 | `NLM_DISABLE_UPDATE_CHECK` | — | Set to `1` to disable the daily npm-registry update check |

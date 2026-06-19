@@ -1,7 +1,14 @@
 # Code-exemplar recall: "what code worked for a task like this"
 
-Status: design / proposed
-Date: 2026-06-15
+Status: SHIPPED (v0.13.0–v0.14.0)
+Date: 2026-06-15 (designed) · 2026-06-19 (shipped)
+
+> **Shipped.** The lane is live behind `NLM_CODE_EXEMPLARS_ENABLED=1`.
+> - v0.13.0 (PR #17) — store + CodeRankEmbed embedder wired into the daemon + MCP; flag-gated capture on the signal-ingest path.
+> - v0.13.1 (PR #18) — `recall_code` parity on the HTTP `/mcp` transport.
+> - v0.14.0 — `PgCodeExemplarStore` (pgvector) so the lane works on both SQLite and Postgres; `recall_code` `/mcp` registration regression test.
+>
+> Remaining open: a code-signal **producer** to populate it from real coding runs (NocoDB #330) and a scaled **synthetic eval** (#331). Capture stays empty until a producer emits code-bearing signals.
 
 ## Thesis
 
