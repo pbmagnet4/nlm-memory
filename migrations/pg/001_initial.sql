@@ -212,3 +212,40 @@ CREATE TABLE IF NOT EXISTS signals (
 );
 CREATE INDEX IF NOT EXISTS idx_signals_agg ON signals(install_scope, repo, model, kind, step);
 CREATE INDEX IF NOT EXISTS idx_signals_ts ON signals(ts);
+
+-- ── Code exemplars (mirror of SQLite migration 021) ─────────────────────────
+-- Sibling to signals: concrete code chunks with deterministic outcome labels
+-- for the recall_code lane. Append-only on id, no supersedence. Gated behind
+-- NLM_CODE_EXEMPLARS_ENABLED in the application layer; tables created
+-- unconditionally so the schema stays backend-symmetric.
+CREATE TABLE IF NOT EXISTS code_exemplars (
+  id            TEXT PRIMARY KEY,
+  install_scope TEXT NOT NULL,
+  signal_id     TEXT,
+  session_id    TEXT,
+  repo          TEXT NOT NULL,
+  model         TEXT NOT NULL,
+  lang          TEXT,
+  task_context  TEXT NOT NULL,
+  code          TEXT NOT NULL,
+  code_hash     TEXT NOT NULL,
+  outcome       TEXT NOT NULL CHECK (outcome IN ('pass', 'fail', 'fix', 'exhausted')),
+  git_sha       TEXT,
+  survived      INTEGER,
+  ts            TEXT NOT NULL,
+  created_at    TEXT NOT NULL DEFAULT (now()::text)
+);
+CREATE INDEX IF NOT EXISTS idx_exemplars_scope_repo ON code_exemplars(install_scope, repo, outcome);
+CREATE INDEX IF NOT EXISTS idx_exemplars_ts ON code_exemplars(ts);
+CREATE INDEX IF NOT EXISTS idx_exemplars_code_hash ON code_exemplars(install_scope, code_hash);
+
+-- Vector lane (pgvector mirror of the sqlite-vec code_exemplars_vec table).
+-- ON DELETE CASCADE means prune/cap deletes on code_exemplars clean the
+-- embeddings automatically — no separate vec bookkeeping like the SQLite store.
+CREATE TABLE IF NOT EXISTS code_exemplar_embeddings (
+  exemplar_id TEXT PRIMARY KEY REFERENCES code_exemplars(id) ON DELETE CASCADE,
+  embedding   vector(768) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS code_exemplar_embeddings_idx
+  ON code_exemplar_embeddings USING ivfflat (embedding vector_l2_ops)
+  WITH (lists = 100);
