@@ -347,6 +347,8 @@ program
           signalStore: signals,
           installScope: scope,
           intervalMs: opts.intervalMin * 60_000,
+          exemplarStore: storage.exemplars,
+          codeEmbedder: new OllamaCodeEmbedder({ baseUrl: ollamaUrl() }),
         });
         scheduler.start();
         console.error(

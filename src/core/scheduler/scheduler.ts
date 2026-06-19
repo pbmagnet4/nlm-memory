@@ -23,6 +23,9 @@ import { homedir } from "node:os";
 import type { LLMClient } from "@ports/llm-client.js";
 import type { TranscriptAdapter } from "@ports/transcript-adapter.js";
 import type { SignalStore } from "@ports/signal-store.js";
+import type { CodeExemplarStore } from "@ports/code-exemplar-store.js";
+import type { CodeEmbedder } from "@ports/code-embedder.js";
+import { drainSessionExemplars } from "@core/exemplars/capture-from-session.js";
 import { extractFacts } from "@core/facts/extract-facts.js";
 import { normalizeSignal } from "@core/signals/ingest-signal.js";
 import type { SqliteFactStore } from "@core/storage/sqlite-fact-store.js";
@@ -92,6 +95,11 @@ export interface SchedulerOptions {
   readonly signalStore?: SignalStore | null;
   /** Per-install scope stamped on drained signals. Required when signalStore is set. */
   readonly installScope?: string;
+  /** Code-exemplar store. When set + NLM_CODE_EXEMPLARS_ENABLED=1, the tick
+   *  captures exemplars from committed sessions after they are stored. */
+  readonly exemplarStore?: CodeExemplarStore | null;
+  /** Code embedder for exemplar vectors (CodeRankEmbed). */
+  readonly codeEmbedder?: CodeEmbedder | null;
   readonly intervalMs?: number;
   readonly classifyTimeoutMs?: number;
   readonly confidenceFloor?: number;
@@ -109,11 +117,13 @@ export interface TickReport {
 }
 
 export class ScanScheduler {
-  private readonly opts: Required<Omit<SchedulerOptions, "embedder" | "factStore" | "signalStore" | "installScope">> & {
+  private readonly opts: Required<Omit<SchedulerOptions, "embedder" | "factStore" | "signalStore" | "installScope" | "exemplarStore" | "codeEmbedder">> & {
     readonly embedder: LLMClient | null;
     readonly factStore: SqliteFactStore | PgFactStore | null;
     readonly signalStore: SignalStore | null;
     readonly installScope: string;
+    readonly exemplarStore: CodeExemplarStore | null;
+    readonly codeEmbedder: CodeEmbedder | null;
   };
   private stopped = true;
   private timer: NodeJS.Timeout | null = null;
@@ -127,6 +137,8 @@ export class ScanScheduler {
       factStore: opts.factStore ?? null,
       signalStore: opts.signalStore ?? null,
       installScope: opts.installScope ?? "default",
+      exemplarStore: opts.exemplarStore ?? null,
+      codeEmbedder: opts.codeEmbedder ?? null,
       intervalMs: opts.intervalMs ?? DEFAULT_INTERVAL_MS,
       classifyTimeoutMs: opts.classifyTimeoutMs ?? DEFAULT_CLASSIFY_TIMEOUT_MS,
       confidenceFloor: opts.confidenceFloor ?? DEFAULT_CONFIDENCE_FLOOR,
@@ -278,6 +290,20 @@ export class ScanScheduler {
             recordClassified(sqliteDb!, adapter.name, chunk.sourcePath, chunk.id);
           }
           inserted += 1;
+          if (this.opts.exemplarStore && this.opts.installScope) {
+            await drainSessionExemplars(
+              {
+                sessionId: chunk.id,
+                projectDir: chunk.projectDir,
+                text: chunk.text,
+                startedAt: chunk.startedAt,
+                summary: classification.summary,
+                decisions: classification.decisions,
+                installScope: this.opts.installScope,
+              },
+              { exemplarStore: this.opts.exemplarStore, codeEmbedder: this.opts.codeEmbedder, logger: this.opts.logger },
+            );
+          }
         } catch (e) {
           storageFailures += 1;
           if (_pgPool) {
