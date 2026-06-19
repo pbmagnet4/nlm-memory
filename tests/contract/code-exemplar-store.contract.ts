@@ -8,6 +8,12 @@ import type { Storage } from "../../src/ports/storage.js";
 import type { CodeExemplarInput } from "../../src/shared/types.js";
 import { codeHash } from "../../src/core/exemplars/ingest-exemplar.js";
 
+function unitVec(i: number): Float32Array {
+  const v = new Float32Array(768);
+  v[i] = 1;
+  return v;
+}
+
 function makeExemplarInput(overrides: Partial<CodeExemplarInput> = {}): CodeExemplarInput {
   const code = overrides.code ?? "function add(a, b) {\n  return a + b;\n}";
   return {
@@ -169,6 +175,20 @@ export function runCodeExemplarStoreContract(h: CodeExemplarStoreContractHarness
       await makeN(5);
       const deleted = await storage.exemplars.applyBucketCap("install-test", 3);
       expect(deleted).toBe(2);
+    });
+
+    it("searchByVector excludes retired exemplars but getById still returns them", async () => {
+      const inp = makeExemplarInput();
+      const { id } = await storage.exemplars.insert(inp);
+      await storage.exemplars.upsertEmbedding(id, unitVec(0));
+      // present before retire
+      const before = await storage.exemplars.searchByVector(unitVec(0), { installScope: inp.installScope, k: 5 });
+      expect(before.map((h) => h.id)).toContain(id);
+      // retire → excluded from search, still in getById
+      await storage.exemplars.setVerdict(id, { retired: true }, "human");
+      const after = await storage.exemplars.searchByVector(unitVec(0), { installScope: inp.installScope, k: 5 });
+      expect(after.map((h) => h.id)).not.toContain(id);
+      expect(await storage.exemplars.getById(id)).not.toBeNull();
     });
   });
 }

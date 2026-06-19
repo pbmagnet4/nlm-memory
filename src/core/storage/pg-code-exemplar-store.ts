@@ -134,7 +134,7 @@ export class PgCodeExemplarStore implements CodeExemplarStore {
               e.embedding <-> $1::vector AS distance
        FROM code_exemplar_embeddings e
        JOIN code_exemplars ce ON ce.id = e.exemplar_id
-       WHERE ce.install_scope = $2
+       WHERE ce.install_scope = $2 AND ce.retired_at IS NULL
        ORDER BY e.embedding <-> $1::vector
        LIMIT $3`,
       [vecStr, filter.installScope, overFetch],

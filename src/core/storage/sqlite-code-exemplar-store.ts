@@ -132,7 +132,7 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
         `SELECT id, install_scope, signal_id, session_id, repo, model, lang,
                 task_context, code, code_hash, outcome, git_sha, survived, ts, created_at
          FROM code_exemplars
-         WHERE id IN (${placeholders}) AND install_scope = ?`,
+         WHERE id IN (${placeholders}) AND install_scope = ? AND retired_at IS NULL`,
       )
       .all(...ids, filter.installScope) as ExemplarRow[];
 
