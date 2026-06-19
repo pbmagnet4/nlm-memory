@@ -46,6 +46,7 @@ import { createMcpServer } from "../mcp/server.js";
 import { ClassifierBox, type ClassifierProvider } from "../llm/classifier-box.js";
 import { DeepSeekClient } from "../llm/deepseek-client.js";
 import { OllamaClient } from "../llm/ollama-client.js";
+import { OllamaCodeEmbedder } from "../llm/ollama-code-embedder.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
 import { addHook, buildHookCommand, removeHook } from "../core/hook/claude-settings.js";
 import {
@@ -241,6 +242,11 @@ program
       },
       signalStore: signals,
       installScope: scope,
+      // Code-exemplar lane. The store + code embedder are always wired; the
+      // NLM_CODE_EXEMPLARS_ENABLED flag gates capture (POST /api/signal) and
+      // the /api/exemplar + /api/recall-code routes at request time.
+      exemplarStore: storage.exemplars,
+      codeEmbedder: new OllamaCodeEmbedder({ baseUrl: ollamaUrl() }),
       embedderInfo: { provider: "ollama", model: "nomic-embed-text", dims: 768 },
       ...(existsSync(UI_DIST) ? { uiDist: UI_DIST } : {}),
       // Wire POST /mcp only when NLM_MCP_TOKEN is present. Absent = route never
@@ -673,8 +679,16 @@ program
   .command("mcp")
   .description("Run as an MCP stdio server (for ~/.mcp.json)")
   .action(async () => {
-    const { recall, store, facts, factRecall } = await buildStack();
-    const server = createMcpServer({ recall, store, factStore: facts, factRecall });
+    const { recall, store, facts, factRecall, storage, scope } = await buildStack();
+    const server = createMcpServer({
+      recall,
+      store,
+      factStore: facts,
+      factRecall,
+      exemplarStore: storage.exemplars,
+      codeEmbedder: new OllamaCodeEmbedder({ baseUrl: ollamaUrl() }),
+      installScope: scope,
+    });
     const transport = new StdioServerTransport();
     await server.connect(transport);
   });
