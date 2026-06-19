@@ -89,6 +89,7 @@ import { PgSessionStore } from "@core/storage/pg-session-store.js";
 import type { Pool } from "pg";
 import type { McpDeps } from "../mcp/server.js";
 import type {
+  CodeExemplarOutcome,
   FactKind,
   FactRecallQuery,
   RecallKindFilter,
@@ -1732,6 +1733,32 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
         .catch(() => { /* degraded; exemplar is still stored without a vector */ });
     }
     return c.json({ id, skipped, status: "accepted" }, 202);
+  });
+
+  app.post("/api/exemplar/:id/verdict", async (c) => {
+    if (!c.req.param("id") || !deps.exemplarStore) {
+      return c.json({ error: "exemplar store not wired in this deployment" }, 503);
+    }
+    if (process.env["NLM_CODE_EXEMPLARS_ENABLED"] !== "1") {
+      return c.json({ error: "code exemplars disabled" }, 403);
+    }
+    let body: { retire?: unknown; outcome?: unknown };
+    try {
+      body = (await c.req.json()) as typeof body;
+    } catch {
+      return c.json({ error: "body must be JSON" }, 400);
+    }
+    const patch: { retired?: boolean; outcome?: CodeExemplarOutcome } = {};
+    if (typeof body.retire === "boolean") patch.retired = body.retire;
+    if (body.outcome === "pass" || body.outcome === "fail" || body.outcome === "fix" || body.outcome === "exhausted") {
+      patch.outcome = body.outcome;
+    }
+    if (patch.retired === undefined && patch.outcome === undefined) {
+      return c.json({ error: "provide retire (boolean) and/or outcome" }, 400);
+    }
+    const result = await deps.exemplarStore.setVerdict(c.req.param("id"), patch, "human");
+    if (result.status === "not_found") return c.json({ error: "exemplar not found" }, 404);
+    return c.json({ id: c.req.param("id"), status: result.status }, 200);
   });
 
   app.get("/api/recall-code", async (c) => {

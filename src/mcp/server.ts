@@ -827,6 +827,28 @@ export function createMcpServer(deps: McpDeps): McpServer {
         return { content: [{ type: "text" as const, text: format(result) }] };
       },
     );
+
+    server.registerTool(
+      "supersede_exemplar",
+      {
+        title: "Supersede a Code Exemplar",
+        description: "Retire (exclude from recall) or relabel the outcome of a code exemplar returned by recall_code. Records the change as a human verdict, which an automated pass will not override.",
+        inputSchema: {
+          exemplar_id: z.string().min(4).describe("Exemplar id from recall_code."),
+          retire: z.boolean().optional().describe("true to exclude from recall, false to restore."),
+          outcome: z.enum(["pass", "fail", "fix", "exhausted"]).optional().describe("Relabel the exemplar's outcome."),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      },
+      async (args) => {
+        const a = args as { exemplar_id: string; retire?: boolean; outcome?: "pass" | "fail" | "fix" | "exhausted" };
+        const patch: { retired?: boolean; outcome?: "pass" | "fail" | "fix" | "exhausted" } = {};
+        if (a.retire !== undefined) patch.retired = a.retire;
+        if (a.outcome !== undefined) patch.outcome = a.outcome;
+        const res = await exemplarStore.setVerdict(a.exemplar_id, patch, "human");
+        return { content: [{ type: "text", text: JSON.stringify({ exemplar_id: a.exemplar_id, status: res.status }) }] } as never;
+      },
+    );
   }
 
   return server;
