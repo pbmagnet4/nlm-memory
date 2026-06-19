@@ -6,12 +6,12 @@ function appWithRecall(captured: { query: unknown }) {
   const recall = {
     search: async (q: { withRelatedExemplars?: boolean }) => {
       captured.query = q;
-      const r: RecallResult = {
-        query: "", entity: null, kind: null, mode: "keyword", limit: 5, total: 0, results: [],
-        relatedExemplars: q.withRelatedExemplars
-          ? [{ id: "ex1", outcome: "pass", lang: "ts", repo: "/r", taskContext: "throttle", distance: 0.2 }]
-          : undefined,
-      };
+      const r: RecallResult = q.withRelatedExemplars
+        ? {
+            query: "", entity: null, kind: null, mode: "keyword", limit: 5, total: 0, results: [],
+            relatedExemplars: [{ id: "ex1", outcome: "pass", lang: "ts", repo: "/r", taskContext: "throttle", distance: 0.2 }],
+          }
+        : { query: "", entity: null, kind: null, mode: "keyword", limit: 5, total: 0, results: [] };
       return r;
     },
   };
