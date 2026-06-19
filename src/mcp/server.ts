@@ -845,6 +845,9 @@ export function createMcpServer(deps: McpDeps): McpServer {
         const patch: { retired?: boolean; outcome?: "pass" | "fail" | "fix" | "exhausted" } = {};
         if (a.retire !== undefined) patch.retired = a.retire;
         if (a.outcome !== undefined) patch.outcome = a.outcome;
+        if (patch.retired === undefined && patch.outcome === undefined) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: "provide retire and/or outcome" }) }] } as never;
+        }
         const res = await exemplarStore.setVerdict(a.exemplar_id, patch, "human");
         return { content: [{ type: "text", text: JSON.stringify({ exemplar_id: a.exemplar_id, status: res.status }) }] } as never;
       },

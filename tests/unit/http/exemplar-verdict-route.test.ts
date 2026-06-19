@@ -60,4 +60,16 @@ describe("POST /api/exemplar/:id/verdict", () => {
     });
     expect(res.status).toBe(403);
   });
+
+  it("400s when neither retire nor outcome is provided", async () => {
+    const calls: Array<{ id: string; patch: ExemplarVerdictPatch; source: ExemplarVerdictSource }> = [];
+    const app = appWith(fakeStore(calls));
+    const res = await app.request("/api/exemplar/ex1/verdict", {
+      method: "POST",
+      headers: { "content-type": "application/json", host: "localhost:3940" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+    expect(calls).toEqual([]);
+  });
 });

@@ -1736,7 +1736,7 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
   });
 
   app.post("/api/exemplar/:id/verdict", async (c) => {
-    if (!c.req.param("id") || !deps.exemplarStore) {
+    if (!deps.exemplarStore) {
       return c.json({ error: "exemplar store not wired in this deployment" }, 503);
     }
     if (process.env["NLM_CODE_EXEMPLARS_ENABLED"] !== "1") {
