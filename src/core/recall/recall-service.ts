@@ -248,14 +248,17 @@ export class RecallService {
       const embedder = this.deps.codeEmbedder;
       const scope = this.deps.installScope;
       const q = semanticQuery || input.query;
-      const timeout = new Promise<never>((_, rej) =>
-        setTimeout(() => rej(new Error("exemplar recall timeout")), EXEMPLAR_RECALL_TIMEOUT_MS),
-      );
+      let timer: ReturnType<typeof setTimeout>;
+      const timeout = new Promise<never>((_, rej) => {
+        timer = setTimeout(() => rej(new Error("exemplar recall timeout")), EXEMPLAR_RECALL_TIMEOUT_MS);
+      });
       try {
         const related = await Promise.race([pickRelatedExemplars(q, store, embedder, scope), timeout]);
         if (related.length > 0) result = { ...result, relatedExemplars: related };
       } catch {
         // timed out or failed — proceed without exemplars
+      } finally {
+        clearTimeout(timer!);
       }
     }
 

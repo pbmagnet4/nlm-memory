@@ -64,7 +64,7 @@ export function formatPointerBlock(
     out.push("## Related code exemplars (nlm-memory)");
     for (const e of exemplars) {
       const langPart = e.lang ? `${e.lang} · ` : "";
-      out.push(`- [${e.outcome}] ${langPart}${e.repo} — ${e.taskContext.slice(0, 120)}`);
+      out.push(`- [${e.outcome}] ${langPart}${e.repo} - ${e.taskContext.slice(0, 120)}`);
     }
   }
   const tools = exemplars.length > 0

@@ -1,5 +1,4 @@
-// tests/unit/http/recall-exemplars-route.test.ts
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createApp } from "../../../src/http/app.js";
 import type { RecallResult } from "../../../src/shared/types.js";
 
