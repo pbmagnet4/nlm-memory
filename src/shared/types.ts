@@ -84,6 +84,14 @@ export interface RecallQuery {
    */
   readonly withRelatedFacts?: boolean;
   /**
+   * If true, RecallService attaches a `relatedExemplars` array of nearest
+   * code exemplars from the CodeRankEmbed space. Allows the recall block
+   * to include concrete code examples as a third dimension alongside
+   * session pointers and facts. Off by default; the HTTP hook caller may
+   * set this true to inject code examples into the pointer block.
+   */
+  readonly withRelatedExemplars?: boolean;
+  /**
    * If true, superseded sessions are included in recall results, down-ranked
    * and carrying a `supersededBy` pointer to their successor. Replaced
    * sessions (mechanical re-ingest noise) are excluded regardless. Off by
@@ -134,6 +142,13 @@ export interface RecallResult {
    * "Known facts" section beneath the session pointer list.
    */
   readonly relatedFacts?: ReadonlyArray<RelatedFact>;
+  /**
+   * Optional array of nearest code exemplars matched via CodeRankEmbed.
+   * Present only when the caller requested `withRelatedExemplars`.
+   * Provides concrete code examples as a third dimension of context
+   * alongside session pointers and facts.
+   */
+  readonly relatedExemplars?: ReadonlyArray<RelatedExemplar>;
 }
 
 /**
@@ -310,5 +325,19 @@ export interface CodeExemplarHit {
   readonly lang: string | null;
   readonly survived: 0 | 1 | null;
   readonly gitSha: string | null;
+  readonly distance: number;
+}
+
+/**
+ * Lean pointer to a related code exemplar, returned by `pickRelatedExemplars`.
+ * Carries just the metadata needed for the recall block to reference the example
+ * without embedding the full code (which is retrieved on demand via `recall_code`).
+ */
+export interface RelatedExemplar {
+  readonly id: string;
+  readonly outcome: CodeExemplarOutcome;
+  readonly lang: string | null;
+  readonly repo: string;
+  readonly taskContext: string;
   readonly distance: number;
 }
