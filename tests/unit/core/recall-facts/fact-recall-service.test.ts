@@ -44,6 +44,7 @@ class InMemoryFactStore implements FactStore {
     return this.facts;
   }
   async markSuperseded(): Promise<void> {}
+  async retire(): Promise<void> {}
   async listForRecall(filter: FactListFilter): Promise<ReadonlyArray<Fact>> {
     return this.facts.filter((f) => {
       if (filter.subject !== undefined && f.subject !== filter.subject) return false;

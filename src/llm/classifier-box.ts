@@ -15,6 +15,7 @@ import type {
   LLMClient,
   RewriteResult,
 } from "@ports/llm-client.js";
+import { stripInjectedContext } from "@core/hook/strip-injected-context.js";
 import { DeepSeekClient } from "./deepseek-client.js";
 import { OllamaClient } from "./ollama-client.js";
 
@@ -60,7 +61,7 @@ export class ClassifierBox implements LLMClient {
   }
 
   classify(transcript: string): Promise<ClassifyResult> {
-    return this.inner.classify(transcript);
+    return this.inner.classify(stripInjectedContext(transcript));
   }
 
   rewriteForRecall(query: string): Promise<RewriteResult> {

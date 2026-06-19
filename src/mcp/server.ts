@@ -501,7 +501,7 @@ export async function supersedeFactHandler(
     return err(new Error("fact store not available"));
   }
   try {
-    await deps.factStore.markSuperseded(input.fact_id, null);
+    await deps.factStore.retire(input.fact_id);
     void appendFactSupersedence({
       factId: input.fact_id,
       source: "mcp",

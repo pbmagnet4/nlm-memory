@@ -100,6 +100,7 @@ import type { CodeExemplarStore } from "@ports/code-exemplar-store.js";
 import type { CodeEmbedder } from "@ports/code-embedder.js";
 import { normalizeSignal } from "@core/signals/ingest-signal.js";
 import { normalizeExemplar } from "@core/exemplars/ingest-exemplar.js";
+import { extractExemplar } from "@core/exemplars/extract-exemplar.js";
 import { recallCode } from "@core/exemplars/recall-code.js";
 import { buildFailureModeBlock } from "@core/signals/failure-mode-recall.js";
 import { aggregateFailureModes } from "@core/signals/aggregate.js";
@@ -1626,6 +1627,29 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
       await deps.signalStore.insert(signal);
     } catch {
       return c.json({ error: "signal insert failed" }, 500);
+    }
+    // Best-effort code-exemplar capture: a code-bearing signal (git_sha or
+    // detail.code) becomes a retrievable exemplar. Gated by the flag and
+    // never allowed to fail the signal write — extractExemplar returns null
+    // when there's no code, and embedding is fire-and-forget.
+    if (
+      process.env["NLM_CODE_EXEMPLARS_ENABLED"] === "1" &&
+      deps.exemplarStore &&
+      deps.installScope !== undefined
+    ) {
+      const exemplarStore = deps.exemplarStore;
+      try {
+        const exemplar = extractExemplar(signal, { installScope: deps.installScope });
+        if (exemplar) {
+          const { id, skipped } = await exemplarStore.insert(exemplar);
+          if (!skipped && deps.codeEmbedder) {
+            void deps.codeEmbedder
+              .embed(exemplar.taskContext + "\n" + exemplar.code, "document")
+              .then((r) => exemplarStore.upsertEmbedding(id, r.vector))
+              .catch(() => { /* degraded; exemplar stored without a vector */ });
+          }
+        }
+      } catch { /* capture is best-effort; never blocks signal ingest */ }
     }
     return c.json({ id: signal.id, status: "accepted" }, 202);
   });

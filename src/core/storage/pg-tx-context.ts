@@ -53,6 +53,18 @@ export class PgTxBoundFactStore implements FactStore {
     return Promise.resolve();
   }
 
+  retire(factId: string): Promise<void> {
+    this.q.push({
+      sql: "UPDATE facts SET retired_at = $1 WHERE id = $2",
+      params: [new Date().toISOString(), factId],
+    });
+    this.q.push({
+      sql: "DELETE FROM fact_embeddings WHERE fact_id = $1",
+      params: [factId],
+    });
+    return Promise.resolve();
+  }
+
   ingestSessionFacts(sessionId: string, facts: ReadonlyArray<Fact>): Promise<void> {
     this.q.push({
       sql: "DELETE FROM facts WHERE source_session_id = $1",
