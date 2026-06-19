@@ -110,6 +110,47 @@ export function runCodeExemplarStoreContract(h: CodeExemplarStoreContractHarness
       expect(fetched!.labelSource).toBe("llm");
     });
 
+    it("setVerdict retire sets retired_at + label_source", async () => {
+      const { id } = await storage.exemplars.insert(makeExemplarInput());
+      const res = await storage.exemplars.setVerdict(id, { retired: true }, "human");
+      expect(res.status).toBe("applied");
+      const fetched = await storage.exemplars.getById(id);
+      expect(fetched!.retiredAt).not.toBeNull();
+      expect(fetched!.labelSource).toBe("human");
+    });
+
+    it("setVerdict can relabel outcome and un-retire", async () => {
+      const { id } = await storage.exemplars.insert(makeExemplarInput());
+      await storage.exemplars.setVerdict(id, { retired: true, outcome: "fail" }, "human");
+      const res = await storage.exemplars.setVerdict(id, { retired: false }, "human");
+      expect(res.status).toBe("applied");
+      const fetched = await storage.exemplars.getById(id);
+      expect(fetched!.retiredAt).toBeNull();
+      expect(fetched!.outcome).toBe("fail");
+    });
+
+    it("human wins: an llm verdict no-ops on a human-sourced row", async () => {
+      const { id } = await storage.exemplars.insert(makeExemplarInput());
+      await storage.exemplars.setVerdict(id, { retired: true }, "human");
+      const res = await storage.exemplars.setVerdict(id, { retired: false }, "llm");
+      expect(res.status).toBe("human_locked");
+      const fetched = await storage.exemplars.getById(id);
+      expect(fetched!.retiredAt).not.toBeNull(); // unchanged — human verdict held
+      expect(fetched!.labelSource).toBe("human");
+    });
+
+    it("an llm verdict applies on an llm-sourced (default) row", async () => {
+      const { id } = await storage.exemplars.insert(makeExemplarInput());
+      const res = await storage.exemplars.setVerdict(id, { retired: true }, "llm");
+      expect(res.status).toBe("applied");
+      expect((await storage.exemplars.getById(id))!.labelSource).toBe("llm");
+    });
+
+    it("setVerdict on a missing id reports not_found", async () => {
+      const res = await storage.exemplars.setVerdict("nope", { retired: true }, "human");
+      expect(res.status).toBe("not_found");
+    });
+
     it("applyBucketCap evicts oldest rows beyond the cap", async () => {
       const makeN = async (n: number) => {
         for (let i = 0; i < n; i++) {

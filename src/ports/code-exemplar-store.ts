@@ -8,7 +8,18 @@
  * requires one.
  */
 
-import type { CodeExemplar, CodeExemplarHit, CodeExemplarInput } from "@shared/types.js";
+import type { CodeExemplar, CodeExemplarHit, CodeExemplarInput, CodeExemplarOutcome } from "@shared/types.js";
+
+export type ExemplarVerdictSource = "llm" | "human";
+
+export interface ExemplarVerdictPatch {
+  readonly retired?: boolean;
+  readonly outcome?: CodeExemplarOutcome;
+}
+
+export interface ExemplarVerdictResult {
+  readonly status: "applied" | "not_found" | "human_locked";
+}
 
 export interface CodeExemplarSearchFilter {
   readonly installScope: string;
@@ -49,4 +60,11 @@ export interface CodeExemplarStore {
 
   /** Delete exemplars with ts < olderThanTs (optional clock-based escape hatch). */
   pruneOlderThan(olderThanTs: string): Promise<number>;
+
+  /**
+   * Apply an operator/LLM verdict (retire/un-retire and/or relabel outcome).
+   * Human-wins: a `source: "llm"` call is a no-op when the row is already
+   * `label_source: "human"`. Returns the outcome so callers can surface it.
+   */
+  setVerdict(id: string, patch: ExemplarVerdictPatch, source: ExemplarVerdictSource): Promise<ExemplarVerdictResult>;
 }
