@@ -107,7 +107,11 @@ CREATE TABLE IF NOT EXISTS facts (
   source_quote       TEXT,
   created_at         TEXT NOT NULL DEFAULT to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
   superseded_by      TEXT REFERENCES facts(id) ON DELETE SET NULL,
-  confidence         REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0)
+  confidence         REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+  -- Operator retirement marker (mirror of SQLite migration 022). Non-null =
+  -- an operator declared the fact wrong/noise; recall excludes it like a
+  -- superseded fact, but getHistory still surfaces it for the audit trail.
+  retired_at         TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_facts_subject_predicate_current
