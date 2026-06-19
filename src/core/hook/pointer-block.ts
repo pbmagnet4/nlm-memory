@@ -26,11 +26,19 @@ export interface PointerFact {
   readonly corroborationCount: number;
 }
 
+export interface PointerExemplar {
+  readonly outcome: string;
+  readonly lang: string | null;
+  readonly repo: string;
+  readonly taskContext: string;
+}
+
 export function formatPointerBlock(
   hits: ReadonlyArray<PointerHit>,
   facts: ReadonlyArray<PointerFact> = [],
+  exemplars: ReadonlyArray<PointerExemplar> = [],
 ): string {
-  if (hits.length === 0 && facts.length === 0) return "";
+  if (hits.length === 0 && facts.length === 0 && exemplars.length === 0) return "";
   const out: string[] = [];
   if (hits.length > 0) {
     out.push("## Possibly-relevant prior sessions (nlm-memory)");
@@ -51,8 +59,17 @@ export function formatPointerBlock(
       out.push(`- ${f.subject} ${f.predicate}: ${f.value}${tag}`);
     }
   }
-  out.push(
-    "NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved).",
-  );
+  if (exemplars.length > 0) {
+    if (out.length > 0) out.push("");
+    out.push("## Related code exemplars (nlm-memory)");
+    for (const e of exemplars) {
+      const langPart = e.lang ? `${e.lang} · ` : "";
+      out.push(`- [${e.outcome}] ${langPart}${e.repo} - ${e.taskContext.slice(0, 120)}`);
+    }
+  }
+  const tools = exemplars.length > 0
+    ? "NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved), recall_code (pull the full code for a related exemplar)."
+    : "NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved).";
+  out.push(tools);
   return out.join("\n");
 }

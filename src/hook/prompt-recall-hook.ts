@@ -14,7 +14,7 @@ import { pathToFileURL } from "node:url";
 import { classifyPrompt } from "@core/hook/gate.js";
 import { appendHookLog } from "@core/hook/hook-log.js";
 import { loadSurfaced, recordSurfaced } from "@core/hook/memo.js";
-import { formatPointerBlock, type PointerFact } from "@core/hook/pointer-block.js";
+import { formatPointerBlock, type PointerExemplar, type PointerFact } from "@core/hook/pointer-block.js";
 import { selectHits, type RecallHitInput } from "@core/hook/select.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
 import { recallOverHttp } from "./recall-over-http.js";
@@ -45,6 +45,7 @@ export interface HookInput {
 export interface RecallFetchResult {
   readonly hits: ReadonlyArray<RecallHitInput>;
   readonly facts: ReadonlyArray<PointerFact>;
+  readonly exemplars?: ReadonlyArray<PointerExemplar>;
 }
 
 export interface RunHookDeps {
@@ -100,7 +101,7 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
     perFireCap: PER_FIRE_CAP,
     perConversationCap: PER_CONVERSATION_CAP,
   });
-  const block = formatPointerBlock(selected, fetched.facts);
+  const block = formatPointerBlock(selected, fetched.facts, fetched.exemplars);
   const estTokens = Math.ceil(block.length / 4);
 
   appendHookLog({
