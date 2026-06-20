@@ -681,6 +681,42 @@ program
   });
 
 program
+  .command("reclassify-oversized")
+  .description("One-shot: re-classify large sessions that never ingested (hierarchical classify), recover into the corpus")
+  .option("-l, --limit <n>", "max sessions to process", (v) => Number.parseInt(v, 10))
+  .option("--dry-run", "count candidates without writing", false)
+  .action(async (opts: { limit?: number; dryRun?: boolean }) => {
+    const { reclassifyOversized } = await import("../core/ingest/reclassify-oversized.js");
+    const stack = await buildStack();
+    try {
+      if (!(stack.storage instanceof SqliteStorage)) {
+        console.error("reclassify-oversized: only supported with SQLite storage (NLM_PG_URL must not be set)");
+        await stack.storage.close();
+        process.exit(1);
+      }
+      const adapters = await buildAdapters(stack.sources);
+      const r = await reclassifyOversized(
+        {
+          db: stack.storage.rawDb(),
+          store: stack.storage.sessions,
+          factStore: stack.storage.facts,
+          embedder: stack.embedder,
+          classifier: stack.classifier,
+          adapters,
+        },
+        { ...(opts.limit ? { limit: opts.limit } : {}), dryRun: Boolean(opts.dryRun) },
+      );
+      console.log(
+        `reclassify-oversized: attempted=${r.attempted} ingested=${r.ingested} ` +
+        `lowConfidence=${r.skippedLowConfidence} missingFile=${r.missingFile} failed=${r.failed} ` +
+        `| gained entities=${r.entities} decisions=${r.decisions} facts=${r.facts}`,
+      );
+    } finally {
+      await stack.storage.close();
+    }
+  });
+
+program
   .command("embed-normalize")
   .description("L2-normalize every row in session_embeddings (idempotent)")
   .option("--dim <n>", "vector dimension (default 768)", (v) => Number.parseInt(v, 10), 768)

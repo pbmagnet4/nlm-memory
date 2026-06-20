@@ -1,6 +1,6 @@
 {
   "name": "nlm-memory",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "description": "Local-first persistent memory for AI coding agents. Recalls relevant prior sessions on every prompt; learns which sessions actually get cited. Owner-edited timeline beats append-only memory layers.",
   "author": {
     "name": "Edward Chalupa",
