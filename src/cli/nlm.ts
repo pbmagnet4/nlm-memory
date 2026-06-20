@@ -691,6 +691,7 @@ program
     try {
       if (!(stack.storage instanceof SqliteStorage)) {
         console.error("reclassify-oversized: only supported with SQLite storage (NLM_PG_URL must not be set)");
+        await stack.storage.close();
         process.exit(1);
       }
       const adapters = await buildAdapters(stack.sources);
