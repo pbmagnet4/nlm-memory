@@ -10,7 +10,7 @@ import { extractFacts } from "@core/facts/extract-facts.js";
 import type { SqliteFactStore } from "@core/storage/sqlite-fact-store.js";
 import type { IngestRecord, SqliteSessionStore } from "@core/storage/sqlite-session-store.js";
 import type { LLMClient } from "@ports/llm-client.js";
-import type { TranscriptAdapter } from "@ports/transcript-adapter.js";
+import type { SessionChunk, TranscriptAdapter } from "@ports/transcript-adapter.js";
 
 const BODY_CAP = 200_000;
 const CONFIDENCE_FLOOR = 0.3;
@@ -76,7 +76,7 @@ export async function reclassifyOversized(
       continue;
     }
 
-    let chunk;
+    let chunk: SessionChunk | null;
     try {
       chunk = await adapter.parseSession(row.source_path);
     } catch (e) {
@@ -89,9 +89,18 @@ export async function reclassifyOversized(
       continue;
     }
 
-    const classification = await classifyAdaptive(chunk.text, deps.classifier);
+    let classification;
+    try {
+      classification = await classifyAdaptive(chunk.text, deps.classifier);
+    } catch (e) {
+      failed++;
+      log(`[reclassify] classify failed ${chunk.id}: ${e instanceof Error ? e.message : String(e)}`);
+      continue;
+    }
 
     if (opts.dryRun) {
+      // dry-run classifies and counts candidates but performs NO writes —
+      // including not resetting failure_count on low-confidence rows.
       continue;
     }
 

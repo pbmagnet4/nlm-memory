@@ -104,10 +104,11 @@ describe("reclassifyOversized", () => {
     expect(ents.n).toBe(1);
 
     const row = db
-      .prepare("SELECT session_id, failure_count FROM adapter_state WHERE source_path = ?")
-      .get(srcPath) as { session_id: string; failure_count: number };
+      .prepare("SELECT session_id, failure_count, last_offset FROM adapter_state WHERE source_path = ?")
+      .get(srcPath) as { session_id: string; failure_count: number; last_offset: number };
     expect(row.session_id).toBe("cc_big1");
     expect(row.failure_count).toBe(0);
+    expect(row.last_offset).toBe(120000);
   });
 
   it("dry-run reports the candidate but writes nothing", async () => {
@@ -217,5 +218,93 @@ describe("reclassifyOversized", () => {
       .prepare("SELECT failure_count FROM adapter_state WHERE source_path = ?")
       .get(srcPath) as { failure_count: number };
     expect(row.failure_count).toBe(0);
+  });
+
+  it("classifier throw on first chunk does not abort batch — second chunk still ingests", async () => {
+    const storage = SqliteStorage.create({ dbPath, migrationsDir: MIGRATIONS });
+    const db = storage.rawDb();
+
+    const srcPath2 = join(dir, "big2.jsonl");
+    writeFileSync(srcPath2, "x".repeat(120_000));
+
+    // Two failure rows — ordered by file_size DESC; both are 120000 so insertion order wins
+    db.prepare(
+      `INSERT INTO adapter_state (adapter_name, source_path, last_offset, file_size, session_id, failure_count)
+       VALUES ('claude-code', ?, 0, 120000, NULL, 2)`,
+    ).run(srcPath);
+    db.prepare(
+      `INSERT INTO adapter_state (adapter_name, source_path, last_offset, file_size, session_id, failure_count)
+       VALUES ('claude-code', ?, 0, 120000, NULL, 2)`,
+    ).run(srcPath2);
+
+    const FAIL_MARKER = "FAIL_ME";
+
+    const chunkFor = (id: string, path: string, text: string): SessionChunk => ({
+      id,
+      runtime: "claude-code",
+      runtimeSessionId: id,
+      sourcePath: path,
+      startedAt: "2026-04-14T00:00:00.000Z",
+      endedAt: "2026-04-14T01:00:00.000Z",
+      durationMin: 60,
+      turnCount: 10,
+      byteRange: [0, 120000],
+      projectDir: "/p",
+      gitBranch: "main",
+      text,
+      label: "raw",
+    });
+
+    // Adapter returns distinct chunk per path
+    const adapter: TranscriptAdapter = {
+      name: "claude-code",
+      runtimeVersion: "test",
+      transcriptKind: "claude-code-jsonl",
+      detect: () => ({ adapterName: "claude-code", enabled: true, path: null, hint: null }),
+      discover: async () => [],
+      parseSession: async (p: string) =>
+        p === srcPath
+          ? chunkFor("cc_iso1", srcPath, FAIL_MARKER + "x".repeat(120_000 - FAIL_MARKER.length))
+          : chunkFor("cc_iso2", srcPath2, "y".repeat(120_000)),
+    } as unknown as TranscriptAdapter;
+
+    const successResult: ClassifyResult = {
+      label: "Isolated",
+      summary: "s",
+      entities: [],
+      decisions: [],
+      open: [],
+      confidence: 0.9,
+      facts: [],
+    };
+
+    // Classifier throws on the first chunk (text starts with FAIL_MARKER), succeeds on the second
+    const throwingClassifier: LLMClient = {
+      classify: async (text: string) => {
+        if (text.startsWith(FAIL_MARKER)) throw new Error("simulated classify timeout");
+        return successResult;
+      },
+      embed: async (): Promise<EmbedResult> => ({ vector: new Float32Array(768), model: "test" }),
+      rewriteForRecall: async () => { throw new Error("nope"); },
+    } as LLMClient;
+
+    const out = await reclassifyOversized(
+      {
+        db,
+        store: storage.sessions,
+        factStore: storage.facts,
+        embedder: fakeClassifier(successResult),
+        classifier: throwingClassifier,
+        adapters: [adapter],
+      },
+      {},
+    );
+
+    expect(out.failed).toBe(1);
+    expect(out.ingested).toBe(1);
+
+    const second = await storage.sessions.getById("cc_iso2");
+    expect(second).not.toBeNull();
+    expect(second!.label).toBe("Isolated");
   });
 });
