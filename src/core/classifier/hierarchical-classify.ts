@@ -11,7 +11,7 @@ import type { ClassifyResult, LLMClient } from "@ports/llm-client.js";
 
 /** Bodies at or under this length go single-pass; larger ones are chunked. */
 export const SINGLE_PASS_CHAR_BUDGET = 40_000;
-const CHUNK_CHARS = 46_000;
+const CHUNK_CHARS = 40_000;
 const CHUNK_OVERLAP = 1_000;
 
 function dedupeCaseInsensitive(values: ReadonlyArray<string>): string[] {
@@ -37,14 +37,15 @@ export async function classifyLarge(text: string, classifier: LLMClient): Promis
     results.push(await classifier.classify(chunk));
   }
   const firstLabelled = results.find((r) => r.label.trim().length > 0) ?? results[0]!;
+  const firstSummarised = results.find((r) => r.summary.trim().length > 0) ?? results[0]!;
   return {
     label: firstLabelled.label,
-    summary: firstLabelled.summary,
-    entities: dedupeCaseInsensitive(results.flatMap((r) => Array.from(r.entities))),
-    decisions: dedupeCaseInsensitive(results.flatMap((r) => Array.from(r.decisions))),
-    open: dedupeCaseInsensitive(results.flatMap((r) => Array.from(r.open))),
+    summary: firstSummarised.summary,
+    entities: dedupeCaseInsensitive(results.flatMap((r) => r.entities)),
+    decisions: dedupeCaseInsensitive(results.flatMap((r) => r.decisions)),
+    open: dedupeCaseInsensitive(results.flatMap((r) => r.open)),
     confidence: Math.min(...results.map((r) => r.confidence)),
-    facts: results.flatMap((r) => Array.from(r.facts)),
+    facts: results.flatMap((r) => r.facts),
   };
 }
 

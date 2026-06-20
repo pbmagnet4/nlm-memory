@@ -23,7 +23,7 @@ describe("classifyLarge", () => {
       res({ label: "A", summary: "sa", entities: ["DuckDB", "Hono"], decisions: ["use wal"], open: ["q1"], confidence: 0.9 }),
       res({ label: "B", summary: "sb", entities: ["duckdb", "Vite"], decisions: ["use wal"], open: ["q2"], confidence: 0.8 }),
     ]);
-    const big = "x".repeat(SINGLE_PASS_CHAR_BUDGET + 50_000); // forces >1 chunk
+    const big = "x".repeat(60_000); // 60K chars → exactly 2 chunks at 40K/1K (step=39K)
     const out = await classifyLarge(big, clf);
     expect(out.entities.map((e) => e.toLowerCase()).sort()).toEqual(["duckdb", "hono", "vite"]);
     expect(out.decisions).toEqual(["use wal"]); // deduped
@@ -34,7 +34,7 @@ describe("classifyLarge", () => {
 
   it("concatenates facts from all chunks (dedupe deferred to ingest supersedence)", async () => {
     const clf = scripted([res({ facts: [f("a")] }), res({ facts: [f("b")] })]);
-    const out = await classifyLarge("y".repeat(SINGLE_PASS_CHAR_BUDGET + 50_000), clf);
+    const out = await classifyLarge("y".repeat(60_000), clf);
     expect(out.facts).toHaveLength(2);
   });
 });
