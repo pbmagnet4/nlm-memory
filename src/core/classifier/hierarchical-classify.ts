@@ -8,9 +8,15 @@
  */
 import { chunkSessionText } from "@core/embedding/chunk-body.js";
 import type { ClassifyResult, LLMClient } from "@ports/llm-client.js";
+import { withTimeout } from "@core/util/with-timeout.js";
 
 /** Bodies at or under this length go single-pass; larger ones are chunked. */
 export const SINGLE_PASS_CHAR_BUDGET = 40_000;
+
+export interface ClassifyAdaptiveOptions {
+  /** When set, each individual chunk classify is bounded by this many ms. */
+  readonly perCallTimeoutMs?: number;
+}
 const CHUNK_CHARS = 40_000;
 const CHUNK_OVERLAP = 1_000;
 
@@ -27,7 +33,11 @@ function dedupeCaseInsensitive(values: ReadonlyArray<string>): string[] {
   return out;
 }
 
-export async function classifyLarge(text: string, classifier: LLMClient): Promise<ClassifyResult> {
+export async function classifyLarge(
+  text: string,
+  classifier: LLMClient,
+  opts: ClassifyAdaptiveOptions = {},
+): Promise<ClassifyResult> {
   const chunks = chunkSessionText({ body: text }, { maxChars: CHUNK_CHARS, overlap: CHUNK_OVERLAP });
   if (chunks.length === 0) {
     return { label: "", summary: "", entities: [], decisions: [], open: [], confidence: 0, facts: [] };
@@ -35,7 +45,8 @@ export async function classifyLarge(text: string, classifier: LLMClient): Promis
   const results: ClassifyResult[] = [];
   for (const chunk of chunks) {
     try {
-      results.push(await classifier.classify(chunk));
+      const p = classifier.classify(chunk);
+      results.push(opts.perCallTimeoutMs ? await withTimeout(p, opts.perCallTimeoutMs) : await p);
     } catch {
       // Tolerate a chunk that still failed after the client's own retries:
       // skip it and classify from the survivors. If every chunk fails, the
@@ -58,7 +69,14 @@ export async function classifyLarge(text: string, classifier: LLMClient): Promis
   };
 }
 
-export async function classifyAdaptive(text: string, classifier: LLMClient): Promise<ClassifyResult> {
-  if (text.length <= SINGLE_PASS_CHAR_BUDGET) return classifier.classify(text);
-  return classifyLarge(text, classifier);
+export async function classifyAdaptive(
+  text: string,
+  classifier: LLMClient,
+  opts: ClassifyAdaptiveOptions = {},
+): Promise<ClassifyResult> {
+  if (text.length <= SINGLE_PASS_CHAR_BUDGET) {
+    const p = classifier.classify(text);
+    return opts.perCallTimeoutMs ? withTimeout(p, opts.perCallTimeoutMs) : p;
+  }
+  return classifyLarge(text, classifier, opts);
 }

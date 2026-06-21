@@ -38,6 +38,7 @@ import type { PgFactStore } from "@core/storage/pg-fact-store.js";
 import type { Fact, Signal } from "@shared/types.js";
 import { MAX_CLASSIFY_FAILURES, getFileSize, recordClassified, recordClassifiedPg, recordFailed, recordFailedPg, recordSkippedLowConfidence, recordSkippedLowConfidencePg, scanOnce, scanOncePg } from "./scan-once.js";
 import { runCheapChecksOnSqlite } from "@core/integrity/check-invariants.js";
+import { TimeoutError, withTimeout } from "@core/util/with-timeout.js";
 
 const DEFAULT_INTERVAL_MS = 30 * 60 * 1000; // 30 min, matches Python default
 const DEFAULT_CLASSIFY_TIMEOUT_MS = 120_000;
@@ -342,18 +343,3 @@ export class ScanScheduler {
   }
 }
 
-class TimeoutError extends Error {}
-
-async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new TimeoutError(`timed out after ${ms}ms`)), ms);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
