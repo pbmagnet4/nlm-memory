@@ -63,7 +63,7 @@ describe("classifyLarge", () => {
       embed: async () => { throw new Error("nope"); },
       rewriteForRecall: async () => { throw new Error("nope"); },
     } as unknown as LLMClient;
-    await expect(classifyLarge("y".repeat(60_000), clf)).rejects.toThrow();
+    await expect(classifyLarge("y".repeat(60_000), clf)).rejects.toThrow(/all \d+ chunks failed classification/);
   });
 });
 

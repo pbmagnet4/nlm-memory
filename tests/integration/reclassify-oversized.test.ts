@@ -220,24 +220,25 @@ describe("reclassifyOversized", () => {
     expect(row.failure_count).toBe(0);
   });
 
-  it("classifier throw on first chunk does not abort batch — second chunk still ingests", async () => {
+  it("failed row is isolated — batch continues and second session still ingests", async () => {
     const storage = SqliteStorage.create({ dbPath, migrationsDir: MIGRATIONS });
     const db = storage.rawDb();
 
     const srcPath2 = join(dir, "big2.jsonl");
     writeFileSync(srcPath2, "x".repeat(120_000));
 
-    // Two failure rows — ordered by file_size DESC; both are 120000 so insertion order wins
+    // Two failure rows — ordered by file_size DESC; cc_iso1 is small (100 bytes) so cc_iso2 goes first,
+    // but row-level isolation means order doesn't matter for the assertion.
     db.prepare(
       `INSERT INTO adapter_state (adapter_name, source_path, last_offset, file_size, session_id, failure_count)
-       VALUES ('claude-code', ?, 0, 120000, NULL, 2)`,
+       VALUES ('claude-code', ?, 0, 100, NULL, 2)`,
     ).run(srcPath);
     db.prepare(
       `INSERT INTO adapter_state (adapter_name, source_path, last_offset, file_size, session_id, failure_count)
        VALUES ('claude-code', ?, 0, 120000, NULL, 2)`,
     ).run(srcPath2);
 
-    const FAIL_MARKER = "FAIL_ME";
+    const FAIL_MARKER = "FAIL_MARKER";
 
     const chunkFor = (id: string, path: string, text: string): SessionChunk => ({
       id,
@@ -255,7 +256,8 @@ describe("reclassifyOversized", () => {
       label: "raw",
     });
 
-    // Adapter returns distinct chunk per path
+    // cc_iso1: body is pure FAIL_MARKER content (≤40K → single-pass → classifier throws → all fail → row catch → failed++)
+    // cc_iso2: body is normal text, classifier succeeds → ingested++
     const adapter: TranscriptAdapter = {
       name: "claude-code",
       runtimeVersion: "test",
@@ -264,7 +266,7 @@ describe("reclassifyOversized", () => {
       discover: async () => [],
       parseSession: async (p: string) =>
         p === srcPath
-          ? chunkFor("cc_iso1", srcPath, FAIL_MARKER + "x".repeat(120_000 - FAIL_MARKER.length))
+          ? chunkFor("cc_iso1", srcPath, FAIL_MARKER.repeat(5))
           : chunkFor("cc_iso2", srcPath2, "y".repeat(120_000)),
     } as unknown as TranscriptAdapter;
 
@@ -278,12 +280,11 @@ describe("reclassifyOversized", () => {
       facts: [],
     };
 
-    // Classifier throws on the first chunk (text starts with FAIL_MARKER), succeeds on all other chunks.
-    // With per-chunk tolerance (Task 2), cc_iso1's surviving chunks (2 of 3) produce a result — so
-    // both sessions ingest. Neither batch entry counts as failed.
+    // Classifier throws whenever the text contains FAIL_MARKER (covers cc_iso1's single-pass call).
+    // cc_iso2's body has no FAIL_MARKER, so its classify calls succeed.
     const throwingClassifier: LLMClient = {
       classify: async (text: string) => {
-        if (text.startsWith(FAIL_MARKER)) throw new Error("simulated classify timeout");
+        if (text.includes(FAIL_MARKER)) throw new Error("simulated classify timeout");
         return successResult;
       },
       embed: async (): Promise<EmbedResult> => ({ vector: new Float32Array(768), model: "test" }),
@@ -302,14 +303,12 @@ describe("reclassifyOversized", () => {
       {},
     );
 
-    // Per-chunk tolerance: one bad chunk in cc_iso1 doesn't sink the session — surviving
-    // chunks produce a valid ClassifyResult, so both sessions are ingested.
-    expect(out.failed).toBe(0);
-    expect(out.ingested).toBe(2);
+    // Row-level isolation: cc_iso1 genuinely fails (all chunks throw) → failed++,
+    // but the batch continues and cc_iso2 ingests successfully.
+    expect(out.failed).toBe(1);
+    expect(out.ingested).toBe(1);
 
-    const first = await storage.sessions.getById("cc_iso1");
-    expect(first).not.toBeNull();
-    expect(first!.label).toBe("Isolated");
+    expect(await storage.sessions.getById("cc_iso1")).toBeNull();
 
     const second = await storage.sessions.getById("cc_iso2");
     expect(second).not.toBeNull();
