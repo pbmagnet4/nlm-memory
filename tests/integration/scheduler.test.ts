@@ -564,7 +564,7 @@ describe("ScanScheduler.tick", () => {
     expect(count?.c).toBe(1);
   });
 
-  it("oversized session (90K chars) routes through classifyAdaptive — classifier called >1 time and session row inserted", async () => {
+  it("oversized session (90K chars) routes through classifyAdaptive - classifier called >1 time and session row inserted", async () => {
     // Build a fixture directory with a fake oversized JSONL transcript
     const oversizedProjects = join(tmp, "oversized_projects");
     mkdirSync(join(oversizedProjects, "project_oversized"), { recursive: true });
@@ -610,7 +610,9 @@ describe("ScanScheduler.tick", () => {
 
     const report = await scheduler.tick();
     expect(report.inserted).toBe(1);
-    // classifyAdaptive chunks a 90K body (> 40K threshold) into multiple passes
+    // > 1 proves the 90K body was chunked (routed through classifyLarge): a
+    // single-pass classify would be exactly 1 call. Depends on the adapter
+    // yielding a >40K-char chunk from this fixture.
     expect(classifyCalls).toBeGreaterThan(1);
 
     const db = store.rawDb();
