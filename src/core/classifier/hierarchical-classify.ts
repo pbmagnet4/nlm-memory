@@ -33,12 +33,13 @@ export async function classifyLarge(text: string, classifier: LLMClient): Promis
     return { label: "", summary: "", entities: [], decisions: [], open: [], confidence: 0, facts: [] };
   }
   const results: ClassifyResult[] = [];
-  let failedChunks = 0;
   for (const chunk of chunks) {
     try {
       results.push(await classifier.classify(chunk));
     } catch {
-      failedChunks++;
+      // Tolerate a chunk that still failed after the client's own retries:
+      // skip it and classify from the survivors. If every chunk fails, the
+      // results.length === 0 guard below throws.
     }
   }
   if (results.length === 0) {
