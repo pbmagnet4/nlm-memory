@@ -164,10 +164,10 @@ export class OllamaClient implements LLMClient {
   }
 
   /**
-   * Send a transcript through the Ollama classifier with the shared system
-   * prompt. Returns a ClassifyResult on success, or throws on network failure
-   * (LLMUnreachableError) or schema-invalid output (ClassifierSchemaError).
-   * Retries up to classifyAttempts times on transient errors before rethrowing.
+   * Classify a transcript, retrying up to `classifyAttempts` times on transient
+   * schema/unreachable errors before rethrowing the last error. Each attempt
+   * sends the transcript through the Ollama classifier and returns a
+   * ClassifyResult on success, or throws LLMUnreachableError / ClassifierSchemaError.
    */
   async classify(transcript: string, priorContext: string = ""): Promise<ClassifyResult> {
     let lastErr: unknown;
@@ -262,4 +262,3 @@ export class OllamaClient implements LLMClient {
   }
 }
 
-export { ClassifierSchemaError } from "@ports/llm-client.js";
