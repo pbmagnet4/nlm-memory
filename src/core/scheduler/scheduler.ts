@@ -38,7 +38,8 @@ import type { PgFactStore } from "@core/storage/pg-fact-store.js";
 import type { Fact, Signal } from "@shared/types.js";
 import { MAX_CLASSIFY_FAILURES, getFileSize, recordClassified, recordClassifiedPg, recordFailed, recordFailedPg, recordSkippedLowConfidence, recordSkippedLowConfidencePg, scanOnce, scanOncePg } from "./scan-once.js";
 import { runCheapChecksOnSqlite } from "@core/integrity/check-invariants.js";
-import { TimeoutError, withTimeout } from "@core/util/with-timeout.js";
+import { classifyAdaptive } from "@core/classifier/hierarchical-classify.js";
+import { TimeoutError } from "@core/util/with-timeout.js";
 
 const DEFAULT_INTERVAL_MS = 30 * 60 * 1000; // 30 min, matches Python default
 const DEFAULT_CLASSIFY_TIMEOUT_MS = 120_000;
@@ -213,10 +214,9 @@ export class ScanScheduler {
 
         let classification;
         try {
-          classification = await withTimeout(
-            this.opts.classifier.classify(chunk.text),
-            this.opts.classifyTimeoutMs,
-          );
+          classification = await classifyAdaptive(chunk.text, this.opts.classifier, {
+            perCallTimeoutMs: this.opts.classifyTimeoutMs,
+          });
         } catch (e) {
           classifyFailures += 1;
           const reason = e instanceof TimeoutError ? "timed out" : `error: ${e instanceof Error ? e.message : String(e)}`;
