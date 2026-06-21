@@ -27,7 +27,7 @@ import type {
   LLMClient,
   RewriteResult,
 } from "@ports/llm-client.js";
-import { LLMUnreachableError } from "@ports/llm-client.js";
+import { ClassifierSchemaError, LLMUnreachableError } from "@ports/llm-client.js";
 import {
   CLASSIFIER_SYSTEM_PROMPT,
   buildUserPrompt,
@@ -36,7 +36,6 @@ import {
   validateClassifierJson,
 } from "@core/classifier/prompt.js";
 import { REWRITE_SYSTEM_PROMPT, parseRewriteJson } from "@core/recall/rewrite-prompt.js";
-import { ClassifierSchemaError } from "./ollama-client.js";
 
 const DEFAULT_REWRITE_TIMEOUT_MS = 5_000;
 function rewriteTimeoutMs(): number {
@@ -55,6 +54,8 @@ export interface DeepSeekClientOptions {
   readonly classifyTimeoutMs?: number;
   readonly maxTranscriptChars?: number;
   readonly fetchImpl?: FetchImpl;
+  /** Total classify attempts before giving up on transient schema/unreachable errors. */
+  readonly classifyAttempts?: number;
 }
 
 interface ChatResponse {
@@ -68,6 +69,7 @@ export class DeepSeekClient implements LLMClient {
   private readonly classifyTimeoutMs: number;
   private readonly maxTranscriptChars: number;
   private readonly fetchImpl: FetchImpl;
+  private readonly classifyAttempts: number;
 
   constructor(opts: DeepSeekClientOptions = {}) {
     const key = opts.apiKey ?? process.env["DEEPSEEK_API_KEY"];
@@ -82,6 +84,7 @@ export class DeepSeekClient implements LLMClient {
     this.classifyTimeoutMs = opts.classifyTimeoutMs ?? 180_000;
     this.maxTranscriptChars = opts.maxTranscriptChars ?? 30_000;
     this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.classifyAttempts = opts.classifyAttempts ?? 3;
   }
 
   async embed(_text: string, _kind: EmbeddingKind): Promise<EmbedResult> {
@@ -91,6 +94,19 @@ export class DeepSeekClient implements LLMClient {
   }
 
   async classify(transcript: string, priorContext: string = ""): Promise<ClassifyResult> {
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= this.classifyAttempts; attempt++) {
+      try {
+        return await this.classifyOnce(transcript, priorContext);
+      } catch (e) {
+        if (!(e instanceof ClassifierSchemaError || e instanceof LLMUnreachableError)) throw e;
+        lastErr = e;
+      }
+    }
+    throw lastErr;
+  }
+
+  private async classifyOnce(transcript: string, priorContext: string): Promise<ClassifyResult> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.classifyTimeoutMs);
     try {

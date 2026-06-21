@@ -34,7 +34,16 @@ export async function classifyLarge(text: string, classifier: LLMClient): Promis
   }
   const results: ClassifyResult[] = [];
   for (const chunk of chunks) {
-    results.push(await classifier.classify(chunk));
+    try {
+      results.push(await classifier.classify(chunk));
+    } catch {
+      // Tolerate a chunk that still failed after the client's own retries:
+      // skip it and classify from the survivors. If every chunk fails, the
+      // results.length === 0 guard below throws.
+    }
+  }
+  if (results.length === 0) {
+    throw new Error(`classifyLarge: all ${chunks.length} chunks failed classification`);
   }
   const firstLabelled = results.find((r) => r.label.trim().length > 0) ?? results[0]!;
   const firstSummarised = results.find((r) => r.summary.trim().length > 0) ?? results[0]!;

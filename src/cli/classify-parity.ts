@@ -17,9 +17,9 @@ import { resolve } from "node:path";
 import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 import type { LLMClient } from "../ports/llm-client.js";
-import { LLMUnreachableError } from "../ports/llm-client.js";
+import { ClassifierSchemaError, LLMUnreachableError } from "../ports/llm-client.js";
 import { DeepSeekClient } from "../llm/deepseek-client.js";
-import { OllamaClient, ClassifierSchemaError } from "../llm/ollama-client.js";
+import { OllamaClient } from "../llm/ollama-client.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
 
 export type Provider = "ollama" | "deepseek";
