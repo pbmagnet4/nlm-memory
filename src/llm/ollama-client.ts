@@ -19,7 +19,7 @@ import type {
   LLMClient,
   RewriteResult,
 } from "@ports/llm-client.js";
-import { LLMUnreachableError } from "@ports/llm-client.js";
+import { ClassifierSchemaError, LLMUnreachableError } from "@ports/llm-client.js";
 import {
   CLASSIFIER_SYSTEM_PROMPT,
   CLASSIFIER_JSON_SCHEMA,
@@ -94,6 +94,8 @@ export interface OllamaClientOptions {
   readonly think?: boolean;
   /** Inject a fake fetch for tests. Defaults to global fetch. */
   readonly fetchImpl?: FetchImpl;
+  /** Total classify attempts before giving up on transient schema/unreachable errors. */
+  readonly classifyAttempts?: number;
 }
 
 interface EmbeddingsResponse {
@@ -113,6 +115,7 @@ export class OllamaClient implements LLMClient {
   private readonly numCtx: number;
   private readonly think: boolean | undefined;
   private readonly fetchImpl: FetchImpl;
+  private readonly classifyAttempts: number;
 
   constructor(opts: OllamaClientOptions = {}) {
     this.baseUrl = (opts.baseUrl ?? "http://localhost:11434").replace(/\/+$/, "");
@@ -123,6 +126,7 @@ export class OllamaClient implements LLMClient {
     this.numCtx = opts.numCtx ?? 16_384;
     this.think = opts.think;
     this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.classifyAttempts = opts.classifyAttempts ?? 3;
   }
 
   async embed(text: string, kind: EmbeddingKind): Promise<EmbedResult> {
@@ -162,12 +166,23 @@ export class OllamaClient implements LLMClient {
   /**
    * Send a transcript through the Ollama classifier with the shared system
    * prompt. Returns a ClassifyResult on success, or throws on network failure
-   * (LLMUnreachableError) or schema-invalid output (Error). The Python
-   * counterpart returned None on parse failure; we throw a typed error so
-   * callers explicitly handle retry / inbox routing rather than swallowing
-   * silent nulls.
+   * (LLMUnreachableError) or schema-invalid output (ClassifierSchemaError).
+   * Retries up to classifyAttempts times on transient errors before rethrowing.
    */
   async classify(transcript: string, priorContext: string = ""): Promise<ClassifyResult> {
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= this.classifyAttempts; attempt++) {
+      try {
+        return await this.classifyOnce(transcript, priorContext);
+      } catch (e) {
+        if (!(e instanceof ClassifierSchemaError || e instanceof LLMUnreachableError)) throw e;
+        lastErr = e;
+      }
+    }
+    throw lastErr;
+  }
+
+  private async classifyOnce(transcript: string, priorContext: string): Promise<ClassifyResult> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.classifyTimeoutMs);
     try {
@@ -247,9 +262,4 @@ export class OllamaClient implements LLMClient {
   }
 }
 
-export class ClassifierSchemaError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ClassifierSchemaError";
-  }
-}
+export { ClassifierSchemaError } from "@ports/llm-client.js";

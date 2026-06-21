@@ -5,8 +5,8 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { OllamaClient, ClassifierSchemaError } from "../../../src/llm/ollama-client.js";
-import { LLMUnreachableError } from "../../../src/ports/llm-client.js";
+import { OllamaClient } from "../../../src/llm/ollama-client.js";
+import { ClassifierSchemaError, LLMUnreachableError } from "../../../src/ports/llm-client.js";
 
 type FakeFetch = typeof fetch;
 

@@ -46,6 +46,13 @@ export class LLMUnreachableError extends Error {
   }
 }
 
+export class ClassifierSchemaError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ClassifierSchemaError";
+  }
+}
+
 /**
  * Result of rewriting a vague natural-language recall query into both a
  * keyword-optimized phrasing (entity-rich, suitable for FTS5 BM25) and a
