@@ -37,6 +37,34 @@ describe("classifyLarge", () => {
     const out = await classifyLarge("y".repeat(60_000), clf);
     expect(out.facts).toHaveLength(2);
   });
+
+  it("skips a chunk that fails and merges the survivors", async () => {
+    // 2 chunks at 40K/1K from a 60K body. First classify throws, second succeeds.
+    let call = 0;
+    const clf = {
+      classify: vi.fn(async () => {
+        call++;
+        if (call === 1) throw new Error("ollama returned non-JSON content");
+        return { label: "B", summary: "sb", entities: ["Hono"], decisions: ["d2"], open: [], confidence: 0.8, facts: [] };
+      }),
+      embed: async () => { throw new Error("nope"); },
+      rewriteForRecall: async () => { throw new Error("nope"); },
+    } as unknown as LLMClient;
+    const out = await classifyLarge("x".repeat(60_000), clf);
+    expect((clf.classify as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2);
+    expect(out.entities).toEqual(["Hono"]);    // only the surviving chunk's content
+    expect(out.decisions).toEqual(["d2"]);
+    expect(out.label).toBe("B");
+  });
+
+  it("throws when every chunk fails", async () => {
+    const clf = {
+      classify: vi.fn(async () => { throw new Error("ollama returned non-JSON content"); }),
+      embed: async () => { throw new Error("nope"); },
+      rewriteForRecall: async () => { throw new Error("nope"); },
+    } as unknown as LLMClient;
+    await expect(classifyLarge("y".repeat(60_000), clf)).rejects.toThrow();
+  });
 });
 
 describe("classifyAdaptive", () => {

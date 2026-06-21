@@ -278,7 +278,9 @@ describe("reclassifyOversized", () => {
       facts: [],
     };
 
-    // Classifier throws on the first chunk (text starts with FAIL_MARKER), succeeds on the second
+    // Classifier throws on the first chunk (text starts with FAIL_MARKER), succeeds on all other chunks.
+    // With per-chunk tolerance (Task 2), cc_iso1's surviving chunks (2 of 3) produce a result — so
+    // both sessions ingest. Neither batch entry counts as failed.
     const throwingClassifier: LLMClient = {
       classify: async (text: string) => {
         if (text.startsWith(FAIL_MARKER)) throw new Error("simulated classify timeout");
@@ -300,8 +302,14 @@ describe("reclassifyOversized", () => {
       {},
     );
 
-    expect(out.failed).toBe(1);
-    expect(out.ingested).toBe(1);
+    // Per-chunk tolerance: one bad chunk in cc_iso1 doesn't sink the session — surviving
+    // chunks produce a valid ClassifyResult, so both sessions are ingested.
+    expect(out.failed).toBe(0);
+    expect(out.ingested).toBe(2);
+
+    const first = await storage.sessions.getById("cc_iso1");
+    expect(first).not.toBeNull();
+    expect(first!.label).toBe("Isolated");
 
     const second = await storage.sessions.getById("cc_iso2");
     expect(second).not.toBeNull();
