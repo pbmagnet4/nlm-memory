@@ -79,4 +79,56 @@ describe("classifyAdaptive", () => {
     await classifyAdaptive("z".repeat(SINGLE_PASS_CHAR_BUDGET + 50_000), clf);
     expect((clf.classify as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(1);
   });
+
+  it("single-pass rejects with TimeoutError when the single call times out", async () => {
+    const clf = {
+      classify: vi.fn(() => new Promise<never>(() => {})), // hangs forever
+      embed: async () => { throw new Error("nope"); },
+      rewriteForRecall: async () => { throw new Error("nope"); },
+    } as unknown as LLMClient;
+    await expect(classifyAdaptive("short body", clf, { perCallTimeoutMs: 30 })).rejects.toBeInstanceOf(
+      (await import("../../../src/core/util/with-timeout.js")).TimeoutError,
+    );
+  });
+
+  it("behaves identically without perCallTimeoutMs (backward compat)", async () => {
+    const clf = scripted([res({ label: "compat", entities: ["x"] })]);
+    const out = await classifyAdaptive("short body", clf);
+    expect(out.label).toBe("compat");
+    expect(clf.classify).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("classifyLarge with perCallTimeoutMs", () => {
+  it("tolerates a chunk that times out and merges the survivors", async () => {
+    let call = 0;
+    const clf = {
+      classify: vi.fn(async () => {
+        call++;
+        if (call === 1) return await new Promise<never>(() => {}); // hangs forever → times out
+        return { label: "B", summary: "s", entities: ["Hono"], decisions: [], open: [], confidence: 0.9, facts: [] };
+      }),
+      embed: async () => { throw new Error("nope"); },
+      rewriteForRecall: async () => { throw new Error("nope"); },
+    } as unknown as LLMClient;
+    const out = await classifyLarge("x".repeat(60_000), clf, { perCallTimeoutMs: 30 });
+    expect(out.entities).toEqual(["Hono"]); // survivor only; hung chunk was skipped
+  });
+
+  it("throws when all chunks time out (results.length === 0)", async () => {
+    const clf = {
+      classify: vi.fn(() => new Promise<never>(() => {})), // all hang forever
+      embed: async () => { throw new Error("nope"); },
+      rewriteForRecall: async () => { throw new Error("nope"); },
+    } as unknown as LLMClient;
+    await expect(classifyLarge("x".repeat(60_000), clf, { perCallTimeoutMs: 30 })).rejects.toThrow(
+      /all \d+ chunks failed classification/,
+    );
+  });
+
+  it("behaves identically without perCallTimeoutMs (backward compat)", async () => {
+    const clf = scripted([res({ entities: ["a"] }), res({ entities: ["b"] })]);
+    const out = await classifyLarge("x".repeat(60_000), clf);
+    expect([...out.entities].sort()).toEqual(["a", "b"]);
+  });
 });

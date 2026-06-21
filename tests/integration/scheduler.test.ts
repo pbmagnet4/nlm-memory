@@ -563,4 +563,61 @@ describe("ScanScheduler.tick", () => {
       .prepare<[], { c: number }>("SELECT COUNT(*) AS c FROM facts").get();
     expect(count?.c).toBe(1);
   });
+
+  it("oversized session (90K chars) routes through classifyAdaptive - classifier called >1 time and session row inserted", async () => {
+    // Build a fixture directory with a fake oversized JSONL transcript
+    const oversizedProjects = join(tmp, "oversized_projects");
+    mkdirSync(join(oversizedProjects, "project_oversized"), { recursive: true });
+
+    // Write a minimal JSONL that will parse into a session with a 90K-char body
+    const oversizedBody = "x".repeat(90_000);
+    const jsonlLines = [
+      JSON.stringify({ type: "summary", summary: { sessionId: "oversized-session-uuid" } }),
+      JSON.stringify({ type: "user", message: { content: oversizedBody }, timestamp: "2026-05-19T10:00:00Z" }),
+      JSON.stringify({ type: "assistant", message: { content: "response" }, timestamp: "2026-05-19T10:01:00Z" }),
+    ].join("\n") + "\n";
+    const oversizedFixture = join(oversizedProjects, "project_oversized", "oversized.jsonl");
+    writeFileSync(oversizedFixture, jsonlLines, "utf8");
+    ageFiles(oversizedProjects, 60 * 60 * 1000);
+
+    // Spy classifier counts calls and returns a valid result each time
+    let classifyCalls = 0;
+    const spyClassifier: import("../../src/ports/llm-client.js").LLMClient = {
+      embed: async () => { throw new Error("not used"); },
+      rewriteForRecall: async () => { throw new Error("not used"); },
+      classify: async (_text: string) => {
+        classifyCalls += 1;
+        return {
+          label: "Oversized label",
+          summary: "Oversized summary",
+          entities: ["BigSession"],
+          decisions: [],
+          open: [],
+          confidence: 0.9,
+          facts: [],
+        };
+      },
+    };
+
+    const adapter = new ClaudeCodeAdapter({ projectsPath: oversizedProjects, idleMinutes: 15 });
+    const scheduler = new ScanScheduler({
+      store,
+      adapters: [adapter],
+      classifier: spyClassifier,
+      embedder: null,
+      logger: () => {},
+    });
+
+    const report = await scheduler.tick();
+    expect(report.inserted).toBe(1);
+    // > 1 proves the 90K body was chunked (routed through classifyLarge): a
+    // single-pass classify would be exactly 1 call. Depends on the adapter
+    // yielding a >40K-char chunk from this fixture.
+    expect(classifyCalls).toBeGreaterThan(1);
+
+    const db = store.rawDb();
+    const sess = db.prepare<[], { id: string; label: string }>("SELECT id, label FROM sessions").all();
+    expect(sess).toHaveLength(1);
+    expect(sess[0]?.label).toBe("Oversized label");
+  });
 });
