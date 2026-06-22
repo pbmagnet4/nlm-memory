@@ -1,8 +1,13 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { clearSurfaced, loadSurfaced, recordSurfaced } from "../../src/core/hook/memo.js";
+import {
+  clearSurfaced,
+  loadSurfaced,
+  recordSurfaced,
+  resolveConversationForSession,
+} from "../../src/core/hook/memo.js";
 
 describe("hook memo", () => {
   let tmp: string;
@@ -64,5 +69,28 @@ describe("hook memo", () => {
     clearSurfaced("conv-1");
     expect(loadSurfaced("conv-1").size).toBe(0);
     expect([...loadSurfaced("conv-2")]).toEqual(["sess_b"]);
+  });
+
+  // #345 — server-side conversation attribution for cite_session: the agent
+  // rarely passes conversation_id, so the daemon resolves it from the memo.
+  it("resolveConversationForSession finds the conversation that surfaced a session", () => {
+    recordSurfaced("conv-1", ["sess_a", "sess_b"]);
+    recordSurfaced("conv-2", ["sess_z"]);
+    expect(resolveConversationForSession("sess_a")).toBe("conv-1");
+    expect(resolveConversationForSession("sess_z")).toBe("conv-2");
+  });
+
+  it("resolveConversationForSession returns null when no conversation surfaced it", () => {
+    recordSurfaced("conv-1", ["sess_a"]);
+    expect(resolveConversationForSession("never_surfaced")).toBeNull();
+  });
+
+  it("resolveConversationForSession picks the MOST RECENT surfacing conversation", () => {
+    recordSurfaced("conv-old", ["sess_shared"]);
+    recordSurfaced("conv-new", ["sess_shared"]);
+    // Force conv-old to be older so the tie is deterministic.
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(join(tmp, "conv-old.json"), past, past);
+    expect(resolveConversationForSession("sess_shared")).toBe("conv-new");
   });
 });

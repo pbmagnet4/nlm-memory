@@ -16,6 +16,7 @@ import { z } from "zod";
 import { logQuery } from "@core/recall/query-log.js";
 import { logFactQuery } from "@core/recall-facts/fact-query-log.js";
 import { appendCitation } from "@core/recall/citation-log.js";
+import { resolveConversationForSession } from "@core/hook/memo.js";
 import { appendFactSupersedence, appendSupersedence, readSupersedenceLog } from "@core/storage/supersedence-log.js";
 import type { FactRecallService } from "@core/recall-facts/fact-recall-service.js";
 import type { RecallService } from "@core/recall/recall-service.js";
@@ -525,7 +526,9 @@ export async function citeSessionHandler(
   }
   try {
     await appendCitation({
-      conversationId: input.conversation_id ?? "mcp_tool",
+      // Agents rarely pass conversation_id; resolve it server-side from the
+      // surfaced-memo so the citation joins to its hook fire (NLM #345).
+      conversationId: input.conversation_id ?? resolveConversationForSession(input.id) ?? "mcp_tool",
       citedId: input.id,
       kind: "tool_use",
       ...(input.reason !== undefined ? { responsePreview: input.reason } : {}),

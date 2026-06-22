@@ -11,7 +11,15 @@
  * I/O.
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -47,6 +55,42 @@ export function recordSurfaced(
     writeFileSync(memoPath(conversationId), JSON.stringify([...merged]), "utf8");
   } catch {
     // Memo write failure must never break the hook.
+  }
+}
+
+/**
+ * Reverse lookup: which conversation most recently surfaced `sessionId`?
+ *
+ * cite_session callers rarely pass conversation_id, so the citation would be
+ * logged as the unjoinable "mcp_tool" placeholder (NLM #345). The hook already
+ * recorded a per-conversation memo of what it surfaced; scan those (few, since
+ * they're cleared on SessionEnd) for the session and return the most-recently-
+ * written conversation. Returns null when no live conversation surfaced it.
+ *
+ * Defensive: any I/O error yields null so cite_session never breaks.
+ */
+export function resolveConversationForSession(sessionId: string): string | null {
+  try {
+    const dir = stateDir();
+    if (!existsSync(dir)) return null;
+    let best: { conversationId: string; mtimeMs: number } | null = null;
+    for (const file of readdirSync(dir)) {
+      if (!file.endsWith(".json")) continue;
+      const path = join(dir, file);
+      try {
+        const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+        if (!Array.isArray(parsed) || !parsed.includes(sessionId)) continue;
+        const mtimeMs = statSync(path).mtimeMs;
+        if (best === null || mtimeMs > best.mtimeMs) {
+          best = { conversationId: file.slice(0, -".json".length), mtimeMs };
+        }
+      } catch {
+        // Skip a corrupt or vanished memo file.
+      }
+    }
+    return best?.conversationId ?? null;
+  } catch {
+    return null;
   }
 }
 
