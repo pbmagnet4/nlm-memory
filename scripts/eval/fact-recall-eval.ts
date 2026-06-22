@@ -49,6 +49,7 @@ interface Args {
   jsonOut: string | null;
   gold: GoldMode;
   refresh: boolean;
+  precision: boolean;
 }
 
 interface GoldQuery {
@@ -72,6 +73,7 @@ function parseArgs(argv: string[]): Args {
     jsonOut: get("json") ?? null,
     gold: (get("gold") ?? "topic") as GoldMode,
     refresh: argv.includes("--refresh"),
+    precision: argv.includes("--precision"),
   };
 }
 
@@ -195,6 +197,83 @@ function pct(num: number, denom: number): number {
   return denom === 0 ? 0 : Math.round((num / denom) * 1000) / 10;
 }
 
+interface PrecisionMetrics {
+  mode: RecallMode;
+  queries: number;
+  distractors: number;
+  resultsTotal: number;
+  leaks: number;
+  supersededLeaks: number;
+  retiredLeaks: number;
+  precisionAtK: number;
+}
+
+/**
+ * Precision-under-distractor arm. Injects superseded AND retired copies of each
+ * gold fact (the retired copies keep supersededBy null and an intact embedding,
+ * which is the exact leak the in-memory makeFilterPredicate must catch — retire()
+ * normally drops the embedding, so this is a deliberately adversarial state).
+ * Runs recall over the polluted corpus and reports precision@k = clean / total.
+ * A leak (any distractor in the results) drives precision below 1.0.
+ */
+async function precisionArm(
+  storage: { facts: { insertMany(f: ReadonlyArray<Fact>): Promise<void>; upsertEmbedding(id: string, v: Float32Array): Promise<void> }; sessions: { rawDb(): { prepare(sql: string): { run(...args: unknown[]): void } } } },
+  factRecall: FactRecallService,
+  embedder: OllamaClient,
+  gold: ReadonlyArray<Fact>,
+  modes: ReadonlyArray<RecallMode>,
+  probe: number,
+): Promise<{ metrics: PrecisionMetrics[] }> {
+  const distractors: Fact[] = [];
+  const now = new Date().toISOString();
+  for (const f of gold) {
+    const superseded: Fact = { ...f, id: `${f.id}__dx_sup`, value: `${f.value} (stale)`, supersededBy: f.id };
+    const retired: Fact = { ...f, id: `${f.id}__dx_ret`, value: `${f.value} (retired)`, supersededBy: null };
+    distractors.push(superseded, retired);
+  }
+  await storage.facts.insertMany(distractors);
+
+  const db = storage.sessions.rawDb();
+  for (const d of distractors) {
+    if (d.id.endsWith("__dx_ret")) {
+      db.prepare("UPDATE facts SET retired_at = ? WHERE id = ?").run(now, d.id);
+    }
+    const emb = await embedder.embed(`${d.subject} ${d.predicate} ${d.value}`, "passage");
+    await storage.facts.upsertEmbedding(d.id, emb.vector);
+  }
+
+  const metrics: PrecisionMetrics[] = [];
+  for (const mode of modes) {
+    let resultsTotal = 0;
+    let supersededLeaks = 0;
+    let retiredLeaks = 0;
+    for (const f of gold) {
+      const res = await factRecall.search({ query: `${f.subject} ${f.predicate}`, mode, limit: probe });
+      for (const h of res.results) {
+        resultsTotal += 1;
+        if (h.id.endsWith("__dx_sup")) supersededLeaks += 1;
+        else if (h.id.endsWith("__dx_ret")) retiredLeaks += 1;
+      }
+    }
+    const leaks = supersededLeaks + retiredLeaks;
+    const m: PrecisionMetrics = {
+      mode,
+      queries: gold.length,
+      distractors: distractors.length,
+      resultsTotal,
+      leaks,
+      supersededLeaks,
+      retiredLeaks,
+      precisionAtK: resultsTotal === 0 ? 0 : Math.round(((resultsTotal - leaks) / resultsTotal) * 1000) / 10,
+    };
+    metrics.push(m);
+    console.error(
+      `  ${mode.padEnd(9)} precision@${probe} ${String(m.precisionAtK).padStart(5)}%  leaks ${leaks}/${resultsTotal} (superseded ${supersededLeaks}, retired ${retiredLeaks})  (${distractors.length} distractors injected)`,
+    );
+  }
+  return { metrics };
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   console.error(`fact-recall-eval: corpus=${args.dbPath}`);
@@ -260,13 +339,30 @@ async function main(): Promise<void> {
     );
   }
 
+  let precisionMetrics: PrecisionMetrics[] | undefined;
+  if (args.precision) {
+    console.error("fact-recall-eval: precision-under-distractor arm");
+    ({ metrics: precisionMetrics } = await precisionArm(
+      storage,
+      factRecall,
+      embedder,
+      gold,
+      args.modes,
+      args.probe,
+    ));
+  }
+
   await storage.close();
   sb.cleanup();
 
   if (args.jsonOut) {
     writeFileSync(
       args.jsonOut,
-      JSON.stringify({ corpus: args.dbPath, poolSize: pool.length, args, metrics: allMetrics }, null, 2),
+      JSON.stringify(
+        { corpus: args.dbPath, poolSize: pool.length, args, metrics: allMetrics, precision: precisionMetrics ?? null },
+        null,
+        2,
+      ),
     );
     console.error(`fact-recall-eval: wrote ${args.jsonOut}`);
   }

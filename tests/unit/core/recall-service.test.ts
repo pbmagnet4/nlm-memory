@@ -183,7 +183,7 @@ describe("RecallService.search", () => {
     expect(result.results[0]?.matchScore).toBe(1);
   });
 
-  it("hybrid mode uses RRF fusion — rank 1 in both legs scores 2/(60+1)", async () => {
+  it("hybrid keyword-primary banding: a keyword hit lands in the upper band [0.5, 1.0]", async () => {
     const store = new InMemoryStore(
       corpus,
       [{ sessionId: "b", distance: 0 }],
@@ -193,30 +193,36 @@ describe("RecallService.search", () => {
     const result = await svc.search({ query: "pgvector", mode: "hybrid" });
     const top = result.results[0];
     expect(top?.id).toBe("b");
-    // RRF with both legs at rank 1, k=60: 1/61 + 1/61 = 2/61 ≈ 0.0328
-    expect(top?.matchScore).toBeCloseTo(2 / 61, 4);
+    // Sole keyword hit normalizes to 1.0 → upper-band score 0.5 + 0.5 = 1.0
+    // (recency multiplier ≈ 1.0 for now-dated fixtures).
+    expect(top?.matchScore).toBeCloseTo(1, 2);
     // Informational normalized scores preserved for UI display.
     expect(top?.keywordScore).toBe(1);
     expect(top?.semanticScore).toBe(1);
   });
 
-  it("hybrid RRF: a session in only one leg scores half as much as a session in both legs at the same rank", async () => {
-    // Session "a" appears in keyword leg at rank 1.
-    // Session "b" appears in BOTH legs at rank 1.
+  it("hybrid keyword-primary banding: the keyword winner outranks a weaker hit also seen by semantic", async () => {
+    // Session "a" wins the keyword leg outright (raw score 100); session "b"
+    // appears in BOTH legs but with a tiny keyword score. Keyword-primary
+    // banding ranks "a" first — the inverse of the old RRF fusion, which let
+    // co-occurrence demote a strong keyword winner.
     const store = new InMemoryStore(
       corpus,
       [{ sessionId: "b", distance: 0 }],
       [
-        { sessionId: "a", score: 100 }, // huge raw score, but only one leg
+        { sessionId: "a", score: 100 }, // huge raw score, keyword only
         { sessionId: "b", score: 1 },   // tiny raw score, but in both legs
       ],
     );
     const svc = new RecallService({ store, llm: new StubEmbedder() });
     const result = await svc.search({ query: "pgvector", mode: "hybrid" });
-    expect(result.results[0]?.id).toBe("b"); // both-legs wins despite tiny kw score
-    expect(result.results[0]?.matchScore).toBeCloseTo(1 / 61 + 1 / 62, 4); // b is rank 1 sem, rank 2 kw
-    expect(result.results[1]?.id).toBe("a");
-    expect(result.results[1]?.matchScore).toBeCloseTo(1 / 61, 4); // a is rank 1 kw only
+    expect(result.results[0]?.id).toBe("a"); // keyword winner leads
+    expect(result.results[0]?.matchScore).toBeCloseTo(1, 2); // norm 1.0 → 0.5 + 0.5
+    expect(result.results[1]?.id).toBe("b");
+    // "b" is a keyword hit too, so it stays in the upper band (>= 0.5) but well
+    // below "a" because its normalized keyword score is ~0.01.
+    expect(result.results[1]?.matchScore).toBeGreaterThanOrEqual(0.5);
+    expect(result.results[1]?.matchScore).toBeLessThan(result.results[0]!.matchScore);
   });
 
   it("clamps limit to MAX_LIMIT (100) and at least 1", async () => {

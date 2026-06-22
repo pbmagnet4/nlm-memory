@@ -45,7 +45,15 @@ const DEFAULT_INTERVAL_MS = 30 * 60 * 1000; // 30 min, matches Python default
 const DEFAULT_CLASSIFY_TIMEOUT_MS = 120_000;
 const DEFAULT_CONFIDENCE_FLOOR = 0.3;
 const DEFAULT_IDLE_MINUTES = 15;
+const DEFAULT_EXEMPLAR_MAX_PER_BUCKET = 50;
 const BODY_CAP = 200_000;
+
+function exemplarMaxPerBucket(): number {
+  const raw = process.env["NLM_EXEMPLAR_MAX_PER_BUCKET"];
+  if (raw === undefined) return DEFAULT_EXEMPLAR_MAX_PER_BUCKET;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_EXEMPLAR_MAX_PER_BUCKET;
+}
 const INTEGRITY_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24h
 
 interface IntegrityCache {
@@ -316,6 +324,20 @@ export class ScanScheduler {
             `[scheduler] storage error for ${chunk.id}: ${e instanceof Error ? e.message : String(e)}`,
           );
         }
+      }
+    }
+
+    if (
+      process.env["NLM_CODE_EXEMPLARS_ENABLED"] === "1" &&
+      this.opts.exemplarStore &&
+      this.opts.installScope
+    ) {
+      try {
+        await this.opts.exemplarStore.applyBucketCap(this.opts.installScope, exemplarMaxPerBucket());
+      } catch (e) {
+        this.opts.logger(
+          `[scheduler] exemplar bucket cap failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
       }
     }
 

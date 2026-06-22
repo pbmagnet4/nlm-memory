@@ -18,12 +18,17 @@ import { formatPointerBlock, type PointerExemplar, type PointerFact } from "@cor
 import { selectHits, type RecallHitInput } from "@core/hook/select.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
 import { recallOverHttp } from "./recall-over-http.js";
+import { parseScoreFloor } from "./score-floor.js";
 
 // Keyword recall returns raw BM25 scores (unbounded, not the 0..1 hybrid
 // scale). FTS5 MATCH already gates relevance — only lexically-matching
-// sessions come back — so the floor starts at 0 and a real cutoff is
-// calibrated from the shadow log's score distribution.
-const SCORE_THRESHOLD = 0;
+// sessions come back — so the default floor is 0. NLM_RECALL_SCORE_FLOOR lets
+// an operator raise it once the shadow log's surfaced-vs-cited score
+// distribution (nlm precision --verbose) justifies a real cutoff.
+// parseScoreFloor guards against a bad env value: a non-numeric / non-finite /
+// negative input falls back to 0 instead of silently deny-all'ing recall
+// (matchScore >= NaN is always false in select.ts).
+const SCORE_THRESHOLD = parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR"]);
 const PER_FIRE_CAP = 3;
 const PER_CONVERSATION_CAP = 10;
 const PROMPT_PREVIEW_CHARS = 200;

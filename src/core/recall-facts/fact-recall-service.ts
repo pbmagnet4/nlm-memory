@@ -63,7 +63,7 @@ export class FactRecallService {
   constructor(private readonly deps: FactRecallServiceDeps) {}
 
   async search(input: FactRecallQuery): Promise<FactRecallResult> {
-    const mode: RecallMode = input.mode ?? "keyword";
+    const mode: RecallMode = input.mode ?? "hybrid";
     const limit = clampLimit(input.limit);
     const subject = input.subject ?? null;
     const predicate = input.predicate ?? null;
@@ -245,6 +245,11 @@ function makeFilterPredicate(
   filter: Parameters<FactStore["listForRecall"]>[0],
 ): (fact: Fact) => boolean {
   return (f: Fact): boolean => {
+    // Defense-in-depth: a retired fact carries retiredAt and its supersededBy
+    // may be null, so the supersededBy gate below does not catch it. The SQL
+    // pre-filter already excludes retired_at IS NOT NULL; this guards semantic
+    // neighbours resolved outside that window from leaking a retired fact.
+    if (f.retiredAt != null) return false;
     if (filter.includeSuperseded !== true && f.supersededBy !== null) return false;
     if (filter.minConfidence !== undefined && f.confidence < filter.minConfidence) return false;
     if (filter.kind !== undefined && f.kind !== filter.kind) return false;
@@ -253,6 +258,8 @@ function makeFilterPredicate(
     return true;
   };
 }
+
+export { makeFilterPredicate as makeFilterPredicateForTest };
 
 interface KeywordHit {
   readonly fact: Fact;

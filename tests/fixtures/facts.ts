@@ -12,6 +12,7 @@ export function makeFact(overrides: Partial<Fact> = {}): Fact {
     createdAt: "2026-05-19T10:30:00Z",
     supersededBy: null,
     confidence: 0.9,
+    retiredAt: null,
   };
   return { ...base, ...overrides };
 }

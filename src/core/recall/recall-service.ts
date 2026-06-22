@@ -46,12 +46,6 @@ function isFactInjectionEnabled(): boolean {
   if (raw === undefined) return true;
   return raw !== "0" && raw.toLowerCase() !== "false";
 }
-// Reciprocal Rank Fusion constant (Cormack et al. 2009). k=60 is the
-// canonical literature default. RRF combines ranked lists from multiple
-// retrievers by summing 1/(k + rank) per retriever, ignoring raw scores —
-// robust to wildly different score distributions (BM25 unbounded vs cosine
-// in [-1,1]) without requiring normalization.
-const RRF_K = 60;
 const SEMANTIC_OVERFETCH = 3;
 const KEYWORD_OVERFETCH = 3;
 
@@ -307,16 +301,21 @@ interface SemanticHit {
 }
 
 /**
- * Reciprocal Rank Fusion across the keyword + semantic legs.
+ * Keyword-primary hybrid merge (the inverse of the fact lane's semantic-primary
+ * banding).
  *
- * matchScore = Σ 1/(RRF_K + rank_i) for each retriever the session appears in.
- * A session at rank 1 in both retrievers therefore scores ~0.0328 (the max
- * possible with two retrievers at k=60); a session at rank 1 in one
- * retriever and absent from the other scores ~0.0164.
+ * For sessions the dominant quality signal is FTS5 BM25: only lexically-matching
+ * sessions come back, and the keyword winner is almost always the intended hit.
+ * RRF fused by rank let strong semantic-only neighbours demote keyword winners
+ * at scale (hybrid 65% vs keyword 90% R@5 on the production decision-query set),
+ * so this bands instead of fuses: keyword hits occupy the upper band [0.5, 1.0]
+ * ranked by normalized BM25; semantic-only hits — sessions keyword never
+ * surfaced — backfill the lower band [0, 0.5).
  *
  * keywordScore and semanticScore stay populated as min-max normalized
- * informational values so the UI can show "how strong was each leg" —
- * they're no longer used to compute matchScore.
+ * informational values so the UI can show "how strong was each leg." When
+ * semantic is unavailable (Ollama down) semHits is empty and this degrades to
+ * pure keyword, preserving the graceful-degradation contract.
  */
 function mergeHybrid(
   kwHits: ReadonlyArray<KeywordHit>,
@@ -324,38 +323,36 @@ function mergeHybrid(
 ): ReadonlyArray<RecallHit> {
   const maxKw = Math.max(1, ...kwHits.map((h) => h.score));
   const maxSem = Math.max(1, ...semHits.map((h) => h.similarity));
-
-  const kwRank = new Map<string, number>();
-  kwHits.forEach((h, i) => kwRank.set(h.session.id, i + 1));
-  const semRank = new Map<string, number>();
-  semHits.forEach((h, i) => semRank.set(h.session.id, i + 1));
-
-  const kwMap = new Map<string, KeywordHit>(kwHits.map((h) => [h.session.id, h]));
   const semMap = new Map<string, SemanticHit>(semHits.map((h) => [h.session.id, h]));
-  const allIds = new Set<string>([...kwMap.keys(), ...semMap.keys()]);
 
   const rows: RecallHit[] = [];
-  for (const id of allIds) {
-    const kw = kwMap.get(id);
-    const sem = semMap.get(id);
-    const session = (kw ?? sem)!.session;
-    const kRank = kwRank.get(id);
-    const sRank = semRank.get(id);
-    const rrf =
-      (kRank !== undefined ? 1 / (RRF_K + kRank) : 0) +
-      (sRank !== undefined ? 1 / (RRF_K + sRank) : 0);
-    const matchedIn = uniqueFields(kw?.matchedIn ?? [], sem ? (["semantic"] as MatchField[]) : []);
+  const seen = new Set<string>();
+  for (const kw of kwHits) {
+    const sem = semMap.get(kw.session.id);
     rows.push({
-      ...sessionHitFields(session),
-      matchScore: round4(rrf),
-      matchedIn,
-      keywordScore: kw ? round4(kw.score / maxKw) : 0,
+      ...sessionHitFields(kw.session),
+      matchScore: round4(0.5 + 0.5 * (kw.score / maxKw)),
+      matchedIn: uniqueFields(kw.matchedIn, sem ? (["semantic"] as MatchField[]) : []),
+      keywordScore: round4(kw.score / maxKw),
       semanticScore: sem ? round4(sem.similarity / maxSem) : 0,
+    });
+    seen.add(kw.session.id);
+  }
+  for (const sem of semHits) {
+    if (seen.has(sem.session.id)) continue;
+    rows.push({
+      ...sessionHitFields(sem.session),
+      matchScore: round4(0.5 * (sem.similarity / maxSem)),
+      matchedIn: ["semantic"] as MatchField[],
+      keywordScore: 0,
+      semanticScore: round4(sem.similarity / maxSem),
     });
   }
   rows.sort((a, b) => b.matchScore - a.matchScore);
   return rows;
 }
+
+export { mergeHybrid as mergeHybridForTest };
 
 /**
  * Force-include the keyword-leg rank-1 session into the merged top-`limit`

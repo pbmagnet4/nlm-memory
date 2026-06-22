@@ -62,18 +62,24 @@ Tooling for this is on the roadmap (a `nlm eval` subcommand that takes a JSON qu
 
 ## Why keyword scores so high
 
-The scoring function (`src/core/recall/match-fields.ts`) weights matches by field:
+Production session keyword retrieval is **FTS5 BM25**, not a hand-weighted field scorer. Three BM25 legs run over the indexed text and are fused into one ranking:
 
-| Field | Weight | Why |
+| Leg | Source | Role |
 |---|---|---|
-| Entity exact | ×4 | Strongest signal — a named entity (a client name, a tool, a project) matching a session's entity list almost always means it's relevant |
-| Label | ×3 | The classifier-generated label is the densest representation of what the session was about |
-| Decision | ×2 | Decisions are the load-bearing markers people search for |
-| Open question | ×2 | "Is X still open" queries hit here |
-| Summary | ×1 | Catch-all |
-| Phrase bonus | +5 | Multi-token match in order gets a bonus |
+| Entity | classifier-produced entity tags | Strongest signal: a named entity matching a session's entity set almost always means it is relevant |
+| Label | classifier-produced label | The densest single representation of what the session was about |
+| Body | session summary and transcript text | Catch-all recall for tokens the structured fields miss |
 
-The classifier produces high-quality labels and entity tags from the session transcript, which is what makes keyword-only retrieval beat what naive substring matching would give. The classifier IS the moat for keyword performance, even though the retrieval algorithm itself doesn't use the classifier at search time.
+On top of the fused BM25 ranking, two production refinements apply:
+
+- **Metadata tiebreaker (#308)** (`src/core/recall/metadata-tiebreaker.ts`): a multiplicative, capped boost from decision-token and entity overlap. It can lift a session past a marginally-higher BM25 neighbour but never past a genuinely stronger hit. This is what rescues the relevant-but-just-below-rank-5 sessions that pure BM25 misses.
+- **`forceIncludeKeywordTop`** (Mode-A mitigation in `src/core/recall/recall-service.ts`): guarantees the keyword rank-1 hit is surfaced even when a later fusion stage would otherwise drop it.
+
+Field-level attribution in the `matchedIn` badge is recovered after the fact by the pure helper `src/core/recall/match-fields.ts`; it does not score the row. (The `×4` entity / `×3` label / `+5` phrase weights still live in `scripts/longmemeval/scorer.ts`, which is the eval-harness scorer, not the production retrieval path.)
+
+**Verified numbers** (operator production decision-query set): keyword R@5 rises from **72.5% to 90%** once the metadata tiebreaker is enabled. Hybrid (RRF fusion) lands at **65%** on the same set: RRF regresses at scale, which is why session recall defaults to keyword.
+
+The classifier produces high-quality labels and entity tags from the session transcript, which is what makes keyword-only retrieval beat what naive substring matching would give. The classifier IS the moat for keyword performance, even though the BM25 retrieval itself doesn't call the classifier at search time.
 
 ## Where this number can break
 
@@ -86,7 +92,7 @@ The classifier produces high-quality labels and entity tags from the session tra
 
 The LongMemEval-S harness now supports **classifier-in-the-loop** evaluation: pre-classify each haystack session with a configurable LLM (local Ollama or DeepSeek cloud), insert the resulting label/entities/decisions into the canonical store, then score retrieval against the question. This is how the 97.2% personal-corpus number was produced — it lets you reproduce a comparable measurement against the public LongMemEval-S dataset and *attribute the contribution of classifier choice* to the headline R@5.
 
-**Why this matters.** The retrieval algorithm scores entity-exact matches at ×4 and labels at ×3 — both populated by the classifier. A weaker classifier produces sparser entity tags and shorter labels, which directly limits how high keyword R@5 can climb. Without classifier-in-the-loop measurement, the harness measures only the floor (body-only); with it, you measure the actual install path users will run.
+**Why this matters.** The BM25 entity and label legs are both populated by the classifier. A weaker classifier produces sparser entity tags and shorter labels, which directly limits how high keyword R@5 can climb. Without classifier-in-the-loop measurement, the harness measures only the floor (body-only); with it, you measure the actual install path users will run.
 
 **Usage** (`npm run` aliases, or direct `tsx` / compiled `node` if you prefer):
 

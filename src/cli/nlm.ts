@@ -429,6 +429,32 @@ program
   });
 
 program
+  .command("eval")
+  .description("Run R@k/MRR over an operator-supplied query set (queries never bundled)")
+  .requiredOption("--queries <file>", "JSON file: [{ query, expectedIds }]")
+  .option("--mode <mode>", "keyword | semantic | hybrid", "keyword")
+  .option("--json", "emit JSON instead of a table")
+  .action(async (opts) => {
+    const { readFile } = await import("node:fs/promises");
+    const queries = JSON.parse(await readFile(opts.queries, "utf8"));
+    const { runEval } = await import("../core/eval/run-eval.js");
+    const { storage, recall } = await buildStack();
+    try {
+      const report = await runEval({ recall }, queries, { mode: opts.mode, k: 5 });
+      if (opts.json) {
+        process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+        return;
+      }
+      process.stdout.write(
+        `mode=${report.mode} n=${report.n} R@1=${(report.rAt1 * 100).toFixed(1)}% ` +
+          `R@5=${(report.rAt5 * 100).toFixed(1)}% MRR=${report.mrr.toFixed(3)}\n`,
+      );
+    } finally {
+      await storage.close();
+    }
+  });
+
+program
   .command("recall-code")
   .description("Semantic search over code exemplars (requires NLM_CODE_EXEMPLARS_ENABLED=1)")
   .argument("<query>", "natural-language description of the task you are about to implement")
@@ -578,6 +604,51 @@ program
         const p = (row.precision * 100).toFixed(0).padStart(3);
         console.log(`  ${p}%  surfaced=${row.surfaced}  cited=${row.cited}  ${row.conversationId}`);
       }
+    }
+  });
+
+program
+  .command("metrics")
+  .description("Read-only retrieval-quality metrics")
+  .argument("<name>", "metric name: re-derivation")
+  .option("--window <days>", "lookback window in days", (v) => Number.parseInt(v, 10), 90)
+  .option("--json", "emit JSON instead of human-readable output")
+  .action(async (name, opts) => {
+    if (name !== "re-derivation") {
+      console.error(`unknown metric '${name}' (available: re-derivation)`);
+      process.exitCode = 1;
+      return;
+    }
+    const { computeReDerivationRate, sqliteReDerivationDeps } = await import(
+      "../core/metrics/re-derivation.js"
+    );
+    const { storage, store } = await buildStack();
+    try {
+      if (typeof (store as { rawDb?: unknown }).rawDb !== "function") {
+        console.error("re-derivation metric requires the SQLite backend");
+        process.exitCode = 1;
+        return;
+      }
+      const deps = sqliteReDerivationDeps(
+        (store as unknown as { rawDb(): unknown }).rawDb() as never,
+      );
+      const report = await computeReDerivationRate(deps, opts.window);
+      if (opts.json) {
+        process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+        return;
+      }
+      const pct = (report.rate * 100).toFixed(1);
+      console.log(
+        `re_derivation_rate (last ${opts.window} day(s)): ${pct}%  ` +
+          `(${report.pairs.length} re-derived pair${report.pairs.length === 1 ? "" : "s"})`,
+      );
+      for (const p of report.pairs) {
+        console.log(
+          `  ${p.a} <-> ${p.b}  jaccard=${p.jaccard}  shared=${p.sharedEntities.join(", ")}`,
+        );
+      }
+    } finally {
+      await storage.close();
     }
   });
 

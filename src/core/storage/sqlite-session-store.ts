@@ -133,6 +133,41 @@ export interface BackfillCandidate {
   readonly body: string | null;
 }
 
+/**
+ * Find the most recent prior session whose entity-set is identical to the new
+ * session's, so a `continues` edge can link the two. "Identical" means same set
+ * of distinct entity canonicals (order-insensitive). Used only when the new
+ * session is not superseding/replacing anything — a continuation extends a prior
+ * topic rather than overturning it. Returns null when there is no such prior
+ * (no entities, or no exact-set match), which leaves the pair unlinked and thus
+ * eligible to surface in the re_derivation_rate metric.
+ */
+function findContinuesPredecessor(
+  db: Database.Database,
+  newId: string,
+  rawEntities: ReadonlyArray<string>,
+): string | null {
+  const entities = [...new Set(rawEntities.map((e) => e.trim()).filter(Boolean))];
+  if (entities.length === 0) return null;
+  const placeholders = entities.map(() => "?").join(",");
+  const row = db
+    .prepare<unknown[], { id: string }>(
+      `SELECT s.id AS id
+         FROM sessions s
+         JOIN session_entities se ON se.session_id = s.id
+        WHERE s.id != ?
+          AND se.entity_canonical IN (${placeholders})
+        GROUP BY s.id
+       HAVING COUNT(DISTINCT se.entity_canonical) = ?
+          AND COUNT(DISTINCT se.entity_canonical)
+            = (SELECT COUNT(*) FROM session_entities x WHERE x.session_id = s.id)
+        ORDER BY s.started_at DESC, s.id DESC
+        LIMIT 1`,
+    )
+    .get(newId, ...entities, entities.length);
+  return row?.id ?? null;
+}
+
 export class SqliteSessionStore implements SessionStore {
   private readonly db: Database.Database;
 
@@ -310,6 +345,14 @@ export class SqliteSessionStore implements SessionStore {
         db.prepare(
           "UPDATE sessions SET status = ?, updated_at = datetime('now') WHERE id = ?",
         ).run(predecessorStatus, supersedes.priorSessionId);
+      } else {
+        const priorId = findContinuesPredecessor(db, record.id, record.entities);
+        if (priorId !== null) {
+          db.prepare(
+            `INSERT OR IGNORE INTO session_edges (from_session, to_session, kind)
+             VALUES (?, ?, 'continues')`,
+          ).run(record.id, priorId);
+        }
       }
 
       // Facts ingest is part of the session txn — either both commit or both
