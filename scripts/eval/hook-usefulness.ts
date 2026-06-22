@@ -28,6 +28,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { classifyPrompt } from "../../src/core/hook/gate.js";
+import { topicalWordCount } from "../../src/hook/recent-context.js";
+
+type Band = "all" | "thin" | "specific";
 
 interface Args {
   limit: number;
@@ -36,6 +39,7 @@ interface Args {
   ollamaUrl: string;
   verbose: boolean;
   json: string | null;
+  band: Band;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -50,6 +54,7 @@ function parseArgs(argv: string[]): Args {
     ollamaUrl: get("ollama") ?? process.env["OLLAMA_URL"] ?? "http://localhost:11434",
     verbose: argv.includes("--verbose"),
     json: get("json") ?? null,
+    band: (get("band") ?? "all") as Band,
   };
 }
 
@@ -60,7 +65,7 @@ interface Fire {
   ts: string;
 }
 
-function readFires(days: number): Fire[] {
+function readFires(days: number, band: Band = "all"): Fire[] {
   const path = join(homedir(), ".nlm", "hook-log.jsonl");
   const cutoff = Date.now() - days * 86_400_000;
   const seen = new Set<string>();
@@ -83,6 +88,13 @@ function readFires(days: number): Fire[] {
     // Measure usefulness on fires that would STILL fire under the current gate —
     // historical entries predate the content gate, so re-apply it here.
     if (classifyPrompt(prompt) !== "evaluate") continue;
+    // Optional topical-word band: "thin" (<3, context-recall's target) vs
+    // "specific" (>=3, never augmented) — to measure each band's recall separately.
+    if (band !== "all") {
+      const topical = topicalWordCount(prompt);
+      if (band === "thin" && topical >= 3) continue;
+      if (band === "specific" && topical < 3) continue;
+    }
     const key = `${cid}:${prompt.slice(0, 40)}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -247,7 +259,7 @@ async function main(): Promise<void> {
   );
   const cited = citedSet(args.days);
 
-  const fires = evenStride(readFires(args.days), args.limit * 2);
+  const fires = evenStride(readFires(args.days, args.band), args.limit * 2);
   const counts = { used: 0, partial: 0, unused: 0 };
   let scored = 0;
   let citedHits = 0;
