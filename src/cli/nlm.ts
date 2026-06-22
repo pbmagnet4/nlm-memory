@@ -45,6 +45,7 @@ import { createApp } from "../http/app.js";
 import { createMcpServer } from "../mcp/server.js";
 import { ClassifierBox, type ClassifierProvider } from "../llm/classifier-box.js";
 import { DeepSeekClient } from "../llm/deepseek-client.js";
+import { classifierEgressNotice } from "../llm/classifier-egress.js";
 import { OllamaClient } from "../llm/ollama-client.js";
 import { OllamaCodeEmbedder } from "../llm/ollama-code-embedder.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
@@ -290,6 +291,10 @@ program
       }
       console.error(`  db:     ${dbPath()}`);
       console.error(`  ollama: ${ollamaUrl()}`);
+      const classifier = (process.env["NLM_CLASSIFIER"] ?? "ollama").toLowerCase();
+      const egress = classifierEgressNotice(classifier);
+      console.error(`  classify: ${classifier} [${egress ? "cloud egress" : "local"}]`);
+      if (egress) console.error(`  notice: ${egress}`);
       // Passive update notice. Fire-and-forget so a slow npm registry
       // round-trip can't delay the startup banner; surfaced only when
       // strictly behind. See src/core/update-check/check.ts for the
