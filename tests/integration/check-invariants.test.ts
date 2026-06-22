@@ -224,6 +224,21 @@ describe("check-invariants (SQLite)", () => {
       expect(violations.find((v) => v.id === "I5a")).toBeUndefined();
       expect(violations.find((v) => v.id === "I5b")).toBeUndefined();
     });
+
+    it("does not flag a duplicate that has been retired (retired_at set)", () => {
+      // supersede_fact retires a fact by setting retired_at while leaving
+      // superseded_by NULL. A retired fact is recall-ineligible (fact-recall
+      // excludes it), so it must not count as an active duplicate — otherwise
+      // retiring one of two duplicates can never clear the I5a violation.
+      store.insertSessionForTest(makeSession({ id: "s1" }));
+      const db = store.rawDb();
+      db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+        VALUES (?, 'attribute', 'x', 'color', 'red', 's1', 1.0)`).run("f1");
+      db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence, retired_at)
+        VALUES (?, 'attribute', 'x', 'color', 'blue', 's1', 1.0, '2026-06-22T00:00:00Z')`).run("f2");
+      const violations = runChecksOnSqlite(store.rawDb());
+      expect(violations.find((v) => v.id === "I5a")).toBeUndefined();
+    });
   });
 
   describe("I6 — adapter_state orphan references", () => {
