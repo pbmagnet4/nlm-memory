@@ -320,6 +320,12 @@ export class SqliteFactStore implements FactStore {
       this.db
         .prepare("UPDATE facts SET superseded_by = ? WHERE id = ?")
         .run(newId, oldId);
+      // A superseded fact is recall-ineligible, so its embedding must leave the
+      // ANN index (matching retire()'s behavior) — otherwise it consumes
+      // k-nearest slots and silently reduces effective recall (NLM #351).
+      if (newId !== null) {
+        this.db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ?").run(oldId);
+      }
     });
     txn();
   }
@@ -342,7 +348,14 @@ export class SqliteFactStore implements FactStore {
     sessionId: string,
     facts: ReadonlyArray<Fact>,
   ): Promise<void> {
+    // Re-ingesting a session replaces its facts; drop the old facts' embeddings
+    // too, or they orphan in the ANN index as ghosts (NLM #351).
+    const stale = this.db
+      .prepare<[string], { id: string }>("SELECT id FROM facts WHERE source_session_id = ?")
+      .all(sessionId);
     this.db.prepare("DELETE FROM facts WHERE source_session_id = ?").run(sessionId);
+    const delStaleEmb = this.db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ?");
+    for (const row of stale) delStaleEmb.run(row.id);
     if (facts.length === 0) return;
 
     const insertStmt = this.insertStmt();
@@ -352,12 +365,21 @@ export class SqliteFactStore implements FactStore {
     // new fact, not just the single most-recent prior. A single-prior loop
     // cannot restore the invariant once two priors are already active and
     // leaves the duplicate live forever. See NLM #301.
+    const findSupersededStmt = this.db.prepare<[string, string, string], { id: string }>(
+      `SELECT id FROM facts WHERE subject = ? AND predicate = ? AND superseded_by IS NULL AND id != ?`,
+    );
     const markSupersededStmt = this.db.prepare(
       `UPDATE facts SET superseded_by = ?
        WHERE subject = ? AND predicate = ? AND superseded_by IS NULL AND id != ?`,
     );
+    const delEmbeddingStmt = this.db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ?");
     for (const f of facts) {
+      // Capture which facts this collapse supersedes BEFORE the update, then
+      // drop their embeddings — a superseded fact must not linger in the ANN
+      // index (NLM #351). Same reason markSuperseded/retire delete embeddings.
+      const collapsed = findSupersededStmt.all(f.subject, f.predicate, f.id);
       markSupersededStmt.run(f.id, f.subject, f.predicate, f.id);
+      for (const row of collapsed) delEmbeddingStmt.run(row.id);
     }
   }
 

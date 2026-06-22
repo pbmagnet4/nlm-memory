@@ -182,6 +182,11 @@ export class PgFactStore implements FactStore {
       await client.query(
         "UPDATE facts SET superseded_by = $1 WHERE id = $2", [newId, oldId],
       );
+      // Superseded facts leave the ANN index (parity with SQLite + retire); a
+      // lingering embedding silently reduces effective recall (NLM #351).
+      if (newId !== null) {
+        await client.query("DELETE FROM fact_embeddings WHERE fact_id = $1", [oldId]);
+      }
       await client.query("COMMIT");
     } catch (err) {
       await client.query("ROLLBACK");
