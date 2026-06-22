@@ -116,6 +116,36 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore.insertSession factSink (PG)", () =
     expect(current?.id).toBe("fact_a");
   });
 
+  it("wires a 'continues' edge to a prior session with the same entity-set", async () => {
+    await storage.sessions.insertSession(
+      record({ id: "cont_a", startedAt: "2026-05-19T10:00:00Z", entities: ["PolySignal"] }),
+    );
+    await storage.sessions.insertSession(
+      record({ id: "cont_b", startedAt: "2026-05-20T10:00:00Z", entities: ["PolySignal"] }),
+    );
+
+    const edges = await pool.query<{ from_session: string; to_session: string; kind: string }>(
+      "SELECT from_session, to_session, kind FROM session_edges WHERE kind = 'continues'",
+    );
+    expect(edges.rows).toHaveLength(1);
+    expect(edges.rows[0]!.from_session).toBe("cont_b");
+    expect(edges.rows[0]!.to_session).toBe("cont_a");
+  });
+
+  it("does not wire a 'continues' edge when entity-sets differ", async () => {
+    await storage.sessions.insertSession(
+      record({ id: "diff_a", startedAt: "2026-05-19T10:00:00Z", entities: ["PolySignal"] }),
+    );
+    await storage.sessions.insertSession(
+      record({ id: "diff_b", startedAt: "2026-05-20T10:00:00Z", entities: ["OtherTopic"] }),
+    );
+
+    const edges = await pool.query<{ c: string }>(
+      "SELECT COUNT(*) AS c FROM session_edges WHERE kind = 'continues'",
+    );
+    expect(Number(edges.rows[0]!.c)).toBe(0);
+  });
+
   it("re-ingest with a new value supersedes the prior fact", async () => {
     await storage.sessions.insertSession(
       record({ id: "sess_1" }), null, null,

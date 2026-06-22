@@ -13,7 +13,7 @@
 - **No code before sign-off applies per task.** This plan is approved for build; still commit per-task and keep each task independently reviewable.
 - **No schema migrations in this plan.** All four steps are T1. Any migration is out of scope (deferred T2 steps 5-8).
 - **Defaults only for step 1.** Any caller passing an explicit `mode=` must be unaffected.
-- **PUBLIC repo.** No home paths (`/Users/...`, `~/.nlm`, `~/.cache/...`, `~/Documents/nlm-private-bench`), no client/property names (TX Tax, GOAT, Tella, Qoverage), no infra names/IPs/hostnames in committed code, tests, fixtures, or docs. The operator's private benchmark corpus is referenced generically and never committed.
+- **PUBLIC repo.** No home/user paths, no client or property names, no infra names/IPs/hostnames in committed code, tests, fixtures, or docs. The operator's private benchmark corpus is referenced generically and never committed.
 - **No em dashes, no emojis** in any user-facing content.
 - **TDD.** Failing test first, minimal implementation, green, commit.
 - **Run the full suite** (`npm test`) green before each commit; `npm run typecheck` clean.

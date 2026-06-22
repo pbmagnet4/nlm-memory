@@ -313,6 +313,87 @@ describe("ScanScheduler.tick", () => {
     expect(edges.some((e) => e.kind === "replaces" && e.to_session === priorSessionId)).toBe(true);
   });
 
+  it("wires a 'continues' edge to a prior session that shares the same entity-set", async () => {
+    // Two distinct transcript files in two projects. The stub classifier tags
+    // both with the same entity ("NLM"), so the second ingest (a genuinely new
+    // session, not a re-parse) continues the prior one rather than superseding it.
+    mkdirSync(join(projects, "project_b"), { recursive: true });
+    const second = join(projects, "project_b", "fixture.jsonl");
+    const lines = [
+      JSON.stringify({ type: "summary", summary: { sessionId: "second-session-uuid" } }),
+      JSON.stringify({ type: "user", message: { content: "follow-up work" }, timestamp: "2026-05-20T10:00:00Z" }),
+      JSON.stringify({ type: "assistant", message: { content: "ack" }, timestamp: "2026-05-20T10:01:00Z" }),
+    ].join("\n") + "\n";
+    writeFileSync(second, lines, "utf8");
+    ageFiles(projects, 60 * 60 * 1000);
+
+    const adapter = new ClaudeCodeAdapter({ projectsPath: projects, idleMinutes: 15 });
+    const classifier = new StubClassifier();
+    const scheduler = new ScanScheduler({
+      store, adapters: [adapter], classifier, embedder: null, logger: () => {},
+    });
+    const report = await scheduler.tick();
+    expect(report.inserted).toBe(2);
+
+    const db = store.rawDb();
+    const ids = db.prepare<[], { id: string; started_at: string }>(
+      "SELECT id, started_at FROM sessions ORDER BY started_at ASC",
+    ).all();
+    expect(ids).toHaveLength(2);
+
+    const continues = db.prepare<[], { from_session: string; to_session: string }>(
+      "SELECT from_session, to_session FROM session_edges WHERE kind = 'continues'",
+    ).all();
+    expect(continues).toHaveLength(1);
+    // Edge points from the later session to the earlier one it continues.
+    expect(continues[0]!.from_session).toBe(ids[1]!.id);
+    expect(continues[0]!.to_session).toBe(ids[0]!.id);
+
+    // No supersedes/replaces edge: these are distinct sessions, not a re-parse.
+    const supersede = db.prepare<[], { c: number }>(
+      "SELECT COUNT(*) AS c FROM session_edges WHERE kind IN ('supersedes', 'replaces')",
+    ).get();
+    expect(supersede?.c).toBe(0);
+    // Both sessions stay closed (a continuation does not retire its predecessor).
+    const statuses = db.prepare<[], { status: string }>("SELECT status FROM sessions").all();
+    expect(statuses.every((s) => s.status === "closed")).toBe(true);
+  });
+
+  it("does not wire a 'continues' edge when entity-sets differ", async () => {
+    mkdirSync(join(projects, "project_b"), { recursive: true });
+    const second = join(projects, "project_b", "fixture.jsonl");
+    const lines = [
+      JSON.stringify({ type: "summary", summary: { sessionId: "other-session-uuid" } }),
+      JSON.stringify({ type: "user", message: { content: "unrelated work" }, timestamp: "2026-05-20T10:00:00Z" }),
+      JSON.stringify({ type: "assistant", message: { content: "ack" }, timestamp: "2026-05-20T10:01:00Z" }),
+    ].join("\n") + "\n";
+    writeFileSync(second, lines, "utf8");
+    ageFiles(projects, 60 * 60 * 1000);
+
+    const adapter = new ClaudeCodeAdapter({ projectsPath: projects, idleMinutes: 15 });
+    // Classify the two files with disjoint entity-sets by path.
+    const classify = async (text: string) => ({
+      label: "L", summary: "S",
+      entities: text.includes("unrelated") ? ["OtherTopic"] : ["NLM"],
+      decisions: [], open: [], confidence: 0.9, facts: [],
+    });
+    const proxy: import("../../src/ports/llm-client.js").LLMClient = {
+      embed: async () => { throw new Error("not used"); },
+      rewriteForRecall: async () => { throw new Error("not used"); },
+      classify,
+    };
+    const scheduler = new ScanScheduler({
+      store, adapters: [adapter], classifier: proxy, embedder: null, logger: () => {},
+    });
+    const report = await scheduler.tick();
+    expect(report.inserted).toBe(2);
+
+    const c = store.rawDb()
+      .prepare<[], { c: number }>("SELECT COUNT(*) AS c FROM session_edges WHERE kind = 'continues'")
+      .get();
+    expect(c?.c).toBe(0);
+  });
+
   it("classifier failure is contained — chunk skipped, ingest continues", async () => {
     const adapter = new ClaudeCodeAdapter({ projectsPath: projects, idleMinutes: 15 });
     const classifier = new StubClassifier(undefined, true);

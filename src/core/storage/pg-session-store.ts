@@ -6,7 +6,7 @@
  * insertSessionForTest() for ingest and test seeding.
  */
 
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import type {
   KeywordNeighbor,
   SearchOptions,
@@ -33,6 +33,37 @@ type SessionRow = {
   transcript_path: string | null;
   body: string | null;
 };
+
+/**
+ * PG mirror of SQLite findContinuesPredecessor: the most recent prior session
+ * whose distinct entity-set is identical to the new session's. Runs on the
+ * ingest transaction's own client. Returns null when there is no entity-set or
+ * no exact-set match, leaving the pair unlinked for the re_derivation_rate metric.
+ */
+async function findContinuesPredecessorPg(
+  client: PoolClient,
+  newId: string,
+  rawEntities: ReadonlyArray<string>,
+): Promise<string | null> {
+  const entities = [...new Set(rawEntities.map((e) => e.trim()).filter(Boolean))];
+  if (entities.length === 0) return null;
+  const placeholders = entities.map((_, i) => `$${i + 2}`).join(",");
+  const res = await client.query<{ id: string }>(
+    `SELECT s.id AS id
+       FROM sessions s
+       JOIN session_entities se ON se.session_id = s.id
+      WHERE s.id != $1
+        AND se.entity_canonical IN (${placeholders})
+      GROUP BY s.id
+     HAVING COUNT(DISTINCT se.entity_canonical) = $${entities.length + 2}
+        AND COUNT(DISTINCT se.entity_canonical)
+          = (SELECT COUNT(*) FROM session_entities x WHERE x.session_id = s.id)
+      ORDER BY s.started_at DESC, s.id DESC
+      LIMIT 1`,
+    [newId, ...entities, entities.length],
+  );
+  return res.rows[0]?.id ?? null;
+}
 
 export class PgSessionStore implements SessionStore {
   // `pool` is public-readonly so PG-native sibling helpers (actions-log Pg
@@ -371,6 +402,15 @@ export class PgSessionStore implements SessionStore {
           "UPDATE sessions SET status = $1, updated_at = NOW() WHERE id = $2",
           [predecessorStatus, supersedes.priorSessionId],
         );
+      } else {
+        const priorId = await findContinuesPredecessorPg(client, record.id, record.entities);
+        if (priorId !== null) {
+          await client.query(
+            `INSERT INTO session_edges (from_session, to_session, kind)
+             VALUES ($1, $2, 'continues') ON CONFLICT DO NOTHING`,
+            [record.id, priorId],
+          );
+        }
       }
 
       // Atomic session+facts ingest. Mirrors the SQLite factSink path

@@ -608,6 +608,51 @@ program
   });
 
 program
+  .command("metrics")
+  .description("Read-only retrieval-quality metrics")
+  .argument("<name>", "metric name: re-derivation")
+  .option("--window <days>", "lookback window in days", (v) => Number.parseInt(v, 10), 90)
+  .option("--json", "emit JSON instead of human-readable output")
+  .action(async (name, opts) => {
+    if (name !== "re-derivation") {
+      console.error(`unknown metric '${name}' (available: re-derivation)`);
+      process.exitCode = 1;
+      return;
+    }
+    const { computeReDerivationRate, sqliteReDerivationDeps } = await import(
+      "../core/metrics/re-derivation.js"
+    );
+    const { storage, store } = await buildStack();
+    try {
+      if (typeof (store as { rawDb?: unknown }).rawDb !== "function") {
+        console.error("re-derivation metric requires the SQLite backend");
+        process.exitCode = 1;
+        return;
+      }
+      const deps = sqliteReDerivationDeps(
+        (store as unknown as { rawDb(): unknown }).rawDb() as never,
+      );
+      const report = await computeReDerivationRate(deps, opts.window);
+      if (opts.json) {
+        process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+        return;
+      }
+      const pct = (report.rate * 100).toFixed(1);
+      console.log(
+        `re_derivation_rate (last ${opts.window} day(s)): ${pct}%  ` +
+          `(${report.pairs.length} re-derived pair${report.pairs.length === 1 ? "" : "s"})`,
+      );
+      for (const p of report.pairs) {
+        console.log(
+          `  ${p.a} <-> ${p.b}  jaccard=${p.jaccard}  shared=${p.sharedEntities.join(", ")}`,
+        );
+      }
+    } finally {
+      await storage.close();
+    }
+  });
+
+program
   .command("supersede")
   .description("Retroactively mark a session as superseded by a newer one")
   .argument("[predecessor]", "predecessor session id (omit for interactive search)")
