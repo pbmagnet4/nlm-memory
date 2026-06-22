@@ -47,7 +47,7 @@ import {
   verifySessionCookie,
 } from "./ui-auth.js";
 import { createNonceStore, type NonceStore } from "./auth-nonce.js";
-import { clearSurfaced, loadSurfaced, recordSurfaced } from "@core/hook/memo.js";
+import { clearSurfaced, loadSurfaced, recordSurfaced, resolveConversationForSession } from "@core/hook/memo.js";
 import { clearCited } from "@core/hook/cite-memo.js";
 import { classifyPrompt } from "@core/hook/gate.js";
 import { selectHits, type RecallHitInput } from "@core/hook/select.js";
@@ -743,7 +743,10 @@ function registerRecallRoutes(app: Hono, deps: HttpDeps): void {
     }
     await appendCitation(
       {
-        conversationId: typeof body["conversation_id"] === "string" ? body["conversation_id"] : "mcp_tool",
+        conversationId:
+          typeof body["conversation_id"] === "string"
+            ? body["conversation_id"]
+            : (resolveConversationForSession(id) ?? "mcp_tool"),
         citedId: id,
         kind: "tool_use",
         ...(typeof body["reason"] === "string" ? { responsePreview: body["reason"] } : {}),
