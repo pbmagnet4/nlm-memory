@@ -33,6 +33,19 @@ function defaultLogPath(): string {
   return process.env["NLM_CITATION_LOG"] ?? join(homedir(), ".nlm", "citation-log.jsonl");
 }
 
+/**
+ * A citation is only usable telemetry if it can be joined to the query fire
+ * that surfaced it — i.e. it carries a real conversation id. Test fixtures
+ * (conv_test_001), the cite_session placeholder (mcp_tool), and "unknown" can't
+ * join, so they poison every precision / reranker metric computed from the log.
+ * The write path drops them at the source; only attributable citations land.
+ */
+export function isAttributableConversationId(id: string): boolean {
+  if (!id) return false;
+  const lower = id.toLowerCase();
+  return lower !== "unknown" && lower !== "mcp_tool" && !/^(conv_)?test/.test(lower);
+}
+
 export async function readCitationLog(
   days: number,
   logPath: string = defaultLogPath(),
@@ -72,6 +85,9 @@ export async function appendCitation(
   entry: CitationEntry,
   logPath: string = defaultLogPath(),
 ): Promise<void> {
+  // Drop unattributable / fixture citations at the source so the log stays a
+  // clean training + metric substrate (see isAttributableConversationId).
+  if (!isAttributableConversationId(entry.conversationId)) return;
   try {
     await mkdir(dirname(logPath), { recursive: true });
     const payload = {
