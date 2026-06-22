@@ -78,7 +78,7 @@ const SQL_I4_MISSING_TO = `
 const SQL_I5_DUPLICATE_FACTS = `
   SELECT MIN(id) AS bad_id
   FROM facts
-  WHERE superseded_by IS NULL
+  WHERE superseded_by IS NULL AND retired_at IS NULL
   GROUP BY subject, predicate
   HAVING COUNT(*) > 1
   LIMIT 6
