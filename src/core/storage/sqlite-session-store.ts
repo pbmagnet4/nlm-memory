@@ -377,31 +377,13 @@ export class SqliteSessionStore implements SessionStore {
       // session, deleting our prior fact unlinks the chain; the loop below
       // re-establishes it with the freshly-inserted row.
       if (factSink !== null) {
-        // Inlined ingest. See SqliteFactStore.ingestSessionFacts for the
-        // backend-agnostic version. SqliteSessionStore runs this synchronously
-        // inside the better-sqlite3 txn callback (which must be sync). The
-        // logic mirrors the port method exactly; if you change one, change
-        // the other. Tracked as a known duplication for the SQLite adapter.
-        const db = this.db;
-        db.prepare("DELETE FROM facts WHERE source_session_id = ?").run(record.id);
-        if (factSink.facts.length > 0) {
-          const factStoreImpl = factSink.factStore;
-          for (const f of factSink.facts) factStoreImpl.insertRowInTxn(f);
-
-          // Collapse EVERY other active fact for this (subject, predicate)
-          // under the new fact — not just the single most-recent prior. A
-          // single-prior loop cannot restore the invariant once two priors are
-          // already active (multi-pass backfill, or an ON DELETE SET NULL
-          // un-supersede leaving siblings live); each ingest would clear only
-          // one and the duplicate would persist. See NLM #301.
-          const markSupersededStmt = db.prepare(
-            `UPDATE facts SET superseded_by = ?
-             WHERE subject = ? AND predicate = ? AND superseded_by IS NULL AND id != ?`,
-          );
-          for (const f of factSink.facts) {
-            markSupersededStmt.run(f.id, f.subject, f.predicate, f.id);
-          }
-        }
+        // Delegate to the canonical sync ingest so this LIVE path (scheduler ->
+        // insertSession) shares the replace + deterministic-collapse +
+        // embedding-cleanup logic instead of re-implementing it. The old inlined
+        // copy drifted from the port method and missed NLM #351 bug 1 (orphan
+        // embeddings on replace) and bug 2 (per-fact collapse -> supersedence
+        // cycles). Runs inside this session txn.
+        factSink.factStore.ingestSessionFactsInTxn(record.id, factSink.facts);
       }
     });
     txn();
@@ -519,24 +501,11 @@ export class SqliteSessionStore implements SessionStore {
     facts: ReadonlyArray<Fact>,
     embedder: import("@ports/llm-client.js").LLMClient | null = null,
   ): Promise<void> {
-    const db = this.db;
-    const txn = db.transaction(() => {
-      // Inlined ingest. Same logic as SqliteFactStore.ingestSessionFacts.
-      // Sync because better-sqlite3 txn callbacks must be sync.
-      db.prepare("DELETE FROM facts WHERE source_session_id = ?").run(sessionId);
-      if (facts.length > 0) {
-        for (const f of facts) factStore.insertRowInTxn(f);
-
-        // Collapse EVERY other active fact for this (subject, predicate) under
-        // the new fact — see the matching comment in insertSession (NLM #301).
-        const markSupersededStmt = db.prepare(
-          `UPDATE facts SET superseded_by = ?
-           WHERE subject = ? AND predicate = ? AND superseded_by IS NULL AND id != ?`,
-        );
-        for (const f of facts) {
-          markSupersededStmt.run(f.id, f.subject, f.predicate, f.id);
-        }
-      }
+    // Delegate to the canonical sync ingest (single source of truth for
+    // replace + collapse + embedding cleanup). Sync because better-sqlite3 txn
+    // callbacks must be sync; ingestSessionFactsInTxn is the sync core.
+    const txn = this.db.transaction(() => {
+      factStore.ingestSessionFactsInTxn(sessionId, facts);
     });
     txn();
     if (embedder) {

@@ -116,4 +116,18 @@ describe("SqliteFactStore (SQLite-internal)", () => {
     ]);
     expect(embCount("old1")).toBe(0);
   });
+
+  it("insertFactsForSession drops embeddings of replaced same-session facts — no orphan vectors (#351 follow-up)", async () => {
+    // The backfill entry point inlines the same DELETE-prior-facts logic as
+    // ingestSessionFacts but the #351 fix patched only the port method, leaving
+    // this path orphaning vec0 vectors (no backing fact). See sqlite-session-store.ts.
+    await storage.facts.insert(makeFact({ id: "bf_old", subject: "P", predicate: "ran", sourceSessionId: "sess_parent" }));
+    const v = new Float32Array(768); v[5] = 1;
+    await storage.facts.upsertEmbedding("bf_old", v);
+    expect(embCount("bf_old")).toBe(1);
+    await storage.sessions.insertFactsForSession("sess_parent", storage.facts, [
+      makeFact({ id: "bf_new", subject: "Q", predicate: "ran", sourceSessionId: "sess_parent" }),
+    ]);
+    expect(embCount("bf_old")).toBe(0);
+  });
 });

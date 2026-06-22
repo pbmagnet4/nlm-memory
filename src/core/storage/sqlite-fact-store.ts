@@ -348,6 +348,20 @@ export class SqliteFactStore implements FactStore {
     sessionId: string,
     facts: ReadonlyArray<Fact>,
   ): Promise<void> {
+    this.ingestSessionFactsInTxn(sessionId, facts);
+  }
+
+  /**
+   * Sync core of ingestSessionFacts, callable from inside an existing
+   * better-sqlite3 transaction. SINGLE SOURCE OF TRUTH for the replace +
+   * deterministic-collapse + embedding-cleanup logic. The live ingest path
+   * (SqliteSessionStore.insertSession / insertFactsForSession) runs inside its
+   * own sync txn and delegates here, so it can no longer drift from this method.
+   * NLM #351's embedding-ghost (bug 1) and supersedence-cycle (bug 2) fixes
+   * originally landed only here and silently skipped the inlined copies — the
+   * path production actually uses — leaving both bugs live in production.
+   */
+  ingestSessionFactsInTxn(sessionId: string, facts: ReadonlyArray<Fact>): void {
     // Re-ingesting a session replaces its facts; drop the old facts' embeddings
     // too, or they orphan in the ANN index as ghosts (NLM #351).
     const stale = this.db
