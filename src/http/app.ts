@@ -103,6 +103,7 @@ import { normalizeSignal } from "@core/signals/ingest-signal.js";
 import { normalizeExemplar } from "@core/exemplars/ingest-exemplar.js";
 import { extractExemplar } from "@core/exemplars/extract-exemplar.js";
 import { recallCode } from "@core/exemplars/recall-code.js";
+import { composeEmbedText } from "@core/exemplars/embed-text.js";
 import { buildFailureModeBlock } from "@core/signals/failure-mode-recall.js";
 import { aggregateFailureModes } from "@core/signals/aggregate.js";
 
@@ -1662,7 +1663,7 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
           const { id, skipped } = await exemplarStore.insert(exemplar);
           if (!skipped && deps.codeEmbedder) {
             void deps.codeEmbedder
-              .embed(exemplar.taskContext + "\n" + exemplar.code, "document")
+              .embed(composeEmbedText(exemplar.taskContext, exemplar.code), "document")
               .then((r) => exemplarStore.upsertEmbedding(id, r.vector))
               .catch(() => { /* degraded; exemplar stored without a vector */ });
           }
@@ -1728,7 +1729,7 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
     const { id, skipped } = await deps.exemplarStore.insert(inp);
     if (!skipped && deps.codeEmbedder) {
       // Best-effort embedding: fire-and-forget, never blocks the response.
-      deps.codeEmbedder.embed(inp.taskContext + "\n" + inp.code, "document")
+      deps.codeEmbedder.embed(composeEmbedText(inp.taskContext, inp.code), "document")
         .then((r) => deps.exemplarStore!.upsertEmbedding(id, r.vector))
         .catch(() => { /* degraded; exemplar is still stored without a vector */ });
     }

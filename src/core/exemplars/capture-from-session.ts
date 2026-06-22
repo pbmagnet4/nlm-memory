@@ -17,6 +17,7 @@ import type { CodeExemplarStore } from "@ports/code-exemplar-store.js";
 import type { CodeEmbedder } from "@ports/code-embedder.js";
 import { detectCommitShas } from "./detect-commits.js";
 import { extractFromGitSha } from "./extract-exemplar.js";
+import { composeEmbedText } from "./embed-text.js";
 
 const TASK_CONTEXT_CAP = 280;
 
@@ -77,7 +78,7 @@ export async function drainSessionExemplars(
         const embedder = deps.codeEmbedder;
         const store = deps.exemplarStore;
         void embedder
-          .embed(input.taskContext + "\n" + input.code, "document")
+          .embed(composeEmbedText(input.taskContext, input.code), "document")
           .then((r) => store.upsertEmbedding(id, r.vector))
           .catch(() => { /* degraded; exemplar stored without a vector */ });
       }
