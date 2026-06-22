@@ -53,4 +53,46 @@ describe("SqliteFactStore (SQLite-internal)", () => {
       .get();
     expect(count?.c).toBe(1);
   });
+
+  const embCount = (factId: string) =>
+    storage
+      .rawDb()
+      .prepare<[string], { c: number }>("SELECT COUNT(*) AS c FROM fact_embeddings WHERE fact_id = ?")
+      .get(factId)?.c;
+
+  it("markSuperseded deletes the superseded fact's embedding (no ANN ghost) (#351)", async () => {
+    await storage.facts.insert(makeFact({ id: "old", sourceSessionId: "sess_parent" }));
+    await storage.facts.insert(makeFact({ id: "new", sourceSessionId: "sess_parent" }));
+    const v = new Float32Array(768); v[0] = 1;
+    await storage.facts.upsertEmbedding("old", v);
+    expect(embCount("old")).toBe(1);
+    await storage.facts.markSuperseded("old", "new");
+    expect(embCount("old")).toBe(0);
+  });
+
+  it("ingestSessionFacts collapse deletes a superseded duplicate's embedding (#351)", async () => {
+    // "dup" comes from a DIFFERENT session; ingesting a fresh fact for the same
+    // (subject,predicate) into sess_parent collapses (supersedes) it.
+    storage.sessions.insertSessionForTest(makeSession({ id: "sess_other", label: "Other" }));
+    await storage.facts.insert(makeFact({ id: "dup", subject: "X", predicate: "uses", sourceSessionId: "sess_other" }));
+    const v = new Float32Array(768); v[2] = 1;
+    await storage.facts.upsertEmbedding("dup", v);
+    expect(embCount("dup")).toBe(1);
+    await storage.facts.ingestSessionFacts("sess_parent", [
+      makeFact({ id: "fresh", subject: "X", predicate: "uses", sourceSessionId: "sess_parent" }),
+    ]);
+    expect(embCount("dup")).toBe(0);
+  });
+
+  it("ingestSessionFacts drops embeddings of replaced same-session facts (#351)", async () => {
+    await storage.facts.insert(makeFact({ id: "old1", subject: "Y", predicate: "ran", sourceSessionId: "sess_parent" }));
+    const v = new Float32Array(768); v[3] = 1;
+    await storage.facts.upsertEmbedding("old1", v);
+    expect(embCount("old1")).toBe(1);
+    // Re-ingesting sess_parent deletes its prior facts (and their embeddings).
+    await storage.facts.ingestSessionFacts("sess_parent", [
+      makeFact({ id: "replacement", subject: "Z", predicate: "ran", sourceSessionId: "sess_parent" }),
+    ]);
+    expect(embCount("old1")).toBe(0);
+  });
 });
