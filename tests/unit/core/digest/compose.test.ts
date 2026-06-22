@@ -36,6 +36,7 @@ describe("composeDigest", () => {
       ],
       port: 3940,
       hookAlert: null,
+      precision: { precisionAtK: 0.4, conversationCount: 45 },
       now: FIXED_NOW,
     });
 
@@ -43,9 +44,26 @@ describe("composeDigest", () => {
     expect(text).toContain("claude-code=2");
     expect(text).toContain("hermes=1");
     expect(text).toContain("Last 7d: 97 real / 100 total"); // 100 - 3 probes
-    expect(text).toContain("hit_rate 85%");
+    // The surfacing rate must be labeled as surfacing, not "hit_rate" (which
+    // reads like precision). True cited-precision is shown on its own line.
+    expect(text).toContain("surfaced 85%");
+    expect(text).not.toContain("hit_rate");
+    expect(text).toContain("Recall precision (cited/surfaced): 40% (45 conv)");
     expect(text).toContain("1. deployment plan");
     expect(text).toContain("UI: http://localhost:3940/ui/");
+  });
+
+  it("shows precision n/a when no conversations are scoreable", () => {
+    const text = composeDigest({
+      stats: baseStats,
+      recent: [],
+      port: 3940,
+      hookAlert: null,
+      precision: { precisionAtK: null, conversationCount: 0 },
+      now: FIXED_NOW,
+    });
+    expect(text).toContain("Recall precision (cited/surfaced): n/a");
+    expect(text).not.toContain("hit_rate");
   });
 
   it("renders (none) when no real 24h traffic", () => {
