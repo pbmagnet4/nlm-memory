@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCodeSignalPayload } from "../../../../src/core/signals/code-signal.js";
+import { buildCodeSignalPayload, formatCodeSignalResult } from "../../../../src/core/signals/code-signal.js";
 
 const NOW = () => "2026-06-09T12:00:00.000Z";
 
@@ -97,5 +97,20 @@ describe("buildCodeSignalPayload", () => {
   it("carries the model override through", () => {
     const p = buildCodeSignalPayload({ repoPath: "/tmp/myrepo", sha: "abc123", testExit: 0, diff: FIXTURE_DIFF, model: "qwen3-coder", ts: NOW });
     expect(p.model).toBe("qwen3-coder");
+  });
+});
+
+describe("formatCodeSignalResult", () => {
+  it("reports the outcome and the accepted signal id on success", () => {
+    const line = formatCodeSignalResult("pass", "sig_abc123");
+    expect(line).toContain("outcome=pass");
+    expect(line).toContain("sig_abc123");
+    expect(line).toContain("accepted");
+  });
+
+  it("carries a fail outcome through", () => {
+    const line = formatCodeSignalResult("fail", "sig_def456");
+    expect(line).toContain("outcome=fail");
+    expect(line).toContain("sig_def456");
   });
 });

@@ -520,7 +520,7 @@ program
   .option("--repo <logical>", "logical repo name (defaults to the repo-path basename)")
   .option("--dry-run", "print the payload and do not POST")
   .action(async (opts) => {
-    const { buildCodeSignalPayload } = await import("../core/signals/code-signal.js");
+    const { buildCodeSignalPayload, formatCodeSignalResult } = await import("../core/signals/code-signal.js");
     const payload = buildCodeSignalPayload({
       repoPath: opts.repoPath,
       sha: opts.sha,
@@ -542,7 +542,10 @@ program
       });
       if (res.status !== 202) {
         process.stderr.write(`code-signal: daemon returned ${res.status} (not 202); skipping\n`);
+        return;
       }
+      const accepted = (await res.json()) as { id?: string };
+      process.stdout.write(formatCodeSignalResult(payload.outcome, accepted.id ?? "unknown") + "\n");
     } catch {
       process.stderr.write(`code-signal: daemon unreachable at ${url}; skipping\n`);
     }

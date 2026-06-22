@@ -58,6 +58,11 @@ export interface CodeSignalPayload {
   readonly ts: string;
 }
 
+/** One-line success summary for the CLI: outcome + the accepted signal id. */
+export function formatCodeSignalResult(outcome: SignalOutcome, signalId: string): string {
+  return `code-signal: accepted outcome=${outcome} signal id=${signalId}`;
+}
+
 function gitShow(repoPath: string, sha: string): string {
   return execFileSync(
     "git",
