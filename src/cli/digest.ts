@@ -13,9 +13,13 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   composeDigest,
+  type DigestPrecision,
   type RecallStats,
   type RecentEntry,
 } from "@core/digest/compose.js";
+import { computePrecision } from "@core/recall/precision.js";
+import { readHookRecallLog } from "@core/recall/hook-recall-log.js";
+import { readCitationLog } from "@core/recall/citation-log.js";
 import { checkHookLiveness, type SessionRow, type HookLogEntry } from "@core/digest/hook-liveness.js";
 import { hookAuthHeaders } from "../hook/hook-auth.js";
 
@@ -75,11 +79,29 @@ export async function runDigest(opts: DigestOptions): Promise<DigestResult> {
     hookLogExists,
   });
 
+  // True cited-precision over the 7-day window (the honest "was recall useful"
+  // metric). Best-effort: a log-read failure must not break the digest.
+  let precision: DigestPrecision | null = null;
+  try {
+    const [recallEntries, citationEntries] = await Promise.all([
+      readHookRecallLog(7),
+      readCitationLog(7),
+    ]);
+    const result = computePrecision(recallEntries, citationEntries);
+    precision = {
+      precisionAtK: result.precisionAtK,
+      conversationCount: result.conversationCount,
+    };
+  } catch {
+    precision = null;
+  }
+
   const text = composeDigest({
     stats,
     recent,
     port: opts.port,
     hookAlert,
+    precision,
   });
 
   if (opts.telegram) {

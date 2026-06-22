@@ -39,11 +39,22 @@ export interface RecentEntry {
   readonly query?: string | null;
 }
 
+/**
+ * True cited-precision over hook-surfaced sessions — the honest "was the recall
+ * useful" metric, distinct from the surfacing rate. `precisionAtK` is null when
+ * no conversations were scoreable in the window (no citations / empty hook-log).
+ */
+export interface DigestPrecision {
+  readonly precisionAtK: number | null;
+  readonly conversationCount: number;
+}
+
 export interface ComposeInput {
   readonly stats: RecallStats;
   readonly recent: ReadonlyArray<RecentEntry>;
   readonly port: number;
   readonly hookAlert: string | null;
+  readonly precision?: DigestPrecision | null;
   /** Override "now" for deterministic tests; defaults to Date.now(). */
   readonly now?: Date;
 }
@@ -97,7 +108,8 @@ export function composeDigest(input: ComposeInput): string {
     `\n` +
     alertBlock +
     `Last 24h (real traffic): ${real24h.length} queries · ${sourceStr}\n` +
-    `Last 7d: ${real7d} real / ${total7d} total · hit_rate ${pct(input.stats.hit_rate)}\n` +
+    `Last 7d: ${real7d} real / ${total7d} total · surfaced ${pct(input.stats.hit_rate)}\n` +
+    `Recall precision (cited/surfaced): ${formatPrecision(input.precision)}\n` +
     `\n` +
     `Top real queries (24h):\n` +
     `${topLines}\n` +
@@ -108,6 +120,11 @@ export function composeDigest(input: ComposeInput): string {
 
 function pct(n: number): string {
   return `${Math.round(n * 100)}%`;
+}
+
+function formatPrecision(p: DigestPrecision | null | undefined): string {
+  if (!p || p.precisionAtK === null) return "n/a (no scored conversations yet)";
+  return `${pct(p.precisionAtK)} (${p.conversationCount} conv)`;
 }
 
 function truncate(s: string, max: number): string {
