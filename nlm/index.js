@@ -181,7 +181,9 @@ var STOPWORDS = /* @__PURE__ */ new Set([
 ]);
 var MIN_CONTENT_WORDS = 2;
 var MIN_WORD_LEN = 3;
+var SYSTEM_MESSAGE_PREFIX = /^<(task-notification|command-name|command-message|command-args|local-command-stdout|local-command-caveat|output-file|system-reminder)\b/;
 function extractRecallQuery(prompt) {
+  if (SYSTEM_MESSAGE_PREFIX.test(prompt.trim())) return null;
   const tokens = prompt.trim().split(/\s+/).map((t) => t.replace(/^[^\w-]+|[^\w-]+$/g, "")).filter((t) => t.length >= MIN_WORD_LEN);
   const contentWords = tokens.filter((t) => !STOPWORDS.has(t.toLowerCase()));
   if (contentWords.length < MIN_CONTENT_WORDS) return null;

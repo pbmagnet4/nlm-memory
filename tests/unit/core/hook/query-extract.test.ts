@@ -60,4 +60,18 @@ describe("extractRecallQuery", () => {
     const q = extractRecallQuery("node 19");
     expect(q).toBeNull(); // only 1 content word after filtering "19"
   });
+
+  it("returns null for harness-injected system messages (never user queries)", () => {
+    expect(extractRecallQuery("<task-notification>\n<task-id>abc</task-id>\n<output-file>/tmp/x</output-file>")).toBeNull();
+    expect(extractRecallQuery("<command-name>/compact</command-name>")).toBeNull();
+    expect(extractRecallQuery("<local-command-stdout>Compacted</local-command-stdout>")).toBeNull();
+    expect(extractRecallQuery("<command-message>workflows</command-message>")).toBeNull();
+    expect(extractRecallQuery("  <system-reminder>background context</system-reminder>")).toBeNull();
+  });
+
+  it("still extracts from a real prompt that merely mentions a tag-like word", () => {
+    const q = extractRecallQuery("the task notification webhook keeps failing");
+    expect(q).not.toBeNull();
+    expect(q).toContain("notification");
+  });
 });

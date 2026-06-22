@@ -162,9 +162,16 @@ function parseScoreFloor(raw) {
   if (!Number.isFinite(parsed) || parsed < 0) return 0;
   return parsed;
 }
+function parseRelativeFloor(raw, fallback) {
+  if (raw === void 0) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  return parsed;
+}
 
 // src/hook/session-start-hook.ts
 var SCORE_THRESHOLD = parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR"]);
+var RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 var PER_FIRE_CAP = 3;
 var PER_CONVERSATION_CAP = 10;
 var RECALL_LIMIT = 5;
@@ -181,6 +188,7 @@ async function runHook(input, deps) {
     hits,
     surfaced,
     scoreThreshold: SCORE_THRESHOLD,
+    relativeFloor: RELATIVE_FLOOR,
     perFireCap: PER_FIRE_CAP,
     perConversationCap: PER_CONVERSATION_CAP
   });
