@@ -57,7 +57,8 @@
     "bench:classifier": "tsx scripts/longmemeval/run-harness.ts --classifier",
     "bench:compare": "tsx scripts/longmemeval/compare-classifiers.ts",
     "eval:signals": "tsx scripts/eval/signals-eval.ts",
-    "eval:classifier": "tsx scripts/eval/classifier-eval.ts"
+    "eval:classifier": "tsx scripts/eval/classifier-eval.ts",
+    "eval:fact-recall": "tsx scripts/eval/fact-recall-eval.ts"
   },
   "dependencies": {
     "@clack/prompts": "^1.4.0",

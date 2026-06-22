@@ -429,6 +429,32 @@ program
   });
 
 program
+  .command("eval")
+  .description("Run R@k/MRR over an operator-supplied query set (queries never bundled)")
+  .requiredOption("--queries <file>", "JSON file: [{ query, expectedIds }]")
+  .option("--mode <mode>", "keyword | semantic | hybrid", "keyword")
+  .option("--json", "emit JSON instead of a table")
+  .action(async (opts) => {
+    const { readFile } = await import("node:fs/promises");
+    const queries = JSON.parse(await readFile(opts.queries, "utf8"));
+    const { runEval } = await import("../core/eval/run-eval.js");
+    const { storage, recall } = await buildStack();
+    try {
+      const report = await runEval({ recall }, queries, { mode: opts.mode, k: 5 });
+      if (opts.json) {
+        process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+        return;
+      }
+      process.stdout.write(
+        `mode=${report.mode} n=${report.n} R@1=${(report.rAt1 * 100).toFixed(1)}% ` +
+          `R@5=${(report.rAt5 * 100).toFixed(1)}% MRR=${report.mrr.toFixed(3)}\n`,
+      );
+    } finally {
+      await storage.close();
+    }
+  });
+
+program
   .command("recall-code")
   .description("Semantic search over code exemplars (requires NLM_CODE_EXEMPLARS_ENABLED=1)")
   .argument("<query>", "natural-language description of the task you are about to implement")
