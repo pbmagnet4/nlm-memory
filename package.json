@@ -58,7 +58,8 @@
     "bench:compare": "tsx scripts/longmemeval/compare-classifiers.ts",
     "eval:signals": "tsx scripts/eval/signals-eval.ts",
     "eval:classifier": "tsx scripts/eval/classifier-eval.ts",
-    "eval:fact-recall": "tsx scripts/eval/fact-recall-eval.ts"
+    "eval:fact-recall": "tsx scripts/eval/fact-recall-eval.ts",
+    "eval:code-exemplar": "tsx scripts/eval/code-exemplar-eval.ts"
   },
   "dependencies": {
     "@clack/prompts": "^1.4.0",
