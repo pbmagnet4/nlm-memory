@@ -12,6 +12,7 @@
  * never wrong ones.
  */
 
+import { basename } from "node:path";
 import type { CodeExemplarInput } from "@shared/types.js";
 import type { CodeExemplarStore } from "@ports/code-exemplar-store.js";
 import type { CodeEmbedder } from "@ports/code-embedder.js";
@@ -44,7 +45,8 @@ export function captureExemplarsFromSession(ctx: SessionExemplarContext): CodeEx
   const out: CodeExemplarInput[] = [];
   for (const sha of detectCommitShas(ctx.text)) {
     const exemplar = extractFromGitSha({
-      repo: ctx.projectDir,
+      repo: basename(ctx.projectDir),
+      repoPath: ctx.projectDir,
       sha,
       installScope: ctx.installScope,
       outcome: "pass",
