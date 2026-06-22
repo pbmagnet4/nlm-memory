@@ -20,11 +20,21 @@ const STOPWORDS = new Set([
 const MIN_CONTENT_WORDS = 2;
 const MIN_WORD_LEN = 3;
 
+// Harness-injected turns (task-completion notifications, slash-command wrappers,
+// local-command output, background context) arrive on the prompt surface but are
+// never user queries. Recalling against them floods context with irrelevant
+// sessions (measured: 7.2% of historical fires). Skip any message that opens
+// with one of these tags.
+const SYSTEM_MESSAGE_PREFIX =
+  /^<(task-notification|command-name|command-message|command-args|local-command-stdout|local-command-caveat|output-file|system-reminder)\b/;
+
 /**
  * Returns null when the message is too conversational to produce a useful
- * query — the caller should skip recall entirely in that case.
+ * query, or is a harness-injected system message — the caller should skip
+ * recall entirely in that case.
  */
 export function extractRecallQuery(prompt: string): string | null {
+  if (SYSTEM_MESSAGE_PREFIX.test(prompt.trim())) return null;
   const tokens = prompt
     .trim()
     .split(/\s+/)

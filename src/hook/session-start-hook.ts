@@ -19,16 +19,17 @@ import { formatPointerBlock } from "@core/hook/pointer-block.js";
 import { selectHits, type RecallHitInput } from "@core/hook/select.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
 import { hookAuthHeaders } from "./hook-auth.js";
-import { parseScoreFloor } from "./score-floor.js";
+import { parseScoreFloor, parseRelativeFloor } from "./score-floor.js";
 
 // This hook recalls in hybrid mode, whose matchScore is normalized to 0..1
-// (mergeHybrid in recall-service.ts), so the default floor is 0 (no cutoff).
-// NLM_RECALL_SCORE_FLOOR is shared with the keyword-mode prompt hook; note the
+// (mergeHybrid in recall-service.ts), so the default absolute floor is 0.
+// NLM_RECALL_SCORE_FLOOR is shared with the keyword-mode prompt hook; the
 // calibrated keyword floor (2.0, raw BM25) would deny-all here on the 0..1
-// scale, so it is opt-in only. parseScoreFloor guards a bad env value: a
-// non-numeric / non-finite / negative input falls back to 0 instead of
-// silently deny-all'ing recall (matchScore >= NaN is always false).
+// scale, so it is opt-in only. parseScoreFloor guards a bad env value.
 const SCORE_THRESHOLD = parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR"]);
+// The relative floor IS scale-invariant (ratio to the fire median), so it
+// applies cleanly to this hybrid path too — parity with the per-message hook.
+const RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 const PER_FIRE_CAP = 3;
 const PER_CONVERSATION_CAP = 10;
 const RECALL_LIMIT = 5;
@@ -63,6 +64,7 @@ export async function runHook(
     hits,
     surfaced,
     scoreThreshold: SCORE_THRESHOLD,
+    relativeFloor: RELATIVE_FLOOR,
     perFireCap: PER_FIRE_CAP,
     perConversationCap: PER_CONVERSATION_CAP,
   });
