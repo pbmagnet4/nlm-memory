@@ -314,4 +314,76 @@ describe("Phase B.4 — supersedence-on-ingest", () => {
     const all = await factStore.list({ subject: "x", predicate: "framework", includeSuperseded: true });
     expect(all.map((f) => f.id).sort()).toEqual(["f_new", "f_old"]);
   });
+
+  it("re-ingest deletes embeddings of replaced same-session facts — no orphan vectors (#351 follow-up)", async () => {
+    const embCount = (factId: string) =>
+      storage
+        .rawDb()
+        .prepare<[string], { c: number }>("SELECT COUNT(*) AS c FROM fact_embeddings WHERE fact_id = ?")
+        .get(factId)?.c;
+
+    // First ingest of sess_R lands one fact; give it a vec0 embedding.
+    const first = fact({ id: "f_first", subject: "svc", predicate: "port", value: "3940", sourceSessionId: "sess_R" });
+    await store.insertSession(makeRecord({ id: "sess_R" }), null, null, { factStore, facts: [first] });
+    const v = new Float32Array(768); v[7] = 1;
+    await factStore.upsertEmbedding("f_first", v);
+    expect(embCount("f_first")).toBe(1);
+
+    // Re-ingest the SAME session id with a different fact: insertSession deletes
+    // the prior fact (DELETE FROM facts WHERE source_session_id). Its embedding
+    // must go too — otherwise it is an orphan vec0 vector that steals kNN slots.
+    const second = fact({ id: "f_second", subject: "svc", predicate: "host", value: "localhost", sourceSessionId: "sess_R" });
+    await store.insertSession(makeRecord({ id: "sess_R" }), null, null, { factStore, facts: [second] });
+
+    expect(embCount("f_first")).toBe(0);
+  });
+
+  it("insertSession batch with duplicate (subject, predicate) creates no supersedence cycle (#351 bug 2 — production path)", async () => {
+    // The live ingest path (scheduler -> insertSession) must collapse a
+    // duplicate-(s,p) batch under ONE winner, not per-fact (which makes A->B,
+    // B->A — both recall-ineligible forever). The fix lived only in the
+    // canonical ingestSessionFacts, which production does not call.
+    await store.insertSession(makeRecord({ id: "sess_dup" }), null, null, {
+      factStore,
+      facts: [
+        fact({ id: "d1", subject: "A", predicate: "uses", value: "x", sourceSessionId: "sess_dup" }),
+        fact({ id: "d2", subject: "A", predicate: "uses", value: "y", sourceSessionId: "sess_dup" }),
+      ],
+    });
+    const db = storage.rawDb();
+    const active = db
+      .prepare("SELECT id FROM facts WHERE subject='A' AND predicate='uses' AND superseded_by IS NULL")
+      .all();
+    expect(active).toHaveLength(1);
+    const cyc = db
+      .prepare<[], { c: number }>(
+        "SELECT COUNT(*) AS c FROM facts a JOIN facts b ON a.superseded_by=b.id AND b.superseded_by=a.id",
+      )
+      .get();
+    expect(cyc?.c).toBe(0);
+  });
+
+  it("insertSession cross-session collapse deletes the superseded prior fact's embedding (#351 bug 1 — production path)", async () => {
+    const embCount = (factId: string) =>
+      storage
+        .rawDb()
+        .prepare<[string], { c: number }>("SELECT COUNT(*) AS c FROM fact_embeddings WHERE fact_id = ?")
+        .get(factId)?.c;
+
+    await store.insertSession(makeRecord({ id: "sess_p1" }), null, null, {
+      factStore,
+      facts: [fact({ id: "c_old", subject: "M", predicate: "framework", value: "Fastify", sourceSessionId: "sess_p1" })],
+    });
+    const v = new Float32Array(768); v[9] = 1;
+    await factStore.upsertEmbedding("c_old", v);
+    expect(embCount("c_old")).toBe(1);
+
+    // A later session asserts the same (subject, predicate): c_old collapses.
+    await store.insertSession(makeRecord({ id: "sess_p2", startedAt: "2026-05-20T10:00:00Z" }), null, null, {
+      factStore,
+      facts: [fact({ id: "c_new", subject: "M", predicate: "framework", value: "Hono", sourceSessionId: "sess_p2" })],
+    });
+    expect((await factStore.getById("c_old"))?.supersededBy).toBe("c_new");
+    expect(embCount("c_old")).toBe(0);
+  });
 });
