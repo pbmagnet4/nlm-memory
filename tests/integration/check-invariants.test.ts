@@ -14,6 +14,7 @@ import {
   applyFixOnSqlite,
 } from "../../src/core/integrity/check-invariants.js";
 import { makeSession } from "../fixtures/sessions.js";
+import { makeFact } from "../fixtures/facts.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 
@@ -326,6 +327,28 @@ describe("check-invariants (SQLite)", () => {
       const second = applyFixOnSqlite(store.rawDb());
       expect(second.deletedSelfLoops).toBe(0);
       expect(second.restoredToClosed).toBe(0);
+    });
+  });
+
+  describe("I5c — fact supersedence cycles", () => {
+    it("detects a 2-cycle in facts.superseded_by", async () => {
+      store.insertSessionForTest(makeSession({ id: "sessF" }));
+      await storage.facts.insert(makeFact({ id: "fa", subject: "s", predicate: "p", sourceSessionId: "sessF" }));
+      await storage.facts.insert(makeFact({ id: "fb", subject: "s", predicate: "q", sourceSessionId: "sessF" }));
+      const db = store.rawDb();
+      db.prepare("UPDATE facts SET superseded_by = 'fb' WHERE id = 'fa'").run();
+      db.prepare("UPDATE facts SET superseded_by = 'fa' WHERE id = 'fb'").run();
+      const violations = runChecksOnSqlite(db);
+      expect(violations.some((v) => v.id === "I5c")).toBe(true);
+    });
+
+    it("does not flag a clean (acyclic) supersedence chain", async () => {
+      store.insertSessionForTest(makeSession({ id: "sessG" }));
+      await storage.facts.insert(makeFact({ id: "g1", subject: "s", predicate: "p", sourceSessionId: "sessG" }));
+      await storage.facts.insert(makeFact({ id: "g2", subject: "s", predicate: "p", sourceSessionId: "sessG" }));
+      // g1 superseded by g2 (normal), g2 active — no cycle.
+      store.rawDb().prepare("UPDATE facts SET superseded_by = 'g2' WHERE id = 'g1'").run();
+      expect(runChecksOnSqlite(store.rawDb()).some((v) => v.id === "I5c")).toBe(false);
     });
   });
 });

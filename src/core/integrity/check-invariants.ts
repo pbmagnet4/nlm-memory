@@ -13,7 +13,7 @@
  *       'replaces' edges (BFS, depth-capped at 100)
  *   I4  every session_edges endpoint exists in sessions
  *   I5  at most one active fact per (subject, predicate); every superseded_by
- *       references an existing facts.id
+ *       references an existing facts.id; superseded_by forms no cycle (I5c)
  *   I6  every non-null adapter_state.session_id references a sessions.id
  */
 
@@ -219,6 +219,19 @@ export function runChecksOnSqlite(db: Database.Database): ReadonlyArray<Violatio
     violations.push(buildViolation("I5b", "facts.superseded_by references non-existent facts.id", i5DangleSamples, count));
   }
 
+  // I5c — facts.superseded_by is a functional graph; a cycle traps every fact in
+  // it as recall-ineligible forever (both copies have a non-null superseded_by).
+  const i5cCycle = detectCycles(() =>
+    db
+      .prepare<[], { from_session: string; to_session: string }>(
+        "SELECT id AS from_session, superseded_by AS to_session FROM facts WHERE superseded_by IS NOT NULL",
+      )
+      .all(),
+  );
+  if (i5cCycle) {
+    violations.push({ ...i5cCycle, id: "I5c", description: "facts.superseded_by forms a cycle" });
+  }
+
   // I6
   const i6Samples = sqliteRows(db, SQL_I6);
   if (i6Samples.length > 0) {
@@ -298,6 +311,15 @@ export async function runChecksOnPg(pool: Pool): Promise<ReadonlyArray<Violation
   if (i5DangleSamples.length > 0) {
     const count = await pgCount(pool, SQL_I5_DANGLING_SUPERSEDED_BY);
     violations.push(buildViolation("I5b", "facts.superseded_by references non-existent facts.id", i5DangleSamples, count));
+  }
+
+  // I5c — fact supersedence cycle (see SQLite runner).
+  const factEdges = await pool.query<{ from_session: string; to_session: string }>(
+    "SELECT id AS from_session, superseded_by AS to_session FROM facts WHERE superseded_by IS NOT NULL",
+  );
+  const i5cCycle = detectCycles(() => factEdges.rows);
+  if (i5cCycle) {
+    violations.push({ ...i5cCycle, id: "I5c", description: "facts.superseded_by forms a cycle" });
   }
 
   // I6
