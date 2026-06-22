@@ -119,7 +119,7 @@ export async function recallSessionsHandler(
     const rewrite = input.rewrite ?? mcpRewriteDefault();
     const query: RecallQuery = {
       query: input.query ?? "",
-      mode: input.mode ?? "hybrid",
+      mode: input.mode ?? "keyword",
       limit: input.limit ?? DEFAULT_LIMIT,
       rewrite,
       // Investigative surface: include superseded sessions, down-ranked and
@@ -139,7 +139,7 @@ export async function recallSessionsHandler(
       query: input.query ?? null,
       entity: input.entity ?? null,
       kind: input.kind ?? null,
-      mode: input.mode ?? "hybrid",
+      mode: input.mode ?? "keyword",
       limit: input.limit ?? DEFAULT_LIMIT,
       nResults: result.total,
       returnedIds: result.results.map((r) => r.id),
@@ -317,8 +317,8 @@ Args:
   - entity: filter to sessions tagged with this entity. Optional.
   - kind: "decision" or "open" — restrict to sessions containing that marker
           kind. Omit for any. Optional.
-  - mode: "hybrid" (default — keyword BM25 + semantic embeddings), "keyword", or
-          "semantic". Optional.
+  - mode: Defaults to keyword (FTS5 BM25); hybrid and semantic are available.
+          Optional.
   - limit: max results (1-100, default 10).`;
 
 const GET_SESSION_DESCRIPTION = `Fetch one full session by its canonical ID, including the conversational body.
@@ -563,7 +563,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
         mode: z
           .enum(["keyword", "semantic", "hybrid"])
           .optional()
-          .describe("Search mode. Defaults to hybrid (keyword BM25 + semantic embeddings)."),
+          .describe("Search mode. Defaults to keyword (FTS5 BM25); hybrid and semantic are available."),
         limit: z
           .number()
           .int()

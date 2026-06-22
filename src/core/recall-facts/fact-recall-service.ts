@@ -63,7 +63,7 @@ export class FactRecallService {
   constructor(private readonly deps: FactRecallServiceDeps) {}
 
   async search(input: FactRecallQuery): Promise<FactRecallResult> {
-    const mode: RecallMode = input.mode ?? "keyword";
+    const mode: RecallMode = input.mode ?? "hybrid";
     const limit = clampLimit(input.limit);
     const subject = input.subject ?? null;
     const predicate = input.predicate ?? null;
