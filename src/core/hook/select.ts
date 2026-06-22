@@ -20,12 +20,27 @@ export interface SelectParams {
   readonly scoreThreshold: number;
   readonly perFireCap: number;
   readonly perConversationCap: number;
+  /**
+   * Drop tail hits scoring below this fraction of the fire's median score (0 =
+   * off). Scale-invariant — a ratio — so it works on raw BM25 or normalized
+   * scores and ports across installs unchanged. The top hit (>= median) always
+   * survives, so this trims weak tail hits; it does not suppress an off-topic
+   * fire. Calibrated via scripts/eval/floor-calibration.ts (#284).
+   */
+  readonly relativeFloor?: number;
+}
+
+function medianScore(hits: ReadonlyArray<RecallHitInput>): number {
+  if (hits.length === 0) return 0;
+  const sorted = hits.map((h) => h.matchScore).sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)] ?? 0;
 }
 
 export function selectHits(params: SelectParams): ReadonlyArray<RecallHitInput> {
-  const { hits, surfaced, scoreThreshold, perFireCap, perConversationCap } = params;
+  const { hits, surfaced, scoreThreshold, perFireCap, perConversationCap, relativeFloor = 0 } = params;
+  const relCut = relativeFloor > 0 ? relativeFloor * medianScore(hits) : 0;
   const eligible = hits.filter(
-    (h) => h.matchScore >= scoreThreshold && !surfaced.has(h.id),
+    (h) => h.matchScore >= scoreThreshold && h.matchScore >= relCut && !surfaced.has(h.id),
   );
   const budget = Math.max(0, perConversationCap - surfaced.size);
   const limit = Math.min(perFireCap, budget);

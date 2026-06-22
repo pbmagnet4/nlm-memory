@@ -19,3 +19,20 @@ export function parseScoreFloor(raw: string | undefined): number {
   if (!Number.isFinite(parsed) || parsed < 0) return 0;
   return parsed;
 }
+
+/**
+ * Parses NLM_RECALL_REL_FLOOR into a fire-median-relative cutoff: drop hits
+ * scoring below this fraction of the fire's median score. Unlike the absolute
+ * floor above, this is scale-invariant (a ratio), so the SAME value works on
+ * raw BM25 (keyword) or normalized (hybrid) scores and ports across installs.
+ * Invalid input collapses to the supplied default; 0 disables. Calibrated to
+ * 0.9 on the keyword/per-message path (scripts/eval/floor-calibration.ts, #284):
+ * keeps ~97% of cited recalls, trims weak tail noise. Set to 0.8 for zero
+ * measured gold loss, or 0 to disable.
+ */
+export function parseRelativeFloor(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  return parsed;
+}

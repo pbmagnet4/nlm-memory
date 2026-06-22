@@ -63,4 +63,43 @@ describe("selectHits", () => {
     });
     expect(out).toEqual([]);
   });
+
+  it("relativeFloor trims tail hits below a fraction of the fire median", () => {
+    // scores [10,8,4,2] -> median = sorted[2] = 8. relFloor 0.9 cuts < 7.2:
+    // a(10), b(8) kept; c(4), d(2) dropped. Scale-invariant (works on raw BM25).
+    const out = selectHits({
+      hits: [hit("a", 10), hit("b", 8), hit("c", 4), hit("d", 2)],
+      surfaced: new Set(),
+      scoreThreshold: 0,
+      perFireCap: 10,
+      perConversationCap: 10,
+      relativeFloor: 0.9,
+    });
+    expect(out.map((h) => h.id)).toEqual(["a", "b"]);
+  });
+
+  it("relativeFloor of 0 disables relative filtering", () => {
+    const out = selectHits({
+      hits: [hit("a", 10), hit("b", 2)],
+      surfaced: new Set(),
+      scoreThreshold: 0,
+      perFireCap: 10,
+      perConversationCap: 10,
+      relativeFloor: 0,
+    });
+    expect(out.map((h) => h.id)).toEqual(["a", "b"]);
+  });
+
+  it("relativeFloor never drops a fire's top hit (top >= median)", () => {
+    // A sole weak hit: score == median, so score >= floor*median holds; kept.
+    const out = selectHits({
+      hits: [hit("a", 0.01)],
+      surfaced: new Set(),
+      scoreThreshold: 0,
+      perFireCap: 10,
+      perConversationCap: 10,
+      relativeFloor: 0.9,
+    });
+    expect(out.map((h) => h.id)).toEqual(["a"]);
+  });
 });
