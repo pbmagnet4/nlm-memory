@@ -510,6 +510,45 @@ program
   });
 
 program
+  .command("code-signal")
+  .description("Emit a PATH-(b) code signal for a commit (deterministic pass/fail exemplar). Best-effort: never blocks a commit.")
+  .requiredOption("--repo-path <dir>", "path to the git repo whose commit to capture")
+  .requiredOption("--sha <sha>", "commit sha to extract the diff from")
+  .requiredOption("--test-exit <n>", "test gate exit code (0 -> pass, non-zero -> fail)", (v) => Number.parseInt(v, 10))
+  .option("--task <s>", "task description (defaults to the changed funcname/file)")
+  .option("--model <s>", "model that produced the change")
+  .option("--repo <logical>", "logical repo name (defaults to the repo-path basename)")
+  .option("--dry-run", "print the payload and do not POST")
+  .action(async (opts) => {
+    const { buildCodeSignalPayload } = await import("../core/signals/code-signal.js");
+    const payload = buildCodeSignalPayload({
+      repoPath: opts.repoPath,
+      sha: opts.sha,
+      testExit: opts.testExit,
+      ...(opts.task ? { task: opts.task } : {}),
+      ...(opts.model ? { model: opts.model } : {}),
+      ...(opts.repo ? { repo: opts.repo } : {}),
+    });
+    if (opts.dryRun) {
+      process.stdout.write(JSON.stringify(payload, null, 2) + "\n");
+      return;
+    }
+    const url = `http://localhost:${port()}/api/signal`;
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.status !== 202) {
+        process.stderr.write(`code-signal: daemon returned ${res.status} (not 202); skipping\n`);
+      }
+    } catch {
+      process.stderr.write(`code-signal: daemon unreachable at ${url}; skipping\n`);
+    }
+  });
+
+program
   .command("misses")
   .description("Show sessions the agent explicitly fetched but the hook never surfaced (recall miss log)")
   .option("-d, --days <n>", "lookback window", (v) => Number.parseInt(v, 10), 7)
