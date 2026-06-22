@@ -14,6 +14,7 @@
 
 import { execFileSync } from "node:child_process";
 import { codeHash, normalizeExemplar } from "./ingest-exemplar.js";
+import { detectLang, extractAddedLines, parseFuncname, parseHunks, selectLargestHunk } from "./diff-parse.js";
 import type { CodeExemplarInput, CodeExemplarOutcome } from "@shared/types.js";
 import type { Signal } from "@shared/types.js";
 
@@ -33,63 +34,6 @@ export interface GitShaExtractParams {
   readonly ts?: string;
   readonly repoPath?: string;
   readonly taskContext?: string;
-}
-
-/** Extract a git hunk header funcname: `@@ ... @@ funcname` */
-function parseFuncname(hunkHeader: string): string | null {
-  const m = hunkHeader.match(/@@ [^@]+ @@ (.+)/);
-  return m?.[1]?.trim() ?? null;
-}
-
-/** Detect likely language from file extension. */
-function detectLang(filePath: string): string | null {
-  const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
-  const map: Record<string, string> = {
-    ts: "ts", tsx: "ts", js: "js", jsx: "js", mjs: "js",
-    py: "py", go: "go", rb: "rb", rs: "rs", java: "java",
-    c: "c", cpp: "cpp", cs: "cs", swift: "swift", kt: "kt",
-    sh: "sh", bash: "sh", zsh: "sh",
-  };
-  return map[ext] ?? null;
-}
-
-/**
- * Parse a unified diff into individual hunks. Returns (file, hunkHeader, body) triples.
- */
-function parseHunks(diff: string): Array<{ file: string; hunkHeader: string; body: string }> {
-  const result: Array<{ file: string; hunkHeader: string; body: string }> = [];
-  let currentFile = "";
-  let currentHeader = "";
-  let bodyLines: string[] = [];
-
-  for (const line of diff.split("\n")) {
-    if (line.startsWith("+++ b/")) {
-      currentFile = line.slice(6);
-    } else if (line.startsWith("@@ ")) {
-      if (currentHeader && bodyLines.length > 0) {
-        result.push({ file: currentFile, hunkHeader: currentHeader, body: bodyLines.join("\n") });
-      }
-      currentHeader = line;
-      bodyLines = [];
-    } else if (currentHeader && (line.startsWith("+") || line.startsWith("-") || line.startsWith(" "))) {
-      bodyLines.push(line);
-    }
-  }
-  if (currentHeader && bodyLines.length > 0) {
-    result.push({ file: currentFile, hunkHeader: currentHeader, body: bodyLines.join("\n") });
-  }
-  return result;
-}
-
-/**
- * Extract the added/changed lines from a hunk body (strip context and removed lines).
- */
-function extractAddedLines(hunkBody: string): string {
-  return hunkBody
-    .split("\n")
-    .filter((l) => l.startsWith("+"))
-    .map((l) => l.slice(1))
-    .join("\n");
 }
 
 /**
@@ -112,14 +56,7 @@ export function extractFromGitSha(params: GitShaExtractParams): CodeExemplarInpu
   const hunks = parseHunks(diff);
   if (hunks.length === 0) return null;
 
-  // Pick the largest hunk by added-line count (most representative).
-  let best: { file: string; hunkHeader: string; body: string } | undefined;
-  let bestCount = 0;
-  for (const h of hunks) {
-    const added = extractAddedLines(h.body);
-    const count = added.split("\n").filter((l) => l.trim()).length;
-    if (count > bestCount) { bestCount = count; best = h; }
-  }
+  const best = selectLargestHunk(hunks);
   if (!best) return null;
 
   const code = extractAddedLines(best.body);
