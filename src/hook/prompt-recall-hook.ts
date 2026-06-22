@@ -12,6 +12,7 @@
 
 import { pathToFileURL } from "node:url";
 import { classifyPrompt } from "@core/hook/gate.js";
+import { recentConversationContext, topicalWordCount } from "./recent-context.js";
 import { appendHookLog } from "@core/hook/hook-log.js";
 import { loadSurfaced, recordSurfaced } from "@core/hook/memo.js";
 import { formatPointerBlock, type PointerExemplar, type PointerFact } from "@core/hook/pointer-block.js";
@@ -50,6 +51,24 @@ export function hookRuntimeFromEnv(
 export interface HookInput {
   readonly prompt: string;
   readonly conversationId: string;
+  /** Runtime transcript path, when the runtime exposes one (Claude Code does). */
+  readonly transcriptPath?: string;
+}
+
+/**
+ * The recall query. Default is the bare prompt (today's behavior). When the
+ * context-recall flag is on AND the prompt is thin (few content words — the
+ * measured off-topic failure band) AND a transcript is available, prepend the
+ * recent conversation turns so the query carries the topic the thin prompt
+ * lacks. Flag-gated + thin-only + fallback => never worse than today.
+ */
+export function buildRecallQuery(input: HookInput, env: NodeJS.ProcessEnv = process.env): string {
+  if (env["NLM_HOOK_CONTEXT_RECALL"] !== "1") return input.prompt;
+  if (!input.transcriptPath) return input.prompt;
+  const minWords = Number.parseInt(env["NLM_HOOK_CONTEXT_MIN_WORDS"] ?? "3", 10);
+  if (topicalWordCount(input.prompt) >= minWords) return input.prompt;
+  const context = recentConversationContext(input.transcriptPath);
+  return context ? `${context} ${input.prompt}` : input.prompt;
 }
 
 export interface RecallFetchResult {
@@ -97,7 +116,7 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
 
   let fetched: RecallFetchResult = { hits: [], facts: [] };
   try {
-    fetched = normalizeRecall(await deps.recall(input.prompt));
+    fetched = normalizeRecall(await deps.recall(buildRecallQuery(input)));
   } catch {
     fetched = { hits: [], facts: [] };
   }
@@ -153,16 +172,19 @@ async function main(): Promise<void> {
     const payload = JSON.parse(raw) as {
       prompt?: unknown;
       session_id?: unknown;
+      transcript_path?: unknown;
     };
     const prompt = typeof payload.prompt === "string" ? payload.prompt : "";
     const conversationId =
       typeof payload.session_id === "string" ? payload.session_id : "unknown";
+    const transcriptPath =
+      typeof payload.transcript_path === "string" ? payload.transcript_path : undefined;
     if (!prompt) return;
 
     const mode: HookMode = process.env["NLM_HOOK_MODE"] === "live" ? "live" : "shadow";
     const runtime = hookRuntimeFromEnv();
     const out = await runHook(
-      { prompt, conversationId },
+      { prompt, conversationId, ...(transcriptPath ? { transcriptPath } : {}) },
       { mode, recall: (q) => recallOverHttp(q, runtime, conversationId === "unknown" ? undefined : conversationId) },
     );
     if (out) process.stdout.write(out);
