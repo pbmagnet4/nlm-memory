@@ -27,7 +27,7 @@ import { createReadStream, existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { buildCitationBoosts, applyBoosts } from "../../src/core/recall/reranker.js";
+import { buildCitationBoosts, applyBoosts, DEFAULT_CITATION_ALPHA } from "../../src/core/recall/reranker.js";
 import type { CitationEntry } from "../../src/core/recall/citation-log.js";
 
 export interface Fire {
@@ -66,6 +66,7 @@ function rankOf(ordered: ReadonlyArray<{ id: string }>, id: string): number {
 export function evaluateReranker(
   fires: ReadonlyArray<Fire>,
   citations: ReadonlyArray<GoldCitation>,
+  alpha: number = DEFAULT_CITATION_ALPHA,
 ): RerankerEvalResult {
   const goldByConv = new Map<string, Set<string>>();
   for (const c of citations) {
@@ -114,9 +115,15 @@ export function evaluateReranker(
     const base = [...fire.hits].sort((a, b) => b.score - a.score);
     const boosts = buildCitationBoosts(
       allEntries.filter((e) => e.conversationId !== fire.conversationId),
+      alpha,
     );
+    // Mirror production: keyword scores are normalized to 0..1 by their set max
+    // before the additive citation boost (recall-service normalizeKeywordScores).
+    // Normalization is monotonic, so base ranking is unchanged; it only makes
+    // the boost commensurate. Without it the boost is swamped by raw BM25.
+    const max = Math.max(1, ...fire.hits.map((h) => h.score));
     const reranked = applyBoosts(
-      fire.hits.map((h) => ({ id: h.id, matchScore: h.score })),
+      fire.hits.map((h) => ({ id: h.id, matchScore: h.score / max })),
       boosts,
     ).sort((a, b) => b.matchScore - a.matchScore);
 
@@ -219,25 +226,37 @@ async function main(): Promise<void> {
     fires.push({ conversationId: conv, hits });
   }
 
-  const res = evaluateReranker(fires, citations);
-  const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
-  const delta = (a: number, b: number) => {
-    const d = b - a;
-    return `${d >= 0 ? "+" : ""}${(d * 100).toFixed(1)}pp`;
-  };
+  const alphaArg = (() => {
+    const i = args.indexOf("--alpha");
+    return i !== -1 ? Number.parseFloat(args[i + 1] ?? "") : NaN;
+  })();
+  const alphas = Number.isFinite(alphaArg)
+    ? [alphaArg]
+    : [0, 0.01, 0.02, 0.05, DEFAULT_CITATION_ALPHA];
 
-  console.log(`Reranker ablation — last ${days}d`);
-  console.log(`  gold positives: ${res.goldPositives} (${res.reachablePositives} reachable, ${res.unreachablePositives} never surfaced)`);
+  const base = evaluateReranker(fires, citations, 0);
+  const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
+
+  console.log(`Reranker ablation — last ${days}d (scores normalized to 0..1, matching production)`);
+  console.log(`  gold positives: ${base.goldPositives} (${base.reachablePositives} reachable, ${base.unreachablePositives} never surfaced)`);
   console.log(`  orphaned tool_use citations (mcp_tool/unknown, unusable): ${orphanedCitations}`);
-  console.log(`  eval samples (fire × reachable positive): ${res.samples}`);
+  console.log(`  eval samples (fire × reachable positive): ${base.samples}`);
   console.log("");
-  console.log(`            base      reranked   delta`);
-  console.log(`  MRR       ${res.mrrBase.toFixed(3)}     ${res.mrrReranked.toFixed(3)}      ${(res.mrrReranked - res.mrrBase >= 0 ? "+" : "")}${(res.mrrReranked - res.mrrBase).toFixed(3)}`);
-  console.log(`  R@1       ${pct(res.recallAt1Base).padEnd(9)} ${pct(res.recallAt1Reranked).padEnd(10)} ${delta(res.recallAt1Base, res.recallAt1Reranked)}`);
-  console.log(`  R@3       ${pct(res.recallAt3Base).padEnd(9)} ${pct(res.recallAt3Reranked).padEnd(10)} ${delta(res.recallAt3Base, res.recallAt3Reranked)}`);
-  console.log(`  R@5       ${pct(res.recallAt5Base).padEnd(9)} ${pct(res.recallAt5Reranked).padEnd(10)} ${delta(res.recallAt5Base, res.recallAt5Reranked)}`);
+  console.log(`  base (no boost):  MRR ${base.mrrBase.toFixed(3)}  R@1 ${pct(base.recallAt1Base)}  R@3 ${pct(base.recallAt3Base)}  R@5 ${pct(base.recallAt5Base)}`);
   console.log("");
-  console.log(`  samples improved: ${res.improved} | hurt: ${res.hurt} | unchanged: ${res.unchanged}`);
+  console.log(`  alpha   MRR     dMRR     R@1     dR@1    improved/hurt`);
+  for (const a of alphas) {
+    const r = evaluateReranker(fires, citations, a);
+    const dMrr = r.mrrReranked - r.mrrBase;
+    const dR1 = r.recallAt1Reranked - r.recallAt1Base;
+    console.log(
+      `  ${a.toFixed(2).padEnd(6)}  ${r.mrrReranked.toFixed(3)}  ` +
+      `${(dMrr >= 0 ? "+" : "") + dMrr.toFixed(3)}`.padEnd(8) + "  " +
+      `${pct(r.recallAt1Reranked)}`.padEnd(6) + "  " +
+      `${(dR1 >= 0 ? "+" : "") + (dR1 * 100).toFixed(1)}pp`.padEnd(7) + " " +
+      `${r.improved}/${r.hurt}`,
+    );
+  }
 }
 
 // Skip the I/O entrypoint when imported under Vitest; run it otherwise.

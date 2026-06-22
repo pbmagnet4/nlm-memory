@@ -4,8 +4,9 @@ Run it: `npm run eval:reranker` (reads `~/.nlm/hook-log.jsonl` + `citation-log.j
 
 ## What it measures
 
-Does the citation-frequency reranker (`src/core/recall/reranker.ts`, live in
-`recall-service.ts`) rank explicitly-cited sessions higher than raw recall does?
+Does the citation-frequency reranker (`src/core/recall/reranker.ts`) rank
+explicitly-cited sessions higher than raw recall does? (It was wired into
+`recall-service.ts` until this change; the ablation below is why it was removed.)
 
 The hook-log already captured the real production candidate sets with base
 scores, so the harness is purely offline. For each hook fire whose conversation
@@ -16,41 +17,61 @@ under test contributes no boost to itself — so we measure whether *prior*
 citations help *future* recall, not the circular "does a session's own citation
 lift it."
 
-## Baseline result (first run, ~365d of logs)
+## Step 1 — baseline, raw scores (the bug)
+
+With the production hook firing **keyword mode** (raw FTS5/BM25 scores: median
+~12, p75 ~28, max ~1200) and the citation boost at `0.15·ln(1+count)` (typically
+0.10–0.21, max ~0.99):
 
 | metric | base | reranked | delta |
 |--------|------|----------|-------|
 | MRR    | 0.623 | 0.623   | +0.001 |
 | R@1    | 41.1% | 41.1%   | +0.0pp |
-| R@3    | 82.8% | 82.1%   | -0.7pp |
-| R@5    | 100%  | 100%    | +0.0pp |
 
-151 samples: **1 improved, 1 hurt, 149 unchanged.**
+151 samples: **1 improved, 1 hurt, 149 unchanged.** A sub-1.0 additive boost on
+scores of 12–1200 can't reorder anything but exact ties — the reranker is inert.
+Same raw-vs-normalized issue as #284.
+
+## Step 2 — normalize keyword scores to 0..1, then sweep the boost weight
+
+Normalizing keyword scores by their set max (matching `mergeHybrid`) makes the
+boost *bite*. But the citation-frequency signal then proves **net-negative at
+every weight** — there is no alpha where it helps:
+
+| alpha | MRR | ΔMRR | R@1 | ΔR@1 | improved/hurt |
+|-------|-----|------|-----|------|---------------|
+| 0.00 (off) | 0.623 | — | 41.1% | — | 0/0 |
+| 0.01  | 0.623 | +0.000 | 41.1% | +0.0pp | 1/2 |
+| 0.02  | 0.622 | -0.001 | 40.4% | -0.7pp | 4/3 |
+| 0.05  | 0.610 | -0.013 | 38.4% | -2.6pp | 10/12 |
+| 0.15  | 0.605 | -0.018 | 38.4% | -2.6pp | 15/24 |
+
+Run the sweep: `npm run eval:reranker`. Single weight: `--alpha 0.05`.
 
 ## Conclusion
 
-**The reranker is inert in production, and the cause is a score-scale mismatch.**
-The production hook fires **keyword mode** (raw FTS5/BM25 scores: median ~12,
-p75 ~28, max ~1200). The citation boost is `0.15·ln(1+count)` — typically
-0.10–0.21, at most ~0.99. A sub-1.0 additive boost on scores of 12–1200 cannot
-reorder anything but exact ties. The boost was calibrated for normalized 0..1
-scores (hybrid/RRF), not the raw keyword path the hook actually uses. This is the
-same raw-vs-normalized calibration issue tracked in #284.
+**Citation frequency is not a per-query relevance signal on this corpus.** A
+globally-popular session (cited often in other conversations) is not the right
+answer to *this* query, so boosting by it displaces the genuinely-best keyword
+match. The reranker was inert before (wrong scale) and is actively harmful once
+correctly scaled. **Decision: disable it.** This change normalizes keyword
+scores to 0..1 (correct, and unblocks #284's score floor) and removes the
+citation boost from the recall path; `buildCitationBoosts`/`applyBoosts` stay as
+the harness's tested utility and a hook for a future relevance-aware reranker.
 
-Ranking headroom **does** exist (R@1 41%, R@5 100% — positives are in the
-candidate set but not at the top), so a reranker that actually fires could help.
+Net effect on ranking today: **none** (normalize + boost-off ≡ base), but on a
+clean unified scale with a proven-dead feature removed.
 
 ## Implications for #185 (neural reranker fine-tune)
 
-A neural fine-tune is premature. Before investing in it:
+A neural fine-tune **on citation labels** is the wrong target: it would learn the
+same non-predictive popularity signal this ablation just rejected. A useful
+reranker needs a query↔document relevance signal (e.g. a cross-encoder over
+query × session body), not citation frequency. If pursued later:
 
-1. **Fix the scale mismatch (Tier 2, ties into #284):** make the boost
-   multiplicative (`score·(1+boost)`) or normalize keyword scores before
-   boosting, then re-run this harness. A correctly-scaled *heuristic* reranker
-   may capture the R@1 headroom for near-zero cost.
-2. **Grow trainable labels:** 379 of 809 `tool_use` citations are orphaned under
-   the `mcp_tool`/`unknown` conversation placeholder and unusable for both this
-   eval and any training set. Thread the real `conversation_id` through
-   `cite_session` going forward (the tool already accepts it).
-3. Only then re-evaluate whether a neural reranker beats the tuned heuristic on
-   this harness.
+1. Train on query-relevance labels, not citation co-occurrence.
+2. Validate against **this harness** (it already isolates the ranking-bound
+   residual: R@5 is 100%, so all headroom is in getting the right session to
+   rank 1, currently 41%).
+3. Grow trainable labels regardless: 380 of 809 `tool_use` citations are orphaned
+   under the `mcp_tool`/`unknown` conversation placeholder (see #345).

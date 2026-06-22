@@ -66,6 +66,27 @@ describe("evaluateReranker", () => {
     expect(r.improved).toBe(0);
   });
 
+  it("normalization lets a moderate boost flip a near-tie raw BM25 scores would not", () => {
+    // Raw scores 20 (distractor) vs 18 (positive): an additive boost of ~0.36
+    // on a raw 18 (=18.36) could never overtake 20. After normalizing by the set
+    // max (20 -> 1.0, 18 -> 0.9), the same 0.36 boost (0.9+0.36=1.26) clears 1.0.
+    // This is the whole fix: the boost only bites once scores are 0..1.
+    const fires: Fire[] = [
+      { conversationId: "target", hits: [
+        { id: "distractor", score: 20 },
+        { id: "positive", score: 18 },
+      ] },
+    ];
+    const citations: GoldCitation[] = [
+      { conversationId: "target", citedId: "positive" },
+      ...Array.from({ length: 10 }, (_, i) => ({ conversationId: `other${i}`, citedId: "positive" })),
+    ];
+    const r = evaluateReranker(fires, citations);
+    expect(r.mrrBase).toBeCloseTo(0.5, 5); // raw rank 2
+    expect(r.mrrReranked).toBeCloseTo(1.0, 5); // normalized + boosted -> rank 1
+    expect(r.improved).toBe(1);
+  });
+
   it("reports positives that never reached any candidate set", () => {
     const fires: Fire[] = [
       { conversationId: "target", hits: [{ id: "x", score: 1.0 }, { id: "y", score: 0.5 }] },
