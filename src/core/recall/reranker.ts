@@ -6,10 +6,11 @@ import type { CitationEntry } from "./citation-log.js";
 
 export type CitationBoostMap = Map<string, number>;
 
-const ALPHA = 0.15;
+export const DEFAULT_CITATION_ALPHA = 0.15;
 
 export function buildCitationBoosts(
   citations: ReadonlyArray<CitationEntry>,
+  alpha: number = DEFAULT_CITATION_ALPHA,
 ): CitationBoostMap {
   const counts = new Map<string, number>();
   for (const c of citations) {
@@ -18,7 +19,7 @@ export function buildCitationBoosts(
 
   const boosts: CitationBoostMap = new Map();
   for (const [id, count] of counts) {
-    boosts.set(id, ALPHA * Math.log(1 + count));
+    boosts.set(id, alpha * Math.log(1 + count));
   }
 
   return boosts;

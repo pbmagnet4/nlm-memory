@@ -95,7 +95,7 @@ describe("RecallService.search", () => {
     expect(result.results).toEqual([]);
   });
 
-  it("keyword mode surfaces store keyword hits ranked by store score", async () => {
+  it("keyword mode surfaces store keyword hits ranked by raw store score", async () => {
     const store = new InMemoryStore(corpus, [], [
       { sessionId: "b", score: 9.2 },
       { sessionId: "a", score: 2.1 },
