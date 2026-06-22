@@ -64,8 +64,8 @@ function recordSurfaced(conversationId, ids) {
 }
 
 // src/core/hook/pointer-block.ts
-function formatPointerBlock(hits, facts = []) {
-  if (hits.length === 0 && facts.length === 0) return "";
+function formatPointerBlock(hits, facts = [], exemplars = []) {
+  if (hits.length === 0 && facts.length === 0 && exemplars.length === 0) return "";
   const out = [];
   if (hits.length > 0) {
     out.push("## Possibly-relevant prior sessions (nlm-memory)");
@@ -86,9 +86,16 @@ function formatPointerBlock(hits, facts = []) {
       out.push(`- ${f.subject} ${f.predicate}: ${f.value}${tag}`);
     }
   }
-  out.push(
-    "NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved)."
-  );
+  if (exemplars.length > 0) {
+    if (out.length > 0) out.push("");
+    out.push("## Related code exemplars (nlm-memory)");
+    for (const e of exemplars) {
+      const langPart = e.lang ? `${e.lang} \xB7 ` : "";
+      out.push(`- [${e.outcome}] ${langPart}${e.repo} - ${e.taskContext.slice(0, 120)}`);
+    }
+  }
+  const tools = exemplars.length > 0 ? "NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved), recall_code (pull the full code for a related exemplar)." : "NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved).";
+  out.push(tools);
   return out.join("\n");
 }
 
@@ -298,9 +305,9 @@ var RECALL_LIMIT = 5;
 var RECALL_TIMEOUT_MS = 2e3;
 async function recallOverHttp(prompt, runtime, conversationId) {
   const query = extractRecallQuery(prompt);
-  if (query === null) return { hits: [], facts: [] };
+  if (query === null) return { hits: [], facts: [], exemplars: [] };
   const portValue = process.env["NLM_PORT"] ?? "3940";
-  const url = `http://localhost:${portValue}/api/recall?q=${encodeURIComponent(query)}&mode=keyword&limit=${RECALL_LIMIT}&withFacts=true` + (conversationId ? `&conversation_id=${encodeURIComponent(conversationId)}` : "");
+  const url = `http://localhost:${portValue}/api/recall?q=${encodeURIComponent(query)}&mode=keyword&limit=${RECALL_LIMIT}&withFacts=true&withExemplars=true` + (conversationId ? `&conversation_id=${encodeURIComponent(conversationId)}` : "");
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), RECALL_TIMEOUT_MS);
   try {
@@ -310,12 +317,12 @@ async function recallOverHttp(prompt, runtime, conversationId) {
       headers: hookAuthHeaders(extra),
       signal: controller.signal
     });
-    if (!res.ok) return { hits: [], facts: [] };
+    if (!res.ok) return { hits: [], facts: [], exemplars: [] };
     let body;
     try {
       body = await res.json();
     } catch {
-      return { hits: [], facts: [] };
+      return { hits: [], facts: [], exemplars: [] };
     }
     const hits = (body.results ?? []).map((r) => ({
       id: r.id,
@@ -330,14 +337,28 @@ async function recallOverHttp(prompt, runtime, conversationId) {
       value: f.value,
       corroborationCount: f.corroborationCount
     }));
-    return { hits, facts };
+    const exemplars = (body.relatedExemplars ?? []).map((e) => ({
+      outcome: e.outcome,
+      lang: e.lang,
+      repo: e.repo,
+      taskContext: e.taskContext
+    }));
+    return { hits, facts, exemplars };
   } finally {
     clearTimeout(timer);
   }
 }
 
+// src/hook/score-floor.ts
+function parseScoreFloor(raw) {
+  if (raw === void 0) return 0;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return parsed;
+}
+
 // src/hook/prompt-recall-hook.ts
-var SCORE_THRESHOLD = 0;
+var SCORE_THRESHOLD = parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR"]);
 var PER_FIRE_CAP = 3;
 var PER_CONVERSATION_CAP = 10;
 var PROMPT_PREVIEW_CHARS = 200;
@@ -380,7 +401,7 @@ async function runHook(input, deps) {
     perFireCap: PER_FIRE_CAP,
     perConversationCap: PER_CONVERSATION_CAP
   });
-  const block = formatPointerBlock(selected, fetched.facts);
+  const block = formatPointerBlock(selected, fetched.facts, fetched.exemplars);
   const estTokens = Math.ceil(block.length / 4);
   appendHookLog({
     ts: (/* @__PURE__ */ new Date()).toISOString(),
