@@ -52,13 +52,15 @@ describe("POST /api/citation/explicit", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
+  const REAL_CONV = "4cf4b47c-8a3b-4c1f-af3b-ad6a012301ed";
+
   it("logs a citation entry and returns logged:true", async () => {
     const res = await app.request("/api/citation/explicit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         id: "cc_sub_a139f4ab7ca5aa909",
-        conversation_id: "conv_test_001",
+        conversation_id: REAL_CONV,
       }),
     });
     expect(res.status).toBe(200);
@@ -68,12 +70,13 @@ describe("POST /api/citation/explicit", () => {
     expect(json["source"]).toBe("mcp_tool");
   });
 
-  it("writes to the citation log with kind tool_use", async () => {
+  it("writes to the citation log with kind tool_use (attributable conversation)", async () => {
     await app.request("/api/citation/explicit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         id: "cc_sub_a139f4ab7ca5aa909",
+        conversation_id: REAL_CONV,
         reason: "Confirmed FTS5 decision.",
       }),
     });
@@ -103,14 +106,16 @@ describe("POST /api/citation/explicit", () => {
     expect(res.status).toBe(400);
   });
 
-  it("defaults conversation_id to mcp_tool when absent", async () => {
-    await app.request("/api/citation/explicit", {
+  it("drops an unattributable citation (no conversation_id) — nothing written", async () => {
+    // Without a real conversation_id the citation can't join to a query fire,
+    // so the write-time guard (isAttributableConversationId) drops it rather
+    // than polluting the log with an mcp_tool placeholder.
+    const res = await app.request("/api/citation/explicit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: "cc_sub_a139f4ab7ca5aa909" }),
     });
-    const lines = readFileSync(citationLogPath, "utf8").trim().split("\n");
-    const entry = JSON.parse(lines[0]!) as Record<string, unknown>;
-    expect(entry["conversation_id"]).toBe("mcp_tool");
+    expect(res.status).toBe(200);
+    expect(existsSync(citationLogPath)).toBe(false);
   });
 });
