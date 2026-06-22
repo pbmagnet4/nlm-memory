@@ -373,7 +373,15 @@ export class SqliteFactStore implements FactStore {
        WHERE subject = ? AND predicate = ? AND superseded_by IS NULL AND id != ?`,
     );
     const delEmbeddingStmt = this.db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ?");
-    for (const f of facts) {
+    // Collapse ONCE per (subject, predicate), under a single winner. Running the
+    // collapse per-fact creates a supersedence CYCLE when a batch carries two
+    // facts for the same (subject, predicate): each supersedes the other, so
+    // both end recall-ineligible forever (NLM #351 bug 2). Last fact in the
+    // batch for a given (subject, predicate) wins; every other active fact —
+    // batch duplicates and prior facts alike — collapses under it.
+    const winners = new Map<string, Fact>();
+    for (const f of facts) winners.set(`${f.subject} ${f.predicate}`, f);
+    for (const f of winners.values()) {
       // Capture which facts this collapse supersedes BEFORE the update, then
       // drop their embeddings — a superseded fact must not linger in the ANN
       // index (NLM #351). Same reason markSuperseded/retire delete embeddings.
