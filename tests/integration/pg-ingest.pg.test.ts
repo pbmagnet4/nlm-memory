@@ -40,7 +40,7 @@ function fact(over: Partial<Fact>): Fact {
   return {
     id: `fact_${Math.abs(hash(over.id ?? over.value ?? "x"))}`,
     kind: "decision",
-    subject: "PolySignal",
+    subject: "ProjectAtlas",
     predicate: "framework",
     value: "Hono",
     sourceSessionId: "sess_1",
@@ -111,17 +111,17 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore.insertSession factSink (PG)", () =
 
     const session = await storage.sessions.getById("sess_1");
     expect(session?.id).toBe("sess_1");
-    const current = await storage.facts.findCurrent("PolySignal", "framework");
+    const current = await storage.facts.findCurrent("ProjectAtlas", "framework");
     expect(current?.value).toBe("Hono");
     expect(current?.id).toBe("fact_a");
   });
 
   it("wires a 'continues' edge to a prior session with the same entity-set", async () => {
     await storage.sessions.insertSession(
-      record({ id: "cont_a", startedAt: "2026-05-19T10:00:00Z", entities: ["PolySignal"] }),
+      record({ id: "cont_a", startedAt: "2026-05-19T10:00:00Z", entities: ["ProjectAtlas"] }),
     );
     await storage.sessions.insertSession(
-      record({ id: "cont_b", startedAt: "2026-05-20T10:00:00Z", entities: ["PolySignal"] }),
+      record({ id: "cont_b", startedAt: "2026-05-20T10:00:00Z", entities: ["ProjectAtlas"] }),
     );
 
     const edges = await pool.query<{ from_session: string; to_session: string; kind: string }>(
@@ -134,7 +134,7 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore.insertSession factSink (PG)", () =
 
   it("does not wire a 'continues' edge when entity-sets differ", async () => {
     await storage.sessions.insertSession(
-      record({ id: "diff_a", startedAt: "2026-05-19T10:00:00Z", entities: ["PolySignal"] }),
+      record({ id: "diff_a", startedAt: "2026-05-19T10:00:00Z", entities: ["ProjectAtlas"] }),
     );
     await storage.sessions.insertSession(
       record({ id: "diff_b", startedAt: "2026-05-20T10:00:00Z", entities: ["OtherTopic"] }),
@@ -156,7 +156,7 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore.insertSession factSink (PG)", () =
       { factStore: storage.facts, facts: [fact({ id: "fact_b", value: "Hono", sourceSessionId: "sess_2" })] },
     );
 
-    const current = await storage.facts.findCurrent("PolySignal", "framework");
+    const current = await storage.facts.findCurrent("ProjectAtlas", "framework");
     expect(current?.value).toBe("Hono");
     expect(current?.id).toBe("fact_b");
     const prior = await storage.facts.getById("fact_a");
@@ -199,11 +199,11 @@ class FactClassifier implements LLMClient {
     return {
       label: "Stub label",
       summary: "Stub summary",
-      entities: ["PolySignal"],
+      entities: ["ProjectAtlas"],
       decisions: ["chose Hono"],
       open: [],
       confidence: 0.9,
-      facts: [{ kind: "decision", subject: "PolySignal", predicate: "framework", value: "Hono" }],
+      facts: [{ kind: "decision", subject: "ProjectAtlas", predicate: "framework", value: "Hono" }],
     };
   }
 }
@@ -246,7 +246,7 @@ describe.skipIf(!PG_TEST_URL)("ScanScheduler tick over PG", () => {
 
     const session = await storage.sessions.getById("sess_tick_1");
     expect(session?.label).toBe("Stub label");
-    const current = await storage.facts.findCurrent("PolySignal", "framework");
+    const current = await storage.facts.findCurrent("ProjectAtlas", "framework");
     expect(current?.value).toBe("Hono");
     expect(current?.sourceSessionId).toBe("sess_tick_1");
 
@@ -297,7 +297,7 @@ describe.skipIf(!PG_TEST_URL)("ingestSession webhook path over PG", () => {
     const session = await storage.sessions.getById("webhook_pg_1");
     expect(session?.label).toBe("Stub label");
     expect(session?.transcriptKind).toBe("webhook");
-    const current = await storage.facts.findCurrent("PolySignal", "framework");
+    const current = await storage.facts.findCurrent("ProjectAtlas", "framework");
     expect(current?.value).toBe("Hono");
     expect(current?.sourceSessionId).toBe("webhook_pg_1");
   });
