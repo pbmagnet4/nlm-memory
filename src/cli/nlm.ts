@@ -82,6 +82,8 @@ import { connectPi, disconnectPi, piSettingsPath } from "../install/pi.js";
 import { runSetup } from "../install/setup.js";
 import { runParity } from "./classify-parity.js";
 import { reembedCorpus } from "../core/embedding/embed-backfill.js";
+import { backfillExemplarEmbeddings } from "../core/exemplars/embed-backfill.js";
+import { warmCodeEmbedder } from "../core/exemplars/warm-embedder.js";
 import { backfillFacts } from "../core/facts/backfill-facts.js";
 import { normalizeEmbeddings } from "../core/embedding/embed-normalize.js";
 import { ScanScheduler } from "../core/scheduler/scheduler.js";
@@ -275,6 +277,11 @@ program
           }
         : {}),
     });
+    // Warm the code embedder once at boot so the first real capture isn't
+    // cold (capture embeds fire-and-forget; a cold model drops the vector and
+    // recall_code is vector-only). Gated on the flag, non-blocking, best-effort.
+    warmCodeEmbedder(new OllamaCodeEmbedder({ baseUrl: ollamaUrl() }));
+
     const p = port();
     serve({ fetch: app.fetch, port: p, hostname: "127.0.0.1" }, (info) => {
       console.error(`nlm-memory http listening on http://localhost:${info.port}`);
@@ -736,8 +743,31 @@ program
   .description("Re-embed every session into session_embedding_chunks (chunk + max-pool)")
   .option("-l, --limit <n>", "session cap (default: all)", (v) => Number.parseInt(v, 10))
   .option("--state <path>", "resume state file (default ~/.nlm/embed_reembed.state)")
+  .option("--exemplars", "instead: embed code_exemplars rows missing a vector (repairs dropped capture embeds)")
   .option("-v, --verbose", "per-session progress on stderr")
   .action(async (opts) => {
+    if (opts.exemplars) {
+      const { storage } = await buildStack();
+      try {
+        const report = await backfillExemplarEmbeddings({
+          dbPath: dbPath(),
+          embedder: new OllamaCodeEmbedder({ baseUrl: ollamaUrl() }),
+          store: storage.exemplars,
+          ...(opts.limit ? { limit: opts.limit } : {}),
+          ...(opts.verbose
+            ? {
+                onProgress: (i: number, n: number, id: string, status: string) => {
+                  process.stderr.write(`  [${i}/${n}] ${id}  ${status}\n`);
+                },
+              }
+            : {}),
+        });
+        process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+      } finally {
+        await storage.close();
+      }
+      return;
+    }
     const embedder = new OllamaClient({ baseUrl: ollamaUrl() });
     const report = await reembedCorpus({
       dbPath: dbPath(),
