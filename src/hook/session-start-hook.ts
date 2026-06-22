@@ -20,7 +20,11 @@ import { selectHits, type RecallHitInput } from "@core/hook/select.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
 import { hookAuthHeaders } from "./hook-auth.js";
 
-const SCORE_THRESHOLD = 0;
+// Keyword recall returns raw BM25 scores (unbounded, not the 0..1 hybrid
+// scale). FTS5 MATCH already gates relevance, so the default floor is 0 (no
+// cutoff). NLM_RECALL_SCORE_FLOOR lets an operator raise it once the
+// surfaced-vs-cited distribution (nlm precision --verbose) justifies a value.
+const SCORE_THRESHOLD = Number(process.env["NLM_RECALL_SCORE_FLOOR"] ?? "0");
 const PER_FIRE_CAP = 3;
 const PER_CONVERSATION_CAP = 10;
 const RECALL_LIMIT = 5;

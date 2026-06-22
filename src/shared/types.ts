@@ -182,6 +182,13 @@ export interface Fact {
   readonly createdAt: string;
   readonly supersededBy: string | null;
   readonly confidence: number;
+  /**
+   * When set, the fact was retired (hard-removed from active recall). Populated
+   * by store reads; absent on bulk constructions. Recall's in-memory filter
+   * excludes any fact carrying this so retired facts can never leak through the
+   * semantic-neighbour path (where the SQL pre-filter does not apply).
+   */
+  readonly retiredAt?: string | null;
 }
 
 export type FactMatchField = "value" | "subject" | "predicate" | "semantic";

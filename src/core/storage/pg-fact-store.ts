@@ -24,6 +24,7 @@ type FactRow = {
   created_at: string;
   superseded_by: string | null;
   confidence: number;
+  retired_at?: string | null;
 };
 
 export class PgFactStore implements FactStore {
@@ -76,7 +77,7 @@ export class PgFactStore implements FactStore {
     if (ids.length === 0) return [];
     const result = await this.pool.query<FactRow>(
       `SELECT id, kind, subject, predicate, value, source_session_id,
-              source_quote, created_at, superseded_by, confidence
+              source_quote, created_at, superseded_by, confidence, retired_at
        FROM facts WHERE id = ANY($1)`,
       [ids as string[]],
     );
@@ -367,5 +368,6 @@ function rowToFact(row: FactRow): Fact {
     createdAt: row.created_at,
     supersededBy: row.superseded_by,
     confidence: row.confidence,
+    retiredAt: row.retired_at ?? null,
   };
 }

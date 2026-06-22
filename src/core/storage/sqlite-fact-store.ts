@@ -38,6 +38,7 @@ type FactRow = {
   created_at: string;
   superseded_by: string | null;
   confidence: number;
+  retired_at?: string | null;
 };
 
 export class SqliteFactStore implements FactStore {
@@ -88,7 +89,7 @@ export class SqliteFactStore implements FactStore {
     const rows = this.db
       .prepare<string[], FactRow>(
         `SELECT id, kind, subject, predicate, value, source_session_id,
-                source_quote, created_at, superseded_by, confidence
+                source_quote, created_at, superseded_by, confidence, retired_at
          FROM facts WHERE id IN (${placeholders})`,
       )
       .all(...ids);
@@ -399,6 +400,7 @@ export class SqliteFactStore implements FactStore {
       createdAt: row.created_at,
       supersededBy: row.superseded_by,
       confidence: row.confidence,
+      retiredAt: row.retired_at ?? null,
     };
   }
 }
