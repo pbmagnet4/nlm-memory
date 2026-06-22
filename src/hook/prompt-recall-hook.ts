@@ -81,7 +81,7 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
   const gate = classifyPrompt(input.prompt);
   const preview = input.prompt.slice(0, PROMPT_PREVIEW_CHARS);
 
-  if (gate === "generative") {
+  if (gate === "generative" || gate === "skip") {
     appendHookLog({
       ts: new Date().toISOString(),
       conversationId: input.conversationId,

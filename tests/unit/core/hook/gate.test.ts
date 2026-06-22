@@ -21,9 +21,50 @@ describe("classifyPrompt", () => {
     expect(classifyPrompt("could you tell me what we decided")).toBe("evaluate");
   });
 
-  it("defaults to evaluate for empty or ambiguous prompts", () => {
-    expect(classifyPrompt("")).toBe("evaluate");
+  it("defaults to evaluate for ambiguous prompts with real content", () => {
     expect(classifyPrompt("the FTS5 work")).toBe("evaluate");
     expect(classifyPrompt("fix the failing test")).toBe("evaluate");
+  });
+
+  // Content gate (#352-adjacent precision fix): 41% of hook injections fired on
+  // contentless prompts where there is no user query to serve — pure context
+  // flooding. These must skip recall. Provably safe: any prompt that still
+  // carries real user content after stripping harness boilerplate keeps firing.
+  it("skips empty / whitespace / punctuation-only prompts", () => {
+    expect(classifyPrompt("")).toBe("skip");
+    expect(classifyPrompt("   ")).toBe("skip");
+    expect(classifyPrompt("...")).toBe("skip");
+  });
+
+  it("skips bare acknowledgements (whole-prompt match only)", () => {
+    expect(classifyPrompt("ok")).toBe("skip");
+    expect(classifyPrompt("yes")).toBe("skip");
+    expect(classifyPrompt("sure")).toBe("skip");
+    expect(classifyPrompt("do it")).toBe("skip");
+    expect(classifyPrompt("go ahead")).toBe("skip");
+    expect(classifyPrompt("thanks!")).toBe("skip");
+  });
+
+  it("skips harness-injected event prompts (not user queries)", () => {
+    expect(
+      classifyPrompt("<ide_selection>The user selected lines 12 to 12 from /tmp/x.ts</ide_selection>"),
+    ).toBe("skip");
+    expect(
+      classifyPrompt("<ide_opened_file>The user opened the file /tmp/x.ts in the IDE</ide_opened_file>"),
+    ).toBe("skip");
+    expect(
+      classifyPrompt("<task-notification>\n<task-id>abc123</task-id>\n</task-notification>"),
+    ).toBe("skip");
+  });
+
+  it("STILL fires when a real query follows a harness block (no recall regression)", () => {
+    expect(
+      classifyPrompt("<ide_selection>lines 1-5 of recall.ts</ide_selection>\n\nwhy does this return zero rows?"),
+    ).toBe("evaluate");
+    expect(
+      classifyPrompt("<system-reminder>task tools available</system-reminder>\nwhat did we decide about pgvector"),
+    ).toBe("evaluate");
+    // A real query that merely starts with an ack word is not a bare ack.
+    expect(classifyPrompt("ok so why is the backend returning zero results")).toBe("evaluate");
   });
 });
