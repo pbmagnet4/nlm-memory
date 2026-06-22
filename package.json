@@ -59,7 +59,8 @@
     "eval:signals": "tsx scripts/eval/signals-eval.ts",
     "eval:classifier": "tsx scripts/eval/classifier-eval.ts",
     "eval:fact-recall": "tsx scripts/eval/fact-recall-eval.ts",
-    "eval:code-exemplar": "tsx scripts/eval/code-exemplar-eval.ts"
+    "eval:code-exemplar": "tsx scripts/eval/code-exemplar-eval.ts",
+    "eval:reranker": "tsx scripts/eval/reranker-ablation.ts"
   },
   "dependencies": {
     "@clack/prompts": "^1.4.0",
