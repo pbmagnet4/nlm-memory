@@ -337,10 +337,16 @@ function formatPointerBlock(hits, facts = [], exemplars = []) {
 }
 
 // src/core/hook/select.ts
+function medianScore(hits) {
+  if (hits.length === 0) return 0;
+  const sorted = hits.map((h) => h.matchScore).sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)] ?? 0;
+}
 function selectHits(params) {
-  const { hits, surfaced, scoreThreshold, perFireCap, perConversationCap } = params;
+  const { hits, surfaced, scoreThreshold, perFireCap, perConversationCap, relativeFloor = 0 } = params;
+  const relCut = relativeFloor > 0 ? relativeFloor * medianScore(hits) : 0;
   const eligible = hits.filter(
-    (h) => h.matchScore >= scoreThreshold && !surfaced.has(h.id)
+    (h) => h.matchScore >= scoreThreshold && h.matchScore >= relCut && !surfaced.has(h.id)
   );
   const budget = Math.max(0, perConversationCap - surfaced.size);
   const limit = Math.min(perFireCap, budget);
@@ -354,9 +360,16 @@ function parseScoreFloor(raw) {
   if (!Number.isFinite(parsed) || parsed < 0) return 0;
   return parsed;
 }
+function parseRelativeFloor(raw, fallback) {
+  if (raw === void 0) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  return parsed;
+}
 
 // src/hook/prompt-recall-hook.ts
 var SCORE_THRESHOLD = parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR"]);
+var RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 var PER_FIRE_CAP = 3;
 var PER_CONVERSATION_CAP = 10;
 var PROMPT_PREVIEW_CHARS = 200;
@@ -396,6 +409,7 @@ async function runHook(input, deps) {
     hits,
     surfaced,
     scoreThreshold: SCORE_THRESHOLD,
+    relativeFloor: RELATIVE_FLOOR,
     perFireCap: PER_FIRE_CAP,
     perConversationCap: PER_CONVERSATION_CAP
   });

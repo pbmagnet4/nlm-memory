@@ -18,7 +18,7 @@ import { formatPointerBlock, type PointerExemplar, type PointerFact } from "@cor
 import { selectHits, type RecallHitInput } from "@core/hook/select.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
 import { recallOverHttp } from "./recall-over-http.js";
-import { parseScoreFloor } from "./score-floor.js";
+import { parseScoreFloor, parseRelativeFloor } from "./score-floor.js";
 
 // Keyword recall returns raw BM25 scores (unbounded, not the 0..1 hybrid
 // scale). FTS5 MATCH already gates relevance — only lexically-matching
@@ -29,6 +29,11 @@ import { parseScoreFloor } from "./score-floor.js";
 // negative input falls back to 0 instead of silently deny-all'ing recall
 // (matchScore >= NaN is always false in select.ts).
 const SCORE_THRESHOLD = parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR"]);
+// Portable per-fire noise floor: drop tail hits below this fraction of the
+// fire's median score. Default 0.9 (calibrated, #284) — trims weak tail recalls
+// while keeping ~97% of cited ones. Only the per-message keyword path runs this;
+// the session-start hybrid path is left unfiltered (unmeasured).
+const RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 const PER_FIRE_CAP = 3;
 const PER_CONVERSATION_CAP = 10;
 const PROMPT_PREVIEW_CHARS = 200;
@@ -103,6 +108,7 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
     hits,
     surfaced,
     scoreThreshold: SCORE_THRESHOLD,
+    relativeFloor: RELATIVE_FLOOR,
     perFireCap: PER_FIRE_CAP,
     perConversationCap: PER_CONVERSATION_CAP,
   });
