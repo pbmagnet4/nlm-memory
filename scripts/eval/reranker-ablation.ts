@@ -117,10 +117,11 @@ export function evaluateReranker(
       allEntries.filter((e) => e.conversationId !== fire.conversationId),
       alpha,
     );
-    // Mirror production: keyword scores are normalized to 0..1 by their set max
-    // before the additive citation boost (recall-service normalizeKeywordScores).
-    // Normalization is monotonic, so base ranking is unchanged; it only makes
-    // the boost commensurate. Without it the boost is swamped by raw BM25.
+    // Give the boost its BEST CASE: normalize keyword scores to 0..1 by their
+    // set max before the additive boost. (Production uses raw scores and no
+    // boost.) Normalization is monotonic, so base ranking is unchanged; it only
+    // makes the boost commensurate. At raw scale the boost is swamped and inert;
+    // this shows it is net-negative even when correctly scaled — hence removed.
     const max = Math.max(1, ...fire.hits.map((h) => h.score));
     const reranked = applyBoosts(
       fire.hits.map((h) => ({ id: h.id, matchScore: h.score / max })),

@@ -95,7 +95,7 @@ describe("RecallService.search", () => {
     expect(result.results).toEqual([]);
   });
 
-  it("keyword mode normalizes raw FTS5 scores to 0..1, preserving rank order", async () => {
+  it("keyword mode surfaces store keyword hits ranked by raw store score", async () => {
     const store = new InMemoryStore(corpus, [], [
       { sessionId: "b", score: 9.2 },
       { sessionId: "a", score: 2.1 },
@@ -103,11 +103,7 @@ describe("RecallService.search", () => {
     const svc = new RecallService({ store, llm: new StubEmbedder() });
     const result = await svc.search({ query: "pgvector", mode: "keyword" });
     expect(result.results.map((r) => r.id)).toEqual(["b", "a"]);
-    // Top normalizes to ~1.0 (9.2/9.2), the runner-up proportionally (2.1/9.2).
-    // Division by the set max is monotonic, so ranking is unchanged; the 0..1
-    // scale is what makes the additive citation boost + score floor work.
-    expect(result.results[0]?.matchScore).toBeCloseTo(1, 2);
-    expect(result.results[1]?.matchScore).toBeCloseTo(2.1 / 9.2, 2);
+    expect(result.results[0]?.matchScore).toBe(9.2);
   });
 
   it("metadata tiebreaker (#308) reorders a BM25 near-tie toward decision overlap", async () => {
@@ -296,9 +292,7 @@ describe("RecallService.search", () => {
       const sup = result.results.find((r) => r.id === "sup")!;
       const act = result.results.find((r) => r.id === "act")!;
       expect(sup.matchScore).toBeLessThan(act.matchScore);
-      // Keyword scores normalize to 0..1 by the set max (5) before the 0.7
-      // superseded multiplier: sup = (5/5) × 0.7.
-      expect(sup.matchScore).toBeCloseTo((5 / 5) * 0.7, 4);
+      expect(sup.matchScore).toBeCloseTo(5 * 0.7, 4);
     });
 
     it("resolves supersededBy to the successor id for superseded hits", async () => {
@@ -350,13 +344,13 @@ describe("RecallService.search", () => {
       const s2 = result.results.find((r) => r.id === "s2")!;
       expect(s2.status).toBe("superseded");
       expect(s2.supersededBy).toBe("s5");
-      // Score composition: BM25 12 normalizes to 1.0 by the set max (12),
-      // superseded down-rank ×0.7, and the #308 metadata tiebreaker. Both query
-      // tokens ("pgvector", "qdrant") appear in s2's decision marker ("pgvector
-      // over qdrant"), so the decision-overlap fraction is 1.0 → tiebreak
-      // ×(1 + 0.13). The down-rank still does not flip this pair (s2 ≫ s5's 4);
-      // the badge + successor pointer is what the stranger needed.
-      expect(s2.matchScore).toBeCloseTo((12 / 12) * 0.7 * 1.13, 4);
+      // Score composition: raw BM25 12, superseded down-rank ×0.7, and the
+      // #308 metadata tiebreaker. Both query tokens ("pgvector", "qdrant")
+      // appear in s2's decision marker ("pgvector over qdrant"), so the
+      // decision-overlap fraction is 1.0 → tiebreak ×(1 + 0.13). The
+      // down-rank still does not flip this pair (s2 ≫ s5's 4); the badge +
+      // successor pointer is what the stranger needed.
+      expect(s2.matchScore).toBeCloseTo(12 * 0.7 * 1.13, 4);
     });
   });
 });

@@ -185,7 +185,7 @@ export class RecallService {
     // 4. Finalize per mode.
     let result: RecallResult;
     if (mode === "keyword") {
-      result = finalize(input.query, entity, kind, mode, limit, normalizeKeywordScores(kwHits.map(toKeywordHit)), queryTokens);
+      result = finalize(input.query, entity, kind, mode, limit, kwHits.map(toKeywordHit), queryTokens);
     } else if (mode === "semantic") {
       result = finalize(input.query, entity, kind, mode, limit, semHits.map(toSemanticHit));
     } else {
@@ -200,11 +200,13 @@ export class RecallService {
 
     // 5. Citation-frequency reranking is intentionally NOT applied. The offline
     //    ablation (scripts/eval/reranker-ablation.ts, docs/reranker-ablation-
-    //    findings.md) showed it is net-negative at every boost weight once
-    //    scores are on a common 0..1 scale: a globally-popular session displaces
-    //    the genuinely-best per-query match (alpha 0.15 → R@1 -2.6pp; no alpha
-    //    helps). buildCitationBoosts/applyBoosts are retained as the harness's
-    //    tested utility and a hook for a future relevance-aware reranker.
+    //    findings.md) showed it cannot help: inert at the raw FTS5 scale (the
+    //    boost is swamped), and net-negative at every weight once scores are
+    //    normalized — a globally-popular session displaces the genuinely-best
+    //    per-query match (alpha 0.15 → R@1 -2.6pp; no alpha helps). citation
+    //    frequency is a popularity prior, not a per-query relevance signal.
+    //    buildCitationBoosts/applyBoosts are retained as the harness's tested
+    //    utility and a hook for a future relevance-aware reranker.
 
     // 6. Spec G.2: optionally attach high-confidence facts about top entities.
     //    Only runs when the caller opts in AND a FactStore is wired. Failures
@@ -374,18 +376,6 @@ function toKeywordHit(h: KeywordHit): RecallHit {
     matchScore: h.score,
     matchedIn: h.matchedIn,
   };
-}
-
-// FTS5/BM25 scores are unbounded (~1..1000+), while semantic and hybrid modes
-// emit 0..1. Scale the keyword leg to 0..1 by its set max (matching
-// mergeHybrid's kw.score/maxKw convention) so the downstream ADDITIVE steps —
-// the citation reranker boost and the score floor — are commensurate across
-// modes instead of being swamped by raw BM25 magnitudes. Division by a constant
-// is monotonic, so keyword ranking is unchanged; the max is clamped to 1 so a
-// genuinely low-confidence result set is not inflated to 1.0.
-function normalizeKeywordScores(hits: ReadonlyArray<RecallHit>): RecallHit[] {
-  const max = Math.max(1, ...hits.map((h) => h.matchScore));
-  return hits.map((h) => ({ ...h, matchScore: round4(h.matchScore / max) }));
 }
 
 function toSemanticHit(h: SemanticHit): RecallHit {

@@ -53,14 +53,20 @@ Run the sweep: `npm run eval:reranker`. Single weight: `--alpha 0.05`.
 **Citation frequency is not a per-query relevance signal on this corpus.** A
 globally-popular session (cited often in other conversations) is not the right
 answer to *this* query, so boosting by it displaces the genuinely-best keyword
-match. The reranker was inert before (wrong scale) and is actively harmful once
-correctly scaled. **Decision: disable it.** This change normalizes keyword
-scores to 0..1 (correct, and unblocks #284's score floor) and removes the
-citation boost from the recall path; `buildCitationBoosts`/`applyBoosts` stay as
-the harness's tested utility and a hook for a future relevance-aware reranker.
+match. The reranker was inert at the raw FTS5 scale (boost swamped) and actively
+harmful once normalized. **Decision: remove the citation boost from the recall
+path.** `buildCitationBoosts`/`applyBoosts` stay as the harness's tested utility
+and a hook for a future relevance-aware reranker.
 
-Net effect on ranking today: **none** (normalize + boost-off ≡ base), but on a
-clean unified scale with a proven-dead feature removed.
+The boost is the only change here. We deliberately do **not** normalize keyword
+scores: with the reranker gone, normalization has no consumer that benefits, and
+a separate analysis (see floor calibration below) showed min-max normalization
+makes the score floor *worse*, not better. So keyword recall keeps its raw FTS5
+scale.
+
+Net effect on ranking today: **none** — the boost was inert at raw scale, so
+removing it changes nothing functionally; it's a cleanup that deletes a
+proven-dead feature.
 
 ## Implications for #185 (neural reranker fine-tune)
 
