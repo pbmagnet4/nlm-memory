@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   captureExemplarsFromSession,
@@ -46,6 +46,22 @@ describe("captureExemplarsFromSession", () => {
     expect(out[0]!.outcome).toBe("pass");
     expect(out[0]!.sessionId).toBe("sess1");
     expect(out[0]!.taskContext).toContain("throttle");
+  });
+
+  it("stores repo as a logical basename, never the absolute projectDir path", () => {
+    const sha = git(repo, "rev-parse", "--short", "HEAD");
+    const out = captureExemplarsFromSession({
+      sessionId: "sess-repo",
+      projectDir: repo,
+      text: `[main ${sha}] add throttle helper`,
+      startedAt: "2026-06-19T12:00:00.000Z",
+      summary: "Added a throttle utility",
+      decisions: [],
+      installScope: "install-test",
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0]!.repo).toBe(basename(repo));
+    expect(out[0]!.repo.startsWith("/")).toBe(false);
   });
 
   it("returns nothing when the session shows no commit", () => {
