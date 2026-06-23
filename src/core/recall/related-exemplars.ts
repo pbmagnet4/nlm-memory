@@ -17,12 +17,12 @@ export async function pickRelatedExemplars(
   store: CodeExemplarStore,
   codeEmbedder: CodeEmbedder,
   installScope: string,
-  opts: { k?: number; maxDistance?: number } = {},
+  opts: { k?: number; maxDistance?: number; signal?: AbortSignal } = {},
 ): Promise<RelatedExemplar[]> {
   const k = opts.k ?? DEFAULT_K;
   const maxDistance = opts.maxDistance ?? DEFAULT_MAX_DISTANCE;
   try {
-    const { vector } = await codeEmbedder.embed(query, "query");
+    const { vector } = await codeEmbedder.embed(query, "query", opts.signal);
     const hits = await store.searchByVector(vector, { installScope, k });
     return hits
       .filter((h) => h.distance <= maxDistance)

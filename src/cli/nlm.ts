@@ -286,6 +286,11 @@ program
     const p = port();
     serve({ fetch: app.fetch, port: p, hostname: "127.0.0.1" }, (info) => {
       console.error(`nlm-memory http listening on http://localhost:${info.port}`);
+      // Warm the FTS5 page cache so the first user prompt doesn't hit a cold-
+      // start latency spike. The canonical DB is 444MB+; loading FTS5 B-tree
+      // pages from a cold OS page cache costs 30–40s. One keyword search forces
+      // those pages into the cache so subsequent warm calls land at ~0.03s.
+      void recall.search({ query: "warmup init", mode: "keyword", limit: 1 }).catch(() => {});
       if (hasMcpToken) {
         console.error(`  mcp:    http://localhost:${info.port}/mcp (token-gated)`);
       }

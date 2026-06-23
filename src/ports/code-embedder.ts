@@ -24,6 +24,11 @@ export interface CodeEmbedder {
    *
    * `role: "query"` — apply the model's query prefix (if any).
    * `role: "document"` — embed the chunk as-is (or with a document prefix).
+   *
+   * `signal` — optional AbortSignal; when aborted, the implementation should
+   * reject (or let the underlying fetch reject) so callers with a racing
+   * timeout can cancel the in-flight Ollama request immediately rather than
+   * letting it run to completion in the background.
    */
-  embed(text: string, role: "query" | "document"): Promise<EmbedCodeResult>;
+  embed(text: string, role: "query" | "document", signal?: AbortSignal): Promise<EmbedCodeResult>;
 }

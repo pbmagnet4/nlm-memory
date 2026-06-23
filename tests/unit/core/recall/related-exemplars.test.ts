@@ -61,4 +61,30 @@ describe("pickRelatedExemplars", () => {
     expect(askedK).toBe(1);
     expect(out).toHaveLength(1);
   });
+
+  it("threads signal to the embedder", async () => {
+    let capturedSignal: AbortSignal | undefined;
+    const capturingEmbedder: CodeEmbedder = {
+      async embed(_text, _role, signal) {
+        capturedSignal = signal;
+        return { vector: new Float32Array(768), dim: 768 };
+      },
+    };
+    const controller = new AbortController();
+    await pickRelatedExemplars("q", storeReturning([]), capturingEmbedder, "scope", { signal: controller.signal });
+    expect(capturedSignal).toBe(controller.signal);
+  });
+
+  it("returns [] when signal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const abortsOnSignal: CodeEmbedder = {
+      async embed(_text, _role, signal) {
+        if (signal?.aborted) throw new Error("aborted");
+        return { vector: new Float32Array(768), dim: 768 };
+      },
+    };
+    const out = await pickRelatedExemplars("q", storeReturning([hit({ id: "a", distance: 0.1 })]), abortsOnSignal, "scope", { signal: controller.signal });
+    expect(out).toEqual([]);
+  });
 });

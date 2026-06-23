@@ -234,12 +234,22 @@ export class RecallService {
       const embedder = this.deps.codeEmbedder;
       const scope = this.deps.installScope;
       const q = semanticQuery || input.query;
+      // AbortController lets us cancel the in-flight Ollama embed request the
+      // moment the race timeout fires, rather than leaving it running in the
+      // background where it ties up Ollama and delays the next embedding call.
+      const abort = new AbortController();
       let timer: ReturnType<typeof setTimeout>;
       const timeout = new Promise<never>((_, rej) => {
-        timer = setTimeout(() => rej(new Error("exemplar recall timeout")), EXEMPLAR_RECALL_TIMEOUT_MS);
+        timer = setTimeout(() => {
+          abort.abort();
+          rej(new Error("exemplar recall timeout"));
+        }, EXEMPLAR_RECALL_TIMEOUT_MS);
       });
       try {
-        const related = await Promise.race([pickRelatedExemplars(q, store, embedder, scope), timeout]);
+        const related = await Promise.race([
+          pickRelatedExemplars(q, store, embedder, scope, { signal: abort.signal }),
+          timeout,
+        ]);
         if (related.length > 0) result = { ...result, relatedExemplars: related };
       } catch {
         // timed out or failed — proceed without exemplars

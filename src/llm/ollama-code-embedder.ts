@@ -49,7 +49,7 @@ export class OllamaCodeEmbedder implements CodeEmbedder {
     this.isNomic = this.model.startsWith("nomic");
   }
 
-  async embed(text: string, role: "query" | "document"): Promise<EmbedCodeResult> {
+  async embed(text: string, role: "query" | "document", signal?: AbortSignal): Promise<EmbedCodeResult> {
     const prompt = this.buildPrompt(text, role);
     let res: Response;
     try {
@@ -57,6 +57,7 @@ export class OllamaCodeEmbedder implements CodeEmbedder {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model: this.model, prompt }),
+        ...(signal ? { signal } : {}),
       });
     } catch (e) {
       throw new LLMUnreachableError("ollama-code-embedder", String(e));
