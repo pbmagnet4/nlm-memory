@@ -2,7 +2,7 @@ import { mkdtempSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { hookRuntimeFromEnv, runHook } from "../../src/hook/prompt-recall-hook.js";
+import { hookRuntimeFromEnv, promptRecallEnabled, runHook } from "../../src/hook/prompt-recall-hook.js";
 import type { RecallHitInput } from "../../src/core/hook/select.js";
 
 const hits = (...ids: string[]): ReadonlyArray<RecallHitInput> =>
@@ -167,6 +167,29 @@ describe("runHook", () => {
       { mode: "live", recall: async () => { throw new Error("daemon down"); } },
     );
     expect(out).toBe("");
+  });
+});
+
+describe("promptRecallEnabled", () => {
+  // Option B (push -> pull): a dedicated flag disables the per-prompt ambient
+  // recall firehose independently of NLM_HOOK_MODE (which still drives the
+  // once-per-session passive layer). Default preserves current behavior so
+  // existing installs are unaffected; an operator opts into pull-only.
+  it("defaults to enabled when the flag is unset (backwards compatible)", () => {
+    expect(promptRecallEnabled({})).toBe(true);
+  });
+
+  it("is disabled when NLM_HOOK_PROMPT_RECALL=off", () => {
+    expect(promptRecallEnabled({ NLM_HOOK_PROMPT_RECALL: "off" })).toBe(false);
+  });
+
+  it("is case-insensitive for off", () => {
+    expect(promptRecallEnabled({ NLM_HOOK_PROMPT_RECALL: "OFF" })).toBe(false);
+  });
+
+  it("stays enabled for any non-off value (fail toward current behavior)", () => {
+    expect(promptRecallEnabled({ NLM_HOOK_PROMPT_RECALL: "live" })).toBe(true);
+    expect(promptRecallEnabled({ NLM_HOOK_PROMPT_RECALL: "garbage" })).toBe(true);
   });
 });
 
