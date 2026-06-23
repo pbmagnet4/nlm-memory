@@ -108,5 +108,21 @@ describe("MCP recall handlers write telemetry", () => {
     expect(entry.query).toBe("routing");
     expect(entry.n_results).toBe(1);
     expect(entry.returned_ids).toEqual(["fact_x"]);
+    // No runtime passed -> null (backwards compatible).
+    expect(entry.runtime).toBeNull();
+  });
+
+  it("recall_facts records the caller runtime when attributed", async () => {
+    const deps = {
+      factRecall: {
+        search: async () => ({ query: "routing", total: 1, results: [{ id: "fact_x" }] }),
+      },
+    } as unknown as McpDeps;
+
+    await recallFactsHandler(deps, { query: "routing", mode: "keyword", limit: 10 }, "claude-code");
+
+    const entry = JSON.parse(await waitForLine(process.env["NLM_FACT_QUERY_LOG"] as string));
+    expect(entry.source).toBe("mcp");
+    expect(entry.runtime).toBe("claude-code");
   });
 });

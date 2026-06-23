@@ -1000,9 +1000,11 @@ function registerFactRoutes(app: Hono, deps: HttpDeps): void {
     const result = await deps.factRecall.search(query);
 
     const source = c.req.header("x-recall-source") ?? "http";
+    const runtime = c.req.header("x-recall-runtime") ?? null;
     void logFactQuery(
       {
         source,
+        runtime,
         query: q || null,
         subject: subject ?? null,
         predicate: predicate ?? null,

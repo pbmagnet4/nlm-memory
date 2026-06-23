@@ -230,6 +230,7 @@ export interface RecallFactsInput {
 export async function recallFactsHandler(
   deps: McpDeps,
   input: Partial<RecallFactsInput>,
+  runtime: string | null = null,
 ): Promise<ToolResult> {
   if (!deps.factRecall) {
     return err(new Error("fact recall not wired in this deployment"));
@@ -253,6 +254,7 @@ export async function recallFactsHandler(
     // Telemetry — see recallSessionsHandler. Fire-and-forget.
     void logFactQuery({
       source: "mcp",
+      runtime,
       query: input.query ?? null,
       subject: input.subject ?? null,
       predicate: input.predicate ?? null,
@@ -681,7 +683,12 @@ export function createMcpServer(deps: McpDeps): McpServer {
           openWorldHint: true,
         },
       },
-      async (args) => recallFactsHandler(deps, args) as never,
+      async (args) =>
+        recallFactsHandler(
+          deps,
+          args,
+          mcpRuntimeFromClient(server.server.getClientVersion()),
+        ) as never,
     );
 
     server.registerTool(

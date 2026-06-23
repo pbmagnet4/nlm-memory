@@ -18,6 +18,10 @@ import type { FactKind, RecallMode } from "@shared/types.js";
 
 export interface FactLogEntry {
   readonly source: string;
+  /** Calling agent runtime (claude-code / hermes / pi.dev / codex / etc).
+   *  Logged from the MCP clientInfo or the x-recall-runtime header; null
+   *  for callers that don't attribute one. Mirrors the session query-log. */
+  readonly runtime: string | null;
   readonly query: string | null;
   readonly subject: string | null;
   readonly predicate: string | null;
@@ -52,6 +56,7 @@ export async function logFactQuery(
     const payload = {
       ts: new Date().toISOString(),
       source: entry.source,
+      runtime: entry.runtime,
       query: entry.query,
       subject: entry.subject,
       predicate: entry.predicate,
