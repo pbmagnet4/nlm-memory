@@ -85,6 +85,8 @@ export interface RecallGate {
   readonly mode: GateMode;
   /** Predict, from the prompt and a candidate's context, whether to inject it. */
   readonly judge: (prompt: string, candidate: string) => Promise<"relevant" | "irrelevant">;
+  /** Judge only the top N candidates (bounds hot-path latency). Unset = all. */
+  readonly maxCandidates?: number;
 }
 
 export interface RunHookDeps {
@@ -152,12 +154,13 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
   let injected = selected;
   if (deps.recallGate && selected.length > 0) {
     const g = deps.recallGate;
+    const toGate = g.maxCandidates ? selected.slice(0, g.maxCandidates) : selected;
     gateDecisions = await Promise.all(
-      selected.map(async (h) => ({ id: h.id, gate: await g.judge(input.prompt, `${h.label}\n${h.summary ?? ""}`) })),
+      toGate.map(async (h) => ({ id: h.id, gate: await g.judge(input.prompt, `${h.label}\n${h.summary ?? ""}`) })),
     );
     if (g.mode === "live") {
-      const keep = new Set(gateDecisions.filter((d) => d.gate === "relevant").map((d) => d.id));
-      injected = selected.filter((h) => keep.has(h.id));
+      const drop = new Set(gateDecisions.filter((d) => d.gate === "irrelevant").map((d) => d.id));
+      injected = selected.filter((h) => !drop.has(h.id));
     }
   }
 
@@ -215,13 +218,16 @@ async function main(): Promise<void> {
     const mode: HookMode = process.env["NLM_HOOK_MODE"] === "live" ? "live" : "shadow";
     const runtime = hookRuntimeFromEnv();
     const gateMode = parseRecallGateMode();
-    const gateUrl = process.env["OLLAMA_URL"] ?? "http://localhost:11434";
+    const gateUrl = process.env["OLLAMA_URL"] ?? "http://127.0.0.1:11434";
+    // Cap how many candidates the gate judges to bound hot-path latency
+    // (~1 judge call/fire by default). Override with NLM_HOOK_RECALL_GATE_TOPN.
+    const gateTopN = Math.max(1, Number.parseInt(process.env["NLM_HOOK_RECALL_GATE_TOPN"] ?? "1", 10) || 1);
     const out = await runHook(
       { prompt, conversationId, ...(transcriptPath ? { transcriptPath } : {}) },
       {
         mode,
         recall: (q) => recallOverHttp(q, runtime, conversationId === "unknown" ? undefined : conversationId),
-        ...(gateMode ? { recallGate: { mode: gateMode, judge: makeOllamaGate(gateUrl) } } : {}),
+        ...(gateMode ? { recallGate: { mode: gateMode, judge: makeOllamaGate(gateUrl), maxCandidates: gateTopN } } : {}),
       },
     );
     if (out) process.stdout.write(out);

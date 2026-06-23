@@ -36,7 +36,10 @@ export async function recallOverHttp(
   if (query === null) return { hits: [], facts: [], exemplars: [] };
   const portValue = process.env["NLM_PORT"] ?? "3940";
   const url =
-    `http://localhost:${portValue}/api/recall` +
+    // 127.0.0.1, not localhost: each hook is a fresh process with no connection
+    // reuse, and Node resolves localhost to IPv6 ::1 first — a measured ~50-300ms
+    // per-fire connect penalty vs ~3ms on the explicit IPv4 loopback.
+    `http://127.0.0.1:${portValue}/api/recall` +
     `?q=${encodeURIComponent(query)}&mode=keyword&limit=${RECALL_LIMIT}&withFacts=true&withExemplars=true` +
     (conversationId ? `&conversation_id=${encodeURIComponent(conversationId)}` : "");
   const controller = new AbortController();

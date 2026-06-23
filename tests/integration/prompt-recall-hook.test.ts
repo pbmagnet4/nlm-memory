@@ -98,6 +98,40 @@ describe("runHook", () => {
     expect([...memo].sort()).toEqual(["sess_a"]);
   });
 
+  it("recall gate caps how many candidates it judges (maxCandidates)", async () => {
+    let calls = 0;
+    const out = await runHook(
+      { prompt: "what did we decide about pgvector", conversationId: "c1" },
+      {
+        mode: "live",
+        recall: async () => hits("sess_a", "sess_b", "sess_c"),
+        recallGate: { mode: "live", maxCandidates: 1, judge: async () => { calls++; return "relevant"; } },
+      },
+    );
+    // Only the top candidate is judged; the rest pass through ungated.
+    expect(calls).toBe(1);
+    const log = JSON.parse(readFileSync(join(tmp, "hook-log.jsonl"), "utf8").trim());
+    expect(log.gateDecisions).toEqual([{ id: "sess_a", gate: "relevant" }]);
+    expect(log.wouldInject).toEqual(["sess_a", "sess_b", "sess_c"]);
+    expect(out).toContain("sess_c");
+  });
+
+  it("recall gate live with cap drops only the judged-irrelevant top candidate", async () => {
+    const out = await runHook(
+      { prompt: "what did we decide about pgvector", conversationId: "c1" },
+      {
+        mode: "live",
+        recall: async () => hits("sess_a", "sess_b"),
+        recallGate: { mode: "live", maxCandidates: 1, judge: async () => "irrelevant" },
+      },
+    );
+    // Top judged irrelevant -> dropped; the ungated second still injects.
+    expect(out).not.toContain("sess_a");
+    expect(out).toContain("sess_b");
+    const log = JSON.parse(readFileSync(join(tmp, "hook-log.jsonl"), "utf8").trim());
+    expect(log.wouldInject).toEqual(["sess_b"]);
+  });
+
   it("without a recall gate, no gate decisions are logged", async () => {
     await runHook(
       { prompt: "what did we decide about pgvector", conversationId: "c1" },
