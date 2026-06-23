@@ -35,19 +35,30 @@ export function parseRecallGateMode(env: NodeJS.ProcessEnv = process.env): GateM
  * "relevant" on any error so the gate can never drop a candidate due to an
  * infra blip — consistent with the hook's fail-open contract.
  */
+/** Bound the gate's hot-path cost. A cold model load can take tens of seconds;
+ * past this the gate gives up and keeps the candidate rather than block the prompt. */
+export const GATE_TIMEOUT_MS = 4000;
+
 export function makeOllamaGate(
   url: string,
   model: string = RECALL_GATE_MODEL,
+  timeoutMs: number = GATE_TIMEOUT_MS,
 ): (prompt: string, candidate: string) => Promise<"relevant" | "irrelevant"> {
   return async (prompt, candidate) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const r = await fetch(`${url}/api/chat`, {
         method: "POST",
+        signal: controller.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model,
           stream: false,
           think: false,
+          // Keep the gate model resident between fires so only the first fire
+          // pays the cold-load; subsequent gates are ~1 judge call.
+          keep_alive: "15m",
           format: GATE_FORMAT,
           options: GATE_OPTS,
           messages: [
@@ -61,6 +72,8 @@ export function makeOllamaGate(
       return v === "irrelevant" ? "irrelevant" : "relevant";
     } catch {
       return "relevant";
+    } finally {
+      clearTimeout(timer);
     }
   };
 }
