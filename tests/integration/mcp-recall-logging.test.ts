@@ -64,6 +64,30 @@ describe("MCP recall handlers write telemetry", () => {
     expect(entry.query).toBe("pgvector");
     expect(entry.n_results).toBe(2);
     expect(entry.returned_ids).toEqual(["s1", "s2"]);
+    // No runtime passed -> null (backwards compatible with existing callers).
+    expect(entry.runtime).toBeNull();
+  });
+
+  it("recall_sessions records the caller runtime when attributed", async () => {
+    const deps = {
+      recall: {
+        search: async () => ({
+          query: "pgvector",
+          entity: null,
+          kind: null,
+          mode: "keyword",
+          limit: 10,
+          total: 1,
+          results: [{ id: "s1" }],
+        }),
+      },
+    } as unknown as McpDeps;
+
+    await recallSessionsHandler(deps, { query: "pgvector", mode: "keyword", limit: 10 }, "claude-code");
+
+    const entry = JSON.parse(await waitForLine(process.env["NLM_QUERY_LOG"] as string));
+    expect(entry.source).toBe("mcp");
+    expect(entry.runtime).toBe("claude-code");
   });
 
   it("recall_facts logs an mcp-source query", async () => {

@@ -112,9 +112,24 @@ function mcpRewriteDefault(): boolean {
   return raw !== "0" && raw.toLowerCase() !== "false";
 }
 
+/**
+ * Normalize an MCP client's self-reported identity (from the initialize
+ * handshake's clientInfo) into a runtime attribution string for the recall
+ * query-log. Returns null when no usable name is present, so the log stays
+ * honest about unknown callers. Trim + lowercase keeps aggregation clean
+ * (claude-code, cursor, hermes) and matches the hook-side runtime convention.
+ */
+export function mcpRuntimeFromClient(
+  client: { name?: string } | undefined,
+): string | null {
+  const name = client?.name?.trim().toLowerCase();
+  return name ? name : null;
+}
+
 export async function recallSessionsHandler(
   deps: McpDeps,
   input: Partial<RecallToolInput>,
+  runtime: string | null = null,
 ): Promise<ToolResult> {
   try {
     const rewrite = input.rewrite ?? mcpRewriteDefault();
@@ -136,7 +151,7 @@ export async function recallSessionsHandler(
     // mirrors the HTTP /api/recall handler.
     void logQuery({
       source: "mcp",
-      runtime: null,
+      runtime,
       query: input.query ?? null,
       entity: input.entity ?? null,
       kind: input.kind ?? null,
@@ -588,7 +603,12 @@ export function createMcpServer(deps: McpDeps): McpServer {
         openWorldHint: true,
       },
     },
-    async (args) => recallSessionsHandler(deps, args) as never,
+    async (args) =>
+      recallSessionsHandler(
+        deps,
+        args,
+        mcpRuntimeFromClient(server.server.getClientVersion()),
+      ) as never,
   );
 
   server.registerTool(
