@@ -37,6 +37,16 @@ without an agent, or thinking away from the keyboard. The digest is explicitly
 never claims to be a full timesheet, and never reports absolute hours derived
 from `duration_min`.
 
+This feature ships in **NLM core** and is useful standalone to any solo
+operator who never touches consulting. NLOS (Whtnxt's consulting methodology)
+is an **extension that consumes** this generic core, not part of it. NLM core
+never models a "function," an "autonomy tier," or a "client." The boundary and
+the extension seams are specified in Section 7.1; this section's only job is to
+keep the core generic.
+
+Runtime coverage for active-time:
+- **claude-code**: full (timestamped JSONL, locally readable).
+
 Runtime coverage for active-time:
 - **claude-code**: full (timestamped JSONL, locally readable).
 - **pi**: full (timestamped, locally readable).
@@ -66,6 +76,9 @@ WorkDigest {
     topic: string
     activeMinutes: number
     share: number                  // 0..1 of activeMinutes
+    meta?: Record<string, unknown> // EXTENSION SEAM (Section 7.1): opaque to NLM,
+                                    // populated/read by extensions (NLOS puts
+                                    // {tier, roiTarget} here). Empty in Phase 1.
   }>
   focus: {                         // FOCUS QUALITY
     contextSwitches: number        // topic transitions across the day's active spans
@@ -110,15 +123,23 @@ is derived from the ordered, attributed timeline (a topic change between adjacen
 active intervals = one context switch; the longest single-topic run = the deepest
 block; deep-work ratio uses `deepBlockMin`, default 25).
 
-### Topic derivation
-A session's topic is its **first classified entity** — NLM already stores an
-ordered entity list per session, and the first entry is treated as primary —
-normalized (trim + lowercase). Sessions with no entity fall into
-`uncategorized`. An optional operator-editable alias map at
-`~/.nlm/work-topics.json` (`{ "pgvector": "NLM", "fts5": "NLM", ... }`) groups
-granular entities into project labels; absent the file, raw primary entities are
-used. This keeps v1 honest and simple while giving the operator a clean path to
-project-level rollups without a built-in taxonomy.
+### Topic derivation (a pluggable provider — extension seam)
+Topic resolution goes through a **topic provider**: `(session) -> topic label`.
+This is the seam an extension uses to impose its own taxonomy without NLM
+knowing what the taxonomy means (Section 7.1).
+
+- **Default provider (NLM core):** a session's topic is its **first classified
+  entity** — NLM already stores an ordered entity list per session, first =
+  primary — normalized (trim + lowercase); no entity falls into `uncategorized`.
+- **Alias-map provider (NLM core, optional):** an operator-editable map at
+  `~/.nlm/work-topics.json` (`{ "pgvector": "NLM", "fts5": "NLM", ... }`) groups
+  granular entities into labels; absent the file, the default provider is used.
+- **Extension providers (e.g. NLOS):** NLOS supplies its "core functions" map
+  through the same provider interface, so active-time rolls up to functions.
+  NLM core treats the returned label as an opaque string either way.
+
+This keeps the core honest and simple while making the taxonomy an injection
+point, not a hardcoded assumption.
 
 ## 5. Composer (`compose-work-digest.ts`)
 
@@ -171,7 +192,7 @@ src/core/work-digest/
   active-spans.ts        pure: timestamps + threshold -> activity intervals
   merge-active.ts        pure: intervals[] -> merged wall-clock timeline + total
   attribute.ts           pure: merged timeline + session topics -> byTopic + focus
-  topics.ts              pure: session entities + alias map -> topic label
+  topics.ts              pure: topic provider (default + alias-map) -> topic label
   build-work-digest.ts   loader: gather sessions/markers (SessionStore) + read
                          transcripts (fs via transcript_path) -> calls the pure
                          stages -> WorkDigest. The only module with I/O.
@@ -182,6 +203,32 @@ Adapters depend on `build-work-digest` + `compose-work-digest`; the pure core
 depends on nothing but its inputs. `core/` never imports an adapter. Transcript
 reading reuses the existing per-runtime transcript handling where practical; the
 loader owns all filesystem and store access so the computation stays pure.
+
+### 7.1 Layering: NLM core vs extensions (e.g. NLOS)
+
+NLM core owns the **generic** operator time-feedback above. It is standalone-
+useful and knows nothing about consulting. An extension (NLOS) consumes the core
+through a small set of stable seams and adds domain meaning. The dependency is
+**one-way: extension -> NLM**. NLM core never imports an extension, never models
+a "function," "autonomy tier," or "client," and never has a code path that
+differs because NLOS is or isn't present.
+
+Discipline (YAGNI): build only the seams that would be *breaking to add later*;
+design-for the rest and build the machinery when an extension actually needs it.
+
+| Seam | NLM core (generic) | Extension (NLOS) adds | Phase |
+|---|---|---|---|
+| **Topic provider** (`topics.ts`) | `(session) -> label`; default = first entity; optional alias map | Supplies its core-functions map via the same interface | 1 (seam) |
+| **Pass-through topic meta** (`byTopic[].meta`) | Opaque `Record<string,unknown>`, never interpreted, carried through compose untouched | Writes `{tier, roiTarget}`; its own renderer reads it | 1 (shape only, empty) |
+| **Consumable `WorkDigest`** | Versioned struct via `GET /api/work-digest` + `work_summary` MCP | Reads the contract, never internals | 1 |
+| **Range / trend queries** | Generic multi-day aggregation of `WorkDigest` (any operator wants weekly trends) | Computes the per-function ROI *delta* over the engagement | Forward |
+| **Anonymized aggregate export** | NLM owns the privacy boundary: an opt-in hook emitting anonymized, schema-level aggregates only | Owns the destination + the cross-instance/cross-client rollup (the data moat) | Forward |
+
+The NLOS value (human-side ROI proof, the operator's learning layer, the cross-
+client benchmark of human-time-reclaimed-by-tier-by-vertical) is built entirely
+in the extension on top of these seams. Phase 1 ships the core plus the three
+Phase-1 seams; it adds no NLOS concept and no NLOS-only code path. This keeps the
+open-core split clean: NLOS rides on NLM Core / Teams without NLM depending on it.
 
 ## 8. Phasing
 
@@ -252,6 +299,11 @@ All via TDD: failing test first, `npm run test` + `npm run typecheck` green.
 
 - "Closed threads" / resolution detection (needs open-question -> resolution
   linkage; today's progress is decisions-made + open-loops-surfaced).
-- Cross-day trends, weekly rollups, streaks.
+- Cross-day trends, weekly rollups, streaks (the range/trend seam is designed-for
+  in Section 7.1; the machinery is built when first needed).
 - Non-active-time productivity inference (NLM only sees what it sees).
 - A built-in project taxonomy beyond the optional alias map.
+- **All NLOS extension scope** (Section 7.1): function/autonomy-tier mapping,
+  human-side ROI proof, the anonymized cross-client benchmark. These live in the
+  extension and consume the core's seams; none of them are NLM-core work, and no
+  NLM-core code path may reference them.
