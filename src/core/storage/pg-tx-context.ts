@@ -153,6 +153,7 @@ export class PgTxBoundSessionStore implements SessionStore {
   list(_filter?: SessionFilter): Promise<ReadonlyArray<Session>> { return noRead("SessionStore.list"); }
   getById(_id: string): Promise<Session | null> { return noRead("SessionStore.getById"); }
   getByIds(_ids: ReadonlyArray<string>): Promise<ReadonlyArray<Session>> { return noRead("SessionStore.getByIds"); }
+  listByDateRange(_from: string, _to: string): Promise<ReadonlyArray<Session>> { return noRead("SessionStore.listByDateRange"); }
   semanticSearch(_v: Float32Array, _n: number): Promise<ReadonlyArray<SemanticNeighbor>> { return noRead("SessionStore.semanticSearch"); }
   keywordSearch(_q: string, _n: number): Promise<ReadonlyArray<KeywordNeighbor>> { return noRead("SessionStore.keywordSearch"); }
   resolveSuccessors(_ids: ReadonlyArray<string>): Promise<Map<string, string>> { return noRead("SessionStore.resolveSuccessors"); }

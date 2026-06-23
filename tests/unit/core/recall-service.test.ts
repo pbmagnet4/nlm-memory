@@ -46,6 +46,7 @@ class InMemoryStore implements SessionStore {
     }
     return out;
   }
+  async listByDateRange(): Promise<ReadonlyArray<Session>> { return []; }
   async updateStatus(): Promise<void> {}
   async markSuperseded(): Promise<void> {}
 }

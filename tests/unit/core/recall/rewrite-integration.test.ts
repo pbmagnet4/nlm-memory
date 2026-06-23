@@ -42,6 +42,7 @@ class CapturingStore implements SessionStore {
   async resolveSuccessors(): Promise<Map<string, string>> {
     return new Map();
   }
+  async listByDateRange(): Promise<ReadonlyArray<Session>> { return []; }
   async updateStatus() {}
   async markSuperseded() {}
 }

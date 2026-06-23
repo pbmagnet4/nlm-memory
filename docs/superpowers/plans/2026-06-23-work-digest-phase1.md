@@ -685,7 +685,7 @@ export function composeWorkDigest(d: WorkDigest): string {
   lines.push("");
 
   if (d.activeMinutes <= 0) {
-    lines.push("No agent-assisted work recorded for this day.".toLowerCase());
+    lines.push("no agent-assisted work recorded for this day.");
     return lines.join("\n");
   }
 

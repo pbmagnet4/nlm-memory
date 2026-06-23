@@ -127,6 +127,24 @@ export class PgSessionStore implements SessionStore {
     return result.rows.map((r) => rowToSession({ ...r, body: null }, entitiesMap, markersMap));
   }
 
+  async listByDateRange(fromIso: string, toIso: string): Promise<ReadonlyArray<Session>> {
+    const result = await this.pool.query<Omit<SessionRow, "body">>(
+      `SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
+              label, summary, status, transcript_kind, transcript_path
+       FROM sessions
+       WHERE started_at < $1 AND (ended_at IS NULL OR ended_at >= $2)
+       ORDER BY started_at ASC`,
+      [toIso, fromIso],
+    );
+    if (result.rows.length === 0) return [];
+    const ids = result.rows.map((r) => r.id);
+    const [entitiesMap, markersMap] = await Promise.all([
+      this.loadEntities(ids),
+      this.loadMarkers(ids),
+    ]);
+    return result.rows.map((r) => rowToSession({ ...r, body: null }, entitiesMap, markersMap));
+  }
+
   async semanticSearch(
     queryVector: Float32Array,
     limit: number,

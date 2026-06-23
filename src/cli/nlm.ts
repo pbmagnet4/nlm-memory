@@ -97,6 +97,9 @@ import { adapterFromSource } from "../core/adapters/from-source.js";
 import type { TranscriptAdapter } from "../ports/transcript-adapter.js";
 import { runDigest } from "./digest.js";
 import { installScope } from "../core/signals/install-scope.js";
+import { buildWorkDigest } from "../core/work-digest/build-work-digest.js";
+import { composeWorkDigest } from "../core/work-digest/compose-work-digest.js";
+import { defaultTopicProvider, aliasTopicProvider, type TopicProvider } from "../core/work-digest/topics.js";
 import { runChecksOnSqlite, runChecksOnPg, applyFixOnSqlite, applyFixOnPg } from "../core/integrity/check-invariants.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -124,6 +127,38 @@ function port(): number {
 
 function ollamaUrl(): string {
   return process.env["NLM_OLLAMA_URL"] ?? "http://localhost:11434";
+}
+
+export function resolveDigestDate(date: string | undefined): string {
+  if (date !== undefined) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      throw new Error(`invalid --date "${date}"; expected YYYY-MM-DD`);
+    }
+    return date;
+  }
+  const d = new Date();
+  const mo = String(d.getMonth() + 1).padStart(2, "0");
+  const da = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mo}-${da}`;
+}
+
+function workDigestEnv(): { idleThresholdMin: number; deepBlockMin: number } {
+  const idle = Number.parseInt(process.env["NLM_WORK_IDLE_THRESHOLD_MIN"] ?? "5", 10);
+  const deep = Number.parseInt(process.env["NLM_WORK_DEEP_BLOCK_MIN"] ?? "25", 10);
+  return {
+    idleThresholdMin: Number.isFinite(idle) && idle > 0 ? idle : 5,
+    deepBlockMin: Number.isFinite(deep) && deep > 0 ? deep : 25,
+  };
+}
+
+function loadTopicProvider(): TopicProvider {
+  try {
+    const raw = readFileSync(join(homedir(), ".nlm", "work-topics.json"), "utf8");
+    const map = JSON.parse(raw) as Record<string, string>;
+    return aliasTopicProvider(map);
+  } catch {
+    return defaultTopicProvider;
+  }
 }
 
 function buildClassifier(): ClassifierBox {
@@ -274,6 +309,7 @@ program
               exemplarStore: storage.exemplars,
               codeEmbedder: new OllamaCodeEmbedder({ baseUrl: ollamaUrl() }),
               installScope: scope,
+              workDigest: { store, topicProvider: loadTopicProvider(), ...workDigestEnv() },
             },
           }
         : {}),
@@ -898,6 +934,7 @@ program
       exemplarStore: storage.exemplars,
       codeEmbedder: new OllamaCodeEmbedder({ baseUrl: ollamaUrl() }),
       installScope: scope,
+      workDigest: { store, topicProvider: loadTopicProvider(), ...workDigestEnv() },
     });
     const transport = new StdioServerTransport();
     await server.connect(transport);
@@ -1861,6 +1898,24 @@ program
     } catch (e) {
       console.error("nlm digest:", e instanceof Error ? e.message : e);
       process.exit(1);
+    }
+  });
+
+program
+  .command("work-digest")
+  .description("Print the operator's agent-assisted work recap for a day")
+  .option("-d, --date <date>", "day to summarize, YYYY-MM-DD (default: today)")
+  .action(async (opts) => {
+    const date = resolveDigestDate(opts.date as string | undefined);
+    const { storage, store } = await buildStack();
+    try {
+      const digest = await buildWorkDigest(
+        { store, topicProvider: loadTopicProvider(), ...workDigestEnv() },
+        date,
+      );
+      console.log(composeWorkDigest(digest));
+    } finally {
+      await storage.close();
     }
   });
 

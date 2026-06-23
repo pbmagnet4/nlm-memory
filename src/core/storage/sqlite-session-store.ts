@@ -613,6 +613,26 @@ export class SqliteSessionStore implements SessionStore {
     );
   }
 
+  async listByDateRange(fromIso: string, toIso: string): Promise<ReadonlyArray<Session>> {
+    const rows = this.db
+      .prepare<[string, string], Omit<SessionRow, "body">>(`
+        SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
+               label, summary, status, transcript_kind, transcript_path
+        FROM sessions
+        WHERE started_at < ? AND (ended_at IS NULL OR ended_at >= ?)
+        ORDER BY started_at ASC
+      `)
+      .all(toIso, fromIso);
+    if (rows.length === 0) return [];
+    const ids = rows.map((r) => r.id);
+    const entitiesByIdMap = this.loadEntities(ids);
+    const markersByIdMap = this.loadMarkers(ids);
+    const overlay = loadActionOverlay(this.db);
+    return rows.map((r) =>
+      this.rowToSession({ ...r, body: null }, entitiesByIdMap, markersByIdMap, overlay),
+    );
+  }
+
   async semanticSearch(
     queryVector: Float32Array,
     limit: number,

@@ -23,6 +23,8 @@ import type { RecallService } from "@core/recall/recall-service.js";
 import type { FactStore } from "@ports/fact-store.js";
 import type { SessionStore } from "@ports/session-store.js";
 import { recallCode } from "@core/exemplars/recall-code.js";
+import { buildWorkDigest, type BuildWorkDigestDeps } from "@core/work-digest/build-work-digest.js";
+import { composeWorkDigest } from "@core/work-digest/compose-work-digest.js";
 import type {
   FactKind,
   FactRecallQuery,
@@ -51,6 +53,8 @@ export interface McpDeps {
   /** Optional code embedder for recall_code semantic search. */
   readonly codeEmbedder?: import("@ports/code-embedder.js").CodeEmbedder;
   readonly installScope?: string;
+  /** Wire to enable the work_summary tool (operator daily work digest). */
+  readonly workDigest?: BuildWorkDigestDeps;
 }
 
 export interface ToolResult {
@@ -81,6 +85,10 @@ function truncate(data: unknown): string {
 
 function ok(data: unknown): ToolResult {
   return { content: [{ type: "text", text: truncate(data) }] };
+}
+
+function okText(text: string): ToolResult {
+  return { content: [{ type: "text", text }] };
 }
 
 function err(error: unknown): ToolResult {
@@ -164,6 +172,30 @@ export async function recallSessionsHandler(
   } catch (e) {
     return err(e);
   }
+}
+
+export async function workSummaryHandler(
+  deps: McpDeps,
+  input: { date?: string | undefined },
+): Promise<ToolResult> {
+  if (!deps.workDigest) {
+    return okText("work_summary is not available in this deployment.");
+  }
+  try {
+    const date = input.date ?? localToday();
+    const digest = await buildWorkDigest(deps.workDigest, date);
+    return okText(composeWorkDigest(digest));
+  } catch (e) {
+    return err(e);
+  }
+}
+
+/** YYYY-MM-DD for "today" in the process timezone. */
+function localToday(): string {
+  const d = new Date();
+  const mo = String(d.getMonth() + 1).padStart(2, "0");
+  const da = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mo}-${da}`;
 }
 
 export async function getSessionHandler(
@@ -792,6 +824,24 @@ export function createMcpServer(deps: McpDeps): McpServer {
       },
     },
     async (args) => markSupersededHandler(deps, args) as never,
+  );
+
+  server.registerTool(
+    "work_summary",
+    {
+      title: "Daily work summary",
+      description:
+        "The operator's agent-assisted work recap for a day: where attention went (active time by topic), focus quality (context switches, longest block), and progress (decisions, open loops). Optional `date` (YYYY-MM-DD); defaults to today.",
+      inputSchema: {
+        date: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional()
+          .describe("Day to summarize, YYYY-MM-DD. Defaults to today."),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (args) => workSummaryHandler(deps, args) as never,
   );
 
   if (

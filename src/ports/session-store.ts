@@ -41,6 +41,13 @@ export interface SessionStore {
 
   getByIds(ids: ReadonlyArray<string>): Promise<ReadonlyArray<Session>>;
 
+  /**
+   * Sessions whose lifespan [started_at, ended_at or open] overlaps the
+   * half-open window [fromIso, toIso). Body is omitted (callers that need it
+   * fetch by id). Ordered by started_at ascending. Used by the work-digest.
+   */
+  listByDateRange(fromIso: string, toIso: string): Promise<ReadonlyArray<Session>>;
+
   semanticSearch(
     queryVector: Float32Array,
     limit: number,
