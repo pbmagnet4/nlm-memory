@@ -29,6 +29,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { classifyPrompt } from "../../src/core/hook/gate.js";
 import { topicalWordCount } from "../../src/hook/recent-context.js";
+import { judgeUsefulness, USEFULNESS_MODEL, type Verdict } from "./lib/usefulness-judge.js";
 
 type Band = "all" | "thin" | "specific";
 
@@ -50,7 +51,7 @@ function parseArgs(argv: string[]): Args {
   return {
     limit: Number.parseInt(get("limit") ?? "30", 10),
     days: Number.parseInt(get("days") ?? "30", 10),
-    model: get("model") ?? "qwen3.5:4b",
+    model: get("model") ?? USEFULNESS_MODEL,
     ollamaUrl: get("ollama") ?? process.env["OLLAMA_URL"] ?? "http://localhost:11434",
     verbose: argv.includes("--verbose"),
     json: get("json") ?? null,
@@ -182,54 +183,6 @@ function locateTranscript(cid: string): string | null {
   );
 }
 
-type Verdict = "used" | "partial" | "unused";
-
-async function judge(
-  args: Args,
-  prompt: string,
-  context: string,
-  response: string,
-): Promise<{ verdict: Verdict; reason: string }> {
-  const res = await fetch(`${args.ollamaUrl}/api/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: args.model,
-      stream: false,
-      think: false,
-      format: {
-        type: "object",
-        properties: {
-          verdict: { type: "string", enum: ["used", "partial", "unused"] },
-          reason: { type: "string" },
-        },
-        required: ["verdict", "reason"],
-      },
-      options: { temperature: 0 },
-      messages: [
-        {
-          role: "system",
-          content:
-            "You judge whether an assistant's RESPONSE used information from an INJECTED prior-session " +
-            "context. Judge the response against the context only — never grade the assistant's quality. " +
-            "verdict=used: the response clearly draws on specific information from the injected context " +
-            "that is not already in the prompt and not generic. verdict=partial: the context is on-topic " +
-            "and plausibly informed the response but no specific borrowed detail is visible. " +
-            "verdict=unused: the injected context is off-topic or absent from the response. " +
-            'Output JSON {"verdict":"...","reason":"..."}.',
-        },
-        {
-          role: "user",
-          content: `USER PROMPT:\n${prompt}\n\nINJECTED CONTEXT:\n${context}\n\nASSISTANT RESPONSE:\n${response}`,
-        },
-      ],
-    }),
-  });
-  const data = (await res.json()) as { message?: { content?: string } };
-  const parsed = JSON.parse(data.message?.content ?? "{}") as { verdict?: Verdict; reason?: string };
-  return { verdict: parsed.verdict ?? "unused", reason: parsed.reason ?? "" };
-}
-
 function citedSet(days: number): Set<string> {
   // (conversationId|citedId) pairs from the citation log, for the cited-rate baseline.
   const path = join(homedir(), ".nlm", "citation-log.jsonl");
@@ -274,16 +227,13 @@ async function main(): Promise<void> {
     if (!row) continue;
     const context = `${row.label}\n${row.summary}\n${row.body}`.trim();
 
-    const { verdict, reason } = await judge(args, f.prompt, context, response);
+    const verdict: Verdict = await judgeUsefulness(args.ollamaUrl, args.model, { prompt: f.prompt, context, response });
     counts[verdict] += 1;
     scored += 1;
     if (cited.has(`${f.conversationId}|${f.injectedId}`)) citedHits += 1;
 
     if (args.verbose) {
-      console.error(
-        `[${verdict.toUpperCase().padEnd(7)}] ${JSON.stringify(f.prompt.slice(0, 60))}\n` +
-          `    inj: ${row.label}\n    why: ${reason}`,
-      );
+      console.error(`[${verdict.toUpperCase().padEnd(7)}] ${JSON.stringify(f.prompt.slice(0, 60))}\n    inj: ${row.label}`);
     }
   }
   db.close();
