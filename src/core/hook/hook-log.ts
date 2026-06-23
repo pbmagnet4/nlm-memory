@@ -23,6 +23,8 @@ export interface HookLogEntry {
   readonly wouldInject: ReadonlyArray<string>;
   readonly estTokens: number;
   readonly mode: "shadow" | "live";
+  /** Per-candidate relevance-gate decisions, when the recall gate ran. */
+  readonly gateDecisions?: ReadonlyArray<{ readonly id: string; readonly gate: "relevant" | "irrelevant" }>;
 }
 
 function logPath(): string {

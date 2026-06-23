@@ -58,6 +58,55 @@ describe("runHook", () => {
     expect([...memo].sort()).toEqual(["sess_a", "sess_b"]);
   });
 
+  it("recall gate shadow logs decisions without changing injection", async () => {
+    const out = await runHook(
+      { prompt: "what did we decide about pgvector", conversationId: "c1" },
+      {
+        mode: "live",
+        recall: async () => hits("sess_a", "sess_b"),
+        recallGate: { mode: "shadow", judge: async () => "irrelevant" },
+      },
+    );
+    expect(out).toContain("sess_a");
+    expect(out).toContain("sess_b");
+    const log = JSON.parse(readFileSync(join(tmp, "hook-log.jsonl"), "utf8").trim());
+    expect(log.wouldInject).toEqual(["sess_a", "sess_b"]);
+    expect(log.gateDecisions).toEqual([
+      { id: "sess_a", gate: "irrelevant" },
+      { id: "sess_b", gate: "irrelevant" },
+    ]);
+  });
+
+  it("recall gate live drops irrelevant candidates from injection", async () => {
+    const out = await runHook(
+      { prompt: "what did we decide about pgvector", conversationId: "c1" },
+      {
+        mode: "live",
+        recall: async () => hits("sess_a", "sess_b"),
+        recallGate: { mode: "live", judge: async (_p, c) => (c.includes("sess_b") ? "irrelevant" : "relevant") },
+      },
+    );
+    expect(out).toContain("sess_a");
+    expect(out).not.toContain("sess_b");
+    const log = JSON.parse(readFileSync(join(tmp, "hook-log.jsonl"), "utf8").trim());
+    expect(log.wouldInject).toEqual(["sess_a"]);
+    expect(log.gateDecisions).toEqual([
+      { id: "sess_a", gate: "relevant" },
+      { id: "sess_b", gate: "irrelevant" },
+    ]);
+    const memo = JSON.parse(readFileSync(join(tmp, "state", "c1.json"), "utf8"));
+    expect([...memo].sort()).toEqual(["sess_a"]);
+  });
+
+  it("without a recall gate, no gate decisions are logged", async () => {
+    await runHook(
+      { prompt: "what did we decide about pgvector", conversationId: "c1" },
+      { mode: "live", recall: async () => hits("sess_a") },
+    );
+    const log = JSON.parse(readFileSync(join(tmp, "hook-log.jsonl"), "utf8").trim());
+    expect(log.gateDecisions).toBeUndefined();
+  });
+
   it("live mode dedups: a second fire does not re-surface the same session", async () => {
     const deps = { mode: "live" as const, recall: async () => hits("sess_a") };
     const first = await runHook({ prompt: "what did we decide", conversationId: "c1" }, deps);
