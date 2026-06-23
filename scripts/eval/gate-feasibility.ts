@@ -17,6 +17,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { RECALL_GATE_SYSTEM } from "../../src/hook/recall-gate.js";
 
 const get = (k: string) => { const h = process.argv.find((a) => a.startsWith(`--${k}=`)); return h ? h.slice(k.length + 3) : undefined; };
 const MODEL = get("model") ?? "qwen3.5:4b";
@@ -27,10 +28,11 @@ const GOLD = (get("gold") ?? join(homedir(), ".nlm", "eval", "gold-usefulness.js
 type V = "used" | "partial" | "unused";
 interface Gold { prompt: string; context: string; response: string; gold: V }
 
-const MODE = (get("mode") ?? "balanced") as "balanced" | "conservative";
+// conservative = the SHIPPED gate prompt (imported so the bench can't drift from
+// the runtime); balanced = a looser variant kept for the operating-point sweep.
+const MODE = (get("mode") ?? "conservative") as "balanced" | "conservative";
 const SYSTEM = MODE === "conservative"
-  ? "You are a recall GATE protecting against off-topic memory injection. Given a USER PROMPT and a CANDIDATE prior-session context, answer irrelevant ONLY when the candidate is CLEARLY about a completely different topic, project, or task than the prompt (e.g. the prompt is about debugging a website and the candidate is about a trading pipeline). If there is ANY plausible topical connection, or you are at all unsure, answer relevant. Dropping a useful memory is worse than keeping a marginal one. You do NOT see the assistant's answer. " +
-    'Output {"gate":"relevant"|"irrelevant"}.'
+  ? RECALL_GATE_SYSTEM
   : "You are a recall GATE. Given a USER PROMPT and a CANDIDATE prior-session context, decide whether injecting the candidate would likely HELP the assistant answer this prompt. " +
     "relevant = the candidate is about the same topic/task/project as the prompt and plausibly carries information the assistant would use. " +
     "irrelevant = the candidate is about a different topic/task, or shares only a word with the prompt. " +
