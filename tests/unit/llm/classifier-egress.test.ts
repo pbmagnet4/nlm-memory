@@ -20,4 +20,19 @@ describe("classifierEgressNotice", () => {
   it("treats unknown providers as local (no false disclosure)", () => {
     expect(classifierEgressNotice("some-local-thing")).toBeNull();
   });
+
+  it("treats an openai provider pointed at a LAN/loopback endpoint as local", () => {
+    expect(classifierEgressNotice("openai", "http://localhost:1234/v1")).toBeNull();
+    expect(classifierEgressNotice("openai", "http://127.0.0.1:1234/v1")).toBeNull();
+    expect(classifierEgressNotice("openai", "http://192.168.1.50:1234/v1")).toBeNull(); // private LAN
+    expect(classifierEgressNotice("openai", "http://10.0.0.5:8000/v1")).toBeNull(); // private LAN
+    expect(classifierEgressNotice("openai", "http://host.local:1234/v1")).toBeNull(); // mDNS
+  });
+
+  it("discloses egress for an openai provider pointed at a public endpoint", () => {
+    const notice = classifierEgressNotice("openai", "https://api.openai.com/v1");
+    expect(notice).not.toBeNull();
+    expect(notice).toContain("api.openai.com");
+    expect(notice).toContain("NLM_CLASSIFIER=ollama");
+  });
 });

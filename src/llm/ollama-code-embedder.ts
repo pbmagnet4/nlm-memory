@@ -17,8 +17,19 @@
 import type { CodeEmbedder, EmbedCodeResult } from "@ports/code-embedder.js";
 import { LLMUnreachableError } from "@ports/llm-client.js";
 
-const DEFAULT_CODE_EMBED_MODEL = "hf.co/awhiteside/CodeRankEmbed-Q8_0-GGUF";
-const CODE_RANK_QUERY_PREFIX = "Represent this query for searching relevant code: ";
+export const DEFAULT_CODE_EMBED_MODEL = "hf.co/awhiteside/CodeRankEmbed-Q8_0-GGUF";
+export const CODE_RANK_QUERY_PREFIX = "Represent this query for searching relevant code: ";
+
+/** Apply the code-embed prefix convention for `model`. CodeRankEmbed prefixes
+ *  queries and leaves documents raw; nomic-family models use the asymmetric
+ *  search_query/search_document prefixes. Shared by both transports so the two
+ *  code embedders produce identical inputs (and thus interchangeable vectors). */
+export function buildCodeEmbedPrompt(text: string, role: "query" | "document", model: string): string {
+  if (model.startsWith("nomic")) {
+    return role === "query" ? `search_query: ${text}` : `search_document: ${text}`;
+  }
+  return role === "query" ? `${CODE_RANK_QUERY_PREFIX}${text}` : text;
+}
 
 function l2Normalize(v: Float32Array): Float32Array {
   let sumSq = 0;
@@ -41,16 +52,14 @@ export interface OllamaCodeEmbedderOptions {
 export class OllamaCodeEmbedder implements CodeEmbedder {
   private readonly baseUrl: string;
   private readonly model: string;
-  private readonly isNomic: boolean;
 
   constructor(opts: OllamaCodeEmbedderOptions = {}) {
     this.baseUrl = opts.baseUrl ?? (process.env["OLLAMA_HOST"] ?? "http://localhost:11434");
     this.model = opts.model ?? (process.env["NLM_CODE_EMBED_MODEL"] ?? DEFAULT_CODE_EMBED_MODEL);
-    this.isNomic = this.model.startsWith("nomic");
   }
 
   async embed(text: string, role: "query" | "document", signal?: AbortSignal): Promise<EmbedCodeResult> {
-    const prompt = this.buildPrompt(text, role);
+    const prompt = buildCodeEmbedPrompt(text, role, this.model);
     let res: Response;
     try {
       res = await fetch(`${this.baseUrl}/api/embeddings`, {
@@ -72,12 +81,5 @@ export class OllamaCodeEmbedder implements CodeEmbedder {
     const raw = new Float32Array(data.embedding);
     const vector = l2Normalize(raw);
     return { vector, dim: vector.length };
-  }
-
-  private buildPrompt(text: string, role: "query" | "document"): string {
-    if (this.isNomic) {
-      return role === "query" ? `search_query: ${text}` : `search_document: ${text}`;
-    }
-    return role === "query" ? `${CODE_RANK_QUERY_PREFIX}${text}` : text;
   }
 }
