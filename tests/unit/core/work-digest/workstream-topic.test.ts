@@ -32,3 +32,20 @@ it("attributes a bound session to its (merge-resolved) workstream label", async 
   const d = await buildWorkDigest(deps, "2026-06-24");
   expect(d.byTopic.map((t) => t.topic)).toContain("NLM"); // resolved through merged_into
 });
+
+it("exposes the resolved workstream_id on the topic's meta (telemetry seam §11)", async () => {
+  const sessions = [
+    { id: "s1", entities: ["x"], label: "x", decisions: [], open: [], transcriptPath: "/t1", workstreamId: "ws_old" },
+  ] as any;
+  const deps: any = {
+    store: { listByDateRange: async () => sessions },
+    workstreams: { listAll: async () => [
+      { id: "ws_old", label: "Old", mergedInto: "ws_new" },
+      { id: "ws_new", label: "NLM", mergedInto: null },
+    ] },
+    readTimestamps: () => [Date.parse("2026-06-24T10:00:00Z"), Date.parse("2026-06-24T10:30:00Z")],
+  };
+  const d = await buildWorkDigest(deps, "2026-06-24");
+  const nlm = d.byTopic.find((t) => t.topic === "NLM");
+  expect(nlm?.meta?.["workstream_id"]).toBe("ws_new"); // survivor id, not ws_old
+});
