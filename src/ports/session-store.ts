@@ -86,4 +86,5 @@ export interface SessionStore {
   setWorkstreamBinding(sessionId: string, workstreamId: string | null, source: BindingSource | null, confidence: number | null): Promise<void>;
   listSessionIdsByWorkstreams(workstreamIds: ReadonlyArray<string>): Promise<ReadonlyArray<string>>;
   getEntities(sessionId: string): Promise<ReadonlyArray<string>>;
+  getWorkstreamIds(sessionIds: ReadonlyArray<string>): Promise<Map<string, string | null>>;
 }

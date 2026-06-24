@@ -168,6 +168,7 @@ export class PgTxBoundSessionStore implements SessionStore {
   resolveSuccessors(_ids: ReadonlyArray<string>): Promise<Map<string, string>> { return noRead("SessionStore.resolveSuccessors"); }
   listSessionIdsByWorkstreams(_ids: ReadonlyArray<string>): Promise<ReadonlyArray<string>> { return noRead("SessionStore.listSessionIdsByWorkstreams"); }
   getEntities(_id: string): Promise<ReadonlyArray<string>> { return noRead("SessionStore.getEntities"); }
+  getWorkstreamIds(_ids: ReadonlyArray<string>): Promise<Map<string, string | null>> { return noRead("SessionStore.getWorkstreamIds"); }
 }
 
 function insertFactOp(f: Fact): QueuedOp {

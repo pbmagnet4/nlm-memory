@@ -52,6 +52,7 @@ class InMemoryStore implements SessionStore {
   async setWorkstreamBinding(): Promise<void> {}
   async listSessionIdsByWorkstreams(): Promise<ReadonlyArray<string>> { return []; }
   async getEntities(): Promise<ReadonlyArray<string>> { return []; }
+  async getWorkstreamIds(): Promise<Map<string, string | null>> { return new Map(); }
 }
 
 class StubEmbedder implements LLMClient {

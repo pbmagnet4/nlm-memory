@@ -871,6 +871,15 @@ export class SqliteSessionStore implements SessionStore {
     return this.loadEntities([sessionId]).get(sessionId) ?? [];
   }
 
+  async getWorkstreamIds(sessionIds: ReadonlyArray<string>): Promise<Map<string, string | null>> {
+    const out = new Map<string, string | null>();
+    if (sessionIds.length === 0) return out;
+    const ph = sessionIds.map(() => "?").join(",");
+    for (const r of this.db.prepare<string[], { id: string; workstream_id: string | null }>(
+      `SELECT id, workstream_id FROM sessions WHERE id IN (${ph})`).all(...sessionIds)) out.set(r.id, r.workstream_id);
+    return out;
+  }
+
   // ── insert helpers used by tests / future ingest path ─────────────────
   /** @internal test-only helper; production callers use insertSession(). */
   insertSessionForTest(session: Session): void {

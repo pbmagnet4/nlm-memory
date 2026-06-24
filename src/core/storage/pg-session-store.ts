@@ -331,6 +331,17 @@ export class PgSessionStore implements SessionStore {
     return (await this.loadEntities([sessionId])).get(sessionId) ?? [];
   }
 
+  async getWorkstreamIds(sessionIds: ReadonlyArray<string>): Promise<Map<string, string | null>> {
+    const out = new Map<string, string | null>();
+    if (sessionIds.length === 0) return out;
+    const ph = sessionIds.map((_, i) => `$${i + 1}`).join(",");
+    const result = await this.pool.query<{ id: string; workstream_id: string | null }>(
+      `SELECT id, workstream_id FROM sessions WHERE id IN (${ph})`, [...sessionIds],
+    );
+    for (const r of result.rows) out.set(r.id, r.workstream_id);
+    return out;
+  }
+
   async recentWrites(limit: number): Promise<RecentWrite[]> {
     const result = await this.pool.query<Omit<RecentWrite, "entities">>(
       `SELECT id, runtime, label, summary, created_at AS "createdAt"
