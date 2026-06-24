@@ -9,7 +9,7 @@ describe("scoreGold", () => {
   it("computes precision/recall from predicted vs gold workstream", () => {
     const m = scoreGold([
       { goldWorkstream: "NLM", predicted: "NLM", score: 0.9 },          // TP
-      { goldWorkstream: "NLM", predicted: "PolySignal", score: 0.8 },   // wrong bind (FP for PolySignal, miss for NLM)
+      { goldWorkstream: "NLM", predicted: "Beacon", score: 0.8 },   // wrong bind (FP for Beacon, miss for NLM)
       { goldWorkstream: "NLM", predicted: null, score: 0.1 },           // create/no-bind (miss)
     ]);
     expect(m.total).toBe(3);

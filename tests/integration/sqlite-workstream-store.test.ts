@@ -52,11 +52,11 @@ describe("SqliteWorkstreamStore", () => {
   });
 
   it("returns entity-overlap candidates", async () => {
-    seedEntities("NLM", "Daemon", "PolySignal");
+    seedEntities("NLM", "Daemon", "Beacon");
     await storage.workstreams.create({ id: "ws_1", label: "NLM" });
-    await storage.workstreams.create({ id: "ws_2", label: "PolySignal" });
+    await storage.workstreams.create({ id: "ws_2", label: "Beacon" });
     await storage.workstreams.upsertEntities("ws_1", ["NLM", "Daemon"]);
-    await storage.workstreams.upsertEntities("ws_2", ["PolySignal"]);
+    await storage.workstreams.upsertEntities("ws_2", ["Beacon"]);
     const cands = await storage.workstreams.candidatesByEntityOverlap(["NLM"], 10);
     expect(cands.map((c) => c.workstreamId)).toEqual(["ws_1"]);
     expect(new Set(cands[0]!.entities)).toEqual(new Set(["NLM", "Daemon"]));
