@@ -409,6 +409,7 @@ program
           intervalMs: opts.intervalMin * 60_000,
           exemplarStore: storage.exemplars,
           codeEmbedder: new OllamaCodeEmbedder({ baseUrl: ollamaUrl() }),
+          workstreams: storage.workstreams,
         });
         scheduler.start();
         console.error(

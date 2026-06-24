@@ -25,6 +25,7 @@ import type { TranscriptAdapter } from "@ports/transcript-adapter.js";
 import type { SignalStore } from "@ports/signal-store.js";
 import type { CodeExemplarStore } from "@ports/code-exemplar-store.js";
 import type { CodeEmbedder } from "@ports/code-embedder.js";
+import type { WorkstreamStore } from "@ports/workstream-store.js";
 import { drainSessionExemplars } from "@core/exemplars/capture-from-session.js";
 import { extractFacts } from "@core/facts/extract-facts.js";
 import { normalizeSignal } from "@core/signals/ingest-signal.js";
@@ -40,6 +41,29 @@ import { MAX_CLASSIFY_FAILURES, getFileSize, recordClassified, recordClassifiedP
 import { runCheapChecksOnSqlite } from "@core/integrity/check-invariants.js";
 import { classifyAdaptive } from "@core/classifier/hierarchical-classify.js";
 import { TimeoutError } from "@core/util/with-timeout.js";
+import { bindSessionToWorkstream } from "@core/workstream/bind.js";
+import { DEFAULT_THRESHOLDS, DEFAULT_WEIGHTS } from "@core/workstream/thresholds.js";
+
+function bindWorkstreamsEnabled(): boolean {
+  return process.env["NLM_WORKSTREAM_BIND"] === "true";
+}
+
+function makeClassifierPicker(classifier: LLMClient): (input: { sessionLabel: string; sessionSummary: string; candidates: ReadonlyArray<{ workstreamId: string; label: string; entities: ReadonlyArray<string> }> }) => Promise<string | null> {
+  return async ({ sessionLabel, sessionSummary, candidates }) => {
+    if (candidates.length === 0) return null;
+    const list = candidates.map((c, i) => `${i + 1}. id=${c.workstreamId} label="${c.label}" entities=[${c.entities.join(", ")}]`).join("\n");
+    const prompt = `You are resolving an ambiguous workstream assignment.\n\nSession label: "${sessionLabel}"\nSession summary: "${sessionSummary}"\n\nCandidates:\n${list}\n\nRespond with ONLY the workstreamId of the best match, or "none" if none fit. No explanation.`;
+    try {
+      const result = await classifier.classify(prompt);
+      const raw = (result.label ?? "").trim();
+      if (!raw || raw === "none") return null;
+      const match = candidates.find((c) => c.workstreamId === raw);
+      return match ? raw : null;
+    } catch {
+      return null;
+    }
+  };
+}
 
 const DEFAULT_INTERVAL_MS = 30 * 60 * 1000; // 30 min, matches Python default
 const DEFAULT_CLASSIFY_TIMEOUT_MS = 120_000;
@@ -110,6 +134,9 @@ export interface SchedulerOptions {
   readonly exemplarStore?: CodeExemplarStore | null;
   /** Code embedder for exemplar vectors (CodeRankEmbed). */
   readonly codeEmbedder?: CodeEmbedder | null;
+  /** WorkstreamStore for flag-gated session binding. When set and
+   *  NLM_WORKSTREAM_BIND=true, each ingested session is bound to a workstream. */
+  readonly workstreams?: WorkstreamStore | null;
   readonly intervalMs?: number;
   readonly classifyTimeoutMs?: number;
   readonly confidenceFloor?: number;
@@ -127,13 +154,14 @@ export interface TickReport {
 }
 
 export class ScanScheduler {
-  private readonly opts: Required<Omit<SchedulerOptions, "embedder" | "factStore" | "signalStore" | "installScope" | "exemplarStore" | "codeEmbedder">> & {
+  private readonly opts: Required<Omit<SchedulerOptions, "embedder" | "factStore" | "signalStore" | "installScope" | "exemplarStore" | "codeEmbedder" | "workstreams">> & {
     readonly embedder: LLMClient | null;
     readonly factStore: SqliteFactStore | PgFactStore | null;
     readonly signalStore: SignalStore | null;
     readonly installScope: string;
     readonly exemplarStore: CodeExemplarStore | null;
     readonly codeEmbedder: CodeEmbedder | null;
+    readonly workstreams: WorkstreamStore | null;
   };
   private stopped = true;
   private timer: NodeJS.Timeout | null = null;
@@ -149,6 +177,7 @@ export class ScanScheduler {
       installScope: opts.installScope ?? "default",
       exemplarStore: opts.exemplarStore ?? null,
       codeEmbedder: opts.codeEmbedder ?? null,
+      workstreams: opts.workstreams ?? null,
       intervalMs: opts.intervalMs ?? DEFAULT_INTERVAL_MS,
       classifyTimeoutMs: opts.classifyTimeoutMs ?? DEFAULT_CLASSIFY_TIMEOUT_MS,
       confidenceFloor: opts.confidenceFloor ?? DEFAULT_CONFIDENCE_FLOOR,
@@ -299,6 +328,32 @@ export class ScanScheduler {
             recordClassified(sqliteDb!, adapter.name, chunk.sourcePath, chunk.id);
           }
           inserted += 1;
+          if (bindWorkstreamsEnabled() && this.opts.workstreams && this.opts.embedder) {
+            try {
+              await bindSessionToWorkstream(
+                {
+                  workstreams: this.opts.workstreams,
+                  sessions: this.opts.store,
+                  embedder: this.opts.embedder,
+                  thresholds: DEFAULT_THRESHOLDS,
+                  weights: DEFAULT_WEIGHTS,
+                  pickAmbiguous: makeClassifierPicker(this.opts.classifier),
+                  log: this.opts.logger,
+                },
+                {
+                  sessionId: chunk.id,
+                  label: classification.label,
+                  summary: classification.summary,
+                  entities: classification.entities,
+                  startedAt: chunk.startedAt,
+                },
+              );
+            } catch (e) {
+              this.opts.logger(
+                `[workstream] bind error for ${chunk.id}: ${e instanceof Error ? e.message : String(e)}`,
+              );
+            }
+          }
           if (this.opts.exemplarStore && this.opts.installScope) {
             await drainSessionExemplars(
               {
