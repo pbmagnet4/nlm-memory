@@ -311,6 +311,26 @@ export class PgSessionStore implements SessionStore {
     }
   }
 
+  async setWorkstreamBinding(sessionId: string, workstreamId: string | null, source: import("@core/workstream/model.js").BindingSource | null, confidence: number | null): Promise<void> {
+    await this.pool.query(
+      "UPDATE sessions SET workstream_id = $1, binding_source = $2, binding_confidence = $3, updated_at = NOW() WHERE id = $4",
+      [workstreamId, source, confidence, sessionId],
+    );
+  }
+
+  async listSessionIdsByWorkstreams(workstreamIds: ReadonlyArray<string>): Promise<ReadonlyArray<string>> {
+    if (workstreamIds.length === 0) return [];
+    const ph = workstreamIds.map((_, i) => `$${i + 1}`).join(",");
+    const r = await this.pool.query<{ id: string }>(
+      `SELECT id FROM sessions WHERE workstream_id IN (${ph}) ORDER BY started_at ASC`, [...workstreamIds],
+    );
+    return r.rows.map((row) => row.id);
+  }
+
+  async getEntities(sessionId: string): Promise<ReadonlyArray<string>> {
+    return (await this.loadEntities([sessionId])).get(sessionId) ?? [];
+  }
+
   async recentWrites(limit: number): Promise<RecentWrite[]> {
     const result = await this.pool.query<Omit<RecentWrite, "entities">>(
       `SELECT id, runtime, label, summary, created_at AS "createdAt"

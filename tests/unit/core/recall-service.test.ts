@@ -49,6 +49,9 @@ class InMemoryStore implements SessionStore {
   async listByDateRange(): Promise<ReadonlyArray<Session>> { return []; }
   async updateStatus(): Promise<void> {}
   async markSuperseded(): Promise<void> {}
+  async setWorkstreamBinding(): Promise<void> {}
+  async listSessionIdsByWorkstreams(): Promise<ReadonlyArray<string>> { return []; }
+  async getEntities(): Promise<ReadonlyArray<string>> { return []; }
 }
 
 class StubEmbedder implements LLMClient {

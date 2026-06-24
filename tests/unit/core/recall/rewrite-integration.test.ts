@@ -45,6 +45,9 @@ class CapturingStore implements SessionStore {
   async listByDateRange(): Promise<ReadonlyArray<Session>> { return []; }
   async updateStatus() {}
   async markSuperseded() {}
+  async setWorkstreamBinding(): Promise<void> {}
+  async listSessionIdsByWorkstreams(): Promise<ReadonlyArray<string>> { return []; }
+  async getEntities(): Promise<ReadonlyArray<string>> { return []; }
 }
 
 class RewritingLLM implements LLMClient {

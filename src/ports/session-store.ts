@@ -6,6 +6,7 @@
  * tomorrow means writing a new implementation; core/ does not change.
  */
 
+import type { BindingSource } from "@core/workstream/model.js";
 import type { Session, SessionStatus } from "@shared/types.js";
 
 export interface SessionFilter {
@@ -81,4 +82,8 @@ export interface SessionStore {
    * action that lets an operator retroactively retire a stale session.
    */
   markSuperseded(predecessorId: string, successorId: string): Promise<void>;
+
+  setWorkstreamBinding(sessionId: string, workstreamId: string | null, source: BindingSource | null, confidence: number | null): Promise<void>;
+  listSessionIdsByWorkstreams(workstreamIds: ReadonlyArray<string>): Promise<ReadonlyArray<string>>;
+  getEntities(sessionId: string): Promise<ReadonlyArray<string>>;
 }

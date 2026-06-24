@@ -853,6 +853,24 @@ export class SqliteSessionStore implements SessionStore {
     txn();
   }
 
+  async setWorkstreamBinding(sessionId: string, workstreamId: string | null, source: import("@core/workstream/model.js").BindingSource | null, confidence: number | null): Promise<void> {
+    this.db.prepare(
+      "UPDATE sessions SET workstream_id = ?, binding_source = ?, binding_confidence = ?, updated_at = datetime('now') WHERE id = ?",
+    ).run(workstreamId, source, confidence, sessionId);
+  }
+
+  async listSessionIdsByWorkstreams(workstreamIds: ReadonlyArray<string>): Promise<ReadonlyArray<string>> {
+    if (workstreamIds.length === 0) return [];
+    const ph = workstreamIds.map(() => "?").join(",");
+    return this.db.prepare<string[], { id: string }>(
+      `SELECT id FROM sessions WHERE workstream_id IN (${ph}) ORDER BY started_at ASC`,
+    ).all(...workstreamIds).map((r) => r.id);
+  }
+
+  async getEntities(sessionId: string): Promise<ReadonlyArray<string>> {
+    return this.loadEntities([sessionId]).get(sessionId) ?? [];
+  }
+
   // ── insert helpers used by tests / future ingest path ─────────────────
   /** @internal test-only helper; production callers use insertSession(). */
   insertSessionForTest(session: Session): void {
