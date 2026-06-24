@@ -32,6 +32,7 @@ type SessionRow = {
   transcript_kind: string | null;
   transcript_path: string | null;
   body: string | null;
+  workstream_id: string | null;
 };
 
 /**
@@ -130,7 +131,7 @@ export class PgSessionStore implements SessionStore {
   async listByDateRange(fromIso: string, toIso: string): Promise<ReadonlyArray<Session>> {
     const result = await this.pool.query<Omit<SessionRow, "body">>(
       `SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
-              label, summary, status, transcript_kind, transcript_path
+              label, summary, status, transcript_kind, transcript_path, workstream_id
        FROM sessions
        WHERE started_at < $1 AND (ended_at IS NULL OR ended_at >= $2)
        ORDER BY started_at ASC`,
@@ -748,5 +749,6 @@ function rowToSession(
     ...(edges !== undefined
       ? { supersededBy: edges.supersededBy, supersedes: edges.supersedes }
       : {}),
+    workstreamId: row.workstream_id ?? null,
   };
 }

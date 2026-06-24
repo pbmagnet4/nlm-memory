@@ -3,7 +3,8 @@ import { activeSpans } from "./active-spans.js";
 import { mergeIntervals } from "./merge-active.js";
 import { attribute } from "./attribute.js";
 import { readTranscriptTimestamps } from "./read-transcript-timestamps.js";
-import { defaultTopicProvider, type TopicProvider } from "./topics.js";
+import { defaultTopicProvider, workstreamTopicProvider, type TopicProvider } from "./topics.js";
+import { resolveWorkstreamId } from "@core/workstream/resolve.js";
 import type { Interval, SessionActivity, WorkDigest } from "./types.js";
 
 const SCOPE_NOTE = "Agent-assisted active time. Excludes meetings and work without an agent.";
@@ -14,6 +15,7 @@ export interface BuildWorkDigestDeps {
   readonly idleThresholdMin?: number;
   readonly deepBlockMin?: number;
   readonly readTimestamps?: (path: string, fromMs: number, toMs: number) => number[];
+  readonly workstreams?: Pick<import("@ports/workstream-store.js").WorkstreamStore, "listAll">;
 }
 
 /** Local-midnight window for `date` (YYYY-MM-DD) in the process timezone. */
@@ -29,6 +31,17 @@ export async function buildWorkDigest(deps: BuildWorkDigestDeps, date: string): 
   const deepBlockMin = deps.deepBlockMin ?? 25;
   const topicProvider = deps.topicProvider ?? defaultTopicProvider;
   const readTs = deps.readTimestamps ?? readTranscriptTimestamps;
+
+  const provider = deps.workstreams ? workstreamTopicProvider(topicProvider) : topicProvider;
+  const wsList = deps.workstreams ? await deps.workstreams.listAll() : [];
+  const wsById = new Map(wsList.map((w) => [w.id, { id: w.id, mergedInto: w.mergedInto }]));
+  const wsLabel = new Map(wsList.map((w) => [w.id, w.label]));
+  function resolveWs(id: string | null | undefined): { id: string; label: string } | null {
+    if (!id) return null;
+    const live = resolveWorkstreamId(id, wsById);
+    const label = wsLabel.get(live);
+    return label ? { id: live, label } : null;
+  }
 
   const { fromMs, toMs, fromIso, toIso } = dayWindow(date);
   const sessions = await deps.store.listByDateRange(fromIso, toIso);
@@ -50,8 +63,9 @@ export async function buildWorkDigest(deps: BuildWorkDigestDeps, date: string): 
       continue;
     }
     measured++;
-    const topic = topicProvider({ entities: s.entities, label: s.label });
-    activities.push({ sessionId: s.id, topic, timestampsMs });
+    const ws = resolveWs(s.workstreamId);
+    const topic = provider({ entities: s.entities, label: s.label, ...(ws ? { workstreamLabel: ws.label } : {}) });
+    activities.push({ sessionId: s.id, topic, timestampsMs, ...(ws ? { workstreamId: ws.id } : {}) });
     for (const span of activeSpans(timestampsMs, idleThresholdMin)) allSpans.push(span);
   }
 

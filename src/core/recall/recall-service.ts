@@ -67,6 +67,13 @@ export interface RecallServiceDeps {
   readonly exemplarStore?: CodeExemplarStore;
   readonly codeEmbedder?: CodeEmbedder;
   readonly installScope?: string;
+  /**
+   * Optional resolver for workstream-filter queries. Given an idOrLabel,
+   * returns the Set of session ids bound to that workstream (merge chains
+   * resolve to the live survivor). When absent, `query.workstream` is a no-op.
+   * Injected by buildStack() / createApp(); tests can stub with a plain fn.
+   */
+  readonly resolveWorkstreamSessions?: (idOrLabel: string) => Promise<Set<string>>;
 }
 
 export class RecallService {
@@ -153,8 +160,21 @@ export class RecallService {
     const filterArgs: { entity?: string; kind?: typeof input.kind } = {};
     if (input.entity !== undefined) filterArgs.entity = input.entity;
     if (input.kind !== undefined) filterArgs.kind = input.kind;
+
+    // Optional workstream filter: resolve the idOrLabel → allowed session-id
+    // Set and drop any hit not in the set. Applied before the final limit so
+    // the caller always gets up to `limit` workstream-bound hits, not a
+    // post-limit slice that would under-fill the result. No-op when the dep
+    // is not wired or the query does not carry a workstream field.
+    let allowedWorkstreamIds: Set<string> | null = null;
+    if (input.workstream && this.deps.resolveWorkstreamSessions) {
+      allowedWorkstreamIds = await this.deps.resolveWorkstreamSessions(input.workstream);
+    }
+
     const byId = new Map<string, Session>(
-      applyFilter(hitSessions, filterArgs).map((s) => [s.id, s]),
+      applyFilter(hitSessions, filterArgs)
+        .filter((s) => allowedWorkstreamIds === null || allowedWorkstreamIds.has(s.id))
+        .map((s) => [s.id, s]),
     );
 
     // 3. Build hits from the resolved sessions, preserving leg rank order.

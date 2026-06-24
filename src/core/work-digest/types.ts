@@ -9,6 +9,7 @@ export interface SessionActivity {
   readonly sessionId: string;
   readonly topic: string;
   readonly timestampsMs: ReadonlyArray<number>;
+  readonly workstreamId?: string | null;
 }
 
 /** Attention: active minutes attributed to one topic. `meta` is an opaque
