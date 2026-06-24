@@ -106,6 +106,8 @@ import { buildWorkDigest } from "../core/work-digest/build-work-digest.js";
 import { composeWorkDigest } from "../core/work-digest/compose-work-digest.js";
 import { defaultTopicProvider, aliasTopicProvider, type TopicProvider } from "../core/work-digest/topics.js";
 import { runChecksOnSqlite, runChecksOnPg, applyFixOnSqlite, applyFixOnPg } from "../core/integrity/check-invariants.js";
+import { normalizeLabel } from "../core/workstream/model.js";
+import { resolveWorkstreamId } from "../core/workstream/resolve.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -311,6 +313,7 @@ async function buildStack() {
   // separately for Phase D ingest.
   const embedder = buildEmbedder();
   const classifier = buildClassifier();
+  const wsStore = storage.workstreams;
   const recall = new RecallService({
     store,
     llm: embedder,
@@ -318,6 +321,16 @@ async function buildStack() {
     exemplarStore: storage.exemplars,
     codeEmbedder: buildCodeEmbedder(),
     installScope: scope,
+    resolveWorkstreamSessions: async (idOrLabel: string): Promise<Set<string>> => {
+      const all = await wsStore.listAll();
+      const byId = new Map(all.map((w) => [w.id, { id: w.id, mergedInto: w.mergedInto }]));
+      const target = all.find((w) => w.id === idOrLabel)
+        ?? all.find((w) => normalizeLabel(w.label) === normalizeLabel(idOrLabel));
+      if (!target) return new Set();
+      const survivor = resolveWorkstreamId(target.id, byId);
+      const members = all.filter((w) => resolveWorkstreamId(w.id, byId) === survivor).map((w) => w.id);
+      return new Set(await store.listSessionIdsByWorkstreams(members));
+    },
   });
   const factRecall = new FactRecallService({ factStore: facts, llm: embedder });
   return { storage, store, facts, signals, scope, sources, providers, recall, factRecall, embedder, classifier };
@@ -532,6 +545,7 @@ program
   .option("-k, --kind <kind>", "filter by marker kind (decision|open)")
   .option("-m, --mode <mode>", "recall mode: keyword, semantic, or hybrid (default: keyword)", "keyword")
   .option("-l, --limit <n>", "max results", (v) => Number.parseInt(v, 10), 10)
+  .option("-w, --workstream <idOrLabel>", "filter by workstream (id or label; merge chains resolve)")
   .option("--json", "emit the raw JSON result instead of rendered lines")
   .action(async (query, opts) => {
     const { storage, recall } = await buildStack();
@@ -545,6 +559,7 @@ program
         includeSuperseded: true,
         ...(opts.entity ? { entity: opts.entity } : {}),
         ...(opts.kind ? { kind: opts.kind } : {}),
+        ...(opts.workstream ? { workstream: opts.workstream } : {}),
       });
       if (opts.json) {
         process.stdout.write(JSON.stringify(result, null, 2) + "\n");

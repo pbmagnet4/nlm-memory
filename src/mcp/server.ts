@@ -119,6 +119,7 @@ export interface RecallToolInput {
   mode: RecallMode | undefined;
   limit: number | undefined;
   rewrite: boolean | undefined;
+  workstream: string | undefined;
 }
 
 function mcpRewriteDefault(): boolean {
@@ -162,6 +163,7 @@ export async function recallSessionsHandler(
       includeSuperseded: true,
       ...(input.entity !== undefined ? { entity: input.entity } : {}),
       ...(input.kind !== undefined ? { kind: input.kind } : {}),
+      ...(input.workstream !== undefined ? { workstream: input.workstream } : {}),
     };
     const result = await deps.recall.search(query);
     // Telemetry — the MCP path is the real agent-usage path; without this it
@@ -662,6 +664,10 @@ export function createMcpServer(deps: McpDeps): McpServer {
           .describe(
             "If true, run a small LLM rewrite on the query before search — extracts entities and strips conversational filler. Set true for vague natural-language queries ('that pgvector thing'); set false for exact-token queries. Defaults to true server-side for MCP callers; the hot-path HTTP hook caller forces it off regardless.",
           ),
+        workstream: z
+          .string()
+          .optional()
+          .describe("Filter to sessions bound to this workstream (id or label; merge chains resolve)."),
       },
       annotations: {
         readOnlyHint: true,

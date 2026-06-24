@@ -103,6 +103,14 @@ export interface RecallQuery {
    * Task #303.
    */
   readonly includeSuperseded?: boolean;
+  /**
+   * Optional workstream id or label to filter recall results. When set, only
+   * sessions bound to the resolved workstream (or any member of its merge
+   * chain) are returned. Merge chains resolve to the live survivor. No-op
+   * when omitted or when `resolveWorkstreamSessions` is not wired into
+   * RecallServiceDeps.
+   */
+  readonly workstream?: string;
 }
 
 export interface RecallHit {
