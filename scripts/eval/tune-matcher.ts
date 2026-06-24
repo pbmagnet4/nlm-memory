@@ -31,8 +31,13 @@ console.log(`  gold path: ${GOLD}`);
 console.log("");
 
 // Plan D: replace this stub with a real matchWorkstream call against seeded workstreams.
-// The function signature will be:
-//   matchWorkstream(sessionCtx: string, candidates: WorkstreamCandidate[], thresholds: MatchThresholds): Promise<MatchDecision>
+// matchWorkstream is synchronous and takes a single MatchInputs arg:
+//   matchWorkstream(inputs: MatchInputs): MatchDecision   (src/core/workstream/match.ts)
+// Build the MatchInputs per gold session the same way bind.ts does: embed label+summary
+// as a "query" vector, semanticSearch for neighbor sessions -> their workstreams (max sim
+// per ws) for neighborScores, gather entity-overlap candidates, then pass DEFAULT_WEIGHTS
+// and the swept thresholds. Map the decision (bind -> predicted=workstreamId+score;
+// ambiguous/create -> predicted=null) into a Prediction.
 // Until seeded workstreams exist, we emit stub predictions so the harness math is exercised.
 const ctx = openSessionContext();
 const preds: Prediction[] = [];
