@@ -38,6 +38,8 @@ export interface Session {
   readonly supersedes?: ReadonlyArray<string>;
   /** ID of the session that superseded this one, if any. Populated by getById; absent on bulk reads. */
   readonly supersededBy?: string | null;
+  /** Live binding to a workstream, if any. Populated by projections that select it (e.g. listByDateRange); absent elsewhere. */
+  readonly workstreamId?: string | null;
 }
 
 /**
