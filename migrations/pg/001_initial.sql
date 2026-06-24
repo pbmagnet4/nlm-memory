@@ -281,7 +281,7 @@ CREATE INDEX IF NOT EXISTS idx_workstream_entities_entity ON workstream_entities
 
 -- FK from sessions.workstream_id to workstreams (deferred so workstreams exists first)
 ALTER TABLE sessions
-  ADD CONSTRAINT IF NOT EXISTS fk_sessions_workstream
+  ADD CONSTRAINT fk_sessions_workstream
   FOREIGN KEY (workstream_id) REFERENCES workstreams(id);
 
 CREATE INDEX IF NOT EXISTS idx_sessions_workstream ON sessions(workstream_id);
