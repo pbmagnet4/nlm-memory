@@ -25,6 +25,9 @@ import type { SessionStore } from "@ports/session-store.js";
 import { recallCode } from "@core/exemplars/recall-code.js";
 import { buildWorkDigest, type BuildWorkDigestDeps } from "@core/work-digest/build-work-digest.js";
 import { composeWorkDigest } from "@core/work-digest/compose-work-digest.js";
+import { rollupWorkstream } from "@core/workstream/rollup.js";
+import { composeWorkstreamRecall } from "@core/workstream/compose-recall.js";
+import { normalizeLabel } from "@core/workstream/model.js";
 import type {
   FactKind,
   FactRecallQuery,
@@ -55,6 +58,13 @@ export interface McpDeps {
   readonly installScope?: string;
   /** Wire to enable the work_summary tool (operator daily work digest). */
   readonly workDigest?: BuildWorkDigestDeps;
+  /** Wire to enable recall_workstream. Mirrors RollupDeps + the store for idOrLabel resolution. */
+  readonly workstreams?: {
+    readonly store: import("@ports/workstream-store.js").WorkstreamStore;
+    readonly sessions: Pick<SessionStore, "listSessionIdsByWorkstreams">;
+    readonly facts: Pick<FactStore, "listBySessions">;
+    readonly exemplars: Pick<import("@ports/code-exemplar-store.js").CodeExemplarStore, "listBySessions">;
+  };
 }
 
 export interface ToolResult {
@@ -185,6 +195,29 @@ export async function workSummaryHandler(
     const date = input.date ?? localToday();
     const digest = await buildWorkDigest(deps.workDigest, date);
     return okText(composeWorkDigest(digest));
+  } catch (e) {
+    return err(e);
+  }
+}
+
+export async function recallWorkstreamHandler(
+  deps: McpDeps,
+  input: { idOrLabel?: string },
+): Promise<ToolResult> {
+  if (!deps.workstreams) return okText("recall_workstream is not available in this deployment.");
+  try {
+    const idOrLabel = (input.idOrLabel ?? "").trim();
+    if (!idOrLabel) return okText("Provide a workstream id or label.");
+    const ws = deps.workstreams.store;
+    const found =
+      (await ws.getById(idOrLabel)) ?? (await ws.findByNormalizedLabel(normalizeLabel(idOrLabel)));
+    if (!found) return okText(`No workstream matches "${idOrLabel}".`);
+    const view = await rollupWorkstream(
+      { workstreams: deps.workstreams.store, sessions: deps.workstreams.sessions, facts: deps.workstreams.facts, exemplars: deps.workstreams.exemplars },
+      found.id,
+    );
+    if (!view) return okText(`No workstream matches "${idOrLabel}".`);
+    return okText(composeWorkstreamRecall(view));
   } catch (e) {
     return err(e);
   }
@@ -842,6 +875,20 @@ export function createMcpServer(deps: McpDeps): McpServer {
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async (args) => workSummaryHandler(deps, args) as never,
+  );
+
+  server.registerTool(
+    "recall_workstream",
+    {
+      title: "Recall a workstream's accumulated context",
+      description:
+        "Return the coherent project view for a workstream: its member sessions, current decisions and open loops, accumulated facts, and code exemplars. Accepts a workstream id or label; merge chains resolve to the live workstream.",
+      inputSchema: {
+        idOrLabel: z.string().describe("Workstream id (ws_...) or label (e.g. 'NLM')."),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (args) => recallWorkstreamHandler(deps, args) as never,
   );
 
   if (
