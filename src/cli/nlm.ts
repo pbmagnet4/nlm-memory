@@ -50,6 +50,7 @@ import { OllamaClient } from "../llm/ollama-client.js";
 import { OllamaCodeEmbedder } from "../llm/ollama-code-embedder.js";
 import { OpenAIEmbedderClient } from "../llm/openai-embedder-client.js";
 import { OpenAICodeEmbedderClient } from "../llm/openai-code-embedder-client.js";
+import { resolveEmbedderInfo } from "../llm/embedder-info.js";
 import type { CodeEmbedder } from "../ports/code-embedder.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
 import { addHook, buildHookCommand, removeHook } from "../core/hook/claude-settings.js";
@@ -367,7 +368,7 @@ program
       // the /api/exemplar + /api/recall-code routes at request time.
       exemplarStore: storage.exemplars,
       codeEmbedder: buildCodeEmbedder(),
-      embedderInfo: { provider: "ollama", model: "nomic-embed-text", dims: 768 },
+      embedderInfo: resolveEmbedderInfo(),
       ...(existsSync(UI_DIST) ? { uiDist: UI_DIST } : {}),
       // Wire POST /mcp only when NLM_MCP_TOKEN is present. Absent = route never
       // mounts, zero attack surface. Present = token-gated Streamable-HTTP MCP

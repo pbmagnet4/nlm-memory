@@ -24,6 +24,11 @@ import { EMBED_PREFIXES, MAX_EMBED_CHARS, l2Normalize } from "./ollama-client.js
 
 export type FetchImpl = typeof fetch;
 
+/** Default model for the openai embedder provider — nomic-embed-text v1.5 as
+ *  served by LM Studio (`/v1/embeddings`). Exported so the info descriptor
+ *  reports the same default the client actually uses. */
+export const DEFAULT_OPENAI_EMBED_MODEL = "text-embedding-nomic-embed-text-v1.5";
+
 export interface OpenAIEmbedderClientOptions {
   readonly baseUrl: string;
   readonly model?: string;
@@ -46,7 +51,7 @@ export class OpenAIEmbedderClient implements LLMClient {
 
   constructor(opts: OpenAIEmbedderClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, "");
-    this.model = opts.model ?? "text-embedding-nomic-embed-text-v1.5";
+    this.model = opts.model ?? DEFAULT_OPENAI_EMBED_MODEL;
     this.apiKey = opts.apiKey ?? "local";
     this.timeoutMs = opts.timeoutMs ?? 30_000;
     this.fetchImpl = opts.fetchImpl ?? fetch;
