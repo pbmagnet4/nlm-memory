@@ -26,6 +26,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   transcript_length    BIGINT,
   created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  workstream_id        TEXT,
+  binding_source       TEXT,
+  binding_confidence   DOUBLE PRECISION,
   fts_vector           TSVECTOR GENERATED ALWAYS AS (
     setweight(to_tsvector('english', coalesce(label, '')), 'A') ||
     setweight(to_tsvector('english', coalesce(summary, '')), 'B') ||
@@ -255,3 +258,30 @@ CREATE TABLE IF NOT EXISTS code_exemplar_embeddings (
 CREATE INDEX IF NOT EXISTS code_exemplar_embeddings_idx
   ON code_exemplar_embeddings USING ivfflat (embedding vector_l2_ops)
   WITH (lists = 100);
+
+-- ── Workstreams (mirror of SQLite migration 025) ─────────────────────────────
+CREATE TABLE IF NOT EXISTS workstreams (
+  id              TEXT PRIMARY KEY,
+  label           TEXT NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','merged','retired')),
+  merged_into     TEXT REFERENCES workstreams(id),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_session_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS workstream_entities (
+  workstream_id    TEXT NOT NULL REFERENCES workstreams(id) ON DELETE CASCADE,
+  entity_canonical TEXT NOT NULL REFERENCES entities(canonical),
+  session_count    INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (workstream_id, entity_canonical)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workstream_entities_entity ON workstream_entities(entity_canonical);
+
+-- FK from sessions.workstream_id to workstreams (deferred so workstreams exists first)
+ALTER TABLE sessions
+  ADD CONSTRAINT IF NOT EXISTS fk_sessions_workstream
+  FOREIGN KEY (workstream_id) REFERENCES workstreams(id);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_workstream ON sessions(workstream_id);
