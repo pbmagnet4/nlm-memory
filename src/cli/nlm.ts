@@ -385,7 +385,7 @@ program
               exemplarStore: storage.exemplars,
               codeEmbedder: buildCodeEmbedder(),
               installScope: scope,
-              workDigest: { store, topicProvider: loadTopicProvider(), ...workDigestEnv() },
+              workDigest: { store, topicProvider: loadTopicProvider(), workstreams: storage.workstreams, ...workDigestEnv() },
             },
           }
         : {}),
@@ -1014,7 +1014,7 @@ program
       exemplarStore: storage.exemplars,
       codeEmbedder: buildCodeEmbedder(),
       installScope: scope,
-      workDigest: { store, topicProvider: loadTopicProvider(), ...workDigestEnv() },
+      workDigest: { store, topicProvider: loadTopicProvider(), workstreams: storage.workstreams, ...workDigestEnv() },
     });
     const transport = new StdioServerTransport();
     await server.connect(transport);
@@ -1990,7 +1990,7 @@ program
     const { storage, store } = await buildStack();
     try {
       const digest = await buildWorkDigest(
-        { store, topicProvider: loadTopicProvider(), ...workDigestEnv() },
+        { store, topicProvider: loadTopicProvider(), workstreams: storage.workstreams, ...workDigestEnv() },
         date,
       );
       console.log(composeWorkDigest(digest));
