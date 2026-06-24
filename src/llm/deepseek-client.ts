@@ -56,6 +56,21 @@ export interface DeepSeekClientOptions {
   readonly fetchImpl?: FetchImpl;
   /** Total classify attempts before giving up on transient schema/unreachable errors. */
   readonly classifyAttempts?: number;
+  /**
+   * Whether to request structured JSON via `response_format`. DeepSeek and many
+   * cloud OpenAI-compatible APIs accept `json_object`; some local servers reject
+   * it (LM Studio's MLX engine demands `json_schema` or `text`). `"none"` omits
+   * the field entirely — the most portable choice across arbitrary endpoints —
+   * and relies on the system prompt + fence-stripping + schema validation.
+   */
+  readonly responseFormat?: "json_object" | "none";
+  /**
+   * Output token budget for classify. Must cover the model's hidden reasoning
+   * plus the JSON body. Thinking-capable local models (e.g. qwen3.5 over an
+   * OpenAI-compatible endpoint, where think cannot be disabled via API) consume
+   * 1-2K+ reasoning tokens before any JSON, so this needs headroom.
+   */
+  readonly classifyMaxTokens?: number;
 }
 
 interface ChatResponse {
@@ -70,6 +85,8 @@ export class DeepSeekClient implements LLMClient {
   private readonly maxTranscriptChars: number;
   private readonly fetchImpl: FetchImpl;
   private readonly classifyAttempts: number;
+  private readonly responseFormat: "json_object" | "none";
+  private readonly classifyMaxTokens: number;
 
   constructor(opts: DeepSeekClientOptions = {}) {
     const key = opts.apiKey ?? process.env["DEEPSEEK_API_KEY"];
@@ -85,6 +102,15 @@ export class DeepSeekClient implements LLMClient {
     this.maxTranscriptChars = opts.maxTranscriptChars ?? 30_000;
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.classifyAttempts = opts.classifyAttempts ?? 3;
+    this.responseFormat = opts.responseFormat ?? "json_object";
+    this.classifyMaxTokens = opts.classifyMaxTokens ?? 8192;
+  }
+
+  /** Spread into a chat request body: `{type:"json_object"}` or nothing. */
+  private responseFormatField(): Record<string, unknown> {
+    return this.responseFormat === "json_object"
+      ? { response_format: { type: "json_object" } }
+      : {};
   }
 
   async embed(_text: string, _kind: EmbeddingKind): Promise<EmbedResult> {
@@ -134,17 +160,16 @@ export class DeepSeekClient implements LLMClient {
             { role: "system", content: CLASSIFIER_SYSTEM_PROMPT },
             { role: "user", content: userPrompt },
           ],
-          response_format: { type: "json_object" },
+          ...this.responseFormatField(),
           temperature: 0.1,
-          // 8192 covers reasoning + JSON output. deepseek-v4-flash is a
-          // reasoning model — its hidden chain-of-thought counts against
-          // max_tokens but never reaches `content`. At 1024 the reasoning
-          // consumed the entire budget and the JSON output came back empty
-          // (finish_reason: length, content: ""). Backfill verified ~72% of
-          // real claude-code sessions hit that mode at 1024. Real-world
-          // observed reasoning_tokens: ~900-1100; JSON body adds 200-1000
-          // depending on facts/entity counts. 8192 leaves headroom.
-          max_tokens: 8192,
+          // max_tokens covers reasoning + JSON output. Reasoning models (e.g.
+          // deepseek-v4-flash, or qwen3.5 over an OpenAI-compatible endpoint
+          // where think can't be disabled) spend hidden chain-of-thought
+          // against this budget before any JSON reaches `content`. At 1024 the
+          // reasoning consumed the entire budget and content came back empty
+          // (finish_reason: length). Default 8192 leaves headroom; tune via
+          // classifyMaxTokens for models with longer reasoning.
+          max_tokens: this.classifyMaxTokens,
           stream: false,
         }),
         signal: controller.signal,
@@ -192,7 +217,7 @@ export class DeepSeekClient implements LLMClient {
             { role: "system", content: REWRITE_SYSTEM_PROMPT },
             { role: "user", content: query },
           ],
-          response_format: { type: "json_object" },
+          ...this.responseFormatField(),
           temperature: 0.1,
           max_tokens: 512,
           stream: false,

@@ -48,6 +48,10 @@ import { DeepSeekClient } from "../llm/deepseek-client.js";
 import { classifierEgressNotice } from "../llm/classifier-egress.js";
 import { OllamaClient } from "../llm/ollama-client.js";
 import { OllamaCodeEmbedder } from "../llm/ollama-code-embedder.js";
+import { OpenAIEmbedderClient } from "../llm/openai-embedder-client.js";
+import { OpenAICodeEmbedderClient } from "../llm/openai-code-embedder-client.js";
+import { resolveEmbedderInfo } from "../llm/embedder-info.js";
+import type { CodeEmbedder } from "../ports/code-embedder.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
 import { addHook, buildHookCommand, removeHook } from "../core/hook/claude-settings.js";
 import {
@@ -95,6 +99,7 @@ import { isDevBuild, updateCheckCachePath } from "./upgrade-helpers.js";
 import { applyEnvAssignment } from "./config-env.js";
 import { adapterFromSource } from "../core/adapters/from-source.js";
 import type { TranscriptAdapter } from "../ports/transcript-adapter.js";
+import type { LLMClient } from "../ports/llm-client.js";
 import { runDigest } from "./digest.js";
 import { installScope } from "../core/signals/install-scope.js";
 import { buildWorkDigest } from "../core/work-digest/build-work-digest.js";
@@ -168,11 +173,81 @@ function buildClassifier(): ClassifierBox {
   // classifierNeedsThinkDisabled) to stay within the 180s classify timeout.
   // Ollama is the default to keep the daemon local-first and key-free; DeepSeek
   // remains available via NLM_CLASSIFIER=deepseek for users who prioritize speed.
+  // The `openai` provider points classification at any OpenAI-compatible
+  // endpoint (local — LM Studio, oMLX, vLLM — or cloud), configured via
+  // NLM_CLASSIFIER_BASE_URL (+ optional NLM_CLASSIFIER_API_KEY). This lets the
+  // heavy classify lane run off-box (e.g. on a dedicated inference host)
+  // instead of taxing the local machine's Ollama.
   const provider = ((process.env["NLM_CLASSIFIER"] ?? "ollama").toLowerCase() as ClassifierProvider);
   if (provider !== "ollama") autoloadEnv();
-  const model = process.env["NLM_CLASSIFIER_MODEL"]
-    ?? (provider === "ollama" ? "qwen3.5:4b" : "deepseek-v4-flash");
-  return new ClassifierBox({ provider, model, ollamaUrl: ollamaUrl() });
+  const modelDefault =
+    provider === "ollama" ? "qwen3.5:4b" : provider === "deepseek" ? "deepseek-v4-flash" : undefined;
+  const model = process.env["NLM_CLASSIFIER_MODEL"] ?? modelDefault;
+  if (!model) {
+    throw new Error(
+      "NLM_CLASSIFIER=openai requires NLM_CLASSIFIER_MODEL (the model id served by your endpoint), " +
+        "e.g. qwen3.5-4b-mlx.",
+    );
+  }
+  const maxTokensRaw = Number.parseInt(process.env["NLM_CLASSIFIER_MAX_TOKENS"] ?? "", 10);
+  return new ClassifierBox({
+    provider,
+    model,
+    ollamaUrl: ollamaUrl(),
+    ...(process.env["NLM_CLASSIFIER_BASE_URL"] ? { baseUrl: process.env["NLM_CLASSIFIER_BASE_URL"] } : {}),
+    ...(process.env["NLM_CLASSIFIER_API_KEY"] ? { apiKey: process.env["NLM_CLASSIFIER_API_KEY"] } : {}),
+    ...(Number.isFinite(maxTokensRaw) && maxTokensRaw > 0 ? { maxTokens: maxTokensRaw } : {}),
+  });
+}
+
+/** Build the recall/document embedder. Default is local Ollama; setting
+ *  NLM_EMBED_PROVIDER=openai points embeddings at any OpenAI-compatible
+ *  /v1/embeddings endpoint (local — LM Studio, oMLX — or cloud) via
+ *  NLM_EMBED_BASE_URL. Embeddings must stay in one vector space: switching
+ *  providers on an existing corpus requires `nlm embed-backfill`. */
+function buildEmbedder(): LLMClient {
+  const provider = (process.env["NLM_EMBED_PROVIDER"] ?? "ollama").toLowerCase();
+  if (provider === "openai") {
+    autoloadEnv();
+    const baseUrl = process.env["NLM_EMBED_BASE_URL"];
+    if (!baseUrl) {
+      throw new Error(
+        "NLM_EMBED_PROVIDER=openai requires NLM_EMBED_BASE_URL (an OpenAI-compatible " +
+          "/v1 endpoint), e.g. http://localhost:1234/v1 for LM Studio.",
+      );
+    }
+    return new OpenAIEmbedderClient({
+      baseUrl,
+      ...(process.env["NLM_EMBED_MODEL"] ? { model: process.env["NLM_EMBED_MODEL"] } : {}),
+      ...(process.env["NLM_EMBED_API_KEY"] ? { apiKey: process.env["NLM_EMBED_API_KEY"] } : {}),
+    });
+  }
+  return new OllamaClient({ baseUrl: ollamaUrl() });
+}
+
+/** Build the code-lane embedder. Follows the same destination as the prose
+ *  embedder (NLM_EMBED_PROVIDER / NLM_EMBED_BASE_URL) but with its own model
+ *  (NLM_CODE_EMBED_MODEL, e.g. text-embedding-coderankembed on LM Studio).
+ *  Switching providers on existing exemplars requires `nlm embed-backfill
+ *  --exemplars`. */
+function buildCodeEmbedder(): CodeEmbedder {
+  const provider = (process.env["NLM_EMBED_PROVIDER"] ?? "ollama").toLowerCase();
+  if (provider === "openai") {
+    autoloadEnv();
+    const baseUrl = process.env["NLM_EMBED_BASE_URL"];
+    if (!baseUrl) {
+      throw new Error(
+        "NLM_EMBED_PROVIDER=openai requires NLM_EMBED_BASE_URL for the code embedder too, " +
+          "e.g. http://localhost:1234/v1 for LM Studio.",
+      );
+    }
+    return new OpenAICodeEmbedderClient({
+      baseUrl,
+      ...(process.env["NLM_CODE_EMBED_MODEL"] ? { model: process.env["NLM_CODE_EMBED_MODEL"] } : {}),
+      ...(process.env["NLM_EMBED_API_KEY"] ? { apiKey: process.env["NLM_EMBED_API_KEY"] } : {}),
+    });
+  }
+  return new OllamaCodeEmbedder({ baseUrl: ollamaUrl() });
 }
 
 async function buildAdapters(sources: SourceRegistryPort): Promise<TranscriptAdapter[]> {
@@ -231,16 +306,17 @@ async function buildStack() {
   // env, which is wrong for a hosted multi-tenant PG. PgProviderRegistry has no
   // seedDefaults (not on ProviderRegistryPort), so this narrows to the SQLite case.
   if (providers instanceof ProviderRegistry) await providers.seedDefaults();
-  // Recall only uses embed(). Embeddings live on Ollama; DeepSeek doesn't
-  // expose them. Classifier is wired separately for Phase D ingest.
-  const embedder = new OllamaClient({ baseUrl: ollamaUrl() });
+  // Recall only uses embed(). Default embedder is local Ollama; NLM_EMBED_*
+  // can point it at any OpenAI-compatible endpoint. Classifier is wired
+  // separately for Phase D ingest.
+  const embedder = buildEmbedder();
   const classifier = buildClassifier();
   const recall = new RecallService({
     store,
     llm: embedder,
     factStore: facts,
     exemplarStore: storage.exemplars,
-    codeEmbedder: new OllamaCodeEmbedder({ baseUrl: ollamaUrl() }),
+    codeEmbedder: buildCodeEmbedder(),
     installScope: scope,
   });
   const factRecall = new FactRecallService({ factStore: facts, llm: embedder });
@@ -291,8 +367,8 @@ program
       // NLM_CODE_EXEMPLARS_ENABLED flag gates capture (POST /api/signal) and
       // the /api/exemplar + /api/recall-code routes at request time.
       exemplarStore: storage.exemplars,
-      codeEmbedder: new OllamaCodeEmbedder({ baseUrl: ollamaUrl() }),
-      embedderInfo: { provider: "ollama", model: "nomic-embed-text", dims: 768 },
+      codeEmbedder: buildCodeEmbedder(),
+      embedderInfo: resolveEmbedderInfo(),
       ...(existsSync(UI_DIST) ? { uiDist: UI_DIST } : {}),
       // Wire POST /mcp only when NLM_MCP_TOKEN is present. Absent = route never
       // mounts, zero attack surface. Present = token-gated Streamable-HTTP MCP
@@ -307,7 +383,7 @@ program
               // Parity with the stdio `nlm mcp` server: remote/container MCP
               // clients hitting POST /mcp get recall_code too when the flag is on.
               exemplarStore: storage.exemplars,
-              codeEmbedder: new OllamaCodeEmbedder({ baseUrl: ollamaUrl() }),
+              codeEmbedder: buildCodeEmbedder(),
               installScope: scope,
               workDigest: { store, topicProvider: loadTopicProvider(), ...workDigestEnv() },
             },
@@ -317,7 +393,7 @@ program
     // Warm the code embedder once at boot so the first real capture isn't
     // cold (capture embeds fire-and-forget; a cold model drops the vector and
     // recall_code is vector-only). Gated on the flag, non-blocking, best-effort.
-    warmCodeEmbedder(new OllamaCodeEmbedder({ baseUrl: ollamaUrl() }));
+    warmCodeEmbedder(buildCodeEmbedder());
 
     const p = port();
     serve({ fetch: app.fetch, port: p, hostname: "127.0.0.1" }, (info) => {
@@ -333,8 +409,12 @@ program
       console.error(`  db:     ${dbPath()}`);
       console.error(`  ollama: ${ollamaUrl()}`);
       const classifier = (process.env["NLM_CLASSIFIER"] ?? "ollama").toLowerCase();
-      const egress = classifierEgressNotice(classifier);
-      console.error(`  classify: ${classifier} [${egress ? "cloud egress" : "local"}]`);
+      const egress = classifierEgressNotice(classifier, process.env["NLM_CLASSIFIER_BASE_URL"]);
+      const classifyTarget =
+        classifier === "openai" && process.env["NLM_CLASSIFIER_BASE_URL"]
+          ? `${classifier} (${process.env["NLM_CLASSIFIER_BASE_URL"]})`
+          : classifier;
+      console.error(`  classify: ${classifyTarget} [${egress ? "cloud egress" : "local"}]`);
       if (egress) console.error(`  notice: ${egress}`);
       // Passive update notice. Fire-and-forget so a slow npm registry
       // round-trip can't delay the startup banner; surfaced only when
@@ -523,11 +603,10 @@ program
       process.exit(1);
     }
     const { storage } = await buildStack();
-    const { OllamaCodeEmbedder } = await import("../llm/ollama-code-embedder.js");
     const { recallCode } = await import("../core/exemplars/recall-code.js");
     const { installScope: getScope } = await import("../core/signals/install-scope.js");
     try {
-      const embedder = new OllamaCodeEmbedder();
+      const embedder = buildCodeEmbedder();
       const result = await recallCode(
         {
           query,
@@ -798,7 +877,7 @@ program
       try {
         const report = await backfillExemplarEmbeddings({
           dbPath: dbPath(),
-          embedder: new OllamaCodeEmbedder({ baseUrl: ollamaUrl() }),
+          embedder: buildCodeEmbedder(),
           store: storage.exemplars,
           ...(opts.limit ? { limit: opts.limit } : {}),
           ...(opts.verbose
@@ -815,7 +894,7 @@ program
       }
       return;
     }
-    const embedder = new OllamaClient({ baseUrl: ollamaUrl() });
+    const embedder = buildEmbedder();
     const report = await reembedCorpus({
       dbPath: dbPath(),
       embedder,
@@ -933,7 +1012,7 @@ program
       factStore: facts,
       factRecall,
       exemplarStore: storage.exemplars,
-      codeEmbedder: new OllamaCodeEmbedder({ baseUrl: ollamaUrl() }),
+      codeEmbedder: buildCodeEmbedder(),
       installScope: scope,
       workDigest: { store, topicProvider: loadTopicProvider(), ...workDigestEnv() },
     });

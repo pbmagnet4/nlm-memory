@@ -1,0 +1,4 @@
+{"key":"a1b2c3d4e5","sessionId":"cc_synth_001","label":"Workstream eval harness design","summary":"Discussed matcher gold-set schema and threshold sweep math.","goldWorkstream":"NLM"}
+{"key":"b2c3d4e5f6","sessionId":"cc_synth_002","label":"PolySignal signal schema review","summary":"Reviewed the Trades and Signals table schema for correctness.","goldWorkstream":"PolySignal"}
+{"key":"c3d4e5f6a7","sessionId":"cc_synth_003","label":"AMI component sourcing","summary":"Researched ESC motor controllers for the marine autonomy platform.","goldWorkstream":"AMI"}
+{"key":"d4e5f6a7b8","sessionId":"cc_synth_004","label":"One-off cleanup task","summary":"Deleted stale Docker volumes on the Mac Pro.","goldWorkstream":""}

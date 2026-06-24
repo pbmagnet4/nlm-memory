@@ -48,9 +48,9 @@ export type FetchImpl = typeof fetch;
 // (each body split into ≤8K-char chunks, store all vectors, score against
 // max cosine at query time) so coverage doesn't depend on a single embed
 // call. Filed as #174.
-const MAX_EMBED_CHARS = 8_000;
+export const MAX_EMBED_CHARS = 8_000;
 
-const EMBED_PREFIXES: Record<EmbeddingKind, string> = {
+export const EMBED_PREFIXES: Record<EmbeddingKind, string> = {
   query: "search_query: ",
   document: "search_document: ",
 };
