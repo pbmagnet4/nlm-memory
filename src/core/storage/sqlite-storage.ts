@@ -20,6 +20,7 @@ import { SqliteCodeExemplarStore } from "./sqlite-code-exemplar-store.js";
 import { SqliteFactStore } from "./sqlite-fact-store.js";
 import { SqliteSessionStore } from "./sqlite-session-store.js";
 import { SqliteSignalStore } from "./sqlite-signal-store.js";
+import { SqliteWorkstreamStore } from "./sqlite-workstream-store.js";
 import { SourceRegistry } from "@core/sources/source-registry.js";
 import { ProviderRegistry } from "@core/providers/provider-registry.js";
 
@@ -33,6 +34,7 @@ export class SqliteStorage implements Storage {
   readonly facts: SqliteFactStore;
   readonly signals: SqliteSignalStore;
   readonly exemplars: SqliteCodeExemplarStore;
+  readonly workstreams: SqliteWorkstreamStore;
   readonly sources: SourceRegistry;
   readonly providers: ProviderRegistry;
   private inTxn = false;
@@ -42,6 +44,7 @@ export class SqliteStorage implements Storage {
     facts: SqliteFactStore,
     signals: SqliteSignalStore,
     exemplars: SqliteCodeExemplarStore,
+    workstreams: SqliteWorkstreamStore,
     sources: SourceRegistry,
     providers: ProviderRegistry,
   ) {
@@ -49,6 +52,7 @@ export class SqliteStorage implements Storage {
     this.facts = facts;
     this.signals = signals;
     this.exemplars = exemplars;
+    this.workstreams = workstreams;
     this.sources = sources;
     this.providers = providers;
   }
@@ -58,9 +62,10 @@ export class SqliteStorage implements Storage {
     const facts = new SqliteFactStore(sessions.rawDb());
     const signals = new SqliteSignalStore(sessions.rawDb());
     const exemplars = new SqliteCodeExemplarStore(sessions.rawDb());
+    const workstreams = new SqliteWorkstreamStore(sessions.rawDb());
     const sources = new SourceRegistry(sessions.rawDb());
     const providers = new ProviderRegistry(sessions.rawDb());
-    return new SqliteStorage(sessions, facts, signals, exemplars, sources, providers);
+    return new SqliteStorage(sessions, facts, signals, exemplars, workstreams, sources, providers);
   }
 
   async init(): Promise<void> {

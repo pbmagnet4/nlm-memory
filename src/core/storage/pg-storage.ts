@@ -18,6 +18,7 @@ import { PgFactStore } from "./pg-fact-store.js";
 import { PgSessionStore } from "./pg-session-store.js";
 import { PgSignalStore } from "./pg-signal-store.js";
 import { PgCodeExemplarStore } from "./pg-code-exemplar-store.js";
+import { PgWorkstreamStore } from "./pg-workstream-store.js";
 import { PgTxBoundFactStore, PgTxBoundSessionStore, type QueuedOp } from "./pg-tx-context.js";
 import { PgSourceRegistry } from "@core/sources/source-registry.js";
 import { PgProviderRegistry } from "@core/providers/provider-registry.js";
@@ -32,6 +33,7 @@ export class PgStorage implements Storage {
   readonly sessions: PgSessionStore;
   readonly signals: PgSignalStore;
   readonly exemplars: PgCodeExemplarStore;
+  readonly workstreams: PgWorkstreamStore;
   readonly sources: PgSourceRegistry;
   readonly providers: PgProviderRegistry;
   private readonly _pool: Pool;
@@ -46,6 +48,7 @@ export class PgStorage implements Storage {
     this.sessions = new PgSessionStore(pool);
     this.signals = new PgSignalStore(pool);
     this.exemplars = new PgCodeExemplarStore(pool);
+    this.workstreams = new PgWorkstreamStore(pool);
     this.sources = new PgSourceRegistry(pool);
     this.providers = new PgProviderRegistry(pool);
   }
