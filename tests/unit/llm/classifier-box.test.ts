@@ -26,6 +26,24 @@ describe("ClassifierBox.classify", () => {
   });
 });
 
+describe("ClassifierBox — openai provider", () => {
+  it("constructs with no API key (local OpenAI-compatible endpoints are keyless)", () => {
+    const box = new ClassifierBox({
+      provider: "openai",
+      model: "qwen3.5-4b-mlx",
+      baseUrl: "http://localhost:1234/v1",
+    });
+    expect(box.provider).toBe("openai");
+    expect(box.model).toBe("qwen3.5-4b-mlx");
+  });
+
+  it("throws a clear error when the openai provider has no baseUrl", () => {
+    expect(() => new ClassifierBox({ provider: "openai", model: "qwen3.5-4b-mlx" })).toThrow(
+      /baseUrl/i,
+    );
+  });
+});
+
 describe("classifierNeedsThinkDisabled", () => {
   it("returns true for qwen3.5:4b", () => {
     expect(classifierNeedsThinkDisabled("qwen3.5:4b")).toBe(true);

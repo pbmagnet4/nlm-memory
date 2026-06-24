@@ -1257,7 +1257,10 @@ function registerClassifierRoutes(app: Hono, deps: HttpDeps): void {
     const provider = body?.provider;
     const model = body?.model;
     if (provider !== "deepseek" && provider !== "ollama") {
-      return c.json({ error: "provider must be 'deepseek' or 'ollama'" }, 400);
+      return c.json(
+        { error: "runtime swap supports 'deepseek' or 'ollama'; 'openai' is set via NLM_CLASSIFIER env + restart" },
+        400,
+      );
     }
     if (!model || typeof model !== "string" || model.length === 0) {
       return c.json({ error: "model is required" }, 400);
