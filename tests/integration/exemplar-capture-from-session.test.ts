@@ -106,6 +106,7 @@ function fakeStore(): CodeExemplarStore & { inserted: CodeExemplarInput[]; embed
     async pruneReverted() { return 0; },
     async pruneOlderThan() { return 0; },
     async setVerdict() { return { status: "not_found" as const }; },
+    async listBySessions() { return []; },
   };
 }
 const fakeEmbedder: CodeEmbedder = { async embed() { return { vector: new Float32Array(768), dim: 768 }; } };

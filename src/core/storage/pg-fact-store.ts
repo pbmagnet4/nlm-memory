@@ -136,6 +136,19 @@ export class PgFactStore implements FactStore {
     return result.rows.map(rowToFact);
   }
 
+  async listBySessions(sessionIds: ReadonlyArray<string>, opts?: { includeSuperseded?: boolean }): Promise<ReadonlyArray<Fact>> {
+    if (sessionIds.length === 0) return [];
+    const ph = sessionIds.map((_, i) => `$${i + 1}`).join(",");
+    const filter = opts?.includeSuperseded === true ? "" : " AND superseded_by IS NULL AND retired_at IS NULL";
+    const result = await this.pool.query<FactRow>(
+      `SELECT id, kind, subject, predicate, value, source_session_id,
+              source_quote, created_at, superseded_by, confidence, retired_at
+       FROM facts WHERE source_session_id IN (${ph})${filter} ORDER BY created_at ASC`,
+      [...sessionIds],
+    );
+    return result.rows.map(rowToFact);
+  }
+
   async listForRecall(filter: FactListFilter): Promise<ReadonlyArray<Fact>> {
     const where: string[] = [];
     const params: unknown[] = [];

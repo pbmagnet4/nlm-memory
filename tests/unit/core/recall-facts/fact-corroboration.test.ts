@@ -57,6 +57,9 @@ class ScriptedFactStore implements FactStore {
   async listBySession() {
     return [];
   }
+  async listBySessions() {
+    return [];
+  }
   async markSuperseded() {}
   async retire() {}
   async upsertEmbedding() {}

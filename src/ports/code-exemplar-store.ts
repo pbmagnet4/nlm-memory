@@ -48,6 +48,12 @@ export interface CodeExemplarStore {
   getById(id: string): Promise<CodeExemplar | null>;
 
   /**
+   * List non-retired exemplars across all given sessions. Empty input
+   * returns [] immediately.
+   */
+  listBySessions(sessionIds: ReadonlyArray<string>): Promise<ReadonlyArray<CodeExemplar>>;
+
+  /**
    * Per-bucket cap enforcement: delete oldest rows beyond maxPerBucket,
    * bucketed by (install_scope, repo, lang, outcome_class).
    * outcome_class = 'positive' for pass/fix, 'negative' for fail/exhausted.

@@ -179,6 +179,16 @@ export class PgCodeExemplarStore implements CodeExemplarStore {
     return row ? this.rowToExemplar(row) : null;
   }
 
+  async listBySessions(sessionIds: ReadonlyArray<string>): Promise<ReadonlyArray<CodeExemplar>> {
+    if (sessionIds.length === 0) return [];
+    const ph = sessionIds.map((_, i) => `$${i + 1}`).join(",");
+    const res = await this.pool.query<ExemplarRow>(
+      `SELECT ${COLUMNS} FROM code_exemplars WHERE session_id IN (${ph}) AND retired_at IS NULL ORDER BY ts ASC`,
+      [...sessionIds],
+    );
+    return res.rows.map((r) => this.rowToExemplar(r));
+  }
+
   async applyBucketCap(installScope: string, maxPerBucket: number): Promise<number> {
     // Window-rank within each (repo, lang, outcome-class) bucket newest-first,
     // delete everything past the cap. Cascade clears the embeddings.

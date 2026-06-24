@@ -43,6 +43,9 @@ class InMemoryFactStore implements FactStore {
   async listBySession(): Promise<ReadonlyArray<Fact>> {
     return this.facts;
   }
+  async listBySessions(): Promise<ReadonlyArray<Fact>> {
+    return this.facts;
+  }
   async markSuperseded(): Promise<void> {}
   async retire(): Promise<void> {}
   async listForRecall(filter: FactListFilter): Promise<ReadonlyArray<Fact>> {

@@ -152,6 +152,20 @@ export class SqliteFactStore implements FactStore {
     return rows.map((r) => this.rowToFact(r));
   }
 
+  async listBySessions(sessionIds: ReadonlyArray<string>, opts?: { includeSuperseded?: boolean }): Promise<ReadonlyArray<Fact>> {
+    if (sessionIds.length === 0) return [];
+    const ph = sessionIds.map(() => "?").join(",");
+    const filter = opts?.includeSuperseded === true ? "" : " AND superseded_by IS NULL AND retired_at IS NULL";
+    const rows = this.db
+      .prepare<string[], FactRow>(
+        `SELECT id, kind, subject, predicate, value, source_session_id,
+                source_quote, created_at, superseded_by, confidence, retired_at
+         FROM facts WHERE source_session_id IN (${ph})${filter} ORDER BY created_at ASC`,
+      )
+      .all(...sessionIds);
+    return rows.map((r) => this.rowToFact(r));
+  }
+
   async listForRecall(filter: FactListFilter): Promise<ReadonlyArray<Fact>> {
     const where: string[] = [];
     const params: Array<string | number> = [];
@@ -409,10 +423,10 @@ export class SqliteFactStore implements FactStore {
     return this.db.prepare<FactRow>(`
       INSERT INTO facts (
         id, kind, subject, predicate, value, source_session_id,
-        source_quote, created_at, superseded_by, confidence
+        source_quote, created_at, superseded_by, confidence, retired_at
       ) VALUES (
         @id, @kind, @subject, @predicate, @value, @source_session_id,
-        @source_quote, @created_at, @superseded_by, @confidence
+        @source_quote, @created_at, @superseded_by, @confidence, @retired_at
       )
     `);
   }
@@ -429,6 +443,7 @@ export class SqliteFactStore implements FactStore {
       created_at: fact.createdAt,
       superseded_by: fact.supersededBy,
       confidence: fact.confidence,
+      retired_at: fact.retiredAt ?? null,
     };
   }
 

@@ -178,6 +178,19 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
     return row ? this.rowToExemplar(row) : null;
   }
 
+  async listBySessions(sessionIds: ReadonlyArray<string>): Promise<ReadonlyArray<CodeExemplar>> {
+    if (sessionIds.length === 0) return [];
+    const ph = sessionIds.map(() => "?").join(",");
+    const rows = this.db
+      .prepare<string[], ExemplarRow>(
+        `SELECT id, install_scope, signal_id, session_id, repo, model, lang,
+                task_context, code, code_hash, outcome, git_sha, survived, ts, created_at, retired_at, label_source
+         FROM code_exemplars WHERE session_id IN (${ph}) AND retired_at IS NULL ORDER BY ts ASC`,
+      )
+      .all(...sessionIds) as ExemplarRow[];
+    return rows.map((r) => this.rowToExemplar(r));
+  }
+
   async applyBucketCap(installScope: string, maxPerBucket: number): Promise<number> {
     type BucketRow = { repo: string; lang: string | null; outcome_class: string };
     const buckets = this.db

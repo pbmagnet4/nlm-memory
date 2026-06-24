@@ -110,6 +110,7 @@ export class PgTxBoundFactStore implements FactStore {
   findCurrent(_s: string, _p: string): Promise<Fact | null> { return noRead("FactStore.findCurrent"); }
   list(_q: FactQuery): Promise<ReadonlyArray<Fact>> { return noRead("FactStore.list"); }
   listBySession(_id: string): Promise<ReadonlyArray<Fact>> { return noRead("FactStore.listBySession"); }
+  listBySessions(_ids: ReadonlyArray<string>): Promise<ReadonlyArray<Fact>> { return noRead("FactStore.listBySessions"); }
   listForRecall(_f: FactListFilter): Promise<ReadonlyArray<Fact>> { return noRead("FactStore.listForRecall"); }
   semanticSearch(_v: Float32Array, _n: number): Promise<ReadonlyArray<FactSemanticNeighbor>> { return noRead("FactStore.semanticSearch"); }
   getHistory(_s: string, _p?: string): Promise<ReadonlyArray<FactHistoryChain>> { return noRead("FactStore.getHistory"); }
