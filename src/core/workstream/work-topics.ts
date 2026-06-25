@@ -51,18 +51,6 @@ export function parseWorkTopics(raw: unknown): ReadonlyArray<WorkTopic> {
 }
 
 /**
- * Reverse-map a workstream label to all of its aliases from the alias->label map.
- */
-export function aliasesFor(label: string, aliasToLabel: ReadonlyMap<string, string>): string[] {
-  const norm = normalizeLabel(label);
-  const out: string[] = [];
-  for (const [alias, canonical] of aliasToLabel) {
-    if (normalizeLabel(canonical) === norm) out.push(alias);
-  }
-  return out;
-}
-
-/**
  * Build a map from normalized alias -> canonical label for all topics.
  * Used by the binding path to resolve classifier output through aliases.
  */

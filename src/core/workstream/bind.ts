@@ -2,8 +2,9 @@
 import type { WorkstreamStore } from "@ports/workstream-store.js";
 import type { SessionStore } from "@ports/session-store.js";
 import type { LLMClient } from "@ports/llm-client.js";
-import { aliasesFor } from "./work-topics.js";
 import { decideWorkstreamByName } from "./name-match.js";
+
+export const NAMING_CONTENT_CHARS = 8000;
 
 export interface BindDeps {
   readonly namer: Pick<LLMClient, "nameWorkstream">;
@@ -17,6 +18,7 @@ export interface BindInput {
   readonly sessionId: string;
   readonly label: string;
   readonly summary: string;
+  readonly body?: string;
   readonly entities: ReadonlyArray<string>;
   readonly startedAt: string;
 }
@@ -32,9 +34,9 @@ export async function bindSessionToWorkstream(deps: BindDeps, input: BindInput):
     const ws = await deps.workstreams.listAll();
     const hints = ws.map((w) => ({
       label: w.label,
-      aliases: aliasesFor(w.label, deps.aliasToLabel),
+      aliases: [] as string[],
     }));
-    const content = `${input.label}\n${input.summary}`;
+    const content = `${input.label}\n${(input.body || input.summary).slice(0, NAMING_CONTENT_CHARS)}`;
     const named = await deps.namer.nameWorkstream(content, hints);
     const decision = decideWorkstreamByName(named, ws, deps.aliasToLabel);
 
