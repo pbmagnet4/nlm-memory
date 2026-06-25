@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { buildMatchInputs } from "../src/core/workstream/build-match-inputs.js";
 import { backfillWorkstreams } from "../src/core/workstream/backfill-workstreams.js";
 import { DEFAULT_THRESHOLDS, DEFAULT_WEIGHTS } from "../src/core/workstream/thresholds.js";
+import { buildEmbedder } from "../src/llm/build-embedder.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -38,10 +39,9 @@ async function main(): Promise<void> {
   const MIGRATIONS_DIR = resolve(__dirname, "../migrations");
 
   const { SqliteStorage } = await import("../src/core/storage/sqlite-storage.js");
-  const { OllamaClient } = await import("../src/llm/ollama-client.js");
 
   const storage = SqliteStorage.create({ dbPath, migrationsDir: MIGRATIONS_DIR });
-  const embedder = new OllamaClient();
+  const embedder = buildEmbedder();
 
   if (dryRun) {
     process.stdout.write("backfill-workstreams: --dry-run — no bindings will be written\n");

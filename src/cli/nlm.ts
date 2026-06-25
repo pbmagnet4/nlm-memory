@@ -46,13 +46,12 @@ import { createMcpServer, listMergeSuggestionsHandler, mergeWorkstreamsHandler, 
 import { ClassifierBox, type ClassifierProvider } from "../llm/classifier-box.js";
 import { DeepSeekClient } from "../llm/deepseek-client.js";
 import { classifierEgressNotice } from "../llm/classifier-egress.js";
-import { OllamaClient } from "../llm/ollama-client.js";
 import { OllamaCodeEmbedder } from "../llm/ollama-code-embedder.js";
-import { OpenAIEmbedderClient } from "../llm/openai-embedder-client.js";
 import { OpenAICodeEmbedderClient } from "../llm/openai-code-embedder-client.js";
 import { resolveEmbedderInfo } from "../llm/embedder-info.js";
 import type { CodeEmbedder } from "../ports/code-embedder.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
+import { buildEmbedder as _buildEmbedder } from "../llm/build-embedder.js";
 import { addHook, buildHookCommand, removeHook } from "../core/hook/claude-settings.js";
 import {
   codexBinaryAvailable,
@@ -202,29 +201,10 @@ function buildClassifier(): ClassifierBox {
   });
 }
 
-/** Build the recall/document embedder. Default is local Ollama; setting
- *  NLM_EMBED_PROVIDER=openai points embeddings at any OpenAI-compatible
- *  /v1/embeddings endpoint (local — LM Studio, oMLX — or cloud) via
- *  NLM_EMBED_BASE_URL. Embeddings must stay in one vector space: switching
- *  providers on an existing corpus requires `nlm embed-backfill`. */
+/** Build the recall/document embedder. Delegates to the shared factory in
+ *  src/llm/build-embedder.ts — see that file for provider routing details. */
 function buildEmbedder(): LLMClient {
-  const provider = (process.env["NLM_EMBED_PROVIDER"] ?? "ollama").toLowerCase();
-  if (provider === "openai") {
-    autoloadEnv();
-    const baseUrl = process.env["NLM_EMBED_BASE_URL"];
-    if (!baseUrl) {
-      throw new Error(
-        "NLM_EMBED_PROVIDER=openai requires NLM_EMBED_BASE_URL (an OpenAI-compatible " +
-          "/v1 endpoint), e.g. http://localhost:1234/v1 for LM Studio.",
-      );
-    }
-    return new OpenAIEmbedderClient({
-      baseUrl,
-      ...(process.env["NLM_EMBED_MODEL"] ? { model: process.env["NLM_EMBED_MODEL"] } : {}),
-      ...(process.env["NLM_EMBED_API_KEY"] ? { apiKey: process.env["NLM_EMBED_API_KEY"] } : {}),
-    });
-  }
-  return new OllamaClient({ baseUrl: ollamaUrl() });
+  return _buildEmbedder();
 }
 
 /** Build the code-lane embedder. Follows the same destination as the prose

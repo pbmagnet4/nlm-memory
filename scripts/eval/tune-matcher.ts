@@ -19,7 +19,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
-import { OllamaClient } from "../../src/llm/ollama-client.js";
+import { buildEmbedder } from "../../src/llm/build-embedder.js";
 import { buildMatchInputs } from "../../src/core/workstream/build-match-inputs.js";
 import { scoreCandidates } from "../../src/core/workstream/match.js";
 import { DEFAULT_THRESHOLDS, DEFAULT_WEIGHTS } from "../../src/core/workstream/thresholds.js";
@@ -46,7 +46,7 @@ if (gold.length === 0) {
 
 const storage = SqliteStorage.create({ dbPath: DB, migrationsDir: MIGRATIONS_DIR });
 await storage.init();
-const embedder = new OllamaClient({});
+const embedder = buildEmbedder();
 
 const preds: Prediction[] = [];
 for (const g of gold) {
