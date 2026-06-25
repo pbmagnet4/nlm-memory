@@ -1,5 +1,5 @@
 /**
- * scripts/backfill-workstreams.ts — name-only historical backfill against the live stack.
+ * scripts/backfill-workstreams.ts - name-only historical backfill against the live stack.
  *
  * Run: npx tsx scripts/backfill-workstreams.ts [--db=<path>] [--dry-run]
  *
@@ -56,7 +56,7 @@ async function main(): Promise<void> {
   }
 
   if (dryRun) {
-    process.stdout.write("backfill-workstreams: --dry-run — no bindings will be written\n");
+    process.stdout.write("backfill-workstreams: --dry-run - no bindings will be written\n");
   }
 
   try {
