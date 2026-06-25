@@ -14,7 +14,7 @@ export interface Workstream {
   readonly lastSessionAt: string | null;
 }
 
-export type BindingSource = "classifier" | "operator";
+export type BindingSource = "classifier" | "operator" | "backfill";
 
 export interface WorkstreamCandidate {
   readonly workstreamId: string;
