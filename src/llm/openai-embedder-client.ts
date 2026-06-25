@@ -101,4 +101,8 @@ export class OpenAIEmbedderClient implements LLMClient {
       "rewriteForRecall not supported — OpenAIEmbedderClient is an embedder only",
     );
   }
+
+  nameWorkstream(): Promise<string | null> {
+    throw new Error("OpenAIEmbedderClient does not support nameWorkstream");
+  }
 }

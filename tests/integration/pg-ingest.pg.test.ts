@@ -87,6 +87,7 @@ class StubEmbedder implements LLMClient {
     return { vector: v, model: "stub" };
   }
   async rewriteForRecall(): Promise<never> { throw new Error("not used"); }
+  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
   async classify(): Promise<never> { throw new Error("not used"); }
 }
 
@@ -195,6 +196,7 @@ class FixtureAdapter implements TranscriptAdapter {
 class FactClassifier implements LLMClient {
   async embed(): Promise<never> { throw new Error("not used"); }
   async rewriteForRecall(): Promise<never> { throw new Error("not used"); }
+  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
   async classify(): Promise<ClassifyResult> {
     return {
       label: "Stub label",
@@ -306,6 +308,7 @@ describe.skipIf(!PG_TEST_URL)("ingestSession webhook path over PG", () => {
     class LowConfidence implements LLMClient {
       async embed(): Promise<never> { throw new Error("not used"); }
       async rewriteForRecall(): Promise<never> { throw new Error("not used"); }
+      nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
       async classify(): Promise<ClassifyResult> {
         return { label: "x", summary: "x", entities: [], decisions: [], open: [], confidence: 0.1, facts: [] };
       }

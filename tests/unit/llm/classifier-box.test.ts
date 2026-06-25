@@ -14,6 +14,7 @@ describe("ClassifierBox.classify", () => {
       classify: async (t: string) => { seen = t; return empty; },
       embed: async () => { throw new Error("unused"); },
       rewriteForRecall: async () => { throw new Error("unused"); },
+      nameWorkstream: async () => { throw new Error("unused"); },
     };
     (box as unknown as { inner: LLMClient }).inner = fakeInner;
 
@@ -41,6 +42,16 @@ describe("ClassifierBox — openai provider", () => {
     expect(() => new ClassifierBox({ provider: "openai", model: "qwen3.5-4b-mlx" })).toThrow(
       /baseUrl/i,
     );
+  });
+});
+
+describe("ClassifierBox.nameWorkstream", () => {
+  it("delegates to the inner client and returns its answer", async () => {
+    const box = new ClassifierBox({ provider: "openai", model: "qwen3.5-4b-mlx", baseUrl: "http://x/v1" });
+    // @ts-expect-error - reach past the wrapper to stub the inner client for the test
+    box["inner"] = { nameWorkstream: async () => "NLM" };
+    const out = await box.nameWorkstream("some session text", [{ label: "NLM", aliases: ["nlm-memory"] }]);
+    expect(out).toBe("NLM");
   });
 });
 

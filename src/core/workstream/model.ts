@@ -16,27 +16,6 @@ export interface Workstream {
 
 export type BindingSource = "classifier" | "operator" | "backfill";
 
-export interface WorkstreamCandidate {
-  readonly workstreamId: string;
-  readonly entities: ReadonlyArray<string>;
-}
-
-export interface MatchThresholds { readonly high: number; readonly low: number; }
-export interface MatchWeights { readonly semantic: number; readonly entity: number; }
-
-export interface MatchInputs {
-  readonly sessionEntities: ReadonlyArray<string>;
-  readonly neighborScores: ReadonlyMap<string, number>;
-  readonly candidates: ReadonlyArray<WorkstreamCandidate>;
-  readonly thresholds: MatchThresholds;
-  readonly weights: MatchWeights;
-}
-
-export type MatchDecision =
-  | { readonly kind: "bind"; readonly workstreamId: string; readonly confidence: number }
-  | { readonly kind: "ambiguous"; readonly candidates: ReadonlyArray<{ readonly workstreamId: string; readonly score: number }> }
-  | { readonly kind: "create"; readonly confidence: number };
-
 export interface WorkstreamRollup {
   readonly workstream: Workstream;
   readonly sessionIds: ReadonlyArray<string>;

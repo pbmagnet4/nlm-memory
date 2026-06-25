@@ -96,6 +96,7 @@ class StubLLM implements LLMClient {
   async rewriteForRecall(): Promise<RewriteResult> {
     throw new LLMUnreachableError("stub");
   }
+  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
 }
 
 describe("fact corroboration boost (Spec G.1)", () => {

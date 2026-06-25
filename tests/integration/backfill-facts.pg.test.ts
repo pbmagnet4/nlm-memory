@@ -34,6 +34,7 @@ class ScriptedClassifier implements LLMClient {
     if (!r) throw new Error(`no scripted result for: ${transcript.slice(0, 40)}`);
     return r;
   }
+  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
 }
 
 function classifyResult(facts: ExtractedFact[], confidence = 0.9): ClassifyResult {

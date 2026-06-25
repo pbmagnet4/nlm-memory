@@ -29,6 +29,7 @@ class FixedEmbedder implements LLMClient {
   async rewriteForRecall(): Promise<never> {
     throw new Error("not used");
   }
+  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
   async classify(): Promise<never> {
     throw new Error("not used");
   }

@@ -19,6 +19,7 @@ function fakeClassifier(result: ClassifyResult): LLMClient {
     classify: async () => result,
     embed: async (): Promise<EmbedResult> => ({ vector: new Float32Array(768), model: "test" }),
     rewriteForRecall: async () => { throw new Error("nope"); },
+    nameWorkstream: async () => { throw new Error("stub"); },
   } as LLMClient;
 }
 
@@ -289,6 +290,7 @@ describe("reclassifyOversized", () => {
       },
       embed: async (): Promise<EmbedResult> => ({ vector: new Float32Array(768), model: "test" }),
       rewriteForRecall: async () => { throw new Error("nope"); },
+      nameWorkstream: async () => { throw new Error("stub"); },
     } as LLMClient;
 
     const out = await reclassifyOversized(

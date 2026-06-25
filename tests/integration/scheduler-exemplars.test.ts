@@ -19,6 +19,7 @@ const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 class StubClassifier implements LLMClient {
   async embed(): Promise<EmbedResult> { throw new Error("nu"); }
   async rewriteForRecall(): Promise<never> { throw new Error("nu"); }
+  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
   async classify(): Promise<ClassifyResult> {
     return { label: "L", summary: "Added throttle", entities: ["throttle"], decisions: ["chose throttle"], open: [], confidence: 0.9, facts: [] };
   }
@@ -26,6 +27,7 @@ class StubClassifier implements LLMClient {
 class StubEmbedder implements LLMClient {
   async embed(): Promise<EmbedResult> { const v = new Float32Array(768); v[0] = 1; return { vector: v, model: "stub" }; }
   async rewriteForRecall(): Promise<never> { throw new Error("nu"); }
+  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
   async classify(): Promise<never> { throw new Error("nu"); }
 }
 const stubCodeEmbedder: CodeEmbedder = { async embed() { const v = new Float32Array(768); v[1] = 1; return { vector: v, dim: 768 }; } };

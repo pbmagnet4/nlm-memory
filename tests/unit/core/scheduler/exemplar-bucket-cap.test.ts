@@ -25,6 +25,7 @@ class StubClassifier implements LLMClient {
   async classify(): Promise<ClassifyResult> {
     return { label: "L", summary: "s", entities: [], decisions: [], open: [], confidence: 0.9, facts: [] };
   }
+  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
 }
 
 interface CapCall { readonly installScope: string; readonly maxPerBucket: number; }

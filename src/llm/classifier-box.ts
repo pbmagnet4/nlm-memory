@@ -82,6 +82,10 @@ export class ClassifierBox implements LLMClient {
     return this.inner.rewriteForRecall(query);
   }
 
+  nameWorkstream(content: string, candidates: ReadonlyArray<import("@ports/llm-client.js").WorkstreamCandidateHint>): Promise<string | null> {
+    return this.inner.nameWorkstream(content, candidates);
+  }
+
   private construct(provider: ClassifierProvider, model: string): LLMClient {
     if (provider === "ollama") {
       return new OllamaClient({ baseUrl: this.ollamaUrl, classifyModel: model, ...(classifierNeedsThinkDisabled(model) ? { think: false } : {}) });
