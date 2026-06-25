@@ -9,6 +9,12 @@ describe("parseWorkTopics", () => {
       { label: "Project Beta", entities: ["beta"] },
     ]);
   });
+  it("parses the alias-map shape (string values), grouping aliases under their canonical", () => {
+    const out = parseWorkTopics({ "nlm-memory": "NLM", nlm: "NLM", beacon: "Beacon" });
+    const byLabel = new Map(out.map((w) => [w.label, [...w.entities].sort()]));
+    expect(byLabel.get("NLM")).toEqual(["NLM", "nlm", "nlm-memory"]);
+    expect(byLabel.get("Beacon")).toEqual(["Beacon", "beacon"]);
+  });
   it("parses the array shape", () => {
     const out = parseWorkTopics([{ label: "Gamma", entities: ["g1", "g2"] }]);
     expect(out).toEqual([{ label: "Gamma", entities: ["g1", "g2"] }]);

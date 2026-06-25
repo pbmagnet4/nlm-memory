@@ -90,7 +90,7 @@ async function main(): Promise<void> {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main().catch((e) => {
     process.stderr.write(`${e instanceof Error ? e.stack : String(e)}\n`);
     process.exit(1);

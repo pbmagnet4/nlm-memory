@@ -37,9 +37,24 @@ export function parseWorkTopics(raw: unknown): ReadonlyArray<WorkTopic> {
     });
   }
   if (raw && typeof raw === "object") {
-    return Object.entries(raw as Record<string, unknown>).map(([label, ents]) => {
+    const entries = Object.entries(raw as Record<string, unknown>);
+    // Alias-map shape { "<alias>": "<canonical>" } (the operator file's real shape,
+    // same map work-digest's aliasTopicProvider consumes): group aliases under their
+    // canonical label. Canonical = workstream label; aliases (+ the canonical itself)
+    // = its entities.
+    if (entries.length > 0 && entries.every(([, v]) => typeof v === "string")) {
+      const byCanonical = new Map<string, Set<string>>();
+      for (const [alias, canonical] of entries as Array<[string, string]>) {
+        const set = byCanonical.get(canonical) ?? new Set<string>([canonical]);
+        set.add(alias);
+        byCanonical.set(canonical, set);
+      }
+      return [...byCanonical].map(([label, entities]) => ({ label, entities: [...entities] }));
+    }
+    // Label-to-entities map { "<label>": ["<entity>", ...] }.
+    return entries.map(([label, ents]) => {
       if (!Array.isArray(ents)) {
-        throw new Error(`work-topics: value for "${label}" is not an array`);
+        throw new Error(`work-topics: value for "${label}" is neither a string (alias map) nor an array (entity map)`);
       }
       return { label, entities: ents.map(String) };
     });
@@ -94,7 +109,7 @@ async function main(): Promise<void> {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main().catch((e) => {
     process.stderr.write(`${e instanceof Error ? e.stack : String(e)}\n`);
     process.exit(1);
