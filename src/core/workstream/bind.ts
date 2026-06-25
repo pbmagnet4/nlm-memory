@@ -36,7 +36,7 @@ export async function bindSessionToWorkstream(deps: BindDeps, input: BindInput):
       label: w.label,
       aliases: [] as string[],
     }));
-    const content = `${input.label}\n${(input.body ?? input.summary).slice(0, NAMING_CONTENT_CHARS)}`;
+    const content = `${input.label}\n${(input.body || input.summary).slice(0, NAMING_CONTENT_CHARS)}`;
     const named = await deps.namer.nameWorkstream(content, hints);
     const decision = decideWorkstreamByName(named, ws, deps.aliasToLabel);
 

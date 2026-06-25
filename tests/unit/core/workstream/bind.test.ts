@@ -114,6 +114,29 @@ describe("bindSessionToWorkstream", () => {
     expect(capturedContent).toContain("built the scheduler");
   });
 
+  it("falls back to summary when body is an empty string", async () => {
+    let capturedContent = "";
+    const deps: BindDeps = {
+      namer: {
+        nameWorkstream: async (content: string) => {
+          capturedContent = content;
+          return "NLM";
+        },
+      },
+      workstreams: {
+        listAll: async () => [{ id: "ws_nlm", label: "NLM", status: "active", mergedInto: null, createdAt: "t", updatedAt: "t", lastSessionAt: null }],
+        upsertEntities: async () => {},
+        touchLastSession: async () => {},
+      },
+      sessions: {
+        setWorkstreamBinding: async () => {},
+      },
+      aliasToLabel: new Map<string, string>(),
+    } as unknown as BindDeps;
+    await bindSessionToWorkstream(deps, { ...baseInput, body: "" });
+    expect(capturedContent).toContain("built the scheduler");
+  });
+
   it("passes empty aliases to namer regardless of aliasToLabel contents", async () => {
     let capturedHints: ReadonlyArray<{ label: string; aliases: string[] }> = [];
     const deps: BindDeps = {
