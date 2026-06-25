@@ -48,6 +48,24 @@ export class PgWorkstreamStore implements WorkstreamStore {
     await this.pool.query("UPDATE workstreams SET status = $1, updated_at = NOW() WHERE id = $2", [status, id]);
   }
 
+  async merge(fromId: string, intoId: string): Promise<void> {
+    // Pointer first (source of truth for resolution), then derived entity union, then clear.
+    // No multi-statement transaction here to match this adapter's per-query style; a mid-failure
+    // leaves merged_into correct (resolution works) with at worst a stale duplicate entity row.
+    await this.pool.query(
+      "UPDATE workstreams SET merged_into = $1, status = 'merged', updated_at = NOW() WHERE id = $2",
+      [intoId, fromId],
+    );
+    await this.pool.query(
+      `INSERT INTO workstream_entities (workstream_id, entity_canonical, session_count)
+       SELECT $1, entity_canonical, session_count FROM workstream_entities WHERE workstream_id = $2
+       ON CONFLICT (workstream_id, entity_canonical)
+       DO UPDATE SET session_count = workstream_entities.session_count + excluded.session_count`,
+      [intoId, fromId],
+    );
+    await this.pool.query("DELETE FROM workstream_entities WHERE workstream_id = $1", [fromId]);
+  }
+
   async upsertEntities(workstreamId: string, entities: ReadonlyArray<string>): Promise<void> {
     for (const raw of entities) {
       const e = raw.trim(); if (!e) continue;

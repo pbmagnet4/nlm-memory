@@ -23,6 +23,7 @@ function fakeDeps(over: Partial<BindDeps> & { existing?: Array<{ id: string; lab
       candidatesByEntityOverlap: async (ents) => existing.filter((w) => w.entities.some((e) => ents.includes(e))).map((w) => ({ workstreamId: w.id, entities: w.entities })),
       setLabel: async () => {},
       setStatus: async () => {},
+      merge: async () => {},
     },
     sessions: {
       setWorkstreamBinding: setBinding,
