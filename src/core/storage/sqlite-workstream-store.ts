@@ -42,6 +42,14 @@ export class SqliteWorkstreamStore implements WorkstreamStore {
     this.db.prepare("UPDATE workstreams SET last_session_at = ?, updated_at = datetime('now') WHERE id = ?").run(atIso, id);
   }
 
+  async setLabel(id: string, label: string): Promise<void> {
+    this.db.prepare("UPDATE workstreams SET label = ?, updated_at = datetime('now') WHERE id = ?").run(label, id);
+  }
+
+  async setStatus(id: string, status: Workstream["status"]): Promise<void> {
+    this.db.prepare("UPDATE workstreams SET status = ?, updated_at = datetime('now') WHERE id = ?").run(status, id);
+  }
+
   async upsertEntities(workstreamId: string, entities: ReadonlyArray<string>): Promise<void> {
     const stmt = this.db.prepare(`
       INSERT INTO workstream_entities (workstream_id, entity_canonical, session_count)

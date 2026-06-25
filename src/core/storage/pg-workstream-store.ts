@@ -40,6 +40,14 @@ export class PgWorkstreamStore implements WorkstreamStore {
     await this.pool.query("UPDATE workstreams SET last_session_at = $1, updated_at = NOW() WHERE id = $2", [atIso, id]);
   }
 
+  async setLabel(id: string, label: string): Promise<void> {
+    await this.pool.query("UPDATE workstreams SET label = $1, updated_at = NOW() WHERE id = $2", [label, id]);
+  }
+
+  async setStatus(id: string, status: Workstream["status"]): Promise<void> {
+    await this.pool.query("UPDATE workstreams SET status = $1, updated_at = NOW() WHERE id = $2", [status, id]);
+  }
+
   async upsertEntities(workstreamId: string, entities: ReadonlyArray<string>): Promise<void> {
     for (const raw of entities) {
       const e = raw.trim(); if (!e) continue;
