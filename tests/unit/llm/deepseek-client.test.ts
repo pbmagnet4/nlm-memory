@@ -91,3 +91,37 @@ describe("DeepSeekClient — OpenAI-compatible request shaping", () => {
     ).not.toThrow();
   });
 });
+
+function fakeFetch(content: string): typeof fetch {
+  return (async () =>
+    new Response(JSON.stringify({ choices: [{ message: { content } }] }), {
+      status: 200,
+    })) as unknown as typeof fetch;
+}
+
+describe("DeepSeekClient.nameWorkstream", () => {
+  const cands = [
+    { label: "NLM", aliases: ["nlm-memory"] },
+    { label: "Acme", aliases: [] },
+  ];
+  it("returns the matched candidate label from a chatty (thinking) response", async () => {
+    const c = new DeepSeekClient({
+      baseUrl: "http://x/v1",
+      apiKey: "local",
+      classifyModel: "qwen3.5-4b-mlx",
+      fetchImpl: fakeFetch("<reasoning...>\n\nNLM"),
+    });
+    expect(
+      await c.nameWorkstream("Finding insertion points for nlm-memory files\nsummary", cands),
+    ).toBe("NLM");
+  });
+  it("returns null when the model answers none", async () => {
+    const c = new DeepSeekClient({
+      baseUrl: "http://x/v1",
+      apiKey: "local",
+      classifyModel: "qwen3.5-4b-mlx",
+      fetchImpl: fakeFetch("none"),
+    });
+    expect(await c.nameWorkstream("Zephyr persona work\nsummary", cands)).toBeNull();
+  });
+});
