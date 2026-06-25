@@ -39,7 +39,7 @@ const db = new Database(DB_PATH, { readonly: true });
 
 // Pull all sessions with a non-empty label for stratification.
 const rows = db.prepare<[], SessionRow>(
-  "SELECT id, label, COALESCE(summary,'') AS summary FROM sessions WHERE label IS NOT NULL AND label != '' ORDER BY ts DESC",
+  "SELECT id, label, COALESCE(summary,'') AS summary FROM sessions WHERE label IS NOT NULL AND label != '' ORDER BY started_at DESC",
 ).all();
 
 db.close();
