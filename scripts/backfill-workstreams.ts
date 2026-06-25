@@ -12,8 +12,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { backfillWorkstreams } from "../src/core/workstream/backfill-workstreams.js";
 import { decideWorkstreamByName } from "../src/core/workstream/name-match.js";
-import { parseWorkTopics, aliasToLabelMap } from "../src/core/workstream/work-topics.js";
-import { normalizeLabel } from "../src/core/workstream/model.js";
+import { parseWorkTopics, aliasToLabelMap, aliasesFor } from "../src/core/workstream/work-topics.js";
 import { buildClassifier } from "../src/llm/build-classifier.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -24,15 +23,6 @@ const arg = (k: string): string | undefined => {
   return h ? h.slice(k.length + 3) : undefined;
 };
 const flag = (k: string): boolean => process.argv.includes(`--${k}`);
-
-function aliasesFor(label: string, aliasToLabel: ReadonlyMap<string, string>): ReadonlyArray<string> {
-  const norm = normalizeLabel(label);
-  const out: string[] = [];
-  for (const [alias, canonical] of aliasToLabel) {
-    if (normalizeLabel(canonical) === norm) out.push(alias);
-  }
-  return out;
-}
 
 async function main(): Promise<void> {
   const dbPath =

@@ -43,7 +43,7 @@ describe("bindSessionToWorkstream", () => {
       },
       aliasToLabel: new Map<string, string>(),
     } as unknown as BindDeps;
-    expect(await bindSessionToWorkstream(deps, { ...baseInput, sessionId: "s2", label: "knxt", summary: "s" })).toBeNull();
+    expect(await bindSessionToWorkstream(deps, { ...baseInput, sessionId: "s2", label: "Zephyr", summary: "s" })).toBeNull();
   });
 
   it("resolves via alias map when classifier returns an alias", async () => {

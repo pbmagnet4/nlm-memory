@@ -173,7 +173,6 @@ class FixtureAdapter implements TranscriptAdapter {
   detect(): DetectionResult {
     return { adapterName: this.name, enabled: true, path: this.path, hint: null };
   }
-  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
   async discover(): Promise<string[]> { return [this.path]; }
   async parseSession(sourcePath: string): Promise<SessionChunk | null> {
     return {

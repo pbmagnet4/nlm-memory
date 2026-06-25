@@ -1,6 +1,6 @@
 // tests/unit/core/workstream/work-topics.test.ts
 import { describe, expect, it } from "vitest";
-import { parseWorkTopics, aliasToLabelMap } from "../../../../src/core/workstream/work-topics.js";
+import { parseWorkTopics, aliasToLabelMap, aliasesFor } from "../../../../src/core/workstream/work-topics.js";
 
 describe("parseWorkTopics", () => {
   it("parses array shape", () => {
@@ -57,5 +57,27 @@ describe("aliasToLabelMap", () => {
     ];
     const map = aliasToLabelMap(topics);
     expect(map.get("shared")).toBe("B");
+  });
+});
+
+describe("aliasesFor", () => {
+  const aliasToLabel = new Map([
+    ["nlm-memory", "NLM"],
+    ["nlm", "NLM"],
+    ["acme-1", "Acme"],
+  ]);
+
+  it("returns all aliases for a known label (order-insensitive)", () => {
+    const result = aliasesFor("NLM", aliasToLabel);
+    expect(result.sort()).toEqual(["nlm", "nlm-memory"]);
+  });
+
+  it("returns empty array when label has no aliases", () => {
+    expect(aliasesFor("Unknown", aliasToLabel)).toEqual([]);
+  });
+
+  it("is case-insensitive via normalizeLabel", () => {
+    const result = aliasesFor("nlm", aliasToLabel);
+    expect(result.sort()).toEqual(["nlm", "nlm-memory"]);
   });
 });

@@ -2,7 +2,7 @@
 import type { WorkstreamStore } from "@ports/workstream-store.js";
 import type { SessionStore } from "@ports/session-store.js";
 import type { LLMClient } from "@ports/llm-client.js";
-import { normalizeLabel } from "./model.js";
+import { aliasesFor } from "./work-topics.js";
 import { decideWorkstreamByName } from "./name-match.js";
 
 export interface BindDeps {
@@ -25,16 +25,6 @@ export interface BindResult {
   readonly workstreamId: string;
   readonly created: boolean;
   readonly confidence: number | null;
-}
-
-/** Build alias list for a workstream label from the aliasToLabel map (reverse lookup). */
-function aliasesFor(label: string, aliasToLabel: ReadonlyMap<string, string>): ReadonlyArray<string> {
-  const norm = normalizeLabel(label);
-  const out: string[] = [];
-  for (const [alias, canonical] of aliasToLabel) {
-    if (normalizeLabel(canonical) === norm) out.push(alias);
-  }
-  return out;
 }
 
 export async function bindSessionToWorkstream(deps: BindDeps, input: BindInput): Promise<BindResult | null> {
