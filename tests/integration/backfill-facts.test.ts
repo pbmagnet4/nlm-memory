@@ -36,6 +36,7 @@ class ScriptedClassifier implements LLMClient {
   async rewriteForRecall(): Promise<never> {
     throw new Error("not used in tests");
   }
+  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
   async classify(transcript: string): Promise<ClassifyResult> {
     this.calls.push(transcript);
     if (this.errorIds.has(transcript)) {

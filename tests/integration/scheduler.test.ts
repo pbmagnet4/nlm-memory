@@ -54,6 +54,7 @@ class StubClassifier implements LLMClient {
   async rewriteForRecall(): Promise<never> {
     throw new Error("not used in tests");
   }
+  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
   async classify(): Promise<ClassifyResult> {
     this.calls += 1;
     if (this.throwError) throw new Error("classifier blew up");
@@ -72,6 +73,7 @@ class StubEmbedder implements LLMClient {
   async rewriteForRecall(): Promise<never> {
     throw new Error("not used in tests");
   }
+  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
   async classify(): Promise<ClassifyResult> {
     throw new Error("not used");
   }
@@ -224,6 +226,7 @@ describe("ScanScheduler.tick", () => {
     const proxy: import("../../src/ports/llm-client.js").LLMClient = {
       embed: async () => { throw new Error("not used"); },
       rewriteForRecall: async () => { throw new Error("not used"); },
+      nameWorkstream: async () => { throw new Error("stub"); },
       classify: async (_text) => classifier.classify(),
     };
 
@@ -380,6 +383,7 @@ describe("ScanScheduler.tick", () => {
     const proxy: import("../../src/ports/llm-client.js").LLMClient = {
       embed: async () => { throw new Error("not used"); },
       rewriteForRecall: async () => { throw new Error("not used"); },
+      nameWorkstream: async () => { throw new Error("stub"); },
       classify,
     };
     const scheduler = new ScanScheduler({
@@ -666,6 +670,7 @@ describe("ScanScheduler.tick", () => {
     const spyClassifier: import("../../src/ports/llm-client.js").LLMClient = {
       embed: async () => { throw new Error("not used"); },
       rewriteForRecall: async () => { throw new Error("not used"); },
+      nameWorkstream: async () => { throw new Error("stub"); },
       classify: async (_text: string) => {
         classifyCalls += 1;
         return {

@@ -69,9 +69,17 @@ export interface RewriteResult {
   readonly rationale?: string;
 }
 
+export interface WorkstreamCandidateHint {
+  readonly label: string;
+  readonly aliases: ReadonlyArray<string>;
+}
+
 export interface LLMClient {
   embed(text: string, kind: EmbeddingKind): Promise<EmbedResult>;
   classify(transcript: string): Promise<ClassifyResult>;
+  /** Name which candidate workstream this session belongs to, or null for "none".
+   *  Returns the chosen candidate.label verbatim. Content is label+summary or a transcript. */
+  nameWorkstream(content: string, candidates: ReadonlyArray<WorkstreamCandidateHint>): Promise<string | null>;
   /**
    * Rewrite a recall query for better retrieval. Cheap-ish call (one-shot
    * chat completion, ~hundreds of ms locally). Implementations MUST throw

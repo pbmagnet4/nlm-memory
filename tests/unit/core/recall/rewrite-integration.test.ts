@@ -65,6 +65,7 @@ class RewritingLLM implements LLMClient {
     if (this.shouldThrow) throw new LLMUnreachableError("test-stub");
     return this.result;
   }
+  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
 }
 
 const corpus = [makeSession({ id: "a", label: "pgvector migration plan" })];

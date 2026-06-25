@@ -21,6 +21,7 @@ const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 class StubClassifier implements LLMClient {
   async embed(): Promise<EmbedResult> { throw new Error("not used"); }
   async rewriteForRecall(): Promise<never> { throw new Error("not used"); }
+  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
   async classify(): Promise<ClassifyResult> {
     return {
       label: "Workstream test session",
@@ -41,6 +42,7 @@ class StubEmbedder implements LLMClient {
     return { vector: v, model: "stub" };
   }
   async rewriteForRecall(): Promise<never> { throw new Error("not used"); }
+  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
   async classify(): Promise<ClassifyResult> { throw new Error("not used"); }
 }
 

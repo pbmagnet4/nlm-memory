@@ -260,5 +260,9 @@ export class OllamaClient implements LLMClient {
       clearTimeout(timer);
     }
   }
+
+  nameWorkstream(): Promise<string | null> {
+    throw new Error("OllamaClient does not support nameWorkstream");
+  }
 }
 

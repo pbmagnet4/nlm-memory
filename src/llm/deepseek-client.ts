@@ -240,4 +240,8 @@ export class DeepSeekClient implements LLMClient {
       clearTimeout(timer);
     }
   }
+
+  nameWorkstream(): Promise<string | null> {
+    throw new Error("DeepSeekClient does not support nameWorkstream");
+  }
 }

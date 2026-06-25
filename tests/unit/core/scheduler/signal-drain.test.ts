@@ -116,6 +116,7 @@ describe("ScanScheduler signal drain", () => {
         rewriteForRecall: async () => {
           throw new Error("no");
         },
+        nameWorkstream: async () => { throw new Error("stub"); },
       },
       embedder: null,
       signalStore,
@@ -160,6 +161,7 @@ describe("ScanScheduler signal drain", () => {
         embed: async () => { throw new Error("no"); },
         classify: async () => { throw new Error("classify fail"); },
         rewriteForRecall: async () => { throw new Error("no"); },
+        nameWorkstream: async () => { throw new Error("stub"); },
       },
       embedder: null,
       // no signalStore
@@ -207,6 +209,7 @@ describe("ScanScheduler signal drain", () => {
         embed: async () => { throw new Error("no"); },
         classify: async () => { throw new Error("classify fail"); },
         rewriteForRecall: async () => { throw new Error("no"); },
+        nameWorkstream: async () => { throw new Error("stub"); },
       },
       embedder: null,
       signalStore,
@@ -255,6 +258,7 @@ describe("ScanScheduler signal drain", () => {
           embed: async () => { throw new Error("no"); },
           classify: async () => { throw new Error("classify fail"); },
           rewriteForRecall: async () => { throw new Error("no"); },
+          nameWorkstream: async () => { throw new Error("stub"); },
         },
         embedder: null,
         signalStore,
