@@ -63,6 +63,9 @@ export async function bindSessionToWorkstream(deps: BindDeps, input: BindInput):
 async function createOrDedup(deps: BindDeps, label: string): Promise<{ workstreamId: string; created: boolean }> {
   const existing = await deps.workstreams.findByNormalizedLabel(normalizeLabel(label));
   if (existing) return { workstreamId: existing.id, created: false };
+  // NOTE: a create() that succeeds before a later persist throws can leave an inert orphan
+  // workstream. Acceptable under fail-open — it has no sessions, surfaces in no rollup, and
+  // dedup-by-normalized-label folds it the next time the same label is proposed. (#367 §17)
   const ws = await deps.workstreams.create({ id: makeWorkstreamId(), label: label.trim() || "untitled" });
   return { workstreamId: ws.id, created: true };
 }

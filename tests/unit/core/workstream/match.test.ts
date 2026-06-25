@@ -67,4 +67,32 @@ describe("matchWorkstream", () => {
     }));
     expect(d.kind).toBe("create");
   });
+
+  it("binds when top score exactly equals high (>= boundary)", () => {
+    // score = weights.semantic * semantic + weights.entity * jaccard(sessionEntities, candidate.entities)
+    // = 0.5 * 1.0 + 0.5 * jaccard(["x"], []) = 0.5 * 1.0 + 0.5 * 0 = 0.5 == high
+    // 0.5 = 2^-1, exactly representable in binary. Locks the >= operator against regression.
+    const d = matchWorkstream({
+      sessionEntities: ["x"],
+      neighborScores: new Map([["ws_a", 1.0]]),
+      candidates: [{ workstreamId: "ws_a", entities: [] }],
+      thresholds: { high: 0.5, low: 0.25 },
+      weights: { semantic: 0.5, entity: 0.5 },
+    });
+    expect(d.kind).toBe("bind");
+  });
+
+  it("is ambiguous (not create) when top score exactly equals low (strict-< boundary)", () => {
+    // score = 0.5 * 1.0 + 0.5 * jaccard(["x"], []) = 0.5 * 1.0 + 0.5 * 0 = 0.5 == low
+    // 0.5 < 0.5 is false (strict), so create is skipped; 0.5 >= 0.75 is false, so bind is skipped -> ambiguous.
+    // 0.5 = 2^-1, 0.75 = 3/4 = 2^-1 + 2^-2, both exactly representable. Locks the strict-< operator.
+    const d = matchWorkstream({
+      sessionEntities: ["x"],
+      neighborScores: new Map([["ws_a", 1.0]]),
+      candidates: [{ workstreamId: "ws_a", entities: [] }],
+      thresholds: { high: 0.75, low: 0.5 },
+      weights: { semantic: 0.5, entity: 0.5 },
+    });
+    expect(d.kind).toBe("ambiguous");
+  });
 });
