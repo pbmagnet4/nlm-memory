@@ -42,7 +42,7 @@ import { PgStorage } from "../core/storage/pg-storage.js";
 import { applyPendingRestore, stageRestore } from "../core/storage/db-restore.js";
 import { listBackupDates, resolveBackup, runRollingBackup } from "../core/storage/backup-rotation.js";
 import { createApp } from "../http/app.js";
-import { createMcpServer, rebindSessionHandler, recallWorkstreamHandler } from "../mcp/server.js";
+import { createMcpServer, mergeWorkstreamsHandler, rebindSessionHandler, recallWorkstreamHandler } from "../mcp/server.js";
 import { ClassifierBox, type ClassifierProvider } from "../llm/classifier-box.js";
 import { DeepSeekClient } from "../llm/deepseek-client.js";
 import { classifierEgressNotice } from "../llm/classifier-egress.js";
@@ -606,6 +606,24 @@ program
       const r = await rebindSessionHandler(
         { recall: {} as never, store, workstreams: { store: storage.workstreams, sessions: store, facts: storage.facts, exemplars: storage.exemplars } } as never,
         { sessionId, workstream },
+      );
+      process.stdout.write(r.content[0]!.text + "\n");
+    } finally {
+      await storage.close();
+    }
+  });
+
+program
+  .command("merge-workstreams")
+  .description("Merge a duplicate workstream into the one to keep")
+  .argument("<from>", "duplicate workstream id or label")
+  .argument("<into>", "survivor workstream id or label")
+  .action(async (from, into) => {
+    const { storage, store } = await buildStack();
+    try {
+      const r = await mergeWorkstreamsHandler(
+        { recall: {} as never, store, workstreams: { store: storage.workstreams, sessions: store, facts: storage.facts, exemplars: storage.exemplars } } as never,
+        { from, into },
       );
       process.stdout.write(r.content[0]!.text + "\n");
     } finally {

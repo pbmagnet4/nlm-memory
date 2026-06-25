@@ -241,6 +241,28 @@ async function resolveWorkstream(
   return survivorId === found.id ? found : ((await store.getById(survivorId)) ?? found);
 }
 
+export async function mergeWorkstreamsHandler(
+  deps: McpDeps,
+  input: { from?: string; into?: string },
+): Promise<ToolResult> {
+  if (!deps.workstreams) return okText("merge_workstreams is not available in this deployment.");
+  try {
+    const fromArg = (input.from ?? "").trim();
+    const intoArg = (input.into ?? "").trim();
+    if (!fromArg || !intoArg) return okText("Provide both `from` and `into` (workstream id or label).");
+    const ws = deps.workstreams.store;
+    const from = await resolveWorkstream(ws, fromArg);
+    const into = await resolveWorkstream(ws, intoArg);
+    if (!from) return okText(`No workstream matches "${fromArg}".`);
+    if (!into) return okText(`No workstream matches "${intoArg}".`);
+    if (from.id === into.id) return okText(`"${fromArg}" and "${intoArg}" resolve to the same workstream — nothing to merge.`);
+    await ws.merge(from.id, into.id);
+    return okText(`Merged "${from.label}" (${from.id}) into "${into.label}" (${into.id}).`);
+  } catch (e) {
+    return err(e);
+  }
+}
+
 export async function rebindSessionHandler(
   deps: McpDeps,
   input: { sessionId?: string; workstream?: string },
@@ -944,6 +966,21 @@ export function createMcpServer(deps: McpDeps): McpServer {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async (args) => rebindSessionHandler(deps, args) as never,
+  );
+
+  server.registerTool(
+    "merge_workstreams",
+    {
+      title: "Merge one workstream into another",
+      description:
+        "Supersede a duplicate workstream into the one to keep: sets merged_into, marks it merged, and unions its entity index. Sessions, facts, and exemplars resolve to the survivor automatically (no session rewrite). Accepts ids or labels; merge chains resolve.",
+      inputSchema: {
+        from: z.string().describe("Workstream to retire (the duplicate); id or label."),
+        into: z.string().describe("Workstream to keep (the survivor); id or label."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    async (args) => mergeWorkstreamsHandler(deps, args) as never,
   );
 
   if (

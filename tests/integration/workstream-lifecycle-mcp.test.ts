@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { makeSession } from "../fixtures/sessions.js";
-import { rebindSessionHandler } from "../../src/mcp/server.js";
+import { mergeWorkstreamsHandler, rebindSessionHandler } from "../../src/mcp/server.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 let storage: SqliteStorage;
@@ -60,5 +60,24 @@ describe("rebind_session handler", () => {
       { sessionId: "s1", workstream: "NLM" },
     );
     expect(r.content[0]!.text.toLowerCase()).toContain("not available");
+  });
+});
+
+describe("merge_workstreams handler", () => {
+  it("merges from into into and resolves the chain", async () => {
+    await storage.workstreams.create({ id: "ws_from", label: "Dup" });
+    await storage.workstreams.create({ id: "ws_into", label: "Keep" });
+    const r = await mergeWorkstreamsHandler(deps(), { from: "Dup", into: "Keep" });
+    expect(r.isError).not.toBe(true);
+    const from = await storage.workstreams.getById("ws_from");
+    expect(from!.mergedInto).toBe("ws_into");
+    expect(from!.status).toBe("merged");
+  });
+  it("refuses to merge a workstream into itself", async () => {
+    await storage.workstreams.create({ id: "ws_1", label: "Solo" });
+    const r = await mergeWorkstreamsHandler(deps(), { from: "Solo", into: "Solo" });
+    expect(r.isError).not.toBe(true);
+    expect(r.content[0]!.text.toLowerCase()).toContain("same workstream");
+    expect((await storage.workstreams.getById("ws_1"))!.mergedInto).toBeNull();
   });
 });
