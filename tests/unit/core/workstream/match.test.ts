@@ -1,6 +1,6 @@
 // tests/unit/core/workstream/match.test.ts
 import { describe, expect, it } from "vitest";
-import { matchWorkstream, jaccard } from "../../../../src/core/workstream/match.js";
+import { matchWorkstream, jaccard, scoreCandidates } from "../../../../src/core/workstream/match.js";
 import type { MatchInputs } from "../../../../src/core/workstream/model.js";
 
 const base = (over: Partial<MatchInputs>): MatchInputs => ({
@@ -21,6 +21,16 @@ describe("jaccard", () => {
   it("is intersection over union", () => {
     expect(jaccard(["a", "b"], ["b", "c"])).toBeCloseTo(1 / 3);
   });
+});
+
+it("scoreCandidates returns candidates sorted by combined score desc", () => {
+  const out = scoreCandidates({
+    sessionEntities: ["x"], neighborScores: new Map([["ws_a", 0.9], ["ws_b", 0.1]]),
+    candidates: [{ workstreamId: "ws_a", entities: ["x"] }, { workstreamId: "ws_b", entities: [] }],
+    thresholds: { high: 0.5, low: 0.3 }, weights: { semantic: 0.5, entity: 0.5 },
+  });
+  expect(out[0]!.workstreamId).toBe("ws_a");
+  expect(out[0]!.score).toBeGreaterThan(out[1]!.score);
 });
 
 describe("matchWorkstream", () => {
