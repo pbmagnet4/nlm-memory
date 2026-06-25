@@ -30,6 +30,8 @@ async function main(): Promise<void> {
     arg("db")?.replace(/^~/, homedir()) ??
     (process.env["NLM_DB_PATH"] ?? join(homedir(), ".nlm", "canonical.sqlite"));
   const dryRun = flag("dry-run");
+  const limitRaw = Number.parseInt(arg("limit") ?? "", 10);
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : null;
 
   const MIGRATIONS_DIR = resolve(__dirname, "../migrations");
 
@@ -55,7 +57,7 @@ async function main(): Promise<void> {
     const res = await backfillWorkstreams({
       listSessions: async () => {
         const rows = storage.sessions.rawDb().prepare<[], { id: string; label: string; summary: string; body: string }>(
-          "SELECT id, label, COALESCE(summary,'') AS summary, COALESCE(body,'') AS body FROM sessions WHERE label IS NOT NULL AND label != '' ORDER BY started_at ASC",
+          `SELECT id, label, COALESCE(summary,'') AS summary, COALESCE(body,'') AS body FROM sessions WHERE label IS NOT NULL AND label != '' AND workstream_id IS NULL ORDER BY started_at ASC${limit ? ` LIMIT ${limit}` : ""}`,
         ).all();
         return rows.map((r) => ({
           sessionId: r.id,
