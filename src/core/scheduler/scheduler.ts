@@ -42,27 +42,19 @@ import { runCheapChecksOnSqlite } from "@core/integrity/check-invariants.js";
 import { classifyAdaptive } from "@core/classifier/hierarchical-classify.js";
 import { TimeoutError } from "@core/util/with-timeout.js";
 import { bindSessionToWorkstream } from "@core/workstream/bind.js";
-import { DEFAULT_THRESHOLDS, DEFAULT_WEIGHTS } from "@core/workstream/thresholds.js";
+import { parseWorkTopics, aliasToLabelMap } from "@core/workstream/work-topics.js";
 
 function bindWorkstreamsEnabled(): boolean {
   return process.env["NLM_WORKSTREAM_BIND"] === "true";
 }
 
-function makeClassifierPicker(classifier: LLMClient): (input: { sessionLabel: string; sessionSummary: string; candidates: ReadonlyArray<{ workstreamId: string; label: string; entities: ReadonlyArray<string> }> }) => Promise<string | null> {
-  return async ({ sessionLabel, sessionSummary, candidates }) => {
-    if (candidates.length === 0) return null;
-    const list = candidates.map((c, i) => `${i + 1}. id=${c.workstreamId} label="${c.label}" entities=[${c.entities.join(", ")}]`).join("\n");
-    const prompt = `You are resolving an ambiguous workstream assignment.\n\nSession label: "${sessionLabel}"\nSession summary: "${sessionSummary}"\n\nCandidates:\n${list}\n\nRespond with ONLY the workstreamId of the best match, or "none" if none fit. No explanation.`;
-    try {
-      const result = await classifier.classify(prompt);
-      const raw = (result.label ?? "").trim();
-      if (!raw || raw === "none") return null;
-      const match = candidates.find((c) => c.workstreamId === raw);
-      return match ? raw : null;
-    } catch {
-      return null;
-    }
-  };
+function loadAliasToLabel(): Map<string, string> {
+  try {
+    const raw = readFileSync(join(homedir(), ".nlm", "work-topics.json"), "utf8");
+    return aliasToLabelMap(parseWorkTopics(JSON.parse(raw)));
+  } catch {
+    return new Map();
+  }
 }
 
 const DEFAULT_INTERVAL_MS = 30 * 60 * 1000; // 30 min, matches Python default
@@ -163,6 +155,7 @@ export class ScanScheduler {
     readonly codeEmbedder: CodeEmbedder | null;
     readonly workstreams: WorkstreamStore | null;
   };
+  private readonly aliasToLabel: ReadonlyMap<string, string>;
   private stopped = true;
   private timer: NodeJS.Timeout | null = null;
 
@@ -184,6 +177,7 @@ export class ScanScheduler {
       idleMinutes: opts.idleMinutes ?? DEFAULT_IDLE_MINUTES,
       logger: opts.logger ?? ((msg) => console.error(msg)),
     };
+    this.aliasToLabel = loadAliasToLabel();
   }
 
   start(): void {
@@ -328,16 +322,14 @@ export class ScanScheduler {
             recordClassified(sqliteDb!, adapter.name, chunk.sourcePath, chunk.id);
           }
           inserted += 1;
-          if (bindWorkstreamsEnabled() && this.opts.workstreams && this.opts.embedder) {
+          if (bindWorkstreamsEnabled() && this.opts.workstreams) {
             try {
               await bindSessionToWorkstream(
                 {
+                  namer: this.opts.classifier,
                   workstreams: this.opts.workstreams,
                   sessions: this.opts.store,
-                  embedder: this.opts.embedder,
-                  thresholds: DEFAULT_THRESHOLDS,
-                  weights: DEFAULT_WEIGHTS,
-                  pickAmbiguous: makeClassifierPicker(this.opts.classifier),
+                  aliasToLabel: this.aliasToLabel,
                   log: this.opts.logger,
                 },
                 {

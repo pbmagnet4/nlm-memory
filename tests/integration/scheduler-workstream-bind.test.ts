@@ -21,7 +21,7 @@ const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 class StubClassifier implements LLMClient {
   async embed(): Promise<EmbedResult> { throw new Error("not used"); }
   async rewriteForRecall(): Promise<never> { throw new Error("not used"); }
-  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
+  async nameWorkstream(): Promise<string | null> { return "NLM"; }
   async classify(): Promise<ClassifyResult> {
     return {
       label: "Workstream test session",
@@ -42,7 +42,7 @@ class StubEmbedder implements LLMClient {
     return { vector: v, model: "stub" };
   }
   async rewriteForRecall(): Promise<never> { throw new Error("not used"); }
-  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
+  async nameWorkstream(): Promise<string | null> { return null; }
   async classify(): Promise<ClassifyResult> { throw new Error("not used"); }
 }
 
@@ -72,6 +72,8 @@ describe("ScanScheduler workstream bind (flag-gated)", () => {
       migrationsDir: MIGRATIONS_DIR,
     });
     await storage.init();
+    // Pre-seed "NLM" workstream so the stub classifier can match it.
+    await storage.workstreams.create({ id: "ws_nlm_test", label: "NLM" });
     projects = mkdtempSync(join(tmpdir(), "nlm-ws-projects-"));
     buildFixture(projects);
   });
@@ -146,10 +148,11 @@ describe("ScanScheduler workstream bind (flag-gated)", () => {
       expect(sess).toHaveLength(1);
       expect(sess[0]?.workstream_id).toBeNull();
 
+      // Only the pre-seeded workstream exists; no new ones were created.
       const wsCount = db
         .prepare<[], { n: number }>("SELECT COUNT(*) AS n FROM workstreams")
         .get();
-      expect(wsCount?.n).toBe(0);
+      expect(wsCount?.n).toBe(1);
     } finally {
       db.close();
     }
