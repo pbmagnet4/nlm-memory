@@ -18,8 +18,10 @@ import type {
   EmbeddingKind,
   LLMClient,
   RewriteResult,
+  WorkstreamCandidateHint,
 } from "@ports/llm-client.js";
 import { ClassifierSchemaError, LLMUnreachableError } from "@ports/llm-client.js";
+import { classifierNeedsThinkDisabled } from "./classifier-box.js";
 import {
   CLASSIFIER_SYSTEM_PROMPT,
   CLASSIFIER_JSON_SCHEMA,
@@ -261,8 +263,52 @@ export class OllamaClient implements LLMClient {
     }
   }
 
-  nameWorkstream(): Promise<string | null> {
-    throw new Error("OllamaClient does not support nameWorkstream");
+  async nameWorkstream(
+    content: string,
+    candidates: ReadonlyArray<WorkstreamCandidateHint>,
+  ): Promise<string | null> {
+    if (candidates.length === 0) return null;
+    const list = candidates
+      .map((c) => (c.aliases.length ? `- ${c.label} (aka ${c.aliases.join(", ")})` : `- ${c.label}`))
+      .join("\n");
+    const sys =
+      `You label a work session by which project it belongs to. Known projects:\n${list}\n` +
+      `If it belongs to NONE of these, answer "none". Reply with ONLY the exact project name from the list, or "none".`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.classifyTimeoutMs);
+    const needsThinkOff = classifierNeedsThinkDisabled(this.classifyModel);
+    try {
+      const res = await this.fetchImpl(`${this.baseUrl}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: this.classifyModel,
+          messages: [
+            { role: "system", content: sys },
+            { role: "user", content },
+          ],
+          stream: false,
+          ...(needsThinkOff ? { think: false } : {}),
+        }),
+        signal: controller.signal,
+      });
+      if (!res.ok) return null;
+      const data = (await res.json()) as ChatResponse;
+      const out = (data.message?.content ?? "").toLowerCase();
+      let best: string | null = null;
+      let bestLen = 0;
+      for (const c of candidates) {
+        if (out.includes(c.label.toLowerCase()) && c.label.length > bestLen) {
+          best = c.label;
+          bestLen = c.label.length;
+        }
+      }
+      return best;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }
 

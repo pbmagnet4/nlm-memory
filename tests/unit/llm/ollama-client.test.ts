@@ -144,3 +144,12 @@ describe("OllamaClient.classify", () => {
     expect(result.entities).toEqual(["n8n", "Qdrant", "42"]);
   });
 });
+
+describe("OllamaClient.nameWorkstream", () => {
+  const cands = [{ label: "NLM", aliases: ["nlm-memory"] }];
+  it("returns the matched label", async () => {
+    const fetchImpl = (async () => new Response(JSON.stringify({ message: { content: "NLM" } }), { status: 200 })) as unknown as typeof fetch;
+    const c = new OllamaClient({ baseUrl: "http://x", classifyModel: "qwen3:4b-instruct", fetchImpl });
+    expect(await c.nameWorkstream("nlm-memory work\nsummary", cands)).toBe("NLM");
+  });
+});
