@@ -1,6 +1,6 @@
 // tests/unit/core/workstream/match.test.ts
 import { describe, expect, it } from "vitest";
-import { matchWorkstream, jaccard } from "../../../../src/core/workstream/match.js";
+import { matchWorkstream, jaccard, scoreCandidates } from "../../../../src/core/workstream/match.js";
 import type { MatchInputs } from "../../../../src/core/workstream/model.js";
 
 const base = (over: Partial<MatchInputs>): MatchInputs => ({
@@ -21,6 +21,16 @@ describe("jaccard", () => {
   it("is intersection over union", () => {
     expect(jaccard(["a", "b"], ["b", "c"])).toBeCloseTo(1 / 3);
   });
+});
+
+it("scoreCandidates returns candidates sorted by combined score desc", () => {
+  const out = scoreCandidates({
+    sessionEntities: ["x"], neighborScores: new Map([["ws_a", 0.9], ["ws_b", 0.1]]),
+    candidates: [{ workstreamId: "ws_a", entities: ["x"] }, { workstreamId: "ws_b", entities: [] }],
+    thresholds: { high: 0.5, low: 0.3 }, weights: { semantic: 0.5, entity: 0.5 },
+  });
+  expect(out[0]!.workstreamId).toBe("ws_a");
+  expect(out[0]!.score).toBeGreaterThan(out[1]!.score);
 });
 
 describe("matchWorkstream", () => {
@@ -56,5 +66,33 @@ describe("matchWorkstream", () => {
       neighborScores: new Map([["ws_1", 0.1]]),
     }));
     expect(d.kind).toBe("create");
+  });
+
+  it("binds when top score exactly equals high (>= boundary)", () => {
+    // score = weights.semantic * semantic + weights.entity * jaccard(sessionEntities, candidate.entities)
+    // = 0.5 * 1.0 + 0.5 * jaccard(["x"], []) = 0.5 * 1.0 + 0.5 * 0 = 0.5 == high
+    // 0.5 = 2^-1, exactly representable in binary. Locks the >= operator against regression.
+    const d = matchWorkstream({
+      sessionEntities: ["x"],
+      neighborScores: new Map([["ws_a", 1.0]]),
+      candidates: [{ workstreamId: "ws_a", entities: [] }],
+      thresholds: { high: 0.5, low: 0.25 },
+      weights: { semantic: 0.5, entity: 0.5 },
+    });
+    expect(d.kind).toBe("bind");
+  });
+
+  it("is ambiguous (not create) when top score exactly equals low (strict-< boundary)", () => {
+    // score = 0.5 * 1.0 + 0.5 * jaccard(["x"], []) = 0.5 * 1.0 + 0.5 * 0 = 0.5 == low
+    // 0.5 < 0.5 is false (strict), so create is skipped; 0.5 >= 0.75 is false, so bind is skipped -> ambiguous.
+    // 0.5 = 2^-1, 0.75 = 3/4 = 2^-1 + 2^-2, both exactly representable. Locks the strict-< operator.
+    const d = matchWorkstream({
+      sessionEntities: ["x"],
+      neighborScores: new Map([["ws_a", 1.0]]),
+      candidates: [{ workstreamId: "ws_a", entities: [] }],
+      thresholds: { high: 0.75, low: 0.5 },
+      weights: { semantic: 0.5, entity: 0.5 },
+    });
+    expect(d.kind).toBe("ambiguous");
   });
 });

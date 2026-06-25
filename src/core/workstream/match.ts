@@ -10,16 +10,19 @@ export function jaccard(a: ReadonlyArray<string>, b: ReadonlyArray<string>): num
   return union === 0 ? 0 : inter / union;
 }
 
-export function matchWorkstream(inputs: MatchInputs): MatchDecision {
-  const { sessionEntities, neighborScores, candidates, thresholds, weights } = inputs;
-
-  const scored = candidates
-    .map((c) => {
-      const semantic = neighborScores.get(c.workstreamId) ?? 0;
-      const entity = jaccard(sessionEntities, c.entities);
-      return { workstreamId: c.workstreamId, score: weights.semantic * semantic + weights.entity * entity };
-    })
+export function scoreCandidates(inputs: MatchInputs): Array<{ workstreamId: string; score: number }> {
+  const { sessionEntities, neighborScores, candidates, weights } = inputs;
+  return candidates
+    .map((c) => ({
+      workstreamId: c.workstreamId,
+      score: weights.semantic * (neighborScores.get(c.workstreamId) ?? 0) + weights.entity * jaccard(sessionEntities, c.entities),
+    }))
     .sort((x, y) => y.score - x.score);
+}
+
+export function matchWorkstream(inputs: MatchInputs): MatchDecision {
+  const { thresholds } = inputs;
+  const scored = scoreCandidates(inputs);
 
   const top = scored[0];
   if (!top || top.score < thresholds.low) {
