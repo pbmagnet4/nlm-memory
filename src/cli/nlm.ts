@@ -42,7 +42,7 @@ import { PgStorage } from "../core/storage/pg-storage.js";
 import { applyPendingRestore, stageRestore } from "../core/storage/db-restore.js";
 import { listBackupDates, resolveBackup, runRollingBackup } from "../core/storage/backup-rotation.js";
 import { createApp } from "../http/app.js";
-import { createMcpServer, recallWorkstreamHandler } from "../mcp/server.js";
+import { createMcpServer, rebindSessionHandler, recallWorkstreamHandler } from "../mcp/server.js";
 import { ClassifierBox, type ClassifierProvider } from "../llm/classifier-box.js";
 import { DeepSeekClient } from "../llm/deepseek-client.js";
 import { classifierEgressNotice } from "../llm/classifier-egress.js";
@@ -588,6 +588,24 @@ program
       const r = await recallWorkstreamHandler(
         { recall: {} as never, store, workstreams: { store: storage.workstreams, sessions: store, facts: storage.facts, exemplars: storage.exemplars } } as never,
         { idOrLabel },
+      );
+      process.stdout.write(r.content[0]!.text + "\n");
+    } finally {
+      await storage.close();
+    }
+  });
+
+program
+  .command("rebind-session")
+  .description("Rebind a session to a workstream (operator correction)")
+  .argument("<sessionId>", "session id")
+  .argument("<workstream>", "target workstream id or label")
+  .action(async (sessionId, workstream) => {
+    const { storage, store } = await buildStack();
+    try {
+      const r = await rebindSessionHandler(
+        { recall: {} as never, store, workstreams: { store: storage.workstreams, sessions: store, facts: storage.facts, exemplars: storage.exemplars } } as never,
+        { sessionId, workstream },
       );
       process.stdout.write(r.content[0]!.text + "\n");
     } finally {

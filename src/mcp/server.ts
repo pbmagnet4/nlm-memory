@@ -28,6 +28,8 @@ import { composeWorkDigest } from "@core/work-digest/compose-work-digest.js";
 import { rollupWorkstream } from "@core/workstream/rollup.js";
 import { composeWorkstreamRecall } from "@core/workstream/compose-recall.js";
 import { normalizeLabel } from "@core/workstream/model.js";
+import type { Workstream } from "@core/workstream/model.js";
+import { resolveWorkstreamId } from "@core/workstream/resolve.js";
 import type {
   FactKind,
   FactRecallQuery,
@@ -220,6 +222,38 @@ export async function recallWorkstreamHandler(
     );
     if (!view) return okText(`No workstream matches "${idOrLabel}".`);
     return okText(composeWorkstreamRecall(view));
+  } catch (e) {
+    return err(e);
+  }
+}
+
+/** idOrLabel -> live survivor workstream (merged_into resolved) | null. One source of truth for lifecycle handlers. */
+async function resolveWorkstream(
+  store: import("@ports/workstream-store.js").WorkstreamStore,
+  idOrLabel: string,
+): Promise<Workstream | null> {
+  const found =
+    (await store.getById(idOrLabel)) ?? (await store.findByNormalizedLabel(normalizeLabel(idOrLabel)));
+  if (!found) return null;
+  const all = await store.listAll();
+  const byId = new Map(all.map((w) => [w.id, { id: w.id, mergedInto: w.mergedInto }]));
+  const survivorId = resolveWorkstreamId(found.id, byId);
+  return survivorId === found.id ? found : ((await store.getById(survivorId)) ?? found);
+}
+
+export async function rebindSessionHandler(
+  deps: McpDeps,
+  input: { sessionId?: string; workstream?: string },
+): Promise<ToolResult> {
+  if (!deps.workstreams) return okText("rebind_session is not available in this deployment.");
+  try {
+    const sessionId = (input.sessionId ?? "").trim();
+    const wsArg = (input.workstream ?? "").trim();
+    if (!sessionId || !wsArg) return okText("Provide both a sessionId and a workstream (id or label).");
+    const ws = await resolveWorkstream(deps.workstreams.store, wsArg);
+    if (!ws) return okText(`No workstream matches "${wsArg}".`);
+    await deps.store.setWorkstreamBinding(sessionId, ws.id, "operator", null);
+    return okText(`Rebound session ${sessionId} -> workstream "${ws.label}" (${ws.id}).`);
   } catch (e) {
     return err(e);
   }
@@ -895,6 +929,21 @@ export function createMcpServer(deps: McpDeps): McpServer {
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async (args) => recallWorkstreamHandler(deps, args) as never,
+  );
+
+  server.registerTool(
+    "rebind_session",
+    {
+      title: "Rebind a session to a different workstream",
+      description:
+        "Move a session's primary workstream binding (operator correction). Sets binding_source=operator. The session's facts and exemplars roll up under the new workstream automatically (rollup is by session binding).",
+      inputSchema: {
+        sessionId: z.string().describe("Session id to rebind."),
+        workstream: z.string().describe("Target workstream id (ws_...) or label."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (args) => rebindSessionHandler(deps, args) as never,
   );
 
   if (
