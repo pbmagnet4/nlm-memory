@@ -1,5 +1,15 @@
 # Workstream Matcher Cold-Start + Entity-Scoring (Plan E) — Design
 
+> **SUPERSEDED 2026-06-25** by `2026-06-25-workstream-classifier-naming-design.md`.
+> The Plan E pre-build dry-run (design Q2) measured every embedding-based approach against the locked
+> gold and found ALL of them ceiling below flip-ready: cascade 10-16% precision (over-binds 33/33
+> negatives), abstain single-pass 50% precision @ 5.9% recall, anchor-centroid+abstain (best) 57%
+> precision @ 24% recall. Root cause: session embeddings cluster by ACTIVITY-TYPE, not project, so
+> negatives sit at the same cosine as positives and no gate separates them. The E1+E2 hypothesis below
+> is FALSIFIED. The replacement design binds by having the classifier NAME the project (validated:
+> 71% precision, 0 wrong-project binds, 94% neg-abstain on label+summary alone — a conservative floor).
+> Retained here for the falsification record only. Do not execute this doc.
+
 > Status: DESIGN (written warm from the R3 runbook findings 2026-06-25). Execute in a FRESH session
 > via writing-plans → subagent-driven-development. Resolves spec §18 (entity scoring) + the cold-start
 > gap that blocked the Plan D R3 threshold derivation. Binding flag stays OFF until this lands and re-tunes.
