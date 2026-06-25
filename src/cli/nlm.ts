@@ -671,11 +671,17 @@ program
   .description("List likely-duplicate workstreams to merge")
   .option("-m, --min-score <n>", "minimum similarity score 0..1", "0.5")
   .action(async (opts) => {
+    const minScore = Number(opts.minScore);
+    if (!Number.isFinite(minScore)) {
+      process.stderr.write(`nlm: invalid --min-score "${opts.minScore}" (expected a number 0..1)\n`);
+      process.exitCode = 1;
+      return;
+    }
     const { storage, store } = await buildStack();
     try {
       const r = await listMergeSuggestionsHandler(
         { recall: {} as never, store, workstreams: { store: storage.workstreams, sessions: store, facts: storage.facts, exemplars: storage.exemplars } } as never,
-        { minScore: Number(opts.minScore) },
+        { minScore },
       );
       process.stdout.write(r.content[0]!.text + "\n");
     } finally {
