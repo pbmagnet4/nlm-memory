@@ -3,16 +3,18 @@
  * Reads NLM_CLASSIFIER / NLM_CLASSIFIER_MODEL / NLM_CLASSIFIER_BASE_URL /
  * NLM_CLASSIFIER_API_KEY / NLM_CLASSIFIER_MAX_TOKENS / NLM_OLLAMA_URL.
  *
- * autoloadEnv() is called for non-ollama providers so standalone scripts
- * still see configured credentials before the branch decision is made.
+ * autoloadEnv() runs FIRST (unconditionally) so standalone scripts (backfill)
+ * read the configured provider from ~/.nlm/.env before the branch decision.
+ * Reading NLM_CLASSIFIER before autoload would default to ollama and silently
+ * bind nothing when the real provider lives in .env (matches buildEmbedder).
  */
 
 import { autoloadEnv } from "./env-autoload.js";
 import { ClassifierBox, type ClassifierProvider } from "./classifier-box.js";
 
 export function buildClassifier(): ClassifierBox {
+  autoloadEnv();
   const provider = ((process.env["NLM_CLASSIFIER"] ?? "ollama").toLowerCase() as ClassifierProvider);
-  if (provider !== "ollama") autoloadEnv();
   const modelDefault =
     provider === "ollama" ? "qwen3.5:4b" : provider === "deepseek" ? "deepseek-v4-flash" : undefined;
   const model = process.env["NLM_CLASSIFIER_MODEL"] ?? modelDefault;
