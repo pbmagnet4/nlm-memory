@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { makeSession } from "../fixtures/sessions.js";
-import { mergeWorkstreamsHandler, rebindSessionHandler, renameWorkstreamHandler, retireWorkstreamHandler } from "../../src/mcp/server.js";
+import { listMergeSuggestionsHandler, mergeWorkstreamsHandler, rebindSessionHandler, renameWorkstreamHandler, retireWorkstreamHandler } from "../../src/mcp/server.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 let storage: SqliteStorage;
@@ -130,5 +130,26 @@ describe("rename_workstream + retire_workstream handlers", () => {
     const r = await retireWorkstreamHandler(deps(), { idOrLabel: "ghost" });
     expect(r.isError).not.toBe(true);
     expect(r.content[0]!.text.toLowerCase()).toContain("no workstream");
+  });
+});
+
+describe("list_merge_suggestions handler", () => {
+  function seedEntities(...names: string[]) {
+    const db = storage.sessions.rawDb();
+    for (const n of names) {
+      db.prepare("INSERT OR IGNORE INTO entities (canonical, type, status, source) VALUES (?, 'candidate', 'candidate', 'test')").run(n);
+    }
+  }
+
+  it("suggests a near-duplicate active pair", async () => {
+    seedEntities("alpha", "beta");
+    await storage.workstreams.create({ id: "ws_a", label: "NLM" });
+    await storage.workstreams.create({ id: "ws_b", label: "NLM Memory" });
+    await storage.workstreams.upsertEntities("ws_a", ["alpha", "beta"]);
+    await storage.workstreams.upsertEntities("ws_b", ["alpha", "beta"]);
+    const r = await listMergeSuggestionsHandler(deps(), { minScore: 0.2 });
+    expect(r.isError).not.toBe(true);
+    expect(r.content[0]!.text).toContain("ws_a");
+    expect(r.content[0]!.text).toContain("ws_b");
   });
 });

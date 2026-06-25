@@ -30,6 +30,7 @@ import { composeWorkstreamRecall } from "@core/workstream/compose-recall.js";
 import { normalizeLabel } from "@core/workstream/model.js";
 import type { Workstream } from "@core/workstream/model.js";
 import { resolveWorkstreamId } from "@core/workstream/resolve.js";
+import { suggestMerges } from "@core/workstream/merge-suggest.js";
 import type {
   FactKind,
   FactRecallQuery,
@@ -719,6 +720,37 @@ export async function citeSessionHandler(
   }
 }
 
+export async function listMergeSuggestionsHandler(
+  deps: McpDeps,
+  input: { minScore: number | undefined },
+): Promise<ToolResult> {
+  if (!deps.workstreams) return okText("list_merge_suggestions is not available in this deployment.");
+  try {
+    const minScore = typeof input.minScore === "number" ? input.minScore : 0.5;
+    const all = (await deps.workstreams.store.listAll()).filter((w) => w.status === "active");
+    if (all.length < 2) return okText("Not enough active workstreams to suggest merges.");
+    const ids = all.map((w) => w.id);
+    const entMap = await deps.workstreams.store.entitiesFor(ids);
+    const items = await Promise.all(
+      all.map(async (w) => ({
+        id: w.id, label: w.label,
+        entities: entMap.get(w.id) ?? [],
+        sessionIds: await deps.workstreams!.sessions.listSessionIdsByWorkstreams([w.id]),
+      })),
+    );
+    const suggestions = suggestMerges(items, minScore);
+    if (suggestions.length === 0) return okText(`No merge suggestions at or above score ${minScore}.`);
+    const lines = ["MERGE SUGGESTIONS:"];
+    for (const s of suggestions) {
+      lines.push(`  - ${(s.score).toFixed(2)}  "${s.aLabel}" (${s.aId}) ~ "${s.bLabel}" (${s.bId})  [entities ${s.sharedEntities}, sessions ${s.sharedSessions}, label ${(s.labelSimilarity).toFixed(2)}]`);
+    }
+    lines.push("", "Merge a pair with: merge_workstreams(from, into).");
+    return okText(lines.join("\n"));
+  } catch (e) {
+    return err(e);
+  }
+}
+
 export function createMcpServer(deps: McpDeps): McpServer {
   const server = new McpServer({
     name: SERVER_NAME,
@@ -1048,6 +1080,18 @@ export function createMcpServer(deps: McpDeps): McpServer {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async (args) => retireWorkstreamHandler(deps, args) as never,
+  );
+
+  server.registerTool(
+    "list_merge_suggestions",
+    {
+      title: "Suggest duplicate workstreams to merge",
+      description:
+        "Score active workstream pairs by shared entities, co-occurring sessions, and label similarity; list likely duplicates for one-click merge_workstreams. Computed on demand; read-only.",
+      inputSchema: { minScore: z.number().optional().describe("Minimum similarity score 0..1 (default 0.5).") },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (args) => listMergeSuggestionsHandler(deps, args) as never,
   );
 
   if (
