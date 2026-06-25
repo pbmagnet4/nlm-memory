@@ -42,7 +42,7 @@ import { PgStorage } from "../core/storage/pg-storage.js";
 import { applyPendingRestore, stageRestore } from "../core/storage/db-restore.js";
 import { listBackupDates, resolveBackup, runRollingBackup } from "../core/storage/backup-rotation.js";
 import { createApp } from "../http/app.js";
-import { createMcpServer, recallWorkstreamHandler } from "../mcp/server.js";
+import { createMcpServer, listMergeSuggestionsHandler, mergeWorkstreamsHandler, rebindSessionHandler, recallWorkstreamHandler, renameWorkstreamHandler, retireWorkstreamHandler } from "../mcp/server.js";
 import { ClassifierBox, type ClassifierProvider } from "../llm/classifier-box.js";
 import { DeepSeekClient } from "../llm/deepseek-client.js";
 import { classifierEgressNotice } from "../llm/classifier-egress.js";
@@ -588,6 +588,100 @@ program
       const r = await recallWorkstreamHandler(
         { recall: {} as never, store, workstreams: { store: storage.workstreams, sessions: store, facts: storage.facts, exemplars: storage.exemplars } } as never,
         { idOrLabel },
+      );
+      process.stdout.write(r.content[0]!.text + "\n");
+    } finally {
+      await storage.close();
+    }
+  });
+
+program
+  .command("rebind-session")
+  .description("Rebind a session to a workstream (operator correction)")
+  .argument("<sessionId>", "session id")
+  .argument("<workstream>", "target workstream id or label")
+  .action(async (sessionId, workstream) => {
+    const { storage, store } = await buildStack();
+    try {
+      const r = await rebindSessionHandler(
+        { recall: {} as never, store, workstreams: { store: storage.workstreams, sessions: store, facts: storage.facts, exemplars: storage.exemplars } } as never,
+        { sessionId, workstream },
+      );
+      process.stdout.write(r.content[0]!.text + "\n");
+    } finally {
+      await storage.close();
+    }
+  });
+
+program
+  .command("merge-workstreams")
+  .description("Merge a duplicate workstream into the one to keep")
+  .argument("<from>", "duplicate workstream id or label")
+  .argument("<into>", "survivor workstream id or label")
+  .action(async (from, into) => {
+    const { storage, store } = await buildStack();
+    try {
+      const r = await mergeWorkstreamsHandler(
+        { recall: {} as never, store, workstreams: { store: storage.workstreams, sessions: store, facts: storage.facts, exemplars: storage.exemplars } } as never,
+        { from, into },
+      );
+      process.stdout.write(r.content[0]!.text + "\n");
+    } finally {
+      await storage.close();
+    }
+  });
+
+program
+  .command("rename-workstream")
+  .description("Rename a workstream")
+  .argument("<idOrLabel>", "workstream id or current label")
+  .argument("<label>", "new label")
+  .action(async (idOrLabel, label) => {
+    const { storage, store } = await buildStack();
+    try {
+      const r = await renameWorkstreamHandler(
+        { recall: {} as never, store, workstreams: { store: storage.workstreams, sessions: store, facts: storage.facts, exemplars: storage.exemplars } } as never,
+        { idOrLabel, label },
+      );
+      process.stdout.write(r.content[0]!.text + "\n");
+    } finally {
+      await storage.close();
+    }
+  });
+
+program
+  .command("retire-workstream")
+  .description("Retire (mark dead) a workstream")
+  .argument("<idOrLabel>", "workstream id or label")
+  .action(async (idOrLabel) => {
+    const { storage, store } = await buildStack();
+    try {
+      const r = await retireWorkstreamHandler(
+        { recall: {} as never, store, workstreams: { store: storage.workstreams, sessions: store, facts: storage.facts, exemplars: storage.exemplars } } as never,
+        { idOrLabel },
+      );
+      process.stdout.write(r.content[0]!.text + "\n");
+    } finally {
+      await storage.close();
+    }
+  });
+
+program
+  .command("merge-suggestions")
+  .description("List likely-duplicate workstreams to merge")
+  .option("-m, --min-score <n>", "minimum similarity score 0..1", "0.5")
+  .action(async (opts) => {
+    const minScore = Number(opts.minScore);
+    if (!Number.isFinite(minScore)) {
+      process.stderr.write(`nlm: invalid --min-score "${opts.minScore}" (expected a number 0..1)\n`);
+      process.exitCode = 1;
+      return;
+    }
+    const { storage, store } = await buildStack();
+    try {
+      const r = await listMergeSuggestionsHandler(
+        { recall: {} as never, store, workstreams: { store: storage.workstreams, sessions: store, facts: storage.facts, exemplars: storage.exemplars } } as never,
+        { minScore },
       );
       process.stdout.write(r.content[0]!.text + "\n");
     } finally {

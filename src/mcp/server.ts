@@ -28,6 +28,9 @@ import { composeWorkDigest } from "@core/work-digest/compose-work-digest.js";
 import { rollupWorkstream } from "@core/workstream/rollup.js";
 import { composeWorkstreamRecall } from "@core/workstream/compose-recall.js";
 import { normalizeLabel } from "@core/workstream/model.js";
+import type { Workstream } from "@core/workstream/model.js";
+import { resolveWorkstreamId } from "@core/workstream/resolve.js";
+import { suggestMerges } from "@core/workstream/merge-suggest.js";
 import type {
   FactKind,
   FactRecallQuery,
@@ -220,6 +223,100 @@ export async function recallWorkstreamHandler(
     );
     if (!view) return okText(`No workstream matches "${idOrLabel}".`);
     return okText(composeWorkstreamRecall(view));
+  } catch (e) {
+    return err(e);
+  }
+}
+
+/** idOrLabel -> live survivor workstream (merged_into resolved) | null. One source of truth for lifecycle handlers. */
+async function resolveWorkstream(
+  store: import("@ports/workstream-store.js").WorkstreamStore,
+  idOrLabel: string,
+): Promise<Workstream | null> {
+  const found =
+    (await store.getById(idOrLabel)) ?? (await store.findByNormalizedLabel(normalizeLabel(idOrLabel)));
+  if (!found) return null;
+  const all = await store.listAll();
+  const byId = new Map(all.map((w) => [w.id, { id: w.id, mergedInto: w.mergedInto }]));
+  const survivorId = resolveWorkstreamId(found.id, byId);
+  return survivorId === found.id ? found : ((await store.getById(survivorId)) ?? found);
+}
+
+export async function renameWorkstreamHandler(
+  deps: McpDeps,
+  input: { idOrLabel?: string; label?: string },
+): Promise<ToolResult> {
+  if (!deps.workstreams) return okText("rename_workstream is not available in this deployment.");
+  try {
+    const idOrLabel = (input.idOrLabel ?? "").trim();
+    const label = (input.label ?? "").trim();
+    if (!idOrLabel || !label) return okText("Provide the workstream (id or label) and the new label.");
+    const ws = deps.workstreams.store;
+    const target = await resolveWorkstream(ws, idOrLabel);
+    if (!target) return okText(`No workstream matches "${idOrLabel}".`);
+    const collision = await ws.findByNormalizedLabel(normalizeLabel(label));
+    if (collision && collision.id !== target.id) {
+      return okText(`Label "${label}" is already used by workstream "${collision.label}" (${collision.id}).`);
+    }
+    await ws.setLabel(target.id, label);
+    return okText(`Renamed workstream ${target.id}: "${target.label}" -> "${label}".`);
+  } catch (e) {
+    return err(e);
+  }
+}
+
+export async function retireWorkstreamHandler(
+  deps: McpDeps,
+  input: { idOrLabel?: string },
+): Promise<ToolResult> {
+  if (!deps.workstreams) return okText("retire_workstream is not available in this deployment.");
+  try {
+    const idOrLabel = (input.idOrLabel ?? "").trim();
+    if (!idOrLabel) return okText("Provide a workstream id or label.");
+    const target = await resolveWorkstream(deps.workstreams.store, idOrLabel);
+    if (!target) return okText(`No workstream matches "${idOrLabel}".`);
+    await deps.workstreams.store.setStatus(target.id, "retired");
+    return okText(`Retired workstream "${target.label}" (${target.id}).`);
+  } catch (e) {
+    return err(e);
+  }
+}
+
+export async function mergeWorkstreamsHandler(
+  deps: McpDeps,
+  input: { from?: string; into?: string },
+): Promise<ToolResult> {
+  if (!deps.workstreams) return okText("merge_workstreams is not available in this deployment.");
+  try {
+    const fromArg = (input.from ?? "").trim();
+    const intoArg = (input.into ?? "").trim();
+    if (!fromArg || !intoArg) return okText("Provide both `from` and `into` (workstream id or label).");
+    const ws = deps.workstreams.store;
+    const from = await resolveWorkstream(ws, fromArg);
+    const into = await resolveWorkstream(ws, intoArg);
+    if (!from) return okText(`No workstream matches "${fromArg}".`);
+    if (!into) return okText(`No workstream matches "${intoArg}".`);
+    if (from.id === into.id) return okText(`"${fromArg}" and "${intoArg}" resolve to the same workstream — nothing to merge.`);
+    await ws.merge(from.id, into.id);
+    return okText(`Merged "${from.label}" (${from.id}) into "${into.label}" (${into.id}).`);
+  } catch (e) {
+    return err(e);
+  }
+}
+
+export async function rebindSessionHandler(
+  deps: McpDeps,
+  input: { sessionId?: string; workstream?: string },
+): Promise<ToolResult> {
+  if (!deps.workstreams) return okText("rebind_session is not available in this deployment.");
+  try {
+    const sessionId = (input.sessionId ?? "").trim();
+    const wsArg = (input.workstream ?? "").trim();
+    if (!sessionId || !wsArg) return okText("Provide both a sessionId and a workstream (id or label).");
+    const ws = await resolveWorkstream(deps.workstreams.store, wsArg);
+    if (!ws) return okText(`No workstream matches "${wsArg}".`);
+    await deps.store.setWorkstreamBinding(sessionId, ws.id, "operator", null);
+    return okText(`Rebound session ${sessionId} -> workstream "${ws.label}" (${ws.id}).`);
   } catch (e) {
     return err(e);
   }
@@ -623,6 +720,37 @@ export async function citeSessionHandler(
   }
 }
 
+export async function listMergeSuggestionsHandler(
+  deps: McpDeps,
+  input: { minScore: number | undefined },
+): Promise<ToolResult> {
+  if (!deps.workstreams) return okText("list_merge_suggestions is not available in this deployment.");
+  try {
+    const minScore = typeof input.minScore === "number" ? input.minScore : 0.5;
+    const all = (await deps.workstreams.store.listAll()).filter((w) => w.status === "active");
+    if (all.length < 2) return okText("Not enough active workstreams to suggest merges.");
+    const ids = all.map((w) => w.id);
+    const entMap = await deps.workstreams.store.entitiesFor(ids);
+    const items = await Promise.all(
+      all.map(async (w) => ({
+        id: w.id, label: w.label,
+        entities: entMap.get(w.id) ?? [],
+        sessionIds: await deps.workstreams!.sessions.listSessionIdsByWorkstreams([w.id]),
+      })),
+    );
+    const suggestions = suggestMerges(items, minScore);
+    if (suggestions.length === 0) return okText(`No merge suggestions at or above score ${minScore}.`);
+    const lines = ["MERGE SUGGESTIONS:"];
+    for (const s of suggestions) {
+      lines.push(`  - ${(s.score).toFixed(2)}  "${s.aLabel}" (${s.aId}) ~ "${s.bLabel}" (${s.bId})  [entities ${s.sharedEntities}, sessions ${s.sharedSessions}, label ${(s.labelSimilarity).toFixed(2)}]`);
+    }
+    lines.push("", "Merge a pair with: merge_workstreams(from, into).");
+    return okText(lines.join("\n"));
+  } catch (e) {
+    return err(e);
+  }
+}
+
 export function createMcpServer(deps: McpDeps): McpServer {
   const server = new McpServer({
     name: SERVER_NAME,
@@ -895,6 +1023,75 @@ export function createMcpServer(deps: McpDeps): McpServer {
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async (args) => recallWorkstreamHandler(deps, args) as never,
+  );
+
+  server.registerTool(
+    "rebind_session",
+    {
+      title: "Rebind a session to a different workstream",
+      description:
+        "Move a session's primary workstream binding (operator correction). Sets binding_source=operator. The session's facts and exemplars roll up under the new workstream automatically (rollup is by session binding).",
+      inputSchema: {
+        sessionId: z.string().describe("Session id to rebind."),
+        workstream: z.string().describe("Target workstream id (ws_...) or label."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (args) => rebindSessionHandler(deps, args) as never,
+  );
+
+  server.registerTool(
+    "merge_workstreams",
+    {
+      title: "Merge one workstream into another",
+      description:
+        "Supersede a duplicate workstream into the one to keep: sets merged_into, marks it merged, and unions its entity index. Sessions, facts, and exemplars resolve to the survivor automatically (no session rewrite). Accepts ids or labels; merge chains resolve.",
+      inputSchema: {
+        from: z.string().describe("Workstream to retire (the duplicate); id or label."),
+        into: z.string().describe("Workstream to keep (the survivor); id or label."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    async (args) => mergeWorkstreamsHandler(deps, args) as never,
+  );
+
+  server.registerTool(
+    "rename_workstream",
+    {
+      title: "Rename a workstream",
+      description:
+        "Relabel a workstream. Refuses a label that collides with a different existing workstream's normalized label (prevents accidental duplicates). Accepts id or label.",
+      inputSchema: {
+        idOrLabel: z.string().describe("Workstream id or current label."),
+        label: z.string().describe("New label."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (args) => renameWorkstreamHandler(deps, args) as never,
+  );
+
+  server.registerTool(
+    "retire_workstream",
+    {
+      title: "Retire a workstream",
+      description:
+        "Mark a workstream retired (status=retired). Operator cleanup for dead one-off workstreams. Reversible by re-setting status. Accepts id or label.",
+      inputSchema: { idOrLabel: z.string().describe("Workstream id or label.") },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (args) => retireWorkstreamHandler(deps, args) as never,
+  );
+
+  server.registerTool(
+    "list_merge_suggestions",
+    {
+      title: "Suggest duplicate workstreams to merge",
+      description:
+        "Score active workstream pairs by shared entities, co-occurring sessions, and label similarity; list likely duplicates for one-click merge_workstreams. Computed on demand; read-only.",
+      inputSchema: { minScore: z.number().optional().describe("Minimum similarity score 0..1 (default 0.5).") },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (args) => listMergeSuggestionsHandler(deps, args) as never,
   );
 
   if (
