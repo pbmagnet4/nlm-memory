@@ -1,25 +1,20 @@
 /**
- * scripts/backfill-workstreams.ts — match-only historical backfill against the live stack.
- * Reuses buildMatchInputs (Task 1) so the backfill matcher == the runtime matcher (spec §15).
+ * scripts/backfill-workstreams.ts — name-only historical backfill against the live stack.
  *
  * Run: npx tsx scripts/backfill-workstreams.ts [--db=<path>] [--dry-run]
  *
- * Stack-opener mirrors scripts/seed-workstreams.ts (SqliteStorage.create pattern).
- * Session-listing projection mirrors scripts/eval/dump-matcher-candidates.ts
- * (SELECT id,label,COALESCE(summary,'')) plus getEntities() per session (critical
- * correction: entities are required for entity-Jaccard scoring — omitting them zeroes
- * that half of the score).
- *
- * Binds with binding_source='backfill' (distinct from 'classifier') so the R4/R6
+ * Binds with binding_source='backfill' (distinct from 'classifier') so a
  * reversal (WHERE binding_source='backfill') is surgical and safe at any time.
  */
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildMatchInputs } from "../src/core/workstream/build-match-inputs.js";
 import { backfillWorkstreams } from "../src/core/workstream/backfill-workstreams.js";
-import { DEFAULT_THRESHOLDS, DEFAULT_WEIGHTS } from "../src/core/workstream/thresholds.js";
-import { buildEmbedder } from "../src/llm/build-embedder.js";
+import { decideWorkstreamByName } from "../src/core/workstream/name-match.js";
+import { parseWorkTopics, aliasToLabelMap } from "../src/core/workstream/work-topics.js";
+import { normalizeLabel } from "../src/core/workstream/model.js";
+import { buildClassifier } from "../src/llm/build-classifier.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -29,6 +24,15 @@ const arg = (k: string): string | undefined => {
   return h ? h.slice(k.length + 3) : undefined;
 };
 const flag = (k: string): boolean => process.argv.includes(`--${k}`);
+
+function aliasesFor(label: string, aliasToLabel: ReadonlyMap<string, string>): ReadonlyArray<string> {
+  const norm = normalizeLabel(label);
+  const out: string[] = [];
+  for (const [alias, canonical] of aliasToLabel) {
+    if (normalizeLabel(canonical) === norm) out.push(alias);
+  }
+  return out;
+}
 
 async function main(): Promise<void> {
   const dbPath =
@@ -41,43 +45,43 @@ async function main(): Promise<void> {
   const { SqliteStorage } = await import("../src/core/storage/sqlite-storage.js");
 
   const storage = SqliteStorage.create({ dbPath, migrationsDir: MIGRATIONS_DIR });
-  const embedder = buildEmbedder();
+  const classifier = buildClassifier();
+
+  const topicsPath = join(homedir(), ".nlm", "work-topics.json");
+  let aliasToLabel: Map<string, string>;
+  try {
+    aliasToLabel = aliasToLabelMap(parseWorkTopics(JSON.parse(readFileSync(topicsPath, "utf8"))));
+  } catch {
+    aliasToLabel = new Map();
+  }
 
   if (dryRun) {
     process.stdout.write("backfill-workstreams: --dry-run — no bindings will be written\n");
   }
 
   try {
+    const ws = await storage.workstreams.listAll();
     const res = await backfillWorkstreams({
-      // Historical sessions: mirror dump-matcher-candidates.ts's SELECT id,label,COALESCE(summary,'')
-      // AND fetch entities per session so entity-Jaccard scoring is populated.
       listSessions: async () => {
         const rows = storage.sessions.rawDb().prepare<[], { id: string; label: string; summary: string }>(
           "SELECT id, label, COALESCE(summary,'') AS summary FROM sessions WHERE label IS NOT NULL AND label != '' ORDER BY started_at ASC",
         ).all();
-        return Promise.all(
-          rows.map(async (r) => ({
-            sessionId: r.id,
-            label: r.label,
-            summary: r.summary,
-            entities: await storage.sessions.getEntities(r.id),
-          })),
-        );
+        return rows.map((r) => ({
+          sessionId: r.id,
+          content: `${r.label}\n${r.summary}`,
+        }));
       },
-      buildInputs: (input) =>
-        buildMatchInputs(
-          {
-            workstreams: storage.workstreams,
-            sessions: storage.sessions,
-            embedder,
-            thresholds: DEFAULT_THRESHOLDS,
-            weights: DEFAULT_WEIGHTS,
-          },
-          input,
-        ),
-      setBinding: async (s, w, c) => {
+      nameSession: async (_sessionId: string, content: string) => {
+        const hints = ws.map((w) => ({
+          label: w.label,
+          aliases: aliasesFor(w.label, aliasToLabel),
+        }));
+        return classifier.nameWorkstream(content, hints);
+      },
+      decide: (named) => decideWorkstreamByName(named, ws, aliasToLabel),
+      setBinding: async (s, w) => {
         if (!dryRun) {
-          await storage.sessions.setWorkstreamBinding(s, w, "backfill", c);
+          await storage.sessions.setWorkstreamBinding(s, w, "backfill", null);
         }
       },
       log: (m) => process.stdout.write(m + "\n"),
