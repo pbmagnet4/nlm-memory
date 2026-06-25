@@ -42,7 +42,7 @@ import { PgStorage } from "../core/storage/pg-storage.js";
 import { applyPendingRestore, stageRestore } from "../core/storage/db-restore.js";
 import { listBackupDates, resolveBackup, runRollingBackup } from "../core/storage/backup-rotation.js";
 import { createApp } from "../http/app.js";
-import { createMcpServer, mergeWorkstreamsHandler, rebindSessionHandler, recallWorkstreamHandler } from "../mcp/server.js";
+import { createMcpServer, mergeWorkstreamsHandler, rebindSessionHandler, recallWorkstreamHandler, renameWorkstreamHandler, retireWorkstreamHandler } from "../mcp/server.js";
 import { ClassifierBox, type ClassifierProvider } from "../llm/classifier-box.js";
 import { DeepSeekClient } from "../llm/deepseek-client.js";
 import { classifierEgressNotice } from "../llm/classifier-egress.js";
@@ -624,6 +624,41 @@ program
       const r = await mergeWorkstreamsHandler(
         { recall: {} as never, store, workstreams: { store: storage.workstreams, sessions: store, facts: storage.facts, exemplars: storage.exemplars } } as never,
         { from, into },
+      );
+      process.stdout.write(r.content[0]!.text + "\n");
+    } finally {
+      await storage.close();
+    }
+  });
+
+program
+  .command("rename-workstream")
+  .description("Rename a workstream")
+  .argument("<idOrLabel>", "workstream id or current label")
+  .argument("<label>", "new label")
+  .action(async (idOrLabel, label) => {
+    const { storage, store } = await buildStack();
+    try {
+      const r = await renameWorkstreamHandler(
+        { recall: {} as never, store, workstreams: { store: storage.workstreams, sessions: store, facts: storage.facts, exemplars: storage.exemplars } } as never,
+        { idOrLabel, label },
+      );
+      process.stdout.write(r.content[0]!.text + "\n");
+    } finally {
+      await storage.close();
+    }
+  });
+
+program
+  .command("retire-workstream")
+  .description("Retire (mark dead) a workstream")
+  .argument("<idOrLabel>", "workstream id or label")
+  .action(async (idOrLabel) => {
+    const { storage, store } = await buildStack();
+    try {
+      const r = await retireWorkstreamHandler(
+        { recall: {} as never, store, workstreams: { store: storage.workstreams, sessions: store, facts: storage.facts, exemplars: storage.exemplars } } as never,
+        { idOrLabel },
       );
       process.stdout.write(r.content[0]!.text + "\n");
     } finally {

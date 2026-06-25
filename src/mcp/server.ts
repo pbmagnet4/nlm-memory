@@ -241,6 +241,46 @@ async function resolveWorkstream(
   return survivorId === found.id ? found : ((await store.getById(survivorId)) ?? found);
 }
 
+export async function renameWorkstreamHandler(
+  deps: McpDeps,
+  input: { idOrLabel?: string; label?: string },
+): Promise<ToolResult> {
+  if (!deps.workstreams) return okText("rename_workstream is not available in this deployment.");
+  try {
+    const idOrLabel = (input.idOrLabel ?? "").trim();
+    const label = (input.label ?? "").trim();
+    if (!idOrLabel || !label) return okText("Provide the workstream (id or label) and the new label.");
+    const ws = deps.workstreams.store;
+    const target = await resolveWorkstream(ws, idOrLabel);
+    if (!target) return okText(`No workstream matches "${idOrLabel}".`);
+    const collision = await ws.findByNormalizedLabel(normalizeLabel(label));
+    if (collision && collision.id !== target.id) {
+      return okText(`Label "${label}" is already used by workstream "${collision.label}" (${collision.id}).`);
+    }
+    await ws.setLabel(target.id, label);
+    return okText(`Renamed workstream ${target.id}: "${target.label}" -> "${label}".`);
+  } catch (e) {
+    return err(e);
+  }
+}
+
+export async function retireWorkstreamHandler(
+  deps: McpDeps,
+  input: { idOrLabel?: string },
+): Promise<ToolResult> {
+  if (!deps.workstreams) return okText("retire_workstream is not available in this deployment.");
+  try {
+    const idOrLabel = (input.idOrLabel ?? "").trim();
+    if (!idOrLabel) return okText("Provide a workstream id or label.");
+    const target = await resolveWorkstream(deps.workstreams.store, idOrLabel);
+    if (!target) return okText(`No workstream matches "${idOrLabel}".`);
+    await deps.workstreams.store.setStatus(target.id, "retired");
+    return okText(`Retired workstream "${target.label}" (${target.id}).`);
+  } catch (e) {
+    return err(e);
+  }
+}
+
 export async function mergeWorkstreamsHandler(
   deps: McpDeps,
   input: { from?: string; into?: string },
@@ -981,6 +1021,33 @@ export function createMcpServer(deps: McpDeps): McpServer {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async (args) => mergeWorkstreamsHandler(deps, args) as never,
+  );
+
+  server.registerTool(
+    "rename_workstream",
+    {
+      title: "Rename a workstream",
+      description:
+        "Relabel a workstream. Refuses a label that collides with a different existing workstream's normalized label (prevents accidental duplicates). Accepts id or label.",
+      inputSchema: {
+        idOrLabel: z.string().describe("Workstream id or current label."),
+        label: z.string().describe("New label."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (args) => renameWorkstreamHandler(deps, args) as never,
+  );
+
+  server.registerTool(
+    "retire_workstream",
+    {
+      title: "Retire a workstream",
+      description:
+        "Mark a workstream retired (status=retired). Operator cleanup for dead one-off workstreams. Reversible by re-setting status. Accepts id or label.",
+      inputSchema: { idOrLabel: z.string().describe("Workstream id or label.") },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (args) => retireWorkstreamHandler(deps, args) as never,
   );
 
   if (

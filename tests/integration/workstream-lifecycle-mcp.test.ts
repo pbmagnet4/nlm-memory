@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { makeSession } from "../fixtures/sessions.js";
-import { mergeWorkstreamsHandler, rebindSessionHandler } from "../../src/mcp/server.js";
+import { mergeWorkstreamsHandler, rebindSessionHandler, renameWorkstreamHandler, retireWorkstreamHandler } from "../../src/mcp/server.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 let storage: SqliteStorage;
@@ -79,5 +79,56 @@ describe("merge_workstreams handler", () => {
     expect(r.isError).not.toBe(true);
     expect(r.content[0]!.text.toLowerCase()).toContain("same workstream");
     expect((await storage.workstreams.getById("ws_1"))!.mergedInto).toBeNull();
+  });
+});
+
+describe("rename_workstream + retire_workstream handlers", () => {
+  it("renames a workstream resolved by id", async () => {
+    await storage.workstreams.create({ id: "ws_1", label: "Old" });
+    const r = await renameWorkstreamHandler(deps(), { idOrLabel: "ws_1", label: "New" });
+    expect(r.isError).not.toBe(true);
+    expect((await storage.workstreams.getById("ws_1"))!.label).toBe("New");
+  });
+
+  it("renames a workstream resolved by label", async () => {
+    await storage.workstreams.create({ id: "ws_1", label: "OldLabel" });
+    const r = await renameWorkstreamHandler(deps(), { idOrLabel: "OldLabel", label: "NewLabel" });
+    expect(r.isError).not.toBe(true);
+    expect((await storage.workstreams.getById("ws_1"))!.label).toBe("NewLabel");
+  });
+
+  it("refuses a rename that collides with a different workstream normalized label", async () => {
+    await storage.workstreams.create({ id: "ws_1", label: "Alpha" });
+    await storage.workstreams.create({ id: "ws_2", label: "Beta" });
+    const r = await renameWorkstreamHandler(deps(), { idOrLabel: "ws_1", label: "  beta " });
+    expect(r.isError).not.toBe(true);
+    expect(r.content[0]!.text.toLowerCase()).toContain("already");
+    expect((await storage.workstreams.getById("ws_1"))!.label).toBe("Alpha");
+  });
+
+  it("allows a rename that normalizes to the same workstream (e.g. casing fix)", async () => {
+    await storage.workstreams.create({ id: "ws_1", label: "alpha" });
+    const r = await renameWorkstreamHandler(deps(), { idOrLabel: "ws_1", label: "Alpha" });
+    expect(r.isError).not.toBe(true);
+    expect((await storage.workstreams.getById("ws_1"))!.label).toBe("Alpha");
+  });
+
+  it("returns a graceful message when the workstream is unknown", async () => {
+    const r = await renameWorkstreamHandler(deps(), { idOrLabel: "nope", label: "Whatever" });
+    expect(r.isError).not.toBe(true);
+    expect(r.content[0]!.text.toLowerCase()).toContain("no workstream");
+  });
+
+  it("retires a workstream by label", async () => {
+    await storage.workstreams.create({ id: "ws_1", label: "Dead" });
+    const r = await retireWorkstreamHandler(deps(), { idOrLabel: "Dead" });
+    expect(r.isError).not.toBe(true);
+    expect((await storage.workstreams.getById("ws_1"))!.status).toBe("retired");
+  });
+
+  it("returns a graceful message when retiring an unknown workstream", async () => {
+    const r = await retireWorkstreamHandler(deps(), { idOrLabel: "ghost" });
+    expect(r.isError).not.toBe(true);
+    expect(r.content[0]!.text.toLowerCase()).toContain("no workstream");
   });
 });
