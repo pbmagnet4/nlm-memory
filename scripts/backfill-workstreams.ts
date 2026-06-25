@@ -12,7 +12,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { backfillWorkstreams } from "../src/core/workstream/backfill-workstreams.js";
 import { decideWorkstreamByName } from "../src/core/workstream/name-match.js";
-import { parseWorkTopics, aliasToLabelMap, aliasesFor } from "../src/core/workstream/work-topics.js";
+import { parseWorkTopics, aliasToLabelMap } from "../src/core/workstream/work-topics.js";
+import { NAMING_CONTENT_CHARS } from "../src/core/workstream/bind.js";
 import { buildClassifier } from "../src/llm/build-classifier.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -53,18 +54,18 @@ async function main(): Promise<void> {
     const ws = await storage.workstreams.listAll();
     const res = await backfillWorkstreams({
       listSessions: async () => {
-        const rows = storage.sessions.rawDb().prepare<[], { id: string; label: string; summary: string }>(
-          "SELECT id, label, COALESCE(summary,'') AS summary FROM sessions WHERE label IS NOT NULL AND label != '' ORDER BY started_at ASC",
+        const rows = storage.sessions.rawDb().prepare<[], { id: string; label: string; summary: string; body: string }>(
+          "SELECT id, label, COALESCE(summary,'') AS summary, COALESCE(body,'') AS body FROM sessions WHERE label IS NOT NULL AND label != '' ORDER BY started_at ASC",
         ).all();
         return rows.map((r) => ({
           sessionId: r.id,
-          content: `${r.label}\n${r.summary}`,
+          content: `${r.label}\n${(r.body || r.summary).slice(0, NAMING_CONTENT_CHARS)}`,
         }));
       },
       nameSession: async (_sessionId: string, content: string) => {
         const hints = ws.map((w) => ({
           label: w.label,
-          aliases: aliasesFor(w.label, aliasToLabel),
+          aliases: [] as string[],
         }));
         return classifier.nameWorkstream(content, hints);
       },

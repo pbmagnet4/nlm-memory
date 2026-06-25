@@ -251,7 +251,7 @@ export class DeepSeekClient implements LLMClient {
       .join("\n");
     const sys =
       `You label a work session by which project it belongs to. Known projects:\n${list}\n` +
-      `If it belongs to NONE of these, answer "none". Reply with ONLY the exact project name from the list, or "none".`;
+      `If it belongs to NONE of these, answer "none". Reply with ONLY the exact project name from the list, or "none". /no_think`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.classifyTimeoutMs);
     try {

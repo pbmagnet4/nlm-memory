@@ -336,6 +336,7 @@ export class ScanScheduler {
                   sessionId: chunk.id,
                   label: classification.label,
                   summary: classification.summary,
+                  ...(record.body != null ? { body: record.body } : {}),
                   entities: classification.entities,
                   startedAt: chunk.startedAt,
                 },
