@@ -75,22 +75,22 @@ describe.skipIf(!PG_TEST_URL)("backfillFacts (PG backend)", () => {
     await storage.sessions.insertSessionForTest(session("s1", "body one", "2026-05-01T00:00:00Z"));
     await storage.sessions.insertSessionForTest(session("s2", "body two", "2026-05-02T00:00:00Z"));
     const classifier = new ScriptedClassifier(new Map([
-      ["body one", classifyResult([{ kind: "decision", subject: "PolySignal", predicate: "framework", value: "Hono" }])],
-      ["body two", classifyResult([{ kind: "decision", subject: "PolySignal", predicate: "db", value: "Postgres" }])],
+      ["body one", classifyResult([{ kind: "decision", subject: "Beacon", predicate: "framework", value: "Hono" }])],
+      ["body two", classifyResult([{ kind: "decision", subject: "Beacon", predicate: "db", value: "Postgres" }])],
     ]));
 
     const report = await backfillFacts({ store: storage.sessions, factStore: storage.facts, classifier, statePath });
 
     expect(report.processed).toBe(2);
     expect(report.factsWritten).toBe(2);
-    expect((await storage.facts.findCurrent("PolySignal", "framework"))?.value).toBe("Hono");
-    expect((await storage.facts.findCurrent("PolySignal", "db"))?.value).toBe("Postgres");
+    expect((await storage.facts.findCurrent("Beacon", "framework"))?.value).toBe("Hono");
+    expect((await storage.facts.findCurrent("Beacon", "db"))?.value).toBe("Postgres");
   });
 
   it("skips sessions that already have facts (reprocess=false) and is resumable", async () => {
     await storage.sessions.insertSessionForTest(session("s1", "body one", "2026-05-01T00:00:00Z"));
     const classifier = new ScriptedClassifier(new Map([
-      ["body one", classifyResult([{ kind: "decision", subject: "PolySignal", predicate: "framework", value: "Hono" }])],
+      ["body one", classifyResult([{ kind: "decision", subject: "Beacon", predicate: "framework", value: "Hono" }])],
     ]));
 
     const r1 = await backfillFacts({ store: storage.sessions, factStore: storage.facts, classifier, statePath });
@@ -107,7 +107,7 @@ describe.skipIf(!PG_TEST_URL)("backfillFacts (PG backend)", () => {
     await backfillFacts({
       store: storage.sessions, factStore: storage.facts, statePath,
       classifier: new ScriptedClassifier(new Map([
-        ["body v1", classifyResult([{ kind: "decision", subject: "PolySignal", predicate: "framework", value: "Express" }])],
+        ["body v1", classifyResult([{ kind: "decision", subject: "Beacon", predicate: "framework", value: "Express" }])],
       ])),
     });
 
@@ -115,10 +115,10 @@ describe.skipIf(!PG_TEST_URL)("backfillFacts (PG backend)", () => {
     await backfillFacts({
       store: storage.sessions, factStore: storage.facts, statePath: join(tmp, "state2.json"),
       classifier: new ScriptedClassifier(new Map([
-        ["body v2", classifyResult([{ kind: "decision", subject: "PolySignal", predicate: "framework", value: "Hono" }])],
+        ["body v2", classifyResult([{ kind: "decision", subject: "Beacon", predicate: "framework", value: "Hono" }])],
       ])),
     });
 
-    expect((await storage.facts.findCurrent("PolySignal", "framework"))?.value).toBe("Hono");
+    expect((await storage.facts.findCurrent("Beacon", "framework"))?.value).toBe("Hono");
   });
 });

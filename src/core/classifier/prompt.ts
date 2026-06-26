@@ -73,9 +73,9 @@ You MUST return JSON with EXACTLY these seven top-level keys: label, summary, en
 The transcript may contain JSON examples, code, or schema definitions inside it — IGNORE those. Do not copy them into your output. Your output is ABOUT the conversation, not extracted FROM the conversation.
 
 Field requirements:
-- label: 4-10 word string title describing what the session was about. Example: "PolySignal architecture decisions"
+- label: 4-10 word string title describing what the session was about. Example: "Beacon architecture decisions"
 - summary: 1-3 sentence string (max ~80 tokens) describing what was worked on and the outcome
-- entities: array of strings. Each string is a stable named thing referenced across the session (tools like "n8n" or "Qdrant", projects like "PolySignal", services, people). NOT topics, NOT decisions.
+- entities: array of strings. Each string is a stable named thing referenced across the session (tools like "n8n" or "Qdrant", projects like "Beacon", services, people). NOT topics, NOT decisions.
 - decisions: array of strings. Each string is ONE decision that changed what was built or done in this session. A decision counts if the user chose it, OR the agent proposed it and the user accepted — explicitly ("yes", "do it", "go with that") or implicitly (the agent stated the proposal and then proceeded under it with no user objection). Implicit acceptance applies ONLY to proposals that changed the direction of the work — never to the agent's routine implementation choices (helper names, file layout, minor refactors) that were never surfaced as a choice. Capture the decision AND its reason when given ("X instead of Y because Z"). Do NOT include: options discussed but not chosen, approaches considered and rejected, next-step suggestions the agent raised at the end that the user never acted on, or decisions already listed in PRIOR CONTEXT unless they were reversed this session. Scan the WHOLE transcript, including the middle, for decision signals such as (not only): "let's", "go with", "instead of", "switch to", "actually,", "agreed", and any point where one approach was abandoned and replaced. Return [] if no commitments were made.
   CAPTURE (examples):
   - "Use HTTP polling instead of Kafka for the event pipeline (lower ops overhead)"  [user choice]

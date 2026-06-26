@@ -594,13 +594,13 @@ describe("HTTP adapter — Spec G.2 fact injection contract", () => {
       startedAt: today,
       endedAt: today,
       durationMin: 5,
-      label: "PolySignal trade execution",
+      label: "Beacon trade execution",
       summary: "trade execution debugging",
       status: "closed",
       transcriptKind: "claude-code-jsonl",
       transcriptPath: null,
-      body: "PolySignal trade execution flow",
-      entities: ["polysignal"],
+      body: "Beacon trade execution flow",
+      entities: ["beacon"],
       decisions: [],
       open: [],
     });
@@ -611,22 +611,22 @@ describe("HTTP adapter — Spec G.2 fact injection contract", () => {
       startedAt: today,
       endedAt: today,
       durationMin: 8,
-      label: "PolySignal pipeline rewrite",
+      label: "Beacon pipeline rewrite",
       summary: "pipeline refactor",
       status: "closed",
       transcriptKind: "claude-code-jsonl",
       transcriptPath: null,
-      body: "PolySignal pipeline rewrite",
-      entities: ["polysignal"],
+      body: "Beacon pipeline rewrite",
+      entities: ["beacon"],
       decisions: [],
       open: [],
     });
 
     await factStore.insertMany([
-      makeFact({ id: "f_g2_1", subject: "polysignal", predicate: "uses", value: "duckdb", confidence: 0.9, sourceSessionId: "sess_g2_a" }),
-      makeFact({ id: "f_g2_2", subject: "polysignal", predicate: "uses", value: "duckdb", confidence: 0.9, sourceSessionId: "sess_g2_b" }),
-      makeFact({ id: "f_g2_3", subject: "polysignal", predicate: "framework", value: "hono", confidence: 0.9, sourceSessionId: "sess_g2_a" }),
-      makeFact({ id: "f_g2_4", subject: "polysignal", predicate: "framework", value: "hono", confidence: 0.9, sourceSessionId: "sess_g2_b" }),
+      makeFact({ id: "f_g2_1", subject: "beacon", predicate: "uses", value: "duckdb", confidence: 0.9, sourceSessionId: "sess_g2_a" }),
+      makeFact({ id: "f_g2_2", subject: "beacon", predicate: "uses", value: "duckdb", confidence: 0.9, sourceSessionId: "sess_g2_b" }),
+      makeFact({ id: "f_g2_3", subject: "beacon", predicate: "framework", value: "hono", confidence: 0.9, sourceSessionId: "sess_g2_a" }),
+      makeFact({ id: "f_g2_4", subject: "beacon", predicate: "framework", value: "hono", confidence: 0.9, sourceSessionId: "sess_g2_b" }),
     ]);
 
     const recall = new RecallService({
@@ -643,7 +643,7 @@ describe("HTTP adapter — Spec G.2 fact injection contract", () => {
   });
 
   it("attaches relatedFacts when x-recall-source: hook is set", async () => {
-    const res = await app.request("/api/recall?q=polysignal&mode=keyword", {
+    const res = await app.request("/api/recall?q=beacon&mode=keyword", {
       headers: { "x-recall-source": "hook", "x-recall-runtime": "claude-code" },
     });
     expect(res.status).toBe(200);
@@ -660,7 +660,7 @@ describe("HTTP adapter — Spec G.2 fact injection contract", () => {
   });
 
   it("attaches relatedFacts when ?withFacts=true is explicit", async () => {
-    const res = await app.request("/api/recall?q=polysignal&mode=keyword&withFacts=true");
+    const res = await app.request("/api/recall?q=beacon&mode=keyword&withFacts=true");
     expect(res.status).toBe(200);
     const body = (await res.json()) as { relatedFacts?: unknown[] };
     expect(Array.isArray(body.relatedFacts)).toBe(true);
@@ -668,14 +668,14 @@ describe("HTTP adapter — Spec G.2 fact injection contract", () => {
   });
 
   it("omits relatedFacts for default HTTP callers (no header, no flag)", async () => {
-    const res = await app.request("/api/recall?q=polysignal&mode=keyword");
+    const res = await app.request("/api/recall?q=beacon&mode=keyword");
     expect(res.status).toBe(200);
     const body = (await res.json()) as { relatedFacts?: unknown[] };
     expect(body.relatedFacts).toBeUndefined();
   });
 
   it("respects ?withFacts=false even from a hook source", async () => {
-    const res = await app.request("/api/recall?q=polysignal&mode=keyword&withFacts=false", {
+    const res = await app.request("/api/recall?q=beacon&mode=keyword&withFacts=false", {
       headers: { "x-recall-source": "hook" },
     });
     expect(res.status).toBe(200);
@@ -689,20 +689,20 @@ describe("HTTP adapter — Spec G.2 fact injection contract", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         session_id: "hermes_test_session_xxxxxx",
-        user_message: "what did we decide about polysignal storage",
+        user_message: "what did we decide about beacon storage",
       }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { context: string | null };
     expect(typeof body.context).toBe("string");
     expect(body.context).toContain("## Known facts about top entities");
-    expect(body.context).toContain("polysignal uses: duckdb");
+    expect(body.context).toContain("beacon uses: duckdb");
   });
 
   it("NLM_HOOK_INJECT_FACTS=0 disables fact attachment even on hook source", async () => {
     process.env["NLM_HOOK_INJECT_FACTS"] = "0";
     try {
-      const res = await app.request("/api/recall?q=polysignal&mode=keyword", {
+      const res = await app.request("/api/recall?q=beacon&mode=keyword", {
         headers: { "x-recall-source": "hook" },
       });
       const body = (await res.json()) as { relatedFacts?: unknown[] };

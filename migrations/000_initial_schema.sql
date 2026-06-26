@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS entities (
   canonical           TEXT PRIMARY KEY,           -- preferred spelling — also the primary key
   type                TEXT NOT NULL,              -- 'candidate' until labeled. Built-in labels: project | tool | contact | service | concept. Custom labels are user-defined via the UI / `nle-daemon action label` and have no CHECK constraint.
   status              TEXT NOT NULL CHECK(status IN ('active','dormant','retired','rejected','candidate')),
-  source              TEXT,                       -- e.g. 'property:.claude/properties/polysignal.yaml', 'auto-detected', 'user-registered'
+  source              TEXT,                       -- e.g. 'property:.claude/properties/beacon.yaml', 'auto-detected', 'user-registered'
   notes               TEXT,                       -- freeform user notes
   first_seen_session  TEXT REFERENCES sessions(id),
   last_seen_session   TEXT REFERENCES sessions(id),

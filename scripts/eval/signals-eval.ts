@@ -82,7 +82,7 @@ async function main(): Promise<void> {
   // A strong model in the same repo is clean. A second repo stays below
   // threshold. One repo is bad enough to warrant a model swap.
   const NLM = "/repos/nlm-memory";
-  const POLY = "/repos/polysignal";
+  const POLY = "/repos/beacon";
   const TAX = "/repos/tx-tax";
   const corpus: Signal[] = [
     ...bucket(NLM, "qwen3-coder", "types", 120, 0.38), // headline failure mode

@@ -100,8 +100,8 @@ export async function pickRelatedFacts(
 
     // 5. Build RelatedFact[], filter by minCorroboration, dedupe by
     //    (subject, predicate) — only the most-corroborated value per pair
-    //    survives so we don't list "polysignal uses: duckdb" AND
-    //    "polysignal uses: postgres" as if both were current.
+    //    survives so we don't list "beacon uses: duckdb" AND
+    //    "beacon uses: postgres" as if both were current.
     const byKey = new Map<string, RelatedFact & { confidence: number }>();
     for (const f of candidates) {
       const corrKey = `${f.subject} ${f.predicate} ${f.value}`;

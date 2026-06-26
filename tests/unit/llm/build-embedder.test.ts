@@ -50,7 +50,7 @@ describe("buildEmbedder", () => {
   it("returns OpenAIEmbedderClient when provider is 'openai' and base URL is set", async () => {
     saved = captureEnv();
     process.env["NLM_EMBED_PROVIDER"] = "openai";
-    process.env["NLM_EMBED_BASE_URL"] = "http://192.168.1.217:1234/v1";
+    process.env["NLM_EMBED_BASE_URL"] = "http://localhost:1234/v1";
 
     const { buildEmbedder } = await import("../../../src/llm/build-embedder.js");
     const result = buildEmbedder();

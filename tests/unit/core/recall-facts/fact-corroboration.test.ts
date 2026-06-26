@@ -109,21 +109,21 @@ describe("fact corroboration boost (Spec G.1)", () => {
 
   it("a more-corroborated fact ranks ahead of a less-corroborated equal-score fact", async () => {
     const facts = [
-      makeFact({ id: "weak", subject: "polysignal", predicate: "uses", value: "postgres" }),
-      makeFact({ id: "strong", subject: "polysignal", predicate: "uses", value: "duckdb" }),
+      makeFact({ id: "weak", subject: "beacon", predicate: "uses", value: "postgres" }),
+      makeFact({ id: "strong", subject: "beacon", predicate: "uses", value: "duckdb" }),
     ];
     const store = new ScriptedFactStore(
       facts,
       new Map([
-        ["polysignal uses postgres", 1],
-        ["polysignal uses duckdb", 10],
+        ["beacon uses postgres", 1],
+        ["beacon uses duckdb", 10],
       ]),
     );
     const svc = new FactRecallService({ factStore: store, llm: new StubLLM() });
     // Pure structured query (no query text) — service returns candidates
     // by created_at then applies corroboration. We seeded both with the
     // same timestamp; corroboration must break the tie in favor of "duckdb".
-    const result = await svc.search({ subject: "polysignal", predicate: "uses", mode: "keyword" });
+    const result = await svc.search({ subject: "beacon", predicate: "uses", mode: "keyword" });
     expect(result.results.map((r) => r.id)).toEqual(["strong", "weak"]);
     expect(result.results[0]!.corroborationCount).toBe(10);
     expect(result.results[1]!.corroborationCount).toBe(1);

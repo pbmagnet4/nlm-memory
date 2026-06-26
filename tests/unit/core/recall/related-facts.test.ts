@@ -98,20 +98,20 @@ describe("pickRelatedFacts (Spec G.2)", () => {
 
   it("returns top facts about top-hit entities by corroboration", async () => {
     const facts = new Map<string, Fact[]>([
-      ["polysignal", [
-        fact("polysignal", "uses", "duckdb"),
-        fact("polysignal", "framework", "hono"),
+      ["beacon", [
+        fact("beacon", "uses", "duckdb"),
+        fact("beacon", "framework", "hono"),
       ]],
     ]);
     const corr = new Map([
-      ["polysignal uses duckdb", 8],
-      ["polysignal framework hono", 3],
+      ["beacon uses duckdb", 8],
+      ["beacon framework hono", 3],
     ]);
     const store = new ScriptedFactStore(facts, corr);
-    const result = await pickRelatedFacts([hit("a", ["polysignal"])], store);
+    const result = await pickRelatedFacts([hit("a", ["beacon"])], store);
     expect(result).toEqual([
-      { subject: "polysignal", predicate: "uses", value: "duckdb", corroborationCount: 8 },
-      { subject: "polysignal", predicate: "framework", value: "hono", corroborationCount: 3 },
+      { subject: "beacon", predicate: "uses", value: "duckdb", corroborationCount: 8 },
+      { subject: "beacon", predicate: "framework", value: "hono", corroborationCount: 3 },
     ]);
   });
 

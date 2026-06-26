@@ -385,16 +385,16 @@ export function runFactStoreContract(h: FactStoreContractHarness): void {
         await storage.facts.insert(
           makeFact({
             id: "f1",
-            subject: "polysignal",
+            subject: "beacon",
             predicate: "uses",
             value: "duckdb",
             sourceSessionId: "sess_parent",
           }),
         );
         const counts = await storage.facts.corroborationCounts([
-          { subject: "polysignal", predicate: "uses", value: "duckdb" },
+          { subject: "beacon", predicate: "uses", value: "duckdb" },
         ]);
-        expect(counts.get("polysignal uses duckdb")).toBe(1);
+        expect(counts.get("beacon uses duckdb")).toBe(1);
       });
 
       it("counts distinct sessions across the full history (including superseded)", async () => {

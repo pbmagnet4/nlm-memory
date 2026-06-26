@@ -65,7 +65,7 @@ export interface CandidateConfig {
   readonly client: ClassifierClient;
 }
 
-const STUDIO_BASE = "http://192.168.1.217:8000/v1";
+const STUDIO_BASE = process.env["NLM_EVAL_BASE_URL"] ?? "http://localhost:8000/v1";
 
 /**
  * Minimal OpenAI-compatible classifier for eval candidates on the Studio.

@@ -242,7 +242,7 @@ export interface FactRecallResult {
 
 /**
  * A current high-confidence fact attached to a recall result — the hook
- * uses these to inject structured context ("polysignal uses: duckdb")
+ * uses these to inject structured context ("beacon uses: duckdb")
  * alongside the session pointer list. Selected by `pickRelatedFacts`
  * server-side using the entities of the top recall hits, the fact-store
  * confidence filter, and the spec G.1 corroborationCount.

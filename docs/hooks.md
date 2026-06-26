@@ -66,8 +66,8 @@ When the gate selects ≥1 hit, the hook emits:
 
 ```
 ## Possibly-relevant prior sessions (nlm-memory)
-- hm_20260425_345042 · PolySignal dashboard UI specification design (2026-04-25)
-- hm_20260425_f57dc7 · PolySignal paper trading layer design and implementation (2026-04-24)
+- hm_20260425_345042 · Beacon dashboard UI specification design (2026-04-25)
+- hm_20260425_f57dc7 · Beacon paper trading layer design and implementation (2026-04-24)
 - hm_20260501_34533d · ADHD Care Connect SEO audit and indexing fix (2026-05-01)
 NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved).
 ```

@@ -21,13 +21,13 @@ When the hook fires, the model sees something like:
 
 ```
 ## Possibly-relevant prior sessions (nlm-memory)
-- cc_xxx · PolySignal pipeline rewrite (2026-05-23)
-- cc_yyy · PolySignal trade execution debugging (2026-05-21)
+- cc_xxx · Beacon pipeline rewrite (2026-05-23)
+- cc_yyy · Beacon trade execution debugging (2026-05-21)
 
 ## Known facts about top entities
-- polysignal uses: duckdb [8 sessions]
-- polysignal framework: hono [3 sessions]
-- polysignal deployment: docker [2 sessions]
+- beacon uses: duckdb [8 sessions]
+- beacon framework: hono [3 sessions]
+- beacon deployment: docker [2 sessions]
 
 NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved).
 ```
@@ -47,7 +47,7 @@ For each runtime, send a history-flavored prompt that references a project with 
 
 | | Test prompt | Inject path |
 |---|---|---|
-| **Claude Code** | "what did we decide about polysignal storage" | `~/.claude/settings.json` hook |
+| **Claude Code** | "what did we decide about beacon storage" | `~/.claude/settings.json` hook |
 | **Codex CLI** | same | marketplace plugin (`UserPromptSubmit`) |
 | **Hermes Agent** | same, in a Hermes session | plugin / `pre_llm_call` hook |
 | **pi.dev** | same, in a pi session | pi extension `input` hook |
