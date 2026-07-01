@@ -482,7 +482,7 @@ program
           installScope: scope,
           intervalMs: opts.intervalMin * 60_000,
           exemplarStore: storage.exemplars,
-          codeEmbedder: new OllamaCodeEmbedder({ baseUrl: ollamaUrl() }),
+          codeEmbedder: buildCodeEmbedder(),
           workstreams: storage.workstreams,
         });
         scheduler.start();
