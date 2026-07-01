@@ -15,6 +15,7 @@
  *   I5  at most one active fact per (subject, predicate); every superseded_by
  *       references an existing facts.id; superseded_by forms no cycle (I5c)
  *   I6  every non-null adapter_state.session_id references a sessions.id
+ *   I7  every fact_embeddings row has a live (active, non-retired) parent fact
  */
 
 import type Database from "better-sqlite3";
@@ -97,6 +98,31 @@ const SQL_I6 = `
   FROM adapter_state a
   WHERE a.session_id IS NOT NULL
     AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = a.session_id)
+  LIMIT 6
+`;
+
+// An embedding row must have a live (active, non-retired) parent fact.
+// Superseded/retired facts leave the ANN index at write time (ingest collapse,
+// markSuperseded, retire, session cascade); a row here means a write path
+// skipped cleanup — the NLM #351 orphan class.
+//
+// SQLite: fact_embeddings is a vec0 virtual table; its shadow rowids table
+// (fact_embeddings_rowids, column: id) supports standard LEFT JOIN.
+const SQL_I7_GHOST_SQLITE = `
+  SELECT r.id AS bad_id
+  FROM fact_embeddings_rowids r
+  LEFT JOIN facts f ON f.id = r.id
+  WHERE f.id IS NULL OR f.superseded_by IS NOT NULL OR f.retired_at IS NOT NULL
+  LIMIT 6
+`;
+
+// PG: fact_embeddings is a regular table with fact_id as PK; the FK ON DELETE
+// CASCADE means f.id IS NULL cannot occur, but the condition is kept symmetric.
+const SQL_I7_GHOST_PG = `
+  SELECT fe.fact_id AS bad_id
+  FROM fact_embeddings fe
+  LEFT JOIN facts f ON f.id = fe.fact_id
+  WHERE f.id IS NULL OR f.superseded_by IS NOT NULL OR f.retired_at IS NOT NULL
   LIMIT 6
 `;
 
@@ -239,6 +265,13 @@ export function runChecksOnSqlite(db: Database.Database): ReadonlyArray<Violatio
     violations.push(buildViolation("I6", "adapter_state.session_id references non-existent sessions.id", i6Samples, count));
   }
 
+  // I7
+  const i7Samples = sqliteRows(db, SQL_I7_GHOST_SQLITE);
+  if (i7Samples.length > 0) {
+    const count = sqliteCount(db, SQL_I7_GHOST_SQLITE);
+    violations.push(buildViolation("I7", "fact embedding without a live parent fact", i7Samples, count));
+  }
+
   return violations;
 }
 
@@ -329,6 +362,13 @@ export async function runChecksOnPg(pool: Pool): Promise<ReadonlyArray<Violation
     violations.push(buildViolation("I6", "adapter_state.session_id references non-existent sessions.id", i6Samples, count));
   }
 
+  // I7
+  const i7Samples = await pgRows(pool, SQL_I7_GHOST_PG);
+  if (i7Samples.length > 0) {
+    const count = await pgCount(pool, SQL_I7_GHOST_PG);
+    violations.push(buildViolation("I7", "fact embedding without a live parent fact", i7Samples, count));
+  }
+
   return violations;
 }
 
@@ -390,6 +430,7 @@ export async function runCheapChecksOnPg(pool: Pool): Promise<ReadonlyArray<Viol
 export interface FixReport {
   readonly deletedSelfLoops: number;
   readonly restoredToClosed: number;
+  readonly deletedGhostEmbeddings: number;
 }
 
 export function applyFixOnSqlite(db: Database.Database): FixReport {
@@ -415,9 +456,25 @@ export function applyFixOnSqlite(db: Database.Database): FixReport {
     `)
     .run();
 
+  // I7 fix: vec0 only supports single-value DELETE, so loop over bad fact_ids.
+  const ghostIds = db
+    .prepare<[], { bad_id: string }>(`
+      SELECT r.id AS bad_id
+      FROM fact_embeddings_rowids r
+      LEFT JOIN facts f ON f.id = r.id
+      WHERE f.id IS NULL OR f.superseded_by IS NOT NULL OR f.retired_at IS NOT NULL
+    `)
+    .all();
+  const delGhostEmb = db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ?");
+  let deletedGhostEmbeddings = 0;
+  for (const { bad_id } of ghostIds) {
+    deletedGhostEmbeddings += delGhostEmb.run(bad_id).changes;
+  }
+
   return {
     deletedSelfLoops: deleteResult.changes,
     restoredToClosed: updateSuperseded.changes + updateReplaced.changes,
+    deletedGhostEmbeddings,
   };
 }
 
@@ -440,8 +497,19 @@ export async function applyFixOnPg(pool: Pool): Promise<FixReport> {
       AND id NOT IN (SELECT to_session FROM session_edges WHERE kind = 'replaces')
   `);
 
+  const ghostEmbResult = await pool.query(`
+    DELETE FROM fact_embeddings
+    WHERE fact_id IN (
+      SELECT fe.fact_id
+      FROM fact_embeddings fe
+      LEFT JOIN facts f ON f.id = fe.fact_id
+      WHERE f.id IS NULL OR f.superseded_by IS NOT NULL OR f.retired_at IS NOT NULL
+    )
+  `);
+
   return {
     deletedSelfLoops: deleteResult.rowCount ?? 0,
     restoredToClosed: (updateSuperseded.rowCount ?? 0) + (updateReplaced.rowCount ?? 0),
+    deletedGhostEmbeddings: ghostEmbResult.rowCount ?? 0,
   };
 }

@@ -2173,7 +2173,7 @@ async function gatherInstallProbe(): Promise<InstallProbe> {
 program
   .command("doctor")
   .description("Check database integrity invariants and install/runtime health, optionally repair safe violations")
-  .option("--fix", "repair mechanically safe violations: delete self-loop edges (I1), restore orphaned superseded/replaced sessions to closed (I2)")
+  .option("--fix", "repair mechanically safe violations: delete self-loop edges (I1), restore orphaned superseded/replaced sessions to closed (I2), delete ghost fact embeddings (I7)")
   .action(async (opts) => {
     const storage = await buildStorage(dbPath());
     let violations;
@@ -2191,7 +2191,10 @@ program
         if (fixReport.restoredToClosed > 0) {
           console.log(`  fixed I2: restored ${fixReport.restoredToClosed} session(s) to closed`);
         }
-        if (fixReport.deletedSelfLoops === 0 && fixReport.restoredToClosed === 0) {
+        if (fixReport.deletedGhostEmbeddings > 0) {
+          console.log(`  fixed I7: deleted ${fixReport.deletedGhostEmbeddings} ghost embedding(s)`);
+        }
+        if (fixReport.deletedSelfLoops === 0 && fixReport.restoredToClosed === 0 && fixReport.deletedGhostEmbeddings === 0) {
           console.log("  --fix: nothing to repair");
         }
       }
@@ -2204,7 +2207,7 @@ program
       await storage.close();
     }
 
-    const ALL_CHECKS = ["I1", "I2", "I3", "I4", "I5a", "I5b", "I6"];
+    const ALL_CHECKS = ["I1", "I2", "I3", "I4", "I5a", "I5b", "I6", "I7"];
     const byId = new Map(violations.map((v) => [v.id, v]));
     let anyFail = false;
     console.log("Database integrity:");
