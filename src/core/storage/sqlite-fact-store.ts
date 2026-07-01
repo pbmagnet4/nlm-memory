@@ -408,7 +408,7 @@ export class SqliteFactStore implements FactStore {
     // batch for a given (subject, predicate) wins; every other active fact —
     // batch duplicates and prior facts alike — collapses under it.
     const winners = new Map<string, Fact>();
-    for (const f of facts) winners.set(`${f.subject} ${f.predicate}`, f);
+    for (const f of facts) winners.set(`${f.subject}\u0000${f.predicate}`, f);
     for (const f of winners.values()) {
       // Capture which facts this collapse supersedes BEFORE the update, then
       // drop their embeddings — a superseded fact must not linger in the ANN
