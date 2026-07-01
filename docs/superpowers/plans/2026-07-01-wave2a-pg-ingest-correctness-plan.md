@@ -59,9 +59,6 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
-    env:
-      NLM_PG_TEST_URL: postgresql://nlm_test:nlm_test@localhost:5432/nlm_test
-
     steps:
       - uses: actions/checkout@v4
 
@@ -78,6 +75,11 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Test (pg, serial)
+        run: npm run test:pg
+        env:
+          NLM_PG_TEST_URL: postgresql://nlm_test:nlm_test@localhost:5432/nlm_test
 
       - name: Build (server)
         run: npm run build
@@ -99,17 +101,27 @@ END $$;
 
 (keep the comment line above it; change nothing else in the file).
 
-- [ ] **Step 3: Verify the pg suite passes locally against a live container**
+- [ ] **Step 3: Add the serial pg test script**
+
+The ten pg test files share one database and TRUNCATE between tests; run in parallel they race each other (45 cross-file failures observed). They must run serially, in their own pass, with `npm test` left pg-free. Add to package.json scripts:
+
+```json
+"test:pg": "vitest run --no-file-parallelism .pg.test.ts"
+```
+
+(vitest CLI args are substring file filters; `.pg.test.ts` selects exactly the pg files, and `--no-file-parallelism` runs them one file at a time.)
+
+- [ ] **Step 4: Verify the pg suite passes locally against a live container**
 
 Start the container per Global Constraints, export `NLM_PG_TEST_URL`, then:
 
-Run: `npx vitest run tests/integration/fact-store.pg.test.ts tests/integration/pg-ingest.pg.test.ts`
-Expected: PASS (previously these skipped without the env var). If any pre-existing pg test fails here, STOP and report — that is a real pg bug this plan may already cover; note which test and continue only if it is one of the known-broken behaviors Tasks 3-4 fix (mutual supersede, ghost embeddings).
+Run: `NLM_PG_TEST_URL="postgresql://nlm_test:nlm_test@localhost:5432/nlm_test" npm run test:pg`
+Expected: ALL pg files PASS serially (previously these skipped without the env var). Also run plain `npm test` WITHOUT the env var and confirm pg files skip and the suite is green. If any pre-existing pg test fails here, STOP and report — that is a real pg bug this plan may already cover; note which test and continue only if it is one of the known-broken behaviors Tasks 3-4 fix (mutual supersede, ghost embeddings).
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add .github/workflows/ci.yml migrations/pg/001_initial.sql
+git add .github/workflows/ci.yml migrations/pg/001_initial.sql package.json
 git commit -m "ci: run pg adapter tests against a pgvector service container; make schema apply idempotent"
 ```
 
