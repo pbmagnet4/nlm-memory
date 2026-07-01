@@ -9,6 +9,7 @@ The daemon must be running for hooks to have effect. If it is unreachable,
 every hook silently returns None so the agent loop is never blocked.
 """
 
+import http.client
 import json
 import os
 import urllib.error
@@ -33,7 +34,7 @@ def _post(path: str, payload: dict[str, Any]) -> dict[str, Any]:
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
             return json.loads(resp.read())
-    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+    except (urllib.error.URLError, OSError, json.JSONDecodeError, http.client.HTTPException):
         return {}
 
 
