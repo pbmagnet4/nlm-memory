@@ -842,12 +842,14 @@ export class SqliteSessionStore implements SessionStore {
       const updateFactSuperseded = this.db.prepare(
         "UPDATE facts SET superseded_by = ? WHERE id = ?"
       );
+      const delFactEmbedding = this.db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ?");
 
       const predecessorFacts = selectPredFacts.all(predecessorId);
       for (const pFact of predecessorFacts) {
         const successor = selectSuccFact.get(successorId, pFact.subject, pFact.predicate);
         if (successor) {
           updateFactSuperseded.run(successor.id, pFact.id);
+          delFactEmbedding.run(pFact.id);
         }
       }
     });

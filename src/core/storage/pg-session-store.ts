@@ -302,7 +302,14 @@ export class PgSessionStore implements SessionStore {
               AND s.superseded_by IS NULL
           )
       `;
-      await client.query(cascadeSQL, [predecessorId, successorId]);
+      const cascaded = await client.query<{ id: string }>(
+        cascadeSQL + " RETURNING p.id",
+        [predecessorId, successorId],
+      );
+      const cascadedIds = cascaded.rows.map((r) => r.id);
+      if (cascadedIds.length > 0) {
+        await client.query("DELETE FROM fact_embeddings WHERE fact_id = ANY($1)", [cascadedIds]);
+      }
 
       await client.query("COMMIT");
     } catch (err) {
