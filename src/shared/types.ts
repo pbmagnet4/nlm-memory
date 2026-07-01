@@ -170,7 +170,7 @@ export interface RecallResult {
  * docs/plans/factstore-design.md for the full design rationale.
  *
  * `kind` mirrors the marker taxonomy plus a third category for entity
- * attributes ("mac-pro-llm-host" + "endpoint" + "http://macpro:8080/v1").
+ * attributes ("local-llm-host" + "endpoint" + "http://macpro:8080/v1").
  *
  * `subject` and `predicate` are normalized (lowercased, trimmed) at extraction
  * time so the deterministic supersedence path can do exact-match collision

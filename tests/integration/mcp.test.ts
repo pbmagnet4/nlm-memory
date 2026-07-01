@@ -388,7 +388,7 @@ describe("MCP adapter", () => {
         makeFact({
           id: "f_endpoint",
           kind: "attribute",
-          subject: "mac-pro-llm-host",
+          subject: "local-llm-host",
           predicate: "endpoint",
           value: "http://macpro:8080/v1",
           confidence: 0.85,
