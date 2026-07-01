@@ -17,6 +17,7 @@ import type {
 import type { Fact, Session, SessionStatus } from "@shared/types.js";
 import type { BackfillCandidate, BackfillCandidateFilter, IngestRecord, RecentMarker, RecentWrite, Supersedes } from "./sqlite-session-store.js";
 import type { PgFactStore } from "./pg-fact-store.js";
+import { ingestSessionFactsOnClient } from "./pg-fact-ingest.js";
 import { chunkSessionText } from "@core/embedding/chunk-body.js";
 
 type SessionRow = {
@@ -463,39 +464,9 @@ export class PgSessionStore implements SessionStore {
         }
       }
 
-      // Atomic session+facts ingest. Mirrors the SQLite factSink path
-      // (sqlite-session-store.insertSession) and PgFactStore.ingestSessionFacts,
-      // but runs on the session's own client so facts commit with the row.
-      // Re-ingest is idempotent: DELETE-by-session clears prior facts, then the
-      // batch UPDATE re-collapses every active (subject, predicate) sibling.
+      // Atomic session+facts ingest on the session's own client. Single source of truth: pg-fact-ingest.ts.
       if (factSink !== null) {
-        await client.query("DELETE FROM facts WHERE source_session_id = $1", [record.id]);
-        if (factSink.facts.length > 0) {
-          for (const f of factSink.facts) {
-            await client.query(
-              `INSERT INTO facts (id, kind, subject, predicate, value, source_session_id,
-                 source_quote, created_at, superseded_by, confidence)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-              [f.id, f.kind, f.subject, f.predicate, f.value, f.sourceSessionId,
-               f.sourceQuote, f.createdAt, f.supersededBy, f.confidence],
-            );
-          }
-          const values = factSink.facts
-            .map((_, i) => `($${i * 3 + 1}, $${i * 3 + 2}, $${i * 3 + 3})`)
-            .join(", ");
-          const params: unknown[] = [];
-          for (const f of factSink.facts) params.push(f.subject, f.predicate, f.id);
-          await client.query(
-            `UPDATE facts AS old
-             SET superseded_by = new_f.new_id
-             FROM (VALUES ${values}) AS new_f(subject, predicate, new_id)
-             WHERE old.subject = new_f.subject
-               AND old.predicate = new_f.predicate
-               AND old.superseded_by IS NULL
-               AND old.id != new_f.new_id`,
-            params,
-          );
-        }
+        await ingestSessionFactsOnClient(client, record.id, factSink.facts);
       }
 
       await client.query("COMMIT");
@@ -614,31 +585,7 @@ export class PgSessionStore implements SessionStore {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      await client.query("DELETE FROM facts WHERE source_session_id = $1", [sessionId]);
-      if (facts.length > 0) {
-        for (const f of facts) {
-          await client.query(
-            `INSERT INTO facts (id, kind, subject, predicate, value, source_session_id,
-               source_quote, created_at, superseded_by, confidence)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-            [f.id, f.kind, f.subject, f.predicate, f.value, f.sourceSessionId,
-             f.sourceQuote, f.createdAt, f.supersededBy, f.confidence],
-          );
-        }
-        const values = facts.map((_, i) => `($${i * 3 + 1}, $${i * 3 + 2}, $${i * 3 + 3})`).join(", ");
-        const supersedeParams: unknown[] = [];
-        for (const f of facts) supersedeParams.push(f.subject, f.predicate, f.id);
-        await client.query(
-          `UPDATE facts AS old
-           SET superseded_by = new_f.new_id
-           FROM (VALUES ${values}) AS new_f(subject, predicate, new_id)
-           WHERE old.subject = new_f.subject
-             AND old.predicate = new_f.predicate
-             AND old.superseded_by IS NULL
-             AND old.id != new_f.new_id`,
-          supersedeParams,
-        );
-      }
+      await ingestSessionFactsOnClient(client, sessionId, facts);
       await client.query("COMMIT");
     } catch (err) {
       await client.query("ROLLBACK");
