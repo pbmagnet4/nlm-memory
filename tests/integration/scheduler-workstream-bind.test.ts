@@ -110,12 +110,12 @@ describe("ScanScheduler workstream bind (flag-gated)", () => {
         )
         .all();
       expect(sess).toHaveLength(1);
-      expect(sess[0]?.workstream_id).not.toBeNull();
+      expect(sess[0]?.workstream_id).toBe("ws_nlm_test");
 
       const wsCount = db
         .prepare<[], { n: number }>("SELECT COUNT(*) AS n FROM workstreams")
         .get();
-      expect(wsCount?.n).toBeGreaterThanOrEqual(1);
+      expect(wsCount?.n).toBe(1);
     } finally {
       db.close();
     }
