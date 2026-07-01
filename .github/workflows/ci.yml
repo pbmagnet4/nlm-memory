@@ -25,9 +25,6 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
-    env:
-      NLM_PG_TEST_URL: postgresql://nlm_test:nlm_test@localhost:5432/nlm_test
-
     steps:
       - uses: actions/checkout@v4
 
@@ -44,6 +41,11 @@ jobs:
 
       - name: Test
         run: npm test
+
+      - name: Test (pg, serial)
+        run: npm run test:pg
+        env:
+          NLM_PG_TEST_URL: postgresql://nlm_test:nlm_test@localhost:5432/nlm_test
 
       - name: Build (server)
         run: npm run build
