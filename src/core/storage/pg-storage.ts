@@ -1,10 +1,8 @@
 /**
  * PgStorage — canonical Storage adapter for PostgreSQL + pgvector.
  *
- * Implements the Storage port (init/close/withTransaction). withTransaction
- * uses the write-queue pattern: the sync callback queues SQL ops, then
- * PgStorage flushes the queue inside a single BEGIN/COMMIT after the
- * callback returns.
+ * Implements the Storage port (init/close). Adapter methods manage atomicity
+ * internally via explicit BEGIN/COMMIT on a PoolClient.
  *
  * pgPool() is a deprecated escape hatch for callers not yet ported to the
  * Storage interface. Tracked for removal in #215a (PG branch).
@@ -13,13 +11,12 @@
 import { Pool } from "pg";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Storage, StorageContext } from "@ports/storage.js";
+import type { Storage } from "@ports/storage.js";
 import { PgFactStore } from "./pg-fact-store.js";
 import { PgSessionStore } from "./pg-session-store.js";
 import { PgSignalStore } from "./pg-signal-store.js";
 import { PgCodeExemplarStore } from "./pg-code-exemplar-store.js";
 import { PgWorkstreamStore } from "./pg-workstream-store.js";
-import { PgTxBoundFactStore, PgTxBoundSessionStore, type QueuedOp } from "./pg-tx-context.js";
 import { PgSourceRegistry } from "@core/sources/source-registry.js";
 import { PgProviderRegistry } from "@core/providers/provider-registry.js";
 
@@ -38,8 +35,6 @@ export class PgStorage implements Storage {
   readonly providers: PgProviderRegistry;
   private readonly _pool: Pool;
   private readonly _migrationsDir: string;
-  // Guards against re-entrant (synchronous) nesting only. Not concurrent-call-safe.
-  private inTxn = false;
 
   private constructor(pool: Pool, migrationsDir: string) {
     this._pool = pool;
@@ -65,41 +60,6 @@ export class PgStorage implements Storage {
 
   async close(): Promise<void> {
     await this._pool.end();
-  }
-
-  async withTransaction<T>(fn: (ctx: StorageContext) => T): Promise<T> {
-    if (this.inTxn) {
-      throw new Error("PgStorage.withTransaction does not support nesting");
-    }
-    this.inTxn = true;
-    const queue: QueuedOp[] = [];
-    const txFacts = new PgTxBoundFactStore(queue);
-    const txSessions = new PgTxBoundSessionStore(queue);
-    const ctx: StorageContext = { facts: txFacts, sessions: txSessions };
-    let result: T;
-    try {
-      result = fn(ctx);
-    } catch (err) {
-      this.inTxn = false;
-      throw err;
-    }
-    this.inTxn = false;
-    if (queue.length > 0) {
-      const client = await this._pool.connect();
-      try {
-        await client.query("BEGIN");
-        for (const op of queue) {
-          await client.query(op.sql, op.params as unknown[]);
-        }
-        await client.query("COMMIT");
-      } catch (err) {
-        await client.query("ROLLBACK");
-        throw err;
-      } finally {
-        client.release();
-      }
-    }
-    return result!;
   }
 
   /**

@@ -65,8 +65,7 @@ export class SqliteFactStore implements FactStore {
   /**
    * @internal. Sync row insert for use inside an already-open better-sqlite3
    * transaction. Used only by SqliteSessionStore's inlined ingest blocks
-   * (which require sync execution inside the txn callback). External callers
-   * use insertMany() or ingestSessionFacts() via Storage.withTransaction.
+   * (which require sync execution inside the txn callback).
    */
   insertRowInTxn(fact: Fact): void {
     this.insertStmt().run(this.toRow(fact));

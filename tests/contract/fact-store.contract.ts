@@ -483,9 +483,7 @@ export function runFactStoreContract(h: FactStoreContractHarness): void {
           value: "red",
           sourceSessionId: "sess_parent",
         });
-        await storage.withTransaction((ctx) => {
-          ctx.facts.ingestSessionFacts("sess_parent", [f1]);
-        });
+        await storage.facts.ingestSessionFacts("sess_parent", [f1]);
         const stored = await storage.facts.getById("f1");
         expect(stored?.value).toBe("red");
       });
@@ -498,9 +496,7 @@ export function runFactStoreContract(h: FactStoreContractHarness): void {
           value: "red",
           sourceSessionId: "sess_parent",
         });
-        await storage.withTransaction((ctx) => {
-          ctx.facts.ingestSessionFacts("sess_parent", [original]);
-        });
+        await storage.facts.ingestSessionFacts("sess_parent", [original]);
         const replacement = makeFact({
           id: "new",
           subject: "alpha",
@@ -508,9 +504,7 @@ export function runFactStoreContract(h: FactStoreContractHarness): void {
           value: "blue",
           sourceSessionId: "sess_parent",
         });
-        await storage.withTransaction((ctx) => {
-          ctx.facts.ingestSessionFacts("sess_parent", [replacement]);
-        });
+        await storage.facts.ingestSessionFacts("sess_parent", [replacement]);
         expect(await storage.facts.getById("orig")).toBeNull();
         expect((await storage.facts.getById("new"))?.value).toBe("blue");
       });
@@ -531,12 +525,8 @@ export function runFactStoreContract(h: FactStoreContractHarness): void {
           value: "blue",
           sourceSessionId: "sess_parent",
         });
-        await storage.withTransaction((ctx) => {
-          ctx.facts.ingestSessionFacts("sess_other", [older]);
-        });
-        await storage.withTransaction((ctx) => {
-          ctx.facts.ingestSessionFacts("sess_parent", [newer]);
-        });
+        await storage.facts.ingestSessionFacts("sess_other", [older]);
+        await storage.facts.ingestSessionFacts("sess_parent", [newer]);
         const olderFetched = await storage.facts.getById("older");
         expect(olderFetched?.supersededBy).toBe("newer");
         const current = await storage.facts.findCurrent("alpha", "color");
@@ -551,12 +541,8 @@ export function runFactStoreContract(h: FactStoreContractHarness): void {
           value: "red",
           sourceSessionId: "sess_parent",
         });
-        await storage.withTransaction((ctx) => {
-          ctx.facts.ingestSessionFacts("sess_parent", [f]);
-        });
-        await storage.withTransaction((ctx) => {
-          ctx.facts.ingestSessionFacts("sess_parent", []);
-        });
+        await storage.facts.ingestSessionFacts("sess_parent", [f]);
+        await storage.facts.ingestSessionFacts("sess_parent", []);
         expect(await storage.facts.getById("to-delete")).toBeNull();
       });
     });
