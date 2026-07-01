@@ -45,7 +45,7 @@ describe("check-invariants (SQLite)", () => {
     expect(violations).toHaveLength(0);
   });
 
-  describe("I1 — self-loop edges", () => {
+  describe("I1: self-loop edges", () => {
     it("detects self-loop edge", () => {
       store.insertSessionForTest(makeSession({ id: "s1" }));
       store.rawDb()
@@ -367,7 +367,7 @@ describe("check-invariants (SQLite)", () => {
     });
   });
 
-  describe("I7 — ghost fact embeddings", () => {
+  describe("I7: ghost fact embeddings", () => {
     function seedEmbedding(factId: string): void {
       const blob = Buffer.alloc(768 * 4);
       store
@@ -405,7 +405,7 @@ describe("check-invariants (SQLite)", () => {
       expect(i7!.sampleIds).toContain("f_ret");
     });
 
-    it("flags an embedding with no facts row at all (sqlite only — pg FK forbids)", () => {
+    it("flags an embedding with no facts row at all (sqlite only; pg FK forbids)", () => {
       seedEmbedding("f_orphan");
       const violations = runChecksOnSqlite(store.rawDb());
       const i7 = violations.find((v) => v.id === "I7");

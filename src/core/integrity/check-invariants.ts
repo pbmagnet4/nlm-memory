@@ -104,7 +104,7 @@ const SQL_I6 = `
 // An embedding row must have a live (active, non-retired) parent fact.
 // Superseded/retired facts leave the ANN index at write time (ingest collapse,
 // markSuperseded, retire, session cascade); a row here means a write path
-// skipped cleanup — the NLM #351 orphan class.
+// skipped cleanup; the NLM #351 orphan class.
 //
 // SQLite: fact_embeddings is a vec0 virtual table; its shadow rowids table
 // (fact_embeddings_rowids, column: id) supports standard LEFT JOIN.

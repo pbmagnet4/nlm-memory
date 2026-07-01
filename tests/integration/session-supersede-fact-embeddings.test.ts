@@ -1,15 +1,3 @@
-/**
- * Task 4 -- session markSuperseded must delete embeddings of newly superseded facts.
- *
- * Drives SqliteSessionStore.markSuperseded and verifies that the cascade which
- * links predecessor facts to their successors by (subject, predicate) also
- * deletes the superseded fact's embedding from fact_embeddings.
- *
- * Independent from fact-supersedence.test.ts (ingest path) and
- * supersedence-cascade.test.ts (basic fact linking). This file tests the
- * ghost-vector cleanup that was missing from the markSuperseded cascade.
- */
-
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";

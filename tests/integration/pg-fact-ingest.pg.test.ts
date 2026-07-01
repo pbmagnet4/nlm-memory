@@ -3,7 +3,7 @@
  *
  * Verifies the two correctness fixes from NLM #351 on the pg ingest path:
  *  1. Intra-batch duplicate (subject,predicate) must not create a mutual
- *     supersedence cycle — last-in-batch wins.
+ *     supersedence cycle; last-in-batch wins.
  *  2. Ghost embeddings of newly-superseded facts must be deleted from
  *     fact_embeddings so they don't pollute the ANN index.
  *

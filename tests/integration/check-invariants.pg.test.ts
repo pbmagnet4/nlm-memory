@@ -65,7 +65,7 @@ describe.skipIf(!PG_TEST_URL)("check-invariants (PostgreSQL)", () => {
     expect(violations).toHaveLength(0);
   });
 
-  describe("I1 — self-loop edges", () => {
+  describe("I1: self-loop edges", () => {
     it("detects self-loop edge", async () => {
       await insertSession(pool, "s1");
       await pool.query(
@@ -155,7 +155,7 @@ describe.skipIf(!PG_TEST_URL)("check-invariants (PostgreSQL)", () => {
     });
   });
 
-  describe("I7 — ghost fact embeddings", () => {
+  describe("I7: ghost fact embeddings", () => {
     async function insertFact(sessionId: string, factId: string, predicate = "p"): Promise<void> {
       await pool.query(
         `INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)

@@ -1,10 +1,3 @@
-/**
- * Task 4 -- session markSuperseded must delete embeddings of newly superseded facts (PG).
- *
- * PG mirror of session-supersede-fact-embeddings.test.ts. Requires a running
- * PostgreSQL instance. Set NLM_PG_TEST_URL. Skips when absent.
- */
-
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";

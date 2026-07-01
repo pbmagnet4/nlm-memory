@@ -6,8 +6,8 @@
  *  - re-ingest clears prior facts for the session (fact_embeddings rows for
  *    DELETED facts self-clean via the FK ON DELETE CASCADE; UPDATE-superseded
  *    facts below need an explicit embedding delete)
- *  - one winner per (subject, predicate) per batch — last in batch wins —
- *    so an intra-batch duplicate can never create a mutual supersedence cycle
+ *  - one winner per (subject, predicate) per batch (last in batch wins), so an
+ *    intra-batch duplicate can never create a mutual supersedence cycle
  *  - every fact the collapse supersedes leaves the ANN index immediately
  */
 
