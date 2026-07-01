@@ -13,7 +13,7 @@
  */
 
 import Database from "better-sqlite3";
-import { existsSync, renameSync, rmSync, statSync } from "node:fs";
+import { chmodSync, existsSync, renameSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export const PENDING_SUFFIX = ".restore-pending";
@@ -81,6 +81,7 @@ export function stageRestore(dbPath: string, candidatePath: string): RestoreVali
   const pending = dbPath + PENDING_SUFFIX;
   rmSync(pending, { force: true });
   renameSync(candidatePath, pending);
+  chmodSync(pending, 0o600);
   return validation;
 }
 
@@ -124,6 +125,7 @@ export function applyPendingRestore(dbPath: string): PendingRestoreResult {
 export function vacuumSnapshot(db: Database.Database, destPath: string): number {
   rmSync(destPath, { force: true });
   db.prepare("VACUUM INTO ?").run(destPath);
+  chmodSync(destPath, 0o600);
   return statSync(destPath).size;
 }
 
