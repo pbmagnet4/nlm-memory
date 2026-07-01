@@ -14,7 +14,7 @@
 - Local pg for development: `docker run --rm -d --name nlm-pg-test -e POSTGRES_USER=nlm_test -e POSTGRES_PASSWORD=nlm_test -e POSTGRES_DB=nlm_test -p 5432:5432 pgvector/pgvector:pg16` then `export NLM_PG_TEST_URL="postgresql://nlm_test:nlm_test@localhost:5432/nlm_test"`.
 - Full gate after every task: `npm run typecheck` clean + `npm test` green. The one tolerated failure is the pre-existing `cli-work-digest` subprocess flake (unhandled rejection); if it errors, verify its 3 tests pass in isolation.
 - No new dependencies. No em dashes in any text. No comments narrating changes; comments only for non-obvious invariants, matching existing style.
-- Do not touch `src/ui/**` or `migrations/**` (no schema changes are needed; all columns exist).
+- Do not touch `src/ui/**`. In `migrations/**`, ONLY Task 1's idempotency fix to `001_initial.sql` is permitted; no schema shape changes anywhere.
 - Commit style: `fix(pg): ...` / `test(pg): ...` / `chore(storage): ...`, one commit per step-5 below.
 
 ---
@@ -83,18 +83,34 @@ jobs:
         run: npm run build
 ```
 
-- [ ] **Step 2: Verify the pg suite passes locally against a live container**
+- [ ] **Step 2: Make schema apply idempotent**
+
+The pg test harness applies `001_initial.sql` on every `setup()` call. Every statement is `IF NOT EXISTS`-guarded except the workstream FK at lines 283-285, which errors with `constraint "fk_sessions_workstream" for relation "sessions" already exists` on the second apply and fails the entire pg suite (79 tests). Postgres has no `ADD CONSTRAINT IF NOT EXISTS`, so replace lines 283-285 of `migrations/pg/001_initial.sql`:
+
+```sql
+DO $$
+BEGIN
+  ALTER TABLE sessions
+    ADD CONSTRAINT fk_sessions_workstream
+    FOREIGN KEY (workstream_id) REFERENCES workstreams(id);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+```
+
+(keep the comment line above it; change nothing else in the file).
+
+- [ ] **Step 3: Verify the pg suite passes locally against a live container**
 
 Start the container per Global Constraints, export `NLM_PG_TEST_URL`, then:
 
 Run: `npx vitest run tests/integration/fact-store.pg.test.ts tests/integration/pg-ingest.pg.test.ts`
 Expected: PASS (previously these skipped without the env var). If any pre-existing pg test fails here, STOP and report — that is a real pg bug this plan may already cover; note which test and continue only if it is one of the known-broken behaviors Tasks 3-4 fix (mutual supersede, ghost embeddings).
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add .github/workflows/ci.yml
-git commit -m "ci: run pg adapter tests against a pgvector service container"
+git add .github/workflows/ci.yml migrations/pg/001_initial.sql
+git commit -m "ci: run pg adapter tests against a pgvector service container; make schema apply idempotent"
 ```
 
 ---
