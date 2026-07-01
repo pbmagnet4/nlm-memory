@@ -92,7 +92,7 @@ describe("extractRecallQuery", () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 ```bash
-cd /Users/echalupa/Documents/Coding\ Projects/nlm-memory
+cd ~/path/to/nlm-memory
 npx vitest run tests/unit/core/hook/query-extract.test.ts
 ```
 Expected: FAIL with "Cannot find module"
@@ -724,15 +724,15 @@ This task is not a code change. It updates the Claude Code agent behavior rules 
 **The problem:** `miss-log.jsonl` doesn't exist and `citation_log.jsonl` has only test data because agents (including Claude) read the pointer block but never call `cite_session` or `get_session`. The signal loop requires explicit tool use. Without it, Phase 2's precision metric will always show "no scoreable conversations."
 
 **Files:**
-- Modify: `/Users/echalupa/Documents/Coding Projects/Whtnxt Agent/.claude/rules/workflows.md`
+- Modify: `~/<operator-workspace>/.claude/rules/workflows.md`
 
 OR (preferred — keeps the rule with the tool it serves):
 - Modify: `plugin/README.md` (add an operator guidance section)
-- Create: `.claude/rules/nlm-citation.md` in the Whtnxt Agent workspace
+- Create: `.claude/rules/nlm-citation.md` in the operator workspace
 
-- [ ] **Step 1: Add citation behavior rule to Whtnxt Agent's rules**
+- [ ] **Step 1: Add citation behavior rule to the operator workspace's rules**
 
-Add to `/Users/echalupa/Documents/Coding Projects/Whtnxt Agent/.claude/rules/workflows.md` in the Memory Recall section:
+Add to `~/<operator-workspace>/.claude/rules/workflows.md` in the Memory Recall section:
 
 ```markdown
 ## NLM Citation Behavior (always-on)
@@ -751,13 +751,13 @@ Do NOT cite sessions you merely scanned and found irrelevant.
 
 Check that `cite_session` is in the available tools:
 ```bash
-grep -r "cite_session\|nlm-memory" /Users/echalupa/Documents/Coding\ Projects/Whtnxt\ Agent/.mcp.json.example 2>/dev/null | head -5
+grep -r "cite_session\|nlm-memory" ~/<operator-workspace>/.mcp.json.example 2>/dev/null | head -5
 ```
 
 - [ ] **Step 3: Commit the rules change**
 
 ```bash
-cd "/Users/echalupa/Documents/Coding Projects/Whtnxt Agent"
+cd ~/<operator-workspace>
 git add .claude/rules/workflows.md
 git commit -m "feat(nlm): add citation behavior rule to close recall signal loop
 

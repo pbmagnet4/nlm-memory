@@ -518,7 +518,7 @@ describe("ScanScheduler.tick", () => {
         { kind: "decision", subject: "nlm-memory-ts", predicate: "framework", value: "Hono" },
         {
           kind: "attribute",
-          subject: "mac-pro-llm-host",
+          subject: "local-llm-host",
           predicate: "endpoint",
           value: "http://macpro:8080/v1",
         },
@@ -538,7 +538,7 @@ describe("ScanScheduler.tick", () => {
     const facts = await factStore.listBySession(sessId);
     expect(facts).toHaveLength(2);
     expect(facts.map((f) => `${f.subject}:${f.predicate}:${f.value}`).sort()).toEqual([
-      "mac-pro-llm-host:endpoint:http://macpro:8080/v1",
+      "local-llm-host:endpoint:http://macpro:8080/v1",
       "nlm-memory-ts:framework:Hono",
     ]);
     for (const f of facts) {

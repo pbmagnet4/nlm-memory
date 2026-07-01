@@ -542,12 +542,12 @@ Superseded facts are excluded by default; call get_fact_history to walk
 the chain of how a value evolved ("when did X flip from Fastify to Hono?").
 
 Examples:
-  recall_facts(subject="mac-pro-llm-host", predicate="model")
-    → the model alias currently exposed on the Mac Pro LLM endpoint
+  recall_facts(subject="local-llm-host", predicate="model")
+    → the model alias currently exposed on the local LLM endpoint
   recall_facts(subject="nlm-memory-ts", predicate="framework")
     → the web framework picked for nlm-memory-ts
-  recall_facts(subject="goat-home-services")
-    → all known facts about the GOAT engagement
+  recall_facts(subject="acme-client")
+    → all known facts about the Acme engagement
   recall_facts(query="routing", kind="decision")
     → recent decision-kind facts mentioning routing
 

@@ -96,13 +96,13 @@ describe("session-start runHook", () => {
 
   it("hook-log entry has promptPreview set to the query", async () => {
     await runHook(
-      { conversationId: "c1", query: "whtnxt-agent session recall" },
+      { conversationId: "c1", query: "example-agent session recall" },
       { mode: "shadow", recall: async () => hits("sess_x") },
     );
     const entry = JSON.parse(
       readFileSync(join(tmp, "hook-log.jsonl"), "utf8").trim(),
     ) as Record<string, unknown>;
-    expect(entry["promptPreview"]).toBe("whtnxt-agent session recall");
+    expect(entry["promptPreview"]).toBe("example-agent session recall");
   });
 
   it("live mode writes memo for each new session ID across multiple fires", async () => {

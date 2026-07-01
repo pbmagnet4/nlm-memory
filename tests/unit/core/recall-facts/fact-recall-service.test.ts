@@ -104,7 +104,7 @@ const corpus: Fact[] = [
   makeFact({
     id: "f_endpoint",
     kind: "attribute",
-    subject: "mac-pro-llm-host",
+    subject: "local-llm-host",
     predicate: "endpoint",
     value: "http://macpro:8080/v1",
     confidence: 0.85,
@@ -112,7 +112,7 @@ const corpus: Fact[] = [
   makeFact({
     id: "f_model",
     kind: "attribute",
-    subject: "mac-pro-llm-host",
+    subject: "local-llm-host",
     predicate: "model",
     value: "qwen2.5-3b",
     confidence: 0.8,

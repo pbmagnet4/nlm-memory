@@ -36,7 +36,7 @@ interface Fact {
 ```
 
 **Decision:** Ship with exactly these fields. No `scope`, no `expiry`.
-**Why:** `scope` is implicit in `subject` (subject="mac-pro-llm-host" is its own scope). `expiry` is what `supersededBy` is for — facts don't time out, they get replaced. `confidence` earns its row because the classifier already returns it; dropping it forfeits a free signal for ranking and conflict resolution. `sourceQuote` is the cheap insurance against hallucinated extraction — when a fact looks wrong, the operator wants to see the exact line from the transcript without re-reading the whole session.
+**Why:** `scope` is implicit in `subject` (subject="local-llm-host" is its own scope). `expiry` is what `supersededBy` is for — facts don't time out, they get replaced. `confidence` earns its row because the classifier already returns it; dropping it forfeits a free signal for ranking and conflict resolution. `sourceQuote` is the cheap insurance against hallucinated extraction — when a fact looks wrong, the operator wants to see the exact line from the transcript without re-reading the whole session.
 
 Indexed on `(subject, predicate)` and `subject` alone. No `kind` index — `attribute` will dominate volume and selectivity comes from `subject`.
 
@@ -63,7 +63,7 @@ Classifier prompt addition (rough shape):
 ```
 "facts": [
   {"kind": "decision", "subject": "nle-memory-ts", "predicate": "framework", "value": "Hono"},
-  {"kind": "attribute", "subject": "mac-pro-llm-host", "predicate": "endpoint", "value": "http://macpro:8080/v1"}
+  {"kind": "attribute", "subject": "local-llm-host", "predicate": "endpoint", "value": "http://macpro:8080/v1"}
 ]
 ```
 
@@ -77,7 +77,7 @@ Confidence cap: facts with classifier-reported confidence below 0.6 are extracte
 
 **Decision:** Separate `FactRecallService.search()` and a separate MCP tool `recall_facts`. Session recall and fact recall do not blend in a unified result type. The UI (Edward browsing) gets a small enrichment — when a session result has facts attributable to it, the digest shows a fact count and a "view facts" affordance, but the primary list stays session-keyed.
 
-**Why:** The two consumers want incompatibly-shaped results. An agent calling `recall_facts(subject="mac-pro-llm-host", predicate="endpoint")` wants `[{value: "http://macpro:8080/v1", confidence: 0.9, sourceSessionId: "..."}]` — a JSON array of 1-3 items at most, no prose. Edward calling `recall_sessions("pgvector decision")` wants a ranked list of session digests with summaries. A unified `kind: session | fact` result type forces both consumers to handle a polymorphic shape, hurts both, and obscures the conceptual primacy of sessions. The "facts only surface as enrichment" option fails the agent use case — the agent shouldn't have to fetch a session to read a fact.
+**Why:** The two consumers want incompatibly-shaped results. An agent calling `recall_facts(subject="local-llm-host", predicate="endpoint")` wants `[{value: "http://macpro:8080/v1", confidence: 0.9, sourceSessionId: "..."}]` — a JSON array of 1-3 items at most, no prose. Edward calling `recall_sessions("pgvector decision")` wants a ranked list of session digests with summaries. A unified `kind: session | fact` result type forces both consumers to handle a polymorphic shape, hurts both, and obscures the conceptual primacy of sessions. The "facts only surface as enrichment" option fails the agent use case — the agent shouldn't have to fetch a session to read a fact.
 
 `FactRecallService.search()` signature:
 
@@ -233,4 +233,4 @@ These do not block shipping the design but should be revisited during Phase B.2:
 
 - Predicate vocabulary: should the closed list ship in the prompt or be config-driven? Lean prompt for v1, config for v2 if the vocabulary drifts per-domain.
 - Should `kind: open` facts have their own resolution affordance (mark resolved without a supersedent)? Probably yes but punt to Phase C.
-- Cross-runtime entity normalization: "mac-pro-llm-host" vs "macpro" vs "Mac Pro" — does the classifier normalize, or do we ship an alias table? Defer; let the data tell us how bad the problem is.
+- Cross-runtime entity normalization: "local-llm-host" vs "macpro" vs "Mac Pro" — does the classifier normalize, or do we ship an alias table? Defer; let the data tell us how bad the problem is.
