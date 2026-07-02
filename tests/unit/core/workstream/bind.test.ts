@@ -30,6 +30,26 @@ describe("bindSessionToWorkstream", () => {
     expect(set).toEqual([["s1", "ws_nlm", "classifier"]]);
   });
 
+  it("binds with backfill source when provided", async () => {
+    const set: Array<[string, string, string]> = [];
+    const deps: BindDeps = {
+      namer: { nameWorkstream: async () => "NLM" },
+      workstreams: {
+        listAll: async () => [{ id: "ws_nlm", label: "NLM", status: "active", mergedInto: null, createdAt: "t", updatedAt: "t", lastSessionAt: null }],
+        upsertEntities: async () => {},
+        touchLastSession: async () => {},
+      },
+      sessions: {
+        setWorkstreamBinding: async (s: string, w: string, src: string) => { set.push([s, w, src]); },
+      },
+      aliasToLabel: new Map<string, string>(),
+      source: "backfill",
+    } as unknown as BindDeps;
+    const r = await bindSessionToWorkstream(deps, baseInput);
+    expect(r).toEqual({ workstreamId: "ws_nlm" });
+    expect(set).toEqual([["s1", "ws_nlm", "backfill"]]);
+  });
+
   it("abstains (returns null, no binding) when classifier says none", async () => {
     const deps: BindDeps = {
       namer: { nameWorkstream: async () => null },
