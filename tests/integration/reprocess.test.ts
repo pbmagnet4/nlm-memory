@@ -781,4 +781,213 @@ describe("reprocess", () => {
       expect(report.succeeded).toBe(1);
     });
   });
+
+  describe("--only-null flag", () => {
+    it("selects exactly the NULL-model cohort and no others", async () => {
+      await store.insertSession(
+        baseRecord({ id: "sess_null_only", startedAt: "2026-01-01T10:00:00Z" }),
+      );
+      await store.insertSession(
+        baseRecord({
+          id: "sess_other_model",
+          startedAt: "2026-01-02T10:00:00Z",
+          classifier: { provider: "ollama", model: "other-model", confidence: 0.9 },
+        }),
+      );
+      await store.insertSession(
+        baseRecord({
+          id: "sess_current_model",
+          startedAt: "2026-01-03T10:00:00Z",
+          classifier: { provider: "ollama", model: "current-model", confidence: 0.9 },
+        }),
+      );
+
+      const db = store.rawDb();
+      const rows = selectReprocessCandidates(db, "current-model", undefined, { onlyNull: true });
+      const ids = rows.map((r) => r.id);
+
+      expect(ids).toContain("sess_null_only");
+      expect(ids).not.toContain("sess_other_model");
+      expect(ids).not.toContain("sess_current_model");
+    });
+
+    it("default (onlyNull absent) still selects NULL and different-model sessions", async () => {
+      await store.insertSession(
+        baseRecord({ id: "sess_null_default", startedAt: "2026-01-01T10:00:00Z" }),
+      );
+      await store.insertSession(
+        baseRecord({
+          id: "sess_diff_default",
+          startedAt: "2026-01-02T10:00:00Z",
+          classifier: { provider: "ollama", model: "other-model", confidence: 0.9 },
+        }),
+      );
+
+      const db = store.rawDb();
+      const rows = selectReprocessCandidates(db, "current-model");
+      const ids = rows.map((r) => r.id);
+
+      expect(ids).toContain("sess_null_default");
+      expect(ids).toContain("sess_diff_default");
+    });
+
+    it("dry-run cohort reflects the narrowed onlyNull selection", async () => {
+      await store.insertSession(
+        baseRecord({ id: "sess_dry_null", startedAt: "2026-01-01T10:00:00Z" }),
+      );
+      await store.insertSession(
+        baseRecord({
+          id: "sess_dry_stamped",
+          startedAt: "2026-01-02T10:00:00Z",
+          classifier: { provider: "cloud", model: "gpt-4", confidence: 0.95 },
+        }),
+      );
+
+      const db = store.rawDb();
+      const report = await reprocess(
+        {
+          db,
+          store,
+          factStore,
+          embedder: fakeEmbedder(),
+          classifier: fakeClassifier({
+            label: "L",
+            summary: "S",
+            entities: [],
+            decisions: [],
+            open: [],
+            confidence: 0.9,
+            facts: [],
+          }),
+          classifierDescriptor: { provider: "ollama", model: "local-model" },
+        },
+        {
+          dryRun: true,
+          onlyNull: true,
+          statePath: join(stateTmp, "reprocess.state"),
+        },
+      );
+
+      expect(report.totalEligible).toBe(1);
+      expect(report.cohort).toBeDefined();
+      const total = report.cohort!.reduce((acc, g) => acc + g.count, 0);
+      expect(total).toBe(1);
+    });
+  });
+
+  describe("--exclude-model flag", () => {
+    it("removes sessions stamped by an excluded model", async () => {
+      await store.insertSession(
+        baseRecord({
+          id: "sess_excluded",
+          startedAt: "2026-01-01T10:00:00Z",
+          classifier: { provider: "cloud", model: "gpt-4", confidence: 0.95 },
+        }),
+      );
+      await store.insertSession(
+        baseRecord({
+          id: "sess_other",
+          startedAt: "2026-01-02T10:00:00Z",
+          classifier: { provider: "ollama", model: "other-model", confidence: 0.8 },
+        }),
+      );
+
+      const db = store.rawDb();
+      const rows = selectReprocessCandidates(db, "current-model", undefined, {
+        excludeModels: ["gpt-4"],
+      });
+      const ids = rows.map((r) => r.id);
+
+      expect(ids).not.toContain("sess_excluded");
+      expect(ids).toContain("sess_other");
+    });
+
+    it("does NOT remove NULL-model sessions when a model is excluded", async () => {
+      await store.insertSession(
+        baseRecord({ id: "sess_null_excl", startedAt: "2026-01-01T10:00:00Z" }),
+      );
+
+      const db = store.rawDb();
+      const rows = selectReprocessCandidates(db, "current-model", undefined, {
+        excludeModels: ["gpt-4"],
+      });
+      const ids = rows.map((r) => r.id);
+
+      expect(ids).toContain("sess_null_excl");
+    });
+
+    it("handles multiple excluded models", async () => {
+      await store.insertSession(
+        baseRecord({
+          id: "sess_ex_a",
+          startedAt: "2026-01-01T10:00:00Z",
+          classifier: { provider: "cloud", model: "gpt-4", confidence: 0.9 },
+        }),
+      );
+      await store.insertSession(
+        baseRecord({
+          id: "sess_ex_b",
+          startedAt: "2026-01-02T10:00:00Z",
+          classifier: { provider: "cloud", model: "claude-3", confidence: 0.9 },
+        }),
+      );
+      await store.insertSession(
+        baseRecord({
+          id: "sess_keep",
+          startedAt: "2026-01-03T10:00:00Z",
+          classifier: { provider: "ollama", model: "local-model", confidence: 0.8 },
+        }),
+      );
+
+      const db = store.rawDb();
+      const rows = selectReprocessCandidates(db, "current-model", undefined, {
+        excludeModels: ["gpt-4", "claude-3"],
+      });
+      const ids = rows.map((r) => r.id);
+
+      expect(ids).not.toContain("sess_ex_a");
+      expect(ids).not.toContain("sess_ex_b");
+      expect(ids).toContain("sess_keep");
+    });
+
+    it("dry-run cohort respects excludeModels", async () => {
+      await store.insertSession(
+        baseRecord({
+          id: "sess_dry_ex",
+          startedAt: "2026-01-01T10:00:00Z",
+          classifier: { provider: "cloud", model: "gpt-4", confidence: 0.95 },
+        }),
+      );
+      await store.insertSession(
+        baseRecord({ id: "sess_dry_keep", startedAt: "2026-01-02T10:00:00Z" }),
+      );
+
+      const db = store.rawDb();
+      const report = await reprocess(
+        {
+          db,
+          store,
+          factStore,
+          embedder: fakeEmbedder(),
+          classifier: fakeClassifier({
+            label: "L",
+            summary: "S",
+            entities: [],
+            decisions: [],
+            open: [],
+            confidence: 0.9,
+            facts: [],
+          }),
+          classifierDescriptor: { provider: "ollama", model: "local-model" },
+        },
+        {
+          dryRun: true,
+          excludeModels: ["gpt-4"],
+          statePath: join(stateTmp, "reprocess.state"),
+        },
+      );
+
+      expect(report.totalEligible).toBe(1);
+    });
+  });
 });

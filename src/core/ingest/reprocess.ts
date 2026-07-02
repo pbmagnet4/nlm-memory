@@ -50,6 +50,8 @@ export interface ReprocessOptions {
   readonly limit?: number;
   readonly dryRun?: boolean;
   readonly minConfidence?: number;
+  readonly onlyNull?: boolean;
+  readonly excludeModels?: string[];
   readonly statePath?: string;
   readonly classifyTimeoutMs?: number;
   readonly verbose?: boolean;
@@ -135,11 +137,28 @@ export function selectReprocessCandidates(
   db: Database,
   model: string,
   minConfidence?: number,
+  opts?: { onlyNull?: boolean; excludeModels?: string[] },
 ): ReprocessSessionRow[] {
-  const classifierClause =
-    minConfidence !== undefined
-      ? "(classifier_model IS NULL OR classifier_model != ? OR classifier_confidence < ?)"
-      : "(classifier_model IS NULL OR classifier_model != ?)";
+  const params: (string | number)[] = [];
+
+  let classifierClause: string;
+  if (opts?.onlyNull) {
+    classifierClause = "classifier_model IS NULL";
+  } else if (minConfidence !== undefined) {
+    classifierClause = "(classifier_model IS NULL OR classifier_model != ? OR classifier_confidence < ?)";
+    params.push(model, minConfidence);
+  } else {
+    classifierClause = "(classifier_model IS NULL OR classifier_model != ?)";
+    params.push(model);
+  }
+
+  const excludeModels = opts?.excludeModels ?? [];
+  let excludeClause = "";
+  if (excludeModels.length > 0) {
+    const placeholders = excludeModels.map(() => "?").join(", ");
+    excludeClause = ` AND (classifier_model IS NULL OR classifier_model NOT IN (${placeholders}))`;
+    params.push(...excludeModels);
+  }
 
   const sql =
     "SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min, " +
@@ -150,11 +169,9 @@ export function selectReprocessCandidates(
     "WHERE body IS NOT NULL AND length(body) > 0 " +
     "AND " +
     classifierClause +
+    excludeClause +
     " " +
     "ORDER BY started_at DESC";
-
-  const params: (string | number)[] = [model];
-  if (minConfidence !== undefined) params.push(minConfidence);
 
   return db.prepare<(string | number)[], ReprocessSessionRow>(sql).all(...params);
 }
@@ -171,7 +188,10 @@ export async function reprocess(
     model: classifierDescriptor.model,
   };
 
-  const allCandidates = selectReprocessCandidates(db, classifierDescriptor.model, opts.minConfidence);
+  const allCandidates = selectReprocessCandidates(db, classifierDescriptor.model, opts.minConfidence, {
+    ...(opts.onlyNull ? { onlyNull: true } : {}),
+    ...(opts.excludeModels ? { excludeModels: opts.excludeModels } : {}),
+  });
 
   if (opts.dryRun) {
     const groupMap = new Map<string, CohortGroup>();

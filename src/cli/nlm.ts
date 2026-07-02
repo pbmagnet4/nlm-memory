@@ -1198,11 +1198,13 @@ program
   )
   .option("-l, --limit <n>", "max sessions to process this run", (v) => Number.parseInt(v, 10))
   .option("--min-confidence <f>", "also reprocess same-model sessions below this confidence", (v) => Number.parseFloat(v))
+  .option("--only-null", "select only sessions with no classifier stamp yet (safe lane-switch resume: sessions already stamped by a stronger model are left untouched)")
+  .option("--exclude-model <tag>", "exclude sessions stamped by this model tag (repeatable; use once per model to preserve corpus quality when switching classifier lanes)", (v: string, prev: string[]) => [...prev, v], [] as string[])
   .option("--state <path>", "resume state file (default ~/.nlm/reprocess.state)")
   .option("--dry-run", "print cohort report without writing")
   .option("-v, --verbose", "per-session progress on stderr")
   .option("--force-embed", "proceed even when the stored prose embedding lane mismatches the runtime embedder")
-  .action(async (opts: { limit?: number; minConfidence?: number; state?: string; dryRun?: boolean; verbose?: boolean; forceEmbed?: boolean }) => {
+  .action(async (opts: { limit?: number; minConfidence?: number; onlyNull?: boolean; excludeModel?: string[]; state?: string; dryRun?: boolean; verbose?: boolean; forceEmbed?: boolean }) => {
     const { reprocess: runReprocess } = await import("../core/ingest/reprocess.js");
     const stack = await buildStack();
     try {
@@ -1226,6 +1228,8 @@ program
         {
           ...(opts.limit ? { limit: opts.limit } : {}),
           ...(opts.minConfidence !== undefined ? { minConfidence: opts.minConfidence } : {}),
+          ...(opts.onlyNull ? { onlyNull: true } : {}),
+          ...(opts.excludeModel && opts.excludeModel.length > 0 ? { excludeModels: opts.excludeModel } : {}),
           ...(opts.state ? { statePath: opts.state } : {}),
           dryRun: Boolean(opts.dryRun),
           verbose: Boolean(opts.verbose),
