@@ -1201,7 +1201,8 @@ program
   .option("--state <path>", "resume state file (default ~/.nlm/reprocess.state)")
   .option("--dry-run", "print cohort report without writing")
   .option("-v, --verbose", "per-session progress on stderr")
-  .action(async (opts: { limit?: number; minConfidence?: number; state?: string; dryRun?: boolean; verbose?: boolean }) => {
+  .option("--force-embed", "proceed even when the stored prose embedding lane mismatches the runtime embedder")
+  .action(async (opts: { limit?: number; minConfidence?: number; state?: string; dryRun?: boolean; verbose?: boolean; forceEmbed?: boolean }) => {
     const { reprocess: runReprocess } = await import("../core/ingest/reprocess.js");
     const stack = await buildStack();
     try {
@@ -1210,6 +1211,7 @@ program
         await stack.storage.close();
         process.exit(1);
       }
+      const embedderInfo = resolveEmbedderInfo();
       const report = await runReprocess(
         {
           db: stack.storage.rawDb(),
@@ -1218,6 +1220,8 @@ program
           embedder: stack.embedder,
           classifier: stack.classifier,
           classifierDescriptor: { provider: stack.classifier.provider, model: stack.classifier.model },
+          embeddingConfig: stack.storage.embeddingConfig,
+          embedderDescriptor: { provider: embedderInfo.provider, model: embedderInfo.model },
         },
         {
           ...(opts.limit ? { limit: opts.limit } : {}),
@@ -1225,6 +1229,7 @@ program
           ...(opts.state ? { statePath: opts.state } : {}),
           dryRun: Boolean(opts.dryRun),
           verbose: Boolean(opts.verbose),
+          forceEmbed: Boolean(opts.forceEmbed),
           ...(opts.verbose
             ? {
                 onProgress: (i: number, n: number, sid: string, status: string) => {

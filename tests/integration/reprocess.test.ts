@@ -178,6 +178,17 @@ describe("reprocess", () => {
       expect(ids.indexOf("sess_b")).toBeLessThan(ids.indexOf("sess_c"));
       expect(ids.indexOf("sess_c")).toBeLessThan(ids.indexOf("sess_a"));
     });
+
+    it("does not include a body column in returned rows", async () => {
+      await store.insertSession(
+        baseRecord({ id: "sess_shape", startedAt: "2026-01-01T10:00:00Z" }),
+      );
+      const db = store.rawDb();
+      const rows = selectReprocessCandidates(db, "current-model");
+      const row = rows.find((r) => r.id === "sess_shape");
+      expect(row).toBeDefined();
+      expect(row).not.toHaveProperty("body");
+    });
   });
 
   describe("reprocess full replacement", () => {
@@ -660,6 +671,113 @@ describe("reprocess", () => {
 
       expect(report.skippedAlreadyDone).toBe(1);
       expect(report.limitSkipped).toBe(1);
+      expect(report.succeeded).toBe(1);
+    });
+  });
+
+  describe("embedding lane guard (M-1)", () => {
+    it("refuses to proceed when stored prose lane mismatches runtime embedder without --force-embed", async () => {
+      await store.insertSession(
+        baseRecord({ id: "sess_guard", startedAt: "2026-01-01T10:00:00Z" }),
+      );
+      storage.embeddingConfig.upsertLane(
+        { lane: "prose", provider: "other-provider", model: "other-model", dim: 384 },
+        "2026-01-01T00:00:00Z",
+      );
+
+      const db = store.rawDb();
+      await expect(
+        reprocess(
+          {
+            db,
+            store,
+            factStore,
+            embedder: fakeEmbedder(),
+            classifier: fakeClassifier({
+              label: "L",
+              summary: "S",
+              entities: [],
+              decisions: [],
+              open: [],
+              confidence: 0.9,
+              facts: [],
+            }),
+            classifierDescriptor: { provider: "deepseek", model: "current-model" },
+            embeddingConfig: storage.embeddingConfig,
+            embedderDescriptor: { provider: "ollama", model: "nomic-embed-text" },
+          },
+          { statePath: join(stateTmp, "reprocess.state") },
+        ),
+      ).rejects.toThrow("prose embedding lane mismatch");
+    });
+
+    it("proceeds with --force-embed when stored lane mismatches runtime embedder", async () => {
+      await store.insertSession(
+        baseRecord({ id: "sess_force", startedAt: "2026-01-01T10:00:00Z" }),
+      );
+      storage.embeddingConfig.upsertLane(
+        { lane: "prose", provider: "other-provider", model: "other-model", dim: 384 },
+        "2026-01-01T00:00:00Z",
+      );
+
+      const db = store.rawDb();
+      const report = await reprocess(
+        {
+          db,
+          store,
+          factStore,
+          embedder: fakeEmbedder(),
+          classifier: fakeClassifier({
+            label: "L",
+            summary: "S",
+            entities: [],
+            decisions: [],
+            open: [],
+            confidence: 0.9,
+            facts: [],
+          }),
+          classifierDescriptor: { provider: "deepseek", model: "current-model" },
+          embeddingConfig: storage.embeddingConfig,
+          embedderDescriptor: { provider: "ollama", model: "nomic-embed-text" },
+        },
+        { statePath: join(stateTmp, "reprocess.state"), forceEmbed: true },
+      );
+
+      expect(report.succeeded).toBe(1);
+    });
+
+    it("proceeds silently when stored lane matches runtime embedder", async () => {
+      await store.insertSession(
+        baseRecord({ id: "sess_match", startedAt: "2026-01-01T10:00:00Z" }),
+      );
+      storage.embeddingConfig.upsertLane(
+        { lane: "prose", provider: "ollama", model: "nomic-embed-text", dim: 768 },
+        "2026-01-01T00:00:00Z",
+      );
+
+      const db = store.rawDb();
+      const report = await reprocess(
+        {
+          db,
+          store,
+          factStore,
+          embedder: fakeEmbedder(),
+          classifier: fakeClassifier({
+            label: "L",
+            summary: "S",
+            entities: [],
+            decisions: [],
+            open: [],
+            confidence: 0.9,
+            facts: [],
+          }),
+          classifierDescriptor: { provider: "deepseek", model: "current-model" },
+          embeddingConfig: storage.embeddingConfig,
+          embedderDescriptor: { provider: "ollama", model: "nomic-embed-text" },
+        },
+        { statePath: join(stateTmp, "reprocess.state") },
+      );
+
       expect(report.succeeded).toBe(1);
     });
   });

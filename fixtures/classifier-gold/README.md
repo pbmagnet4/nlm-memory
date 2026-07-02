@@ -34,9 +34,8 @@ pulsearch, irongate, gridhost, droneflow, bridgeauth, flarepath, vaultdb,
 axiom-worker, crestapi, orbitflow, cobalt-api). Domains are example.com.
 Paths are /opt/... or /home/dev/... style.
 
-No em dashes appear in any file in this directory. This is a hard rule: the
-classifier output also goes through Edward's writing pipeline where em dashes
-are banned.
+No em dashes appear in any file in this directory. This is a hard rule for
+all text in this repository, fixtures included.
 
 ## reference.json schema
 

@@ -1,7 +1,11 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { runClassifierEvalCommand } from "../../../src/cli/nlm.js";
+import { runEval } from "@core/eval/run-eval.js";
 import type { ClassifyResult } from "../../../src/ports/llm-client.js";
 
 const FIXTURES_DIR = join(
@@ -106,5 +110,44 @@ describe("recall mode (--queries) is unaffected when --classifier is absent", ()
     const parsed = JSON.parse(chunks.join(""));
     expect(parsed.provider).toBe("ollama");
     expect(parsed.perTranscript).toHaveLength(2);
+  });
+});
+
+describe("eval --queries path (M-2)", () => {
+  let tmp: string;
+
+  afterEach(() => {
+    if (tmp) rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("reads a queries file and emits a recall report with correct shape", async () => {
+    tmp = mkdtempSync(join(tmpdir(), "nlm-eval-queries-"));
+    const queriesPath = join(tmp, "queries.json");
+    writeFileSync(
+      queriesPath,
+      JSON.stringify([
+        { query: "alpha", expectedIds: ["s1"] },
+        { query: "beta", expectedIds: ["s2"] },
+      ]),
+    );
+
+    const stubRecall = {
+      search: async ({ query }: { query: string; mode: string; limit: number }) => ({
+        results:
+          query === "alpha"
+            ? [{ id: "s1" }, { id: "s9" }]
+            : [{ id: "s9" }, { id: "s2" }],
+      }),
+    };
+
+    const queries = JSON.parse(await readFile(queriesPath, "utf8"));
+    const report = await runEval({ recall: stubRecall } as never, queries, { mode: "keyword", k: 5 });
+
+    expect(report.n).toBe(2);
+    expect(report.mode).toBe("keyword");
+    expect(report.rAt1).toBeCloseTo(0.5);
+    expect(report.rAt5).toBeCloseTo(1.0);
+    expect(report.mrr).toBeCloseTo(0.75);
+    expect(report.misses).toHaveLength(0);
   });
 });

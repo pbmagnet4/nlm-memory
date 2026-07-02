@@ -24,6 +24,7 @@ import { homedir } from "node:os";
 import type { Database } from "better-sqlite3";
 import { classifyAdaptive } from "@core/classifier/hierarchical-classify.js";
 import { extractFacts } from "@core/facts/extract-facts.js";
+import type { EmbeddingConfigStore } from "@core/embedding/embedding-config.js";
 import type { SqliteFactStore } from "@core/storage/sqlite-fact-store.js";
 import type { IngestRecord, SqliteSessionStore } from "@core/storage/sqlite-session-store.js";
 import type { LLMClient } from "@ports/llm-client.js";
@@ -40,6 +41,8 @@ export interface ReprocessDeps {
   readonly embedder: LLMClient;
   readonly classifier: LLMClient;
   readonly classifierDescriptor: { readonly provider: string; readonly model: string };
+  readonly embeddingConfig?: EmbeddingConfigStore;
+  readonly embedderDescriptor?: { readonly provider: string; readonly model: string };
   readonly log?: (msg: string) => void;
 }
 
@@ -50,6 +53,7 @@ export interface ReprocessOptions {
   readonly statePath?: string;
   readonly classifyTimeoutMs?: number;
   readonly verbose?: boolean;
+  readonly forceEmbed?: boolean;
   readonly onProgress?: (i: number, n: number, sid: string, status: string) => void;
 }
 
@@ -71,6 +75,7 @@ export interface ReprocessReport {
   readonly meanConfidenceOld: number | null;
   readonly meanConfidenceNew: number | null;
   readonly cohort?: ReadonlyArray<CohortGroup>;
+  readonly stateNote?: string;
 }
 
 interface LaneIdentity {
@@ -87,7 +92,6 @@ interface ReprocessSessionRow {
   readonly duration_min: number | null;
   readonly label: string;
   readonly summary: string;
-  readonly body: string;
   readonly status: string;
   readonly transcript_kind: string | null;
   readonly transcript_path: string | null;
@@ -139,7 +143,7 @@ export function selectReprocessCandidates(
 
   const sql =
     "SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min, " +
-    "label, summary, body, status, transcript_kind, transcript_path, " +
+    "label, summary, status, transcript_kind, transcript_path, " +
     "transcript_offset, transcript_length, " +
     "classifier_provider, classifier_model, classifier_confidence " +
     "FROM sessions " +
@@ -186,6 +190,13 @@ export async function reprocess(
       }
     }
     const cohort = [...groupMap.values()].sort((a, b) => b.count - a.count);
+
+    let stateNote: string | undefined;
+    if (existsSync(statePath)) {
+      const n = loadState(statePath, lane).size;
+      stateNote = `state file present, ${n} sessions already done, real run will skip them`;
+    }
+
     return {
       totalEligible: allCandidates.length,
       processed: 0,
@@ -197,8 +208,41 @@ export async function reprocess(
       meanConfidenceOld: null,
       meanConfidenceNew: null,
       cohort,
+      ...(stateNote !== undefined ? { stateNote } : {}),
     };
   }
+
+  if (deps.embeddingConfig && deps.embedderDescriptor) {
+    const stored = deps.embeddingConfig.getLane("prose");
+    if (stored) {
+      let dim: number | null = null;
+      try {
+        const result = await deps.embedder.embed("nlm probe", "query");
+        dim = result.vector.length;
+      } catch {
+        // probe failure: pre-tracking tolerance, proceed
+      }
+      if (dim !== null) {
+        const mismatch =
+          stored.provider !== deps.embedderDescriptor.provider ||
+          stored.model !== deps.embedderDescriptor.model ||
+          stored.dim !== dim;
+        if (mismatch && !opts.forceEmbed) {
+          const msg =
+            `reprocess: prose embedding lane mismatch: stored ${stored.provider}/${stored.model}@${stored.dim}` +
+            ` vs runtime ${deps.embedderDescriptor.provider}/${deps.embedderDescriptor.model}@${dim}.` +
+            ` Re-embedding under a mismatched lane writes mixed vectors. Run nlm embed-backfill first,` +
+            ` or pass --force-embed to override.`;
+          log(msg);
+          throw new Error(msg);
+        }
+      }
+    }
+  }
+
+  const bodyStmt = db.prepare<[string], { body: string | null }>(
+    "SELECT body FROM sessions WHERE id = ?",
+  );
 
   const done = loadState(statePath, lane);
 
@@ -221,9 +265,19 @@ export async function reprocess(
     const sid = row.id;
     const idx = i + 1;
 
+    const bodyRow = bodyStmt.get(sid);
+    if (!bodyRow?.body) {
+      failed++;
+      processed++;
+      log(`[reprocess] empty body ${sid}: skipping`);
+      opts.onProgress?.(idx, total, sid, "empty_body");
+      continue;
+    }
+    const body = bodyRow.body;
+
     let classification;
     try {
-      classification = await classifyAdaptive(row.body, classifier, {
+      classification = await classifyAdaptive(body, classifier, {
         ...(opts.classifyTimeoutMs ? { perCallTimeoutMs: opts.classifyTimeoutMs } : {}),
       });
     } catch (e) {
@@ -264,7 +318,7 @@ export async function reprocess(
       durationMin: row.duration_min,
       label: classification.label,
       summary: classification.summary,
-      body: row.body,
+      body,
       status: row.status as SessionStatus,
       transcriptKind: row.transcript_kind,
       transcriptPath: row.transcript_path,
