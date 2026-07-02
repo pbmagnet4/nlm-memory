@@ -18,7 +18,7 @@ import { createApp } from "../../src/http/app.js";
 import type { Session } from "../../src/shared/types.js";
 import { makeFact } from "../fixtures/facts.js";
 import { makeSession } from "../fixtures/sessions.js";
-import { FixedEmbedder } from "../fixtures/llm-stubs.js";
+import { FixedEmbedder, StubClassifier, StubEmbedder } from "../fixtures/llm-stubs.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 
@@ -1236,5 +1236,86 @@ describe("GET /api/recall/facts empty hint", () => {
     const body = (await res.json()) as { total: number; hint?: string };
     expect(body.total).toBeGreaterThan(0);
     expect(body.hint).toBeUndefined();
+  });
+});
+
+describe("HTTP adapter: POST /api/ingest classifier provenance wiring", () => {
+  let tmp: string;
+  let storage: SqliteStorage;
+
+  beforeEach(async () => {
+    tmp = mkdtempSync(join(tmpdir(), "nlm-http-ingest-prov-"));
+    storage = SqliteStorage.create({
+      dbPath: join(tmp, "canonical.sqlite"),
+      migrationsDir: MIGRATIONS_DIR,
+    });
+    await storage.init();
+  });
+
+  afterEach(async () => {
+    await storage.close();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("stores non-NULL classifier provenance when classifierDescriptor mirrors nlm.ts webhook ingest composition", async () => {
+    // Mirrors how nlm.ts builds ingest deps: classifierDescriptor is read from
+    // classifier.provider and classifier.model (ClassifierBox getters) and passed
+    // alongside the classifier itself. This test catches the bug where those fields
+    // are omitted and every ingested session writes NULL provenance.
+
+    const webhookSource = await storage.sources.insert({
+      kind: "webhook",
+      name: "test-hook",
+      runtimeLabel: "hermes",
+      enabled: true,
+    });
+    const token = webhookSource.token!;
+
+    // Stub with .provider/.model to match ClassifierBox contract nlm.ts reads from.
+    const stubClassifier = Object.assign(new StubClassifier(), {
+      provider: "ollama" as const,
+      model: "deepseek-r1:7b",
+    });
+
+    const app = createApp({
+      recall: new RecallService({ store: storage.sessions, llm: new FixedEmbedder(unit([0, 1, 0])) }),
+      store: storage.sessions,
+      liveStore: storage.sessions,
+      sources: storage.sources,
+      ingest: {
+        classifier: stubClassifier,
+        embedder: new StubEmbedder(),
+        store: storage.sessions,
+        classifierDescriptor: { provider: stubClassifier.provider, model: stubClassifier.model },
+      },
+    });
+
+    const res = await app.request("/api/ingest", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        id: "wh_prov_test",
+        text: "session content for provenance test",
+        startedAt: "2026-04-14T10:00:00.000Z",
+      }),
+    });
+    expect(res.status).toBe(202);
+
+    // Poll until the background ingest resolves (fire-and-forget in the HTTP handler).
+    const deadline = Date.now() + 3000;
+    let sess = null;
+    while (Date.now() < deadline) {
+      sess = await storage.sessions.getById("wh_prov_test");
+      if (sess) break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    expect(sess).not.toBeNull();
+    expect(sess!.classifierProvider).toBe("ollama");
+    expect(sess!.classifierModel).toBe("deepseek-r1:7b");
+    expect(sess!.classifierConfidence).toBeCloseTo(0.9);
   });
 });
