@@ -1004,6 +1004,7 @@ program
   .option("-l, --limit <n>", "session cap (default: all)", (v) => Number.parseInt(v, 10))
   .option("--state <path>", "resume state file (default ~/.nlm/embed_reembed.state)")
   .option("--exemplars", "instead: embed code_exemplars rows missing a vector (repairs dropped capture embeds)")
+  .option("--dry-run", "report dim mismatch and what would be dropped without writing")
   .option("-v, --verbose", "per-session progress on stderr")
   .action(async (opts) => {
     if (opts.exemplars) {
@@ -1032,6 +1033,8 @@ program
     const report = await reembedCorpus({
       dbPath: dbPath(),
       embedder,
+      embedderProvider: resolveEmbedderInfo(process.env).provider,
+      ...(opts.dryRun ? { dryRun: true } : {}),
       ...(opts.state ? { statePath: opts.state } : {}),
       ...(opts.limit ? { limit: opts.limit } : {}),
       ...(opts.verbose

@@ -46,6 +46,20 @@ class DeterministicEmbedder implements LLMClient {
   }
 }
 
+/** 8-dimensional stub embedder for rebuild tests. */
+class Dim8Embedder implements LLMClient {
+  calls = 0;
+  async embed(): Promise<EmbedResult> {
+    this.calls++;
+    const v = new Float32Array(8);
+    v[this.calls % 8] = 1;
+    return { vector: v, model: "stub-8d" };
+  }
+  async rewriteForRecall(): Promise<never> { throw new Error("not used"); }
+  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
+  async classify(): Promise<never> { throw new Error("not used"); }
+}
+
 const seed: ReadonlyArray<Session> = [
   makeSession({ id: "s_a", label: "Hono setup", body: "wired Hono routes" }),
   makeSession({ id: "s_b", label: "pgvector plan", body: "drafted pgvector swap" }),
@@ -81,7 +95,8 @@ describe("reembedCorpus", () => {
     expect(report.succeeded).toBe(3);
     expect(report.failed).toBe(0);
     expect(report.skippedAlreadyDone).toBe(0);
-    expect(embedder.calls).toBe(3);
+    // 1 probe call + 3 session embed calls (one chunk per short session)
+    expect(embedder.calls).toBe(4);
     expect(existsSync(statePath)).toBe(true);
   });
 
@@ -92,7 +107,8 @@ describe("reembedCorpus", () => {
     const report = await reembedCorpus({ dbPath, embedder: embedder2, statePath });
     expect(report.skippedAlreadyDone).toBe(3);
     expect(report.succeeded).toBe(0);
-    expect(embedder2.calls).toBe(0);
+    // Only the probe call is made; all sessions are already done
+    expect(embedder2.calls).toBe(1);
   });
 
   it("respects --limit", async () => {
@@ -100,6 +116,118 @@ describe("reembedCorpus", () => {
     const report = await reembedCorpus({ dbPath, embedder, statePath, limit: 2 });
     expect(report.total).toBe(2);
     expect(report.succeeded).toBe(2);
+  });
+});
+
+describe("rebuild on dim mismatch", () => {
+  let tmp: string;
+  let dbPath: string;
+  let statePath: string;
+
+  beforeEach(async () => {
+    tmp = mkdtempSync(join(tmpdir(), "nlm-rebuild-"));
+    dbPath = join(tmp, "canonical.sqlite");
+    statePath = join(tmp, "state.json");
+    const storage = SqliteStorage.create({ dbPath, migrationsDir: MIGRATIONS_DIR });
+    await storage.init();
+    for (const s of seed) {
+      storage.sessions.insertSessionForTest(s);
+      storage.sessions.insertEmbeddingForTest(s.id, new Float32Array(768).fill(0.1));
+    }
+    await storage.close();
+    // Insert a fact, its 768-dim embedding, and a 768-dim config row via raw SQL.
+    const rawDb = new Database(dbPath);
+    sqliteVec.load(rawDb);
+    rawDb
+      .prepare(
+        "INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)" +
+        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run("f_1", "attribute", "project", "uses", "SQLite", "s_a", 0.9);
+    const blob768 = Buffer.from(new Float32Array(768).fill(0.1).buffer);
+    rawDb.prepare("INSERT INTO fact_embeddings (fact_id, embedding) VALUES (?, ?)").run("f_1", blob768);
+    rawDb
+      .prepare(
+        "INSERT INTO embedding_config (lane, provider, model, dim, updated_at) VALUES (?, ?, ?, ?, ?)",
+      )
+      .run("prose", "test", "model-768", 768, new Date().toISOString());
+    rawDb.close();
+  });
+
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+  it("drops and recreates vec tables on dim mismatch, reembeds sessions and facts", async () => {
+    const embedder = new Dim8Embedder();
+    const report = await reembedCorpus({ dbPath, embedder, statePath, embedderProvider: "test" });
+
+    expect(report.rebuilt).toBe(true);
+    expect(report.succeeded).toBe(3);
+    expect(report.factsReembedded).toBe(1);
+
+    const db = new Database(dbPath);
+    sqliteVec.load(db);
+
+    // Session chunk embedding is now 8-dim (8 x float32 = 32 bytes).
+    const chunkRow = db
+      .prepare<[], { embedding: Buffer }>("SELECT embedding FROM session_embedding_chunks LIMIT 1")
+      .get()!;
+    expect(chunkRow.embedding.byteLength).toBe(8 * 4);
+
+    // Fact embedding is now 8-dim.
+    const factRow = db
+      .prepare<[string], { embedding: Buffer }>(
+        "SELECT embedding FROM fact_embeddings WHERE fact_id = ?",
+      )
+      .get("f_1")!;
+    expect(factRow.embedding.byteLength).toBe(8 * 4);
+
+    // Config row updated to dim=8 with the stub model/provider.
+    const cfgRow = db
+      .prepare<[], { dim: number; model: string; provider: string }>(
+        "SELECT dim, model, provider FROM embedding_config WHERE lane='prose'",
+      )
+      .get()!;
+    expect(cfgRow.dim).toBe(8);
+    expect(cfgRow.model).toBe("stub-8d");
+    expect(cfgRow.provider).toBe("test");
+
+    db.close();
+  });
+
+  it("does not drop tables when config matches, leaves other session chunks intact", async () => {
+    // First run: rebuilds from 768 to 8-dim and embeds all sessions + facts.
+    const embedder1 = new Dim8Embedder();
+    await reembedCorpus({ dbPath, embedder: embedder1, statePath, embedderProvider: "test" });
+
+    const db = new Database(dbPath);
+    sqliteVec.load(db);
+    const countAfterRebuild = (
+      db.prepare<[], { c: number }>("SELECT COUNT(*) as c FROM session_chunk_map").get()!
+    ).c;
+    db.close();
+    expect(countAfterRebuild).toBe(3);
+
+    // Second run: same embedder config (8-dim, "stub-8d", "test") — no rebuild.
+    // Reuse the same state file so all sessions are already done.
+    const embedder2 = new Dim8Embedder();
+    const report = await reembedCorpus({ dbPath, embedder: embedder2, statePath, embedderProvider: "test" });
+
+    expect(report.rebuilt).toBe(false);
+    expect(report.skippedAlreadyDone).toBe(3);
+
+    // All chunks from the first run must still be present.
+    const db2 = new Database(dbPath);
+    sqliteVec.load(db2);
+    const countAfterSecond = (
+      db2.prepare<[], { c: number }>("SELECT COUNT(*) as c FROM session_chunk_map").get()!
+    ).c;
+    const feCount = (
+      db2.prepare<[], { c: number }>("SELECT COUNT(*) as c FROM fact_embeddings").get()!
+    ).c;
+    db2.close();
+
+    expect(countAfterSecond).toBe(3);
+    expect(feCount).toBe(1);
   });
 });
 
