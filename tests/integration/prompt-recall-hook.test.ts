@@ -2,7 +2,7 @@ import { mkdtempSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { hookRuntimeFromEnv, promptRecallEnabled, runHook } from "../../src/hook/prompt-recall-hook.js";
+import { hookRuntimeFromEnv, parseHookDeadline, promptRecallEnabled, runHook } from "../../src/hook/prompt-recall-hook.js";
 import type { RecallHitInput } from "../../src/core/hook/select.js";
 
 const hits = (...ids: string[]): ReadonlyArray<RecallHitInput> =>
@@ -168,6 +168,35 @@ describe("runHook", () => {
     );
     expect(out).toBe("");
   });
+
+  it("fails open and skips the gate when the recall stage eats the whole deadline", async () => {
+    const out = await runHook(
+      { prompt: "what did we decide about pgvector", conversationId: "c1" },
+      {
+        mode: "live",
+        deadlineMs: 60,
+        recall: async () => { await new Promise((r) => setTimeout(r, 200)); return hits("sess_a"); },
+        recallGate: { mode: "live", judge: async () => { throw new Error("gate must not run"); } },
+      },
+    );
+    expect(out).toBe("");
+  });
+
+  it("keeps all selected candidates when the gate exceeds the remaining deadline", async () => {
+    const start = Date.now();
+    const out = await runHook(
+      { prompt: "what did we decide about pgvector", conversationId: "c1" },
+      {
+        mode: "live",
+        deadlineMs: 120,
+        recall: async () => hits("sess_a", "sess_b"),
+        recallGate: { mode: "live", judge: async () => { await new Promise((r) => setTimeout(r, 500)); return "irrelevant"; } },
+      },
+    );
+    expect(Date.now() - start).toBeLessThan(300);
+    expect(out).toContain("sess_a");
+    expect(out).toContain("sess_b");
+  });
 });
 
 describe("promptRecallEnabled", () => {
@@ -204,5 +233,24 @@ describe("hookRuntimeFromEnv", () => {
 
   it("ignores blank runtime overrides", () => {
     expect(hookRuntimeFromEnv({ NLM_HOOK_RUNTIME: "  " })).toBe("claude-code");
+  });
+});
+
+describe("parseHookDeadline", () => {
+  it("defaults to 4000 when env is unset", () => {
+    expect(parseHookDeadline(undefined)).toBe(4000);
+  });
+
+  it("parses a valid ms value", () => {
+    expect(parseHookDeadline("2500")).toBe(2500);
+  });
+
+  it("falls back to 4000 for non-numeric input", () => {
+    expect(parseHookDeadline("garbage")).toBe(4000);
+  });
+
+  it("falls back to 4000 for zero or negative values", () => {
+    expect(parseHookDeadline("0")).toBe(4000);
+    expect(parseHookDeadline("-100")).toBe(4000);
   });
 });

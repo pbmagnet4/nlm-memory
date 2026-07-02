@@ -41,6 +41,25 @@ const PER_FIRE_CAP = 3;
 const PER_CONVERSATION_CAP = 10;
 const PROMPT_PREVIEW_CHARS = 200;
 
+export function parseHookDeadline(raw: string | undefined): number {
+  if (raw === undefined) return 4000;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 4000;
+}
+
+const HOOK_DEADLINE_MS = parseHookDeadline(process.env["NLM_HOOK_DEADLINE_MS"]);
+
+async function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  if (ms <= 0) return fallback;
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<T>((resolve) => { timer = setTimeout(() => resolve(fallback), ms); });
+  try {
+    return await Promise.race([p, timeout]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
+
 export type HookMode = "shadow" | "live";
 
 export function hookRuntimeFromEnv(
@@ -116,6 +135,8 @@ export interface RunHookDeps {
   ) => Promise<ReadonlyArray<RecallHitInput> | RecallFetchResult>;
   /** Optional pre-injection relevance gate. Absent => no gating (today's behavior). */
   readonly recallGate?: RecallGate;
+  /** Wall-clock deadline for the combined recall + gate stages. Defaults to NLM_HOOK_DEADLINE_MS (4000ms). */
+  readonly deadlineMs?: number;
 }
 
 function normalizeRecall(
@@ -144,9 +165,13 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
     return "";
   }
 
+  const deadline = Date.now() + (deps.deadlineMs ?? HOOK_DEADLINE_MS);
+
   let fetched: RecallFetchResult = { hits: [], facts: [] };
   try {
-    fetched = normalizeRecall(await deps.recall(buildRecallQuery(input)));
+    fetched = normalizeRecall(
+      await withDeadline(deps.recall(buildRecallQuery(input)), deadline - Date.now(), { hits: [], facts: [] }),
+    );
   } catch {
     fetched = { hits: [], facts: [] };
   }
@@ -171,9 +196,17 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
   if (deps.recallGate && selected.length > 0) {
     const g = deps.recallGate;
     const toGate = g.maxCandidates ? selected.slice(0, g.maxCandidates) : selected;
-    gateDecisions = await Promise.all(
-      toGate.map(async (h) => ({ id: h.id, gate: await g.judge(input.prompt, `${h.label}\n${h.summary ?? ""}`) })),
-    );
+    const remaining = deadline - Date.now();
+    const gateFallback = toGate.map((h) => ({ id: h.id, gate: "relevant" as const }));
+    if (remaining <= 0) {
+      gateDecisions = gateFallback;
+    } else {
+      gateDecisions = await withDeadline(
+        Promise.all(toGate.map(async (h) => ({ id: h.id, gate: await g.judge(input.prompt, `${h.label}\n${h.summary ?? ""}`) }))),
+        remaining,
+        gateFallback,
+      );
+    }
     if (g.mode === "live") {
       const drop = new Set(gateDecisions.filter((d) => d.gate === "irrelevant").map((d) => d.id));
       injected = selected.filter((h) => !drop.has(h.id));
