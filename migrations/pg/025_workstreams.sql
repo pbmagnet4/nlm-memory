@@ -1,7 +1,8 @@
 -- migrations/pg/025_workstreams.sql
--- PG parity for SQLite migration 025 (workstreams). One-shot, applied manually
--- against a PG canonical store (PgStorage.init only runs 001_initial.sql; there
--- is no version-gated runner on the PG side). Mirrors migrations/025_workstreams.sql.
+-- PG parity for SQLite migration 025 (workstreams). Auto-applied by the
+-- version-gated runner (runMigrationsPg). Idempotent: every DDL statement uses
+-- IF NOT EXISTS or ADD COLUMN IF NOT EXISTS, so re-applying on an existing
+-- schema is a no-op. Mirrors migrations/025_workstreams.sql.
 
 BEGIN;
 

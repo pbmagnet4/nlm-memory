@@ -9,9 +9,8 @@
  */
 
 import { Pool } from "pg";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { Storage } from "@ports/storage.js";
+import { runMigrationsPg } from "./pg-migrate.js";
 import { PgFactStore } from "./pg-fact-store.js";
 import { PgSessionStore } from "./pg-session-store.js";
 import { PgSignalStore } from "./pg-signal-store.js";
@@ -54,8 +53,7 @@ export class PgStorage implements Storage {
   }
 
   async init(): Promise<void> {
-    const sql = readFileSync(join(this._migrationsDir, "001_initial.sql"), "utf8");
-    await this._pool.query(sql);
+    await runMigrationsPg(this._pool, this._migrationsDir);
   }
 
   async close(): Promise<void> {
