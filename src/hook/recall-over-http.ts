@@ -17,6 +17,7 @@ import type { RecallHitInput } from "@core/hook/select.js";
 import type { PointerExemplar, PointerFact } from "@core/hook/pointer-block.js";
 import { hookAuthHeaders } from "./hook-auth.js";
 import { extractRecallQuery } from "@core/hook/query-extract.js";
+import { fetchWithTimeout } from "./hook-helpers.js";
 
 export const RECALL_LIMIT = 5;
 export const RECALL_TIMEOUT_MS = 2000;
@@ -31,6 +32,7 @@ export async function recallOverHttp(
   prompt: string,
   runtime?: string,
   conversationId?: string,
+  mode: "keyword" | "hybrid" = "keyword",
 ): Promise<RecallOverHttpResult> {
   const query = extractRecallQuery(prompt);
   if (query === null) return { hits: [], facts: [], exemplars: [] };
@@ -40,17 +42,12 @@ export async function recallOverHttp(
     // reuse, and Node resolves localhost to IPv6 ::1 first — a measured ~50-300ms
     // per-fire connect penalty vs ~3ms on the explicit IPv4 loopback.
     `http://127.0.0.1:${portValue}/api/recall` +
-    `?q=${encodeURIComponent(query)}&mode=keyword&limit=${RECALL_LIMIT}&withFacts=true&withExemplars=true` +
+    `?q=${encodeURIComponent(query)}&mode=${mode}&limit=${RECALL_LIMIT}&withFacts=true&withExemplars=true` +
     (conversationId ? `&conversation_id=${encodeURIComponent(conversationId)}` : "");
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), RECALL_TIMEOUT_MS);
   try {
     const extra: Record<string, string> = { "x-recall-source": "hook" };
     if (runtime) extra["x-recall-runtime"] = runtime;
-    const res = await fetch(url, {
-      headers: hookAuthHeaders(extra),
-      signal: controller.signal,
-    });
+    const res = await fetchWithTimeout(url, { headers: hookAuthHeaders(extra) }, RECALL_TIMEOUT_MS);
     if (!res.ok) return { hits: [], facts: [], exemplars: [] };
     type RecallBody = {
       results?: ReadonlyArray<{
@@ -99,7 +96,7 @@ export async function recallOverHttp(
       taskContext: e.taskContext,
     }));
     return { hits, facts, exemplars };
-  } finally {
-    clearTimeout(timer);
+  } catch {
+    return { hits: [], facts: [], exemplars: [] };
   }
 }

@@ -13,9 +13,6 @@
  */
 
 import { pathToFileURL } from "node:url";
-import { appendFileSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
 import {
   detectCitations,
   type CitationKind,
@@ -30,6 +27,7 @@ import {
 } from "@core/hook/transcript.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
 import { hookAuthHeaders } from "./hook-auth.js";
+import { readStdin, fetchWithTimeout, hookModeFromEnv, appendHookEvent } from "./hook-helpers.js";
 
 const RESPONSE_PREVIEW_CHARS = 200;
 const POST_TIMEOUT_MS = 1500;
@@ -160,40 +158,16 @@ export async function runStopHook(
   };
 }
 
-function logPath(): string {
-  return process.env["NLM_HOOK_LOG"] ?? join(homedir(), ".nlm", "hook-log.jsonl");
-}
-
 function logStopResult(result: StopHookResult): void {
-  try {
-    const path = logPath();
-    mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(
-      path,
-      `${JSON.stringify({
-        ts: new Date().toISOString(),
-        kind: "stop",
-        conversationId: result.conversationId,
-        surfacedCount: result.surfacedCount,
-        citedIds: result.citations.map((c) => c.id),
-        citationKinds: result.citations.map((c) => c.kind),
-        skipped: result.skipped,
-        mode: process.env["NLM_HOOK_MODE"] === "live" ? "live" : "shadow",
-      })}\n`,
-      "utf8",
-    );
-  } catch {
-    // Telemetry failure must never break the hook.
-  }
-}
-
-function readStdin(): Promise<string> {
-  return new Promise((resolve) => {
-    let data = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => (data += chunk));
-    process.stdin.on("end", () => resolve(data));
-    process.stdin.on("error", () => resolve(data));
+  appendHookEvent({
+    ts: new Date().toISOString(),
+    kind: "stop",
+    conversationId: result.conversationId,
+    surfacedCount: result.surfacedCount,
+    citedIds: result.citations.map((c) => c.id),
+    citationKinds: result.citations.map((c) => c.kind),
+    skipped: result.skipped,
+    mode: hookModeFromEnv(),
   });
 }
 
@@ -205,23 +179,16 @@ async function postCitationOverHttp(
 ): Promise<void> {
   const port = process.env["NLM_PORT"] ?? "3940";
   const url = `http://127.0.0.1:${port}/api/recall/cite-event`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), POST_TIMEOUT_MS);
-  try {
-    await fetch(url, {
-      method: "POST",
-      headers: hookAuthHeaders({ "content-type": "application/json" }),
-      body: JSON.stringify({
-        ...(conversationId !== "unknown" ? { conversation_id: conversationId } : {}),
-        cited_id: citedId,
-        kind,
-        response_preview: responsePreview,
-      }),
-      signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timer);
-  }
+  await fetchWithTimeout(url, {
+    method: "POST",
+    headers: hookAuthHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({
+      ...(conversationId !== "unknown" ? { conversation_id: conversationId } : {}),
+      cited_id: citedId,
+      kind,
+      response_preview: responsePreview,
+    }),
+  }, POST_TIMEOUT_MS);
 }
 
 async function main(): Promise<void> {

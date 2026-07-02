@@ -14,6 +14,7 @@
  * harness imports RECALL_GATE_SYSTEM from here so validated == shipped.
  */
 import type { GateMode } from "./prompt-recall-hook.js";
+import { fetchWithTimeout } from "./hook-helpers.js";
 
 export const RECALL_GATE_MODEL = "qwen3.5:4b";
 
@@ -45,35 +46,34 @@ export function makeOllamaGate(
   timeoutMs: number = GATE_TIMEOUT_MS,
 ): (prompt: string, candidate: string) => Promise<"relevant" | "irrelevant"> {
   return async (prompt, candidate) => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const r = await fetch(`${url}/api/chat`, {
-        method: "POST",
-        signal: controller.signal,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model,
-          stream: false,
-          think: false,
-          // Keep the gate model resident between fires so only the first fire
-          // pays the cold-load; subsequent gates are ~1 judge call.
-          keep_alive: "15m",
-          format: GATE_FORMAT,
-          options: GATE_OPTS,
-          messages: [
-            { role: "system", content: RECALL_GATE_SYSTEM },
-            { role: "user", content: `USER PROMPT:\n${prompt}\n\nCANDIDATE CONTEXT:\n${candidate}` },
-          ],
-        }),
-      });
+      const r = await fetchWithTimeout(
+        `${url}/api/chat`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model,
+            stream: false,
+            think: false,
+            // Keep the gate model resident between fires so only the first fire
+            // pays the cold-load; subsequent gates are ~1 judge call.
+            keep_alive: "15m",
+            format: GATE_FORMAT,
+            options: GATE_OPTS,
+            messages: [
+              { role: "system", content: RECALL_GATE_SYSTEM },
+              { role: "user", content: `USER PROMPT:\n${prompt}\n\nCANDIDATE CONTEXT:\n${candidate}` },
+            ],
+          }),
+        },
+        timeoutMs,
+      );
       const d = (await r.json()) as { message?: { content?: string } };
       const v = (JSON.parse(d.message?.content ?? "{}") as { gate?: string }).gate;
       return v === "irrelevant" ? "irrelevant" : "relevant";
     } catch {
       return "relevant";
-    } finally {
-      clearTimeout(timer);
     }
   };
 }
