@@ -4,10 +4,13 @@ export function buildNamingSystemPrompt(
   candidates: ReadonlyArray<WorkstreamCandidateHint>,
   opts?: { readonly noThinkSuffix?: boolean },
 ): string {
-  const list = candidates.map((c) => `- ${c.label}`).join("\n");
+  const list = candidates
+    .map((c) => (c.aliases.length > 0 ? `- ${c.label} (aka ${c.aliases.join(", ")})` : `- ${c.label}`))
+    .join("\n");
   return (
     `You label a work session by which project it belongs to. Known projects:\n${list}\n` +
-    `If it belongs to NONE of these, answer "none". Reply with ONLY the exact project name from the list, or "none".` +
+    `Answer with a project name only when the session's actual work is on that project; a passing mention is not enough. ` +
+    `If it belongs to NONE of these, or you are unsure, answer "none". Reply with ONLY the exact project name from the list, or "none".` +
     (opts?.noThinkSuffix ? " /no_think" : "")
   );
 }

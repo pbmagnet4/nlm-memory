@@ -157,11 +157,11 @@ describe("bindSessionToWorkstream", () => {
     expect(capturedContent).toContain("built the scheduler");
   });
 
-  it("passes label-only hints to namer", async () => {
-    let capturedHints: ReadonlyArray<{ label: string }> = [];
+  it("passes hints with derived aliases to namer", async () => {
+    let capturedHints: ReadonlyArray<{ label: string; aliases: ReadonlyArray<string> }> = [];
     const deps: BindDeps = {
       namer: {
-        nameWorkstream: async (_content: string, hints: ReadonlyArray<{ label: string }>) => {
+        nameWorkstream: async (_content: string, hints: ReadonlyArray<{ label: string; aliases: ReadonlyArray<string> }>) => {
           capturedHints = hints;
           return "NLM";
         },
@@ -178,7 +178,7 @@ describe("bindSessionToWorkstream", () => {
     } as unknown as BindDeps;
     await bindSessionToWorkstream(deps, baseInput);
     expect(capturedHints).toHaveLength(1);
-    expect(capturedHints[0]).toEqual({ label: "NLM" });
+    expect(capturedHints[0]).toEqual({ label: "NLM", aliases: ["nlm-memory"] });
   });
 
   it("truncates body to NAMING_CONTENT_CHARS", async () => {

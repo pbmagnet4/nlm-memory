@@ -21,7 +21,7 @@ import Database from "better-sqlite3";
 import { buildClassifier } from "../../src/llm/build-classifier.js";
 import { NAMING_CONTENT_CHARS } from "../../src/core/workstream/bind.js";
 import { decideWorkstreamByName } from "../../src/core/workstream/name-match.js";
-import { parseWorkTopics, aliasToLabelMap } from "../../src/core/workstream/work-topics.js";
+import { parseWorkTopics, aliasToLabelMap, aliasesForLabel } from "../../src/core/workstream/work-topics.js";
 
 const HOME = homedir();
 const DEFAULT_GOLD = join(HOME, ".nlm", "eval", "gold-matcher.jsonl");
@@ -90,7 +90,7 @@ async function main(): Promise<void> {
   const bodyMap = new Map(bodyRows.map((r) => [r.id, r.body ?? ""]));
 
   const classifier = buildClassifier();
-  const hints = wsRows.map((w) => ({ label: w.label }));
+  const hints = wsRows.map((w) => ({ label: w.label, aliases: aliasesForLabel(aliasMap, w.label) }));
   const wsById = new Map(wsRows.map((w) => [w.id, w.label]));
 
   console.log(

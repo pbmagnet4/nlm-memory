@@ -101,8 +101,8 @@ function fakeFetch(content: string): typeof fetch {
 
 describe("DeepSeekClient.nameWorkstream", () => {
   const cands = [
-    { label: "NLM" },
-    { label: "Acme" },
+    { label: "NLM", aliases: [] },
+    { label: "Acme", aliases: [] },
   ];
   it("returns the matched candidate label from a chatty (thinking) response", async () => {
     const c = new DeepSeekClient({

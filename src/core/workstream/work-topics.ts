@@ -51,6 +51,25 @@ export function parseWorkTopics(raw: unknown): ReadonlyArray<WorkTopic> {
 }
 
 /**
+ * Return alias keys from aliasToLabel whose value equals label, excluding any
+ * alias that equals the label case-insensitively, capped at 12, in map iteration order.
+ */
+export function aliasesForLabel(
+  aliasToLabel: ReadonlyMap<string, string>,
+  label: string,
+): ReadonlyArray<string> {
+  const labelNorm = normalizeLabel(label);
+  const result: string[] = [];
+  for (const [alias, target] of aliasToLabel) {
+    if (target !== label) continue;
+    if (alias === labelNorm) continue;
+    result.push(alias);
+    if (result.length >= 12) break;
+  }
+  return result;
+}
+
+/**
  * Build a map from normalized alias -> canonical label for all topics.
  * Used by the binding path to resolve classifier output through aliases.
  */

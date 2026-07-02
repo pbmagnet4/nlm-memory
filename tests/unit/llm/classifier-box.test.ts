@@ -51,7 +51,7 @@ describe("ClassifierBox.nameWorkstream", () => {
     const box = new ClassifierBox({ provider: "openai", model: "qwen3.5-4b-mlx", baseUrl: "http://x/v1" });
     // @ts-expect-error - reach past the wrapper to stub the inner client for the test
     box["inner"] = { nameWorkstream: async () => "NLM" };
-    const out = await box.nameWorkstream("some session text", [{ label: "NLM" }]);
+    const out = await box.nameWorkstream("some session text", [{ label: "NLM", aliases: [] }]);
     expect(out).toBe("NLM");
   });
 });
