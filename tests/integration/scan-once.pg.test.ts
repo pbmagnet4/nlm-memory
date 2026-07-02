@@ -167,7 +167,7 @@ describe.skipIf(!PG_TEST_URL)("scanOncePg: adapter_state lifecycle (PG)", () => 
   it("recordClassifiedPg records size + session_id and resets failure_count", async () => {
     const adapter = new FixtureAdapter(fixturePath, "sess_1");
     await recordFailedPg(pool, adapter.name, fixturePath, getFileSize(fixturePath));
-    await recordClassifiedPg(pool, adapter.name, fixturePath, "sess_1");
+    await recordClassifiedPg(pool, adapter.name, fixturePath, "sess_1", getFileSize(fixturePath)!);
 
     const state = await readState(pool, fixturePath);
     expect(state?.session_id).toBe("sess_1");
@@ -177,7 +177,7 @@ describe.skipIf(!PG_TEST_URL)("scanOncePg: adapter_state lifecycle (PG)", () => 
 
   it("supersedes points at the prior session_id when the file grows under a new id", async () => {
     const adapter1 = new FixtureAdapter(fixturePath, "sess_1");
-    await recordClassifiedPg(pool, adapter1.name, fixturePath, "sess_1");
+    await recordClassifiedPg(pool, adapter1.name, fixturePath, "sess_1", getFileSize(fixturePath)!);
 
     writeFileSync(fixturePath, "line one\nline two\n");
     const old = (Date.now() - 60 * 60 * 1000) / 1000;
@@ -191,7 +191,7 @@ describe.skipIf(!PG_TEST_URL)("scanOncePg: adapter_state lifecycle (PG)", () => 
 
   it("does not self-supersede when a grown file resumes under the same id", async () => {
     const adapter = new FixtureAdapter(fixturePath, "sess_1");
-    await recordClassifiedPg(pool, adapter.name, fixturePath, "sess_1");
+    await recordClassifiedPg(pool, adapter.name, fixturePath, "sess_1", getFileSize(fixturePath)!);
 
     writeFileSync(fixturePath, "line one\nline two\n");
     const old = (Date.now() - 60 * 60 * 1000) / 1000;
@@ -200,5 +200,27 @@ describe.skipIf(!PG_TEST_URL)("scanOncePg: adapter_state lifecycle (PG)", () => 
     const results = await scanOncePg(adapter, 15, pool);
     expect(results).toHaveLength(1);
     expect(results[0]?.supersedes).toBeNull();
+  });
+
+  it("TOCTOU: records parse-time size so classify-window appends are re-scanned next tick", async () => {
+    const adapter = new FixtureAdapter(fixturePath, "sess_1");
+    const results = await scanOncePg(adapter, 15, pool);
+    expect(results).toHaveLength(1);
+    const parseSize = results[0]!.fileSize;
+
+    writeFileSync(fixturePath, "line one\nappended bytes\n");
+    const grownSize = getFileSize(fixturePath)!;
+    expect(grownSize).toBeGreaterThan(parseSize);
+
+    await recordClassifiedPg(pool, adapter.name, fixturePath, "sess_1", parseSize);
+
+    const state = await readState(pool, fixturePath);
+    expect(Number(state?.file_size)).toBe(parseSize);
+    expect(Number(state?.file_size)).not.toBe(grownSize);
+
+    const old = (Date.now() - 60 * 60 * 1000) / 1000;
+    utimesSync(fixturePath, old, old);
+    const next = await scanOncePg(adapter, 15, pool);
+    expect(next).toHaveLength(1);
   });
 });

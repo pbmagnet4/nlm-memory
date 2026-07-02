@@ -32,6 +32,7 @@ import type {
 export interface ScanResult {
   readonly chunk: SessionChunk;
   readonly supersedes: string | null;
+  readonly fileSize: number;
 }
 
 export const MAX_CLASSIFY_FAILURES = 3;
@@ -90,7 +91,7 @@ export async function scanOnce(
     if (!chunk) continue;
     const supersedes =
       prior?.session_id && prior.session_id !== chunk.id ? prior.session_id : null;
-    out.push({ chunk, supersedes });
+    out.push({ chunk, supersedes, fileSize: st.size });
   }
   return out;
 }
@@ -100,13 +101,8 @@ export function recordClassified(
   adapterName: string,
   sourcePath: string,
   sessionId: string,
+  fileSize: number,
 ): void {
-  let size = 0;
-  try {
-    size = statSync(sourcePath).size;
-  } catch {
-    return;
-  }
   db.prepare(
     `INSERT INTO adapter_state
        (adapter_name, source_path, last_offset, file_size, session_id, failure_count, last_processed_at)
@@ -117,20 +113,15 @@ export function recordClassified(
        session_id = excluded.session_id,
        failure_count = 0,
        last_processed_at = excluded.last_processed_at`,
-  ).run(adapterName, sourcePath, size, size, sessionId);
+  ).run(adapterName, sourcePath, fileSize, fileSize, sessionId);
 }
 
 export function recordFailed(
   db: Database.Database,
   adapterName: string,
   sourcePath: string,
+  fileSize: number,
 ): void {
-  let size = 0;
-  try {
-    size = statSync(sourcePath).size;
-  } catch {
-    return;
-  }
   db.prepare(
     `INSERT INTO adapter_state
        (adapter_name, source_path, last_offset, file_size, session_id, failure_count, last_processed_at)
@@ -139,7 +130,7 @@ export function recordFailed(
        file_size = excluded.file_size,
        failure_count = failure_count + 1,
        last_processed_at = excluded.last_processed_at`,
-  ).run(adapterName, sourcePath, size, size);
+  ).run(adapterName, sourcePath, fileSize, fileSize);
 }
 
 export function getFileSize(sourcePath: string): number | null {
@@ -197,8 +188,7 @@ export async function scanOncePg(
 
     // Bug 2 fix: skip unchanged files for ALL paths, not just failure-ceiling paths
     if (state?.fileSize !== undefined && state.fileSize !== null) {
-      const currentSize = getFileSize(sourcePath);
-      if (currentSize === state.fileSize) continue;
+      if (st.size === state.fileSize) continue;
     }
 
     if (state && state.failureCount >= MAX_CLASSIFY_FAILURES) {
@@ -214,7 +204,7 @@ export async function scanOncePg(
 
     const supersedes =
       state?.sessionId && state.sessionId !== chunk.id ? state.sessionId : null;
-    results.push({ chunk, supersedes });
+    results.push({ chunk, supersedes, fileSize: st.size });
   }
 
   return results;
@@ -225,9 +215,8 @@ export async function recordClassifiedPg(
   adapterName: string,
   sourcePath: string,
   sessionId: string,
+  fileSize: number,
 ): Promise<void> {
-  const size = getFileSize(sourcePath);
-  if (size === null) return;
   await pool.query(
     `INSERT INTO adapter_state (adapter_name, source_path, last_offset, file_size, session_id, failure_count, last_processed_at)
      VALUES ($1, $2, 0, $3, $4, 0, NOW())
@@ -236,7 +225,7 @@ export async function recordClassifiedPg(
        session_id = EXCLUDED.session_id,
        failure_count = 0,
        last_processed_at = NOW()`,
-    [adapterName, sourcePath, size, sessionId],
+    [adapterName, sourcePath, fileSize, sessionId],
   );
 }
 
@@ -244,13 +233,8 @@ export function recordSkippedLowConfidence(
   db: Database.Database,
   adapterName: string,
   sourcePath: string,
+  fileSize: number,
 ): void {
-  let size = 0;
-  try {
-    size = statSync(sourcePath).size;
-  } catch {
-    return;
-  }
   db.prepare(
     `INSERT INTO adapter_state
        (adapter_name, source_path, last_offset, file_size, session_id, failure_count, last_processed_at)
@@ -260,16 +244,15 @@ export function recordSkippedLowConfidence(
        file_size = excluded.file_size,
        failure_count = 0,
        last_processed_at = excluded.last_processed_at`,
-  ).run(adapterName, sourcePath, size, size);
+  ).run(adapterName, sourcePath, fileSize, fileSize);
 }
 
 export async function recordSkippedLowConfidencePg(
   pool: Pool,
   adapterName: string,
   sourcePath: string,
+  fileSize: number,
 ): Promise<void> {
-  const size = getFileSize(sourcePath);
-  if (size === null) return;
   await pool.query(
     `INSERT INTO adapter_state (adapter_name, source_path, last_offset, file_size, session_id, failure_count, last_processed_at)
      VALUES ($1, $2, 0, $3, NULL, 0, NOW())
@@ -277,7 +260,7 @@ export async function recordSkippedLowConfidencePg(
        file_size = EXCLUDED.file_size,
        failure_count = 0,
        last_processed_at = NOW()`,
-    [adapterName, sourcePath, size],
+    [adapterName, sourcePath, fileSize],
   );
 }
 
