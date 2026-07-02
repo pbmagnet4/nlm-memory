@@ -291,6 +291,38 @@ git commit -m "fix(pg): rowToSession computes live session status, matching sqli
 
 ---
 
+### Task 8: pg TIMESTAMPTZ returns ISO strings (Critical from Task 3 review)
+
+node-postgres parses TIMESTAMPTZ (OID 1184) as JS Date objects by default, but every NLM row type annotates those columns as string. Active crash: compose-recall.ts:16 calls .slice(0, 10) on Workstream.lastSessionAt, which is a Date at runtime on pg; recall_workstream throws TypeError for any pg workstream with a session touch. The workstream contract's touchLastSession assertion was weakened to toBeTruthy to dodge this; that masking must be reverted.
+
+**Files:**
+- Modify: `src/core/storage/pg-storage.ts` (per-pool type parser in create())
+- Modify: `tests/contract/workstream-store.contract.ts` (re-strengthen touchLastSession assertion)
+- Test: extend `tests/integration/workstream-store.pg.test.ts` implicitly via the contract; add one explicit compose path case if cheap
+
+- [ ] **Step 1: Failing test.** Strengthen the contract's touchLastSession case: call touchLastSession with a known ISO string, read back, assert `typeof ws.lastSessionAt === "string"` AND it round-trips to the same instant (`new Date(ws.lastSessionAt).toISOString() === new Date(atIso).toISOString()`). Run the pg consumer: RED (receives a Date object). Sqlite consumer must stay green unchanged.
+
+- [ ] **Step 2: Per-pool parser.** In PgStorage.create, construct the pool with a custom types parser so the override is scoped to NLM's pool, not process-global:
+
+```typescript
+import { Pool, types } from "pg";
+
+const pgTypes = new types.TypeParsers ? undefined : undefined;
+```
+
+If the installed pg version supports per-pool `types` (check node_modules/pg docs: `new Pool({ connectionString, types: { getTypeParser } })`), use that shape: delegate to `types.getTypeParser` for everything except OID 1184 (TIMESTAMPTZ) and 1114 (TIMESTAMP), which return `(val) => new Date(val).toISOString()`. If per-pool types are awkward in the installed version, fall back to module-level `types.setTypeParser(1184, ...)` + `(1114, ...)` in pg-storage.ts with a comment stating the process-global scope and why it is safe (every NLM pg annotation expects strings). State which route you took in your report.
+
+- [ ] **Step 3: Audit other TIMESTAMPTZ reads.** Grep migrations/pg for TIMESTAMPTZ/TIMESTAMP columns and every SELECT reading them; confirm each consumer is now receiving ISO strings and nothing depended on Date objects (recentWrites/recentMarkers JSON serialization keeps working; schema_migrations applied_at is display-only). List the audited columns in your report.
+
+- [ ] **Step 4: Green (pg workstream consumer + full serial pass), full gate, commit**
+
+```bash
+git add src/core/storage/pg-storage.ts tests/contract/workstream-store.contract.ts
+git commit -m "fix(pg): TIMESTAMPTZ columns return ISO strings, matching the string-typed row contracts"
+```
+
+---
+
 ## Out of scope
 
 O-1 overlay caching (both adapters, after this wave the pg cost is one extra query per read call, same class as sqlite's full scan); pg batch INSERT round-trips and ivfflat-friendly semanticSearch (O-8); `findByNormalizedLabel` full-table scan on pg (fine at current scale). The factSink ghost-embedding test nicety from the Wave 2a review is CLOSED (covered by the batchWinners fix tests).
