@@ -18,16 +18,7 @@ import { PgStorage } from "../../src/core/storage/pg-storage.js";
 import { makeFact } from "../fixtures/facts.js";
 import { makeSession } from "../fixtures/sessions.js";
 import { runChecksOnPg } from "../../src/core/integrity/check-invariants.js";
-import type { EmbedResult, LLMClient } from "../../src/ports/llm-client.js";
-
-class StubEmbedder implements LLMClient {
-  async embed(): Promise<EmbedResult> {
-    return { vector: new Float32Array(768).fill(0.1), model: "stub" };
-  }
-  async rewriteForRecall(): Promise<never> { throw new Error("stub"); }
-  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
-  async classify(): Promise<never> { throw new Error("stub"); }
-}
+import { StubEmbedder } from "../fixtures/llm-stubs.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
 const MIGRATIONS_DIR = join(

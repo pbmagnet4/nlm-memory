@@ -14,19 +14,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScanScheduler } from "../../../../src/core/scheduler/scheduler.js";
 import { SqliteStorage } from "../../../../src/core/storage/sqlite-storage.js";
 import type { CodeExemplarStore } from "../../../../src/ports/code-exemplar-store.js";
-import type { ClassifyResult, EmbedResult, LLMClient } from "../../../../src/ports/llm-client.js";
+import { StubClassifier } from "../../../fixtures/llm-stubs.js";
 import type { TranscriptAdapter, SessionChunk } from "../../../../src/ports/transcript-adapter.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../../../migrations");
 
-class StubClassifier implements LLMClient {
-  async embed(): Promise<EmbedResult> { throw new Error("nu"); }
-  async rewriteForRecall(): Promise<never> { throw new Error("nu"); }
-  async classify(): Promise<ClassifyResult> {
-    return { label: "L", summary: "s", entities: [], decisions: [], open: [], confidence: 0.9, facts: [] };
-  }
-  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
-}
 
 interface CapCall { readonly installScope: string; readonly maxPerBucket: number; }
 
@@ -119,7 +111,7 @@ describe("ScanScheduler exemplar bucket cap", () => {
     const scheduler = new ScanScheduler({
       store: storage.sessions,
       adapters: [adapterFor(transcriptPath)],
-      classifier: new StubClassifier(),
+      classifier: new StubClassifier({ label: "L", summary: "s", entities: [], decisions: [], open: [], confidence: 0.9, facts: [] }),
       embedder: null,
       installScope: "install-test",
       exemplarStore: fixtureExemplarStore(capCalls),

@@ -20,6 +20,8 @@ import { selectHits, type RecallHitInput } from "@core/hook/select.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
 import { hookAuthHeaders } from "./hook-auth.js";
 import { parseScoreFloor, parseRelativeFloor } from "./score-floor.js";
+import { recallOverHttp } from "./recall-over-http.js";
+import { readStdin, hookModeFromEnv, fetchWithTimeout } from "./hook-helpers.js";
 
 // This hook recalls in hybrid mode, whose matchScore is normalized to 0..1
 // (mergeHybrid in recall-service.ts), so the default absolute floor is 0.
@@ -32,7 +34,6 @@ const SCORE_THRESHOLD = parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR"]);
 const RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 const PER_FIRE_CAP = 3;
 const PER_CONVERSATION_CAP = 10;
-const RECALL_LIMIT = 5;
 const RECALL_TIMEOUT_MS = 2000;
 
 export type HookMode = "shadow" | "live";
@@ -97,21 +98,16 @@ export function composeSessionStartOutput(failureModeBlock: string, recallBlock:
 async function fetchFailureModeBlock(repo: string): Promise<string> {
   if (!repo) return "";
   const portValue = process.env["NLM_PORT"] ?? "3940";
-  const url = `http://localhost:${portValue}/api/signals/failure-modes?repo=${encodeURIComponent(repo)}`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), RECALL_TIMEOUT_MS);
+  const url = `http://127.0.0.1:${portValue}/api/signals/failure-modes?repo=${encodeURIComponent(repo)}`;
   try {
-    const res = await fetch(url, {
+    const res = await fetchWithTimeout(url, {
       headers: hookAuthHeaders({ "x-recall-source": "session-start-hook" }),
-      signal: controller.signal,
-    });
+    }, RECALL_TIMEOUT_MS);
     if (!res.ok) return "";
     const body = (await res.json()) as { block?: string };
     return typeof body.block === "string" ? body.block : "";
   } catch {
     return "";
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -120,60 +116,6 @@ function buildQuery(workingDirectory: string, projectName: string): string {
   const dirTail = workingDirectory.split("/").filter(Boolean).at(-1) ?? "";
   const parts = [dirTail, projectName].filter(Boolean);
   return parts.join(" ").trim() || "session start";
-}
-
-function readStdin(): Promise<string> {
-  return new Promise((resolve) => {
-    let data = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => (data += chunk));
-    process.stdin.on("end", () => resolve(data));
-    process.stdin.on("error", () => resolve(data));
-  });
-}
-
-async function recallOverHttp(query: string, conversationId?: string): Promise<ReadonlyArray<RecallHitInput>> {
-  const portValue = process.env["NLM_PORT"] ?? "3940";
-  const url =
-    `http://localhost:${portValue}/api/recall` +
-    `?q=${encodeURIComponent(query)}&mode=hybrid&limit=${RECALL_LIMIT}` +
-    (conversationId ? `&conversation_id=${encodeURIComponent(conversationId)}` : "");
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), RECALL_TIMEOUT_MS);
-  try {
-    const res = await fetch(url, {
-      headers: hookAuthHeaders({
-        "x-recall-source": "session-start-hook",
-        "x-recall-runtime": "claude-code",
-      }),
-      signal: controller.signal,
-    });
-    if (!res.ok) return [];
-    type RecallBody = {
-      results?: ReadonlyArray<{
-        id: string;
-        label: string;
-        startedAt: string;
-        matchScore: number;
-        summary?: string;
-      }>;
-    };
-    let body: RecallBody;
-    try {
-      body = (await res.json()) as RecallBody;
-    } catch {
-      return [];
-    }
-    return (body.results ?? []).map((r) => ({
-      id: r.id,
-      label: r.label,
-      startedAt: r.startedAt,
-      matchScore: r.matchScore,
-      ...(r.summary !== undefined ? { summary: r.summary } : {}),
-    }));
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 async function main(): Promise<void> {
@@ -197,8 +139,15 @@ async function main(): Promise<void> {
     const projectName =
       typeof payload.project_name === "string" ? payload.project_name : "";
     const query = buildQuery(workingDirectory, projectName);
-    const mode: HookMode = process.env["NLM_HOOK_MODE"] === "live" ? "live" : "shadow";
-    const out = await runHook({ conversationId, query }, { mode, recall: (q, cid) => recallOverHttp(q, cid === "unknown" ? undefined : cid) });
+    const mode: HookMode = hookModeFromEnv();
+    const out = await runHook(
+      { conversationId, query },
+      {
+        mode,
+        recall: async (q, cid) =>
+          (await recallOverHttp(q, "claude-code", cid === "unknown" ? undefined : cid, "hybrid")).hits,
+      },
+    );
     const failureModes = mode === "live" ? await fetchFailureModeBlock(workingDirectory) : "";
     const combined = composeSessionStartOutput(failureModes, out);
     if (combined) process.stdout.write(combined);

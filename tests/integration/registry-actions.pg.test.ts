@@ -26,21 +26,8 @@ import {
 } from "../../src/core/actions/actions-log.js";
 import { createApp } from "../../src/http/app.js";
 import { RecallService } from "../../src/core/recall/recall-service.js";
-import type { EmbedResult, LLMClient } from "../../src/ports/llm-client.js";
 import type { Hono } from "hono";
-
-class FixedEmbedder implements LLMClient {
-  async embed(): Promise<EmbedResult> {
-    return { vector: new Float32Array(768), model: "fixed-test" };
-  }
-  async rewriteForRecall(): Promise<never> {
-    throw new Error("not used in tests");
-  }
-  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
-  async classify(): Promise<never> {
-    throw new Error("not used in tests");
-  }
-}
+import { FixedEmbedder } from "../fixtures/llm-stubs.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
 const MIGRATIONS_DIR = join(

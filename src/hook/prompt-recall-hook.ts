@@ -21,6 +21,7 @@ import { autoloadEnv } from "../llm/env-autoload.js";
 import { recallOverHttp } from "./recall-over-http.js";
 import { parseScoreFloor, parseRelativeFloor } from "./score-floor.js";
 import { makeOllamaGate, parseRecallGateMode } from "./recall-gate.js";
+import { readStdin, hookModeFromEnv } from "./hook-helpers.js";
 
 // Keyword recall returns raw BM25 scores (unbounded, not the 0..1 hybrid
 // scale). FTS5 MATCH already gates relevance — only lexically-matching
@@ -201,16 +202,6 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
   return "";
 }
 
-function readStdin(): Promise<string> {
-  return new Promise((resolve) => {
-    let data = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => (data += chunk));
-    process.stdin.on("end", () => resolve(data));
-    process.stdin.on("error", () => resolve(data));
-  });
-}
-
 async function main(): Promise<void> {
   try {
     // Load ~/.nlm/.env so NLM_MCP_TOKEN is available before we hit /api/recall.
@@ -236,7 +227,7 @@ async function main(): Promise<void> {
     // (session-start hook) is unaffected.
     if (!promptRecallEnabled()) return;
 
-    const mode: HookMode = process.env["NLM_HOOK_MODE"] === "live" ? "live" : "shadow";
+    const mode: HookMode = hookModeFromEnv();
     const runtime = hookRuntimeFromEnv();
     const gateMode = parseRecallGateMode();
     const gateUrl = process.env["OLLAMA_URL"] ?? "http://127.0.0.1:11434";

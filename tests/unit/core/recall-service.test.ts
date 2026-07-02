@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { RecallService } from "../../../src/core/recall/recall-service.js";
-import type { LLMClient, EmbedResult } from "../../../src/ports/llm-client.js";
-import { LLMUnreachableError } from "../../../src/ports/llm-client.js";
+import { StubEmbedder } from "../../fixtures/llm-stubs.js";
 import type {
   KeywordNeighbor,
   SessionStore,
@@ -55,20 +54,6 @@ class InMemoryStore implements SessionStore {
   async getWorkstreamIds(): Promise<Map<string, string | null>> { return new Map(); }
 }
 
-class StubEmbedder implements LLMClient {
-  constructor(private readonly fail: boolean = false) {}
-  async embed(): Promise<EmbedResult> {
-    if (this.fail) throw new LLMUnreachableError("ollama");
-    return { vector: new Float32Array([1, 0, 0]), model: "stub" };
-  }
-  async rewriteForRecall(): Promise<never> {
-    throw new Error("not used in tests");
-  }
-  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
-  async classify(): Promise<never> {
-    throw new Error("not used");
-  }
-}
 
 const corpus: Session[] = [
   makeSession({

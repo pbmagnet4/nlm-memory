@@ -13,11 +13,9 @@
  */
 
 import { pathToFileURL } from "node:url";
-import { appendFileSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
 import { clearSurfaced } from "@core/hook/memo.js";
 import { clearCited } from "@core/hook/cite-memo.js";
+import { readStdin, hookModeFromEnv, appendHookEvent } from "./hook-helpers.js";
 
 export interface SessionEndResult {
   readonly conversationId: string;
@@ -30,38 +28,14 @@ export function runSessionEnd(conversationId: string): SessionEndResult {
   return { conversationId, cleared: surfacedCleared || citedCleared };
 }
 
-function readStdin(): Promise<string> {
-  return new Promise((resolve) => {
-    let data = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => (data += chunk));
-    process.stdin.on("end", () => resolve(data));
-    process.stdin.on("error", () => resolve(data));
-  });
-}
-
-function logPath(): string {
-  return process.env["NLM_HOOK_LOG"] ?? join(homedir(), ".nlm", "hook-log.jsonl");
-}
-
 function logSessionEnd(result: SessionEndResult): void {
-  try {
-    const path = logPath();
-    mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(
-      path,
-      `${JSON.stringify({
-        ts: new Date().toISOString(),
-        kind: "session-end",
-        conversationId: result.conversationId,
-        cleared: result.cleared,
-        mode: process.env["NLM_HOOK_MODE"] === "live" ? "live" : "shadow",
-      })}\n`,
-      "utf8",
-    );
-  } catch {
-    // Telemetry failure must never break the hook.
-  }
+  appendHookEvent({
+    ts: new Date().toISOString(),
+    kind: "session-end",
+    conversationId: result.conversationId,
+    cleared: result.cleared,
+    mode: hookModeFromEnv(),
+  });
 }
 
 async function main(): Promise<void> {

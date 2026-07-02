@@ -13,27 +13,12 @@ import { RecallService } from "../../src/core/recall/recall-service.js";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { makeWorkstreamId, normalizeLabel } from "../../src/core/workstream/model.js";
 import { resolveWorkstreamId } from "../../src/core/workstream/resolve.js";
-import type { EmbedResult, LLMClient } from "../../src/ports/llm-client.js";
 import type { WorkstreamStore } from "../../src/ports/workstream-store.js";
 import type { SessionStore } from "../../src/ports/session-store.js";
 import { makeSession } from "../fixtures/sessions.js";
+import { FixedEmbedder } from "../fixtures/llm-stubs.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
-
-class FixedEmbedder implements LLMClient {
-  async embed(): Promise<EmbedResult> {
-    const v = new Float32Array(768);
-    v[0] = 1;
-    return { vector: v, model: "fixed-test" };
-  }
-  async rewriteForRecall(): Promise<never> {
-    throw new Error("not used");
-  }
-  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
-  async classify(): Promise<never> {
-    throw new Error("not used");
-  }
-}
 
 /**
  * Exact mirror of the resolveWorkstreamSessions closure in buildStack() (src/cli/nlm.ts).

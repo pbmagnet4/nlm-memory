@@ -323,29 +323,23 @@ export class ScanScheduler {
           }
           inserted += 1;
           if (bindWorkstreamsEnabled() && this.opts.workstreams) {
-            try {
-              await bindSessionToWorkstream(
-                {
-                  namer: this.opts.classifier,
-                  workstreams: this.opts.workstreams,
-                  sessions: this.opts.store,
-                  aliasToLabel: this.aliasToLabel,
-                  log: this.opts.logger,
-                },
-                {
-                  sessionId: chunk.id,
-                  label: classification.label,
-                  summary: classification.summary,
-                  ...(record.body != null ? { body: record.body } : {}),
-                  entities: classification.entities,
-                  startedAt: chunk.startedAt,
-                },
-              );
-            } catch (e) {
-              this.opts.logger(
-                `[workstream] bind error for ${chunk.id}: ${e instanceof Error ? e.message : String(e)}`,
-              );
-            }
+            await bindSessionToWorkstream(
+              {
+                namer: this.opts.classifier,
+                workstreams: this.opts.workstreams,
+                sessions: this.opts.store,
+                aliasToLabel: this.aliasToLabel,
+                log: this.opts.logger,
+              },
+              {
+                sessionId: chunk.id,
+                label: classification.label,
+                summary: classification.summary,
+                ...(record.body != null ? { body: record.body } : {}),
+                entities: classification.entities,
+                startedAt: chunk.startedAt,
+              },
+            );
           }
           if (this.opts.exemplarStore && this.opts.installScope) {
             await drainSessionExemplars(

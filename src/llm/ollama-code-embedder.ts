@@ -16,6 +16,7 @@
 
 import type { CodeEmbedder, EmbedCodeResult } from "@ports/code-embedder.js";
 import { LLMUnreachableError } from "@ports/llm-client.js";
+import { l2Normalize } from "./ollama-client.js";
 
 export const DEFAULT_CODE_EMBED_MODEL = "hf.co/awhiteside/CodeRankEmbed-Q8_0-GGUF";
 export const CODE_RANK_QUERY_PREFIX = "Represent this query for searching relevant code: ";
@@ -29,19 +30,6 @@ export function buildCodeEmbedPrompt(text: string, role: "query" | "document", m
     return role === "query" ? `search_query: ${text}` : `search_document: ${text}`;
   }
   return role === "query" ? `${CODE_RANK_QUERY_PREFIX}${text}` : text;
-}
-
-function l2Normalize(v: Float32Array): Float32Array {
-  let sumSq = 0;
-  for (let i = 0; i < v.length; i++) {
-    const x = v[i] ?? 0;
-    sumSq += x * x;
-  }
-  if (sumSq === 0) return v;
-  const norm = Math.sqrt(sumSq);
-  const out = new Float32Array(v.length);
-  for (let i = 0; i < v.length; i++) out[i] = (v[i] ?? 0) / norm;
-  return out;
 }
 
 export interface OllamaCodeEmbedderOptions {

@@ -71,7 +71,6 @@ export interface RewriteResult {
 
 export interface WorkstreamCandidateHint {
   readonly label: string;
-  readonly aliases: ReadonlyArray<string>;
 }
 
 export interface LLMClient {

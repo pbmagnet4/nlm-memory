@@ -63,15 +63,6 @@ export class SqliteFactStore implements FactStore {
     txn(facts.map((f) => this.toRow(f)));
   }
 
-  /**
-   * @internal. Sync row insert for use inside an already-open better-sqlite3
-   * transaction. Used only by SqliteSessionStore's inlined ingest blocks
-   * (which require sync execution inside the txn callback).
-   */
-  insertRowInTxn(fact: Fact): void {
-    this.insertStmt().run(this.toRow(fact));
-  }
-
   async getById(id: string): Promise<Fact | null> {
     const row = this.db
       .prepare<[string], FactRow>(

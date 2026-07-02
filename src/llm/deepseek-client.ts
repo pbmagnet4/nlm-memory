@@ -246,9 +246,7 @@ export class DeepSeekClient implements LLMClient {
     candidates: ReadonlyArray<import("@ports/llm-client.js").WorkstreamCandidateHint>,
   ): Promise<string | null> {
     if (candidates.length === 0) return null;
-    const list = candidates
-      .map((c) => (c.aliases.length ? `- ${c.label} (aka ${c.aliases.join(", ")})` : `- ${c.label}`))
-      .join("\n");
+    const list = candidates.map((c) => `- ${c.label}`).join("\n");
     const sys =
       `You label a work session by which project it belongs to. Known projects:\n${list}\n` +
       `If it belongs to NONE of these, answer "none". Reply with ONLY the exact project name from the list, or "none". /no_think`;
