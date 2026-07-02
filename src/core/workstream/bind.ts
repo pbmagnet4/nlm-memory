@@ -2,6 +2,7 @@
 import type { WorkstreamStore } from "@ports/workstream-store.js";
 import type { SessionStore } from "@ports/session-store.js";
 import type { LLMClient } from "@ports/llm-client.js";
+import type { BindingSource } from "./model.js";
 import { decideWorkstreamByName } from "./name-match.js";
 
 export const NAMING_CONTENT_CHARS = 8000;
@@ -12,6 +13,7 @@ export interface BindDeps {
   readonly sessions: Pick<SessionStore, "setWorkstreamBinding">;
   readonly aliasToLabel: ReadonlyMap<string, string>;
   readonly log?: (msg: string) => void;
+  readonly source?: BindingSource;
 }
 
 export interface BindInput {
@@ -43,7 +45,7 @@ export async function bindSessionToWorkstream(deps: BindDeps, input: BindInput):
     if (decision.kind === "abstain") return null;
 
     const { workstreamId } = decision;
-    await deps.sessions.setWorkstreamBinding(input.sessionId, workstreamId, "classifier", null);
+    await deps.sessions.setWorkstreamBinding(input.sessionId, workstreamId, deps.source ?? "classifier", null);
     await deps.workstreams.upsertEntities(workstreamId, input.entities);
     await deps.workstreams.touchLastSession(workstreamId, input.startedAt);
     return { workstreamId, created: false, confidence: null };

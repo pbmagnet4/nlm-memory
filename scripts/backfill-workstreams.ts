@@ -10,11 +10,10 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { backfillWorkstreams } from "../src/core/workstream/backfill-workstreams.js";
-import { decideWorkstreamByName } from "../src/core/workstream/name-match.js";
+import { bindSessionToWorkstream, NAMING_CONTENT_CHARS } from "../src/core/workstream/bind.js";
 import { parseWorkTopics, aliasToLabelMap } from "../src/core/workstream/work-topics.js";
-import { NAMING_CONTENT_CHARS } from "../src/core/workstream/bind.js";
 import { buildClassifier } from "../src/llm/build-classifier.js";
+import type { SessionStore } from "../src/ports/session-store.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -52,35 +51,47 @@ async function main(): Promise<void> {
     process.stdout.write("backfill-workstreams: --dry-run - no bindings will be written\n");
   }
 
+  const noopSessions: Pick<SessionStore, "setWorkstreamBinding"> = {
+    setWorkstreamBinding: async () => {},
+  };
+
   try {
-    const ws = await storage.workstreams.listAll();
-    const res = await backfillWorkstreams({
-      listSessions: async () => {
-        const rows = storage.sessions.rawDb().prepare<[], { id: string; label: string; summary: string; body: string }>(
-          `SELECT id, label, COALESCE(summary,'') AS summary, COALESCE(body,'') AS body FROM sessions WHERE label IS NOT NULL AND label != '' AND workstream_id IS NULL ORDER BY started_at ASC${limit ? ` LIMIT ${limit}` : ""}`,
-        ).all();
-        return rows.map((r) => ({
-          sessionId: r.id,
-          content: `${r.label}\n${(r.body || r.summary).slice(0, NAMING_CONTENT_CHARS)}`,
-        }));
-      },
-      nameSession: async (_sessionId: string, content: string) => {
-        const hints = ws.map((w) => ({
-          label: w.label,
-          aliases: [] as string[],
-        }));
-        return classifier.nameWorkstream(content, hints);
-      },
-      decide: (named) => decideWorkstreamByName(named, ws, aliasToLabel),
-      setBinding: async (s, w) => {
-        if (!dryRun) {
-          await storage.sessions.setWorkstreamBinding(s, w, "backfill", null);
-        }
-      },
-      log: (m) => process.stdout.write(m + "\n"),
-    });
+    const rows = storage.sessions.rawDb().prepare<[], { id: string; label: string; summary: string; body: string; started_at: string }>(
+      `SELECT id, label, COALESCE(summary,'') AS summary, COALESCE(body,'') AS body, started_at FROM sessions WHERE label IS NOT NULL AND label != '' AND workstream_id IS NULL ORDER BY started_at ASC${limit ? ` LIMIT ${limit}` : ""}`,
+    ).all();
+
+    const log = (m: string): void => { process.stdout.write(m + "\n"); };
+    let bound = 0; let skipped = 0;
+
+    for (const row of rows) {
+      const result = await bindSessionToWorkstream(
+        {
+          namer: classifier,
+          workstreams: storage.workstreams,
+          sessions: dryRun ? noopSessions : storage.sessions,
+          aliasToLabel,
+          log,
+          source: "backfill",
+        },
+        {
+          sessionId: row.id,
+          label: row.label,
+          summary: row.summary,
+          body: row.body || undefined,
+          entities: [],
+          startedAt: row.started_at,
+        },
+      );
+      if (result !== null) {
+        bound++;
+        log(`[backfill] ${row.id} -> ${result.workstreamId}`);
+      } else {
+        skipped++;
+      }
+    }
+
     process.stdout.write(
-      `backfill-workstreams: considered ${res.considered}, bound ${res.bound}, skipped ${res.skipped}\n`,
+      `backfill-workstreams: considered ${rows.length}, bound ${bound}, skipped ${skipped}\n`,
     );
   } finally {
     await storage.close();
