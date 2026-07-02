@@ -20,6 +20,8 @@ import type { PgFactStore } from "./pg-fact-store.js";
 import { ingestSessionFactsOnClient } from "./pg-fact-ingest.js";
 import { chunkSessionText } from "@core/embedding/chunk-body.js";
 import { batchWinners } from "./fact-batch.js";
+import { loadActionOverlayPg, openQuestionId } from "@core/actions/overlay.js";
+import type { ActionOverlay } from "@core/actions/overlay.js";
 
 type SessionRow = {
   id: string;
@@ -81,11 +83,12 @@ export class PgSessionStore implements SessionStore {
     );
     if (result.rows.length === 0) return [];
     const ids = result.rows.map((r) => r.id);
-    const [entitiesMap, markersMap] = await Promise.all([
+    const [entitiesMap, markersMap, overlay] = await Promise.all([
       this.loadEntities(ids),
       this.loadMarkers(ids),
+      loadActionOverlayPg(this.pool),
     ]);
-    const sessions = result.rows.map((r) => rowToSession(r, entitiesMap, markersMap));
+    const sessions = result.rows.map((r) => rowToSession(r, entitiesMap, markersMap, overlay));
     if (!filter) return sessions;
     return sessions.filter((s) => {
       if (filter.entity !== undefined && !s.entities.includes(filter.entity)) return false;
@@ -103,13 +106,14 @@ export class PgSessionStore implements SessionStore {
       [sessionId],
     );
     if (!result.rows[0]) return null;
-    const [entitiesMap, markersMap, edgesMap] = await Promise.all([
+    const [entitiesMap, markersMap, edgesMap, overlay] = await Promise.all([
       this.loadEntities([sessionId]),
       this.loadMarkers([sessionId]),
       this.loadEdges([sessionId]),
+      loadActionOverlayPg(this.pool),
     ]);
     const edges = edgesMap.get(sessionId);
-    return rowToSession(result.rows[0], entitiesMap, markersMap, edges);
+    return rowToSession(result.rows[0], entitiesMap, markersMap, overlay, edges);
   }
 
   async getByIds(ids: ReadonlyArray<string>): Promise<ReadonlyArray<Session>> {
@@ -123,11 +127,12 @@ export class PgSessionStore implements SessionStore {
     );
     if (result.rows.length === 0) return [];
     const foundIds = result.rows.map((r) => r.id);
-    const [entitiesMap, markersMap] = await Promise.all([
+    const [entitiesMap, markersMap, overlay] = await Promise.all([
       this.loadEntities(foundIds),
       this.loadMarkers(foundIds),
+      loadActionOverlayPg(this.pool),
     ]);
-    return result.rows.map((r) => rowToSession({ ...r, body: null }, entitiesMap, markersMap));
+    return result.rows.map((r) => rowToSession({ ...r, body: null }, entitiesMap, markersMap, overlay));
   }
 
   async listByDateRange(fromIso: string, toIso: string): Promise<ReadonlyArray<Session>> {
@@ -141,11 +146,12 @@ export class PgSessionStore implements SessionStore {
     );
     if (result.rows.length === 0) return [];
     const ids = result.rows.map((r) => r.id);
-    const [entitiesMap, markersMap] = await Promise.all([
+    const [entitiesMap, markersMap, overlay] = await Promise.all([
       this.loadEntities(ids),
       this.loadMarkers(ids),
+      loadActionOverlayPg(this.pool),
     ]);
-    return result.rows.map((r) => rowToSession({ ...r, body: null }, entitiesMap, markersMap));
+    return result.rows.map((r) => rowToSession({ ...r, body: null }, entitiesMap, markersMap, overlay));
   }
 
   async semanticSearch(
@@ -682,9 +688,26 @@ function rowToSession(
   row: SessionRow,
   entitiesById: Map<string, string[]>,
   markersById: Map<string, { decisions: string[]; open: string[] }>,
+  overlay: ActionOverlay,
   edges?: { supersededBy: string | null; supersedes: string[] },
 ): Session {
   const m = markersById.get(row.id);
+  const rawDecisions = m?.decisions ?? [];
+  const rawOpen = m?.open ?? [];
+
+  const activeOpen: string[] = [];
+  const promotedDecisions: string[] = [];
+  for (const text of rawOpen) {
+    const id = openQuestionId(row.id, text);
+    if (overlay.resolvedOpens.has(id)) continue;
+    const resolution = overlay.promotedOpens.get(id);
+    if (resolution !== undefined) {
+      promotedDecisions.push(resolution);
+      continue;
+    }
+    activeOpen.push(text);
+  }
+
   return {
     id: row.id,
     runtime: row.runtime,
@@ -699,8 +722,8 @@ function rowToSession(
     transcriptPath: row.transcript_path,
     body: row.body ?? "",
     entities: entitiesById.get(row.id) ?? [],
-    decisions: m?.decisions ?? [],
-    open: m?.open ?? [],
+    decisions: [...rawDecisions, ...promotedDecisions],
+    open: activeOpen,
     ...(edges !== undefined
       ? { supersededBy: edges.supersededBy, supersedes: edges.supersedes }
       : {}),
