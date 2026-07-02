@@ -1,3 +1,18 @@
+## 2026-06-22 (cont.) — context-recall shipped + the measurement-apparatus reckoning
+
+Continuation of the big production-drive day. Shipped 11 PRs (#38–#48). After the corpus/honesty fixes, the arc converged on the real bottleneck: the usefulness judge.
+
+- **Honest digest (#39):** report true cited-precision (1%), not the surfacing rate (90%) that was hiding it.
+- **Content gate (#40):** don't fire recall on contentless/harness prompts (IDE selections, task-notifications, bare acks). Measured over 8,666 fires: 53.8% of fires now skip recall entirely, 177 wasted injections eliminated, ZERO real-query regressions.
+- **Usefulness harness (#41) + band filter (#46):** judge real *usage* (not citation) of injected context vs the agent's actual response — citation undercounts usefulness ~5–18×.
+- **I5a invariant fix (#42):** the duplicate-fact check counted *retired* facts as active; retiring a dup never cleared it. Retired 2 stale dups; live I5a 3→1 (remaining = legit multi-valued `stack`).
+- **cite_session conv-id (#43):** resolve the real conversation server-side from the surfaced-memo; ~379 orphaned `mcp_tool` citations → 0.
+- **Context-recall (#44, LIVE):** recall on recent conversation turns for thin prompts. A/B (#45/#47): usefulness 29%→54%, off-topic 46%→8% (paired). Flag `NLM_HOOK_CONTEXT_RECALL=1`, reversible.
+- **The reckoning:** the small local usefulness judge (qwen3.5:4b) is config-sensitive and unreliable (over-counts topical adjacency *or* over-corrects to all-unused; no config reliable across samples). So absolute usefulness numbers are untrustworthy — only PAIRED deltas hold. Built the judge-tuning framework (#48: `dump-gold-candidates.ts` + `tune-usefulness-judge.ts`; gold at `~/.nlm/eval/`, 13 frontier-labeled). **Keystone workstream = tune a small local judge against a frontier gold set (#360)** — prerequisite for trustworthy recall measurement AND telemetry. Killed (via mining): semantic-upgrade, dedup-degradation, "specific recall is fine", citation-as-learning-signal.
+- **Resume:** expand the gold to ~50+ with used/partial balance, tune to match frontier, wire as the standing judge, then re-run recall-health + reranker + build telemetry. Detail: NocoDB #360.
+
+_Older entries archived in CHANGELOG-2026.md_
+
 
 
 ## 2026-06-21 — exemplar Phase 3 (v0.17.0) + the oversized-session recovery arc (v0.18.0 → v0.20.0)
