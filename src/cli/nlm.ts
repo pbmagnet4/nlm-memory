@@ -85,6 +85,7 @@ import { connectPi, disconnectPi, piSettingsPath } from "../install/pi.js";
 import { runSetup } from "../install/setup.js";
 import { runParity } from "./classify-parity.js";
 import { reembedCorpus } from "../core/embedding/embed-backfill.js";
+import { reembedCorpusPg } from "../core/embedding/pg-embed-backfill.js";
 import { backfillExemplarEmbeddings } from "../core/exemplars/embed-backfill.js";
 import { warmCodeEmbedder } from "../core/exemplars/warm-embedder.js";
 import { markWarm } from "../core/health/warmup-state.js";
@@ -1030,8 +1031,8 @@ program
       return;
     }
     const embedder = buildEmbedder();
-    const report = await reembedCorpus({
-      dbPath: dbPath(),
+    const pgUrl = process.env["NLM_PG_URL"];
+    const sharedOpts = {
       embedder,
       embedderProvider: resolveEmbedderInfo(process.env).provider,
       ...(opts.dryRun ? { dryRun: true } : {}),
@@ -1044,7 +1045,10 @@ program
             },
           }
         : {}),
-    });
+    };
+    const report = pgUrl
+      ? await reembedCorpusPg({ pgUrl, ...sharedOpts })
+      : await reembedCorpus({ dbPath: dbPath(), ...sharedOpts });
     process.stdout.write(JSON.stringify(report, null, 2) + "\n");
   });
 
