@@ -30,6 +30,7 @@
     "dist",
     "migrations",
     "fixtures",
+    "templates",
     "plugin",
     "plugin-hermes-agent",
     "nlm",

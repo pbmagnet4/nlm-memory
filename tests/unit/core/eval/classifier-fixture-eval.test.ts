@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runClassifierFixtureEval } from "@core/eval/classifier-fixture-eval.js";
 import type { ClassifyResult } from "@ports/llm-client.js";
-import { ClassifierSchemaError } from "@ports/llm-client.js";
+import { ClassifierSchemaError, LLMUnreachableError } from "@ports/llm-client.js";
 
 const FIXTURES_DIR = join(
   fileURLToPath(new URL("../../../../", import.meta.url)),
@@ -149,6 +149,67 @@ describe("runClassifierFixtureEval", () => {
           { limit: 1 },
         ),
       ).rejects.toThrow("unexpected infrastructure failure");
+    });
+  });
+
+  describe("LLMUnreachableError stub", () => {
+    it("scores LLMUnreachableError as timedOutOrUnreachable, run completes, other fixtures scored", async () => {
+      const refs = loadRefs();
+      const byTranscript = loadTranscriptMap(refs);
+
+      let callCount = 0;
+      const result = await runClassifierFixtureEval(
+        async (transcript: string): Promise<ClassifyResult> => {
+          callCount++;
+          if (callCount === 2) {
+            throw new LLMUnreachableError("test-lane", "classify timeout");
+          }
+          const ref = byTranscript.get(transcript);
+          return makeResult({
+            label: ref?.label ?? "placeholder label",
+            entities: ref ? [...ref.entities] : [],
+            decisions: ref ? [...ref.decisions] : [],
+            confidence: ref?.expectLowConfidence ? 0.2 : 0.9,
+          });
+        },
+        FIXTURES_DIR,
+        { limit: 5 },
+      );
+
+      expect(result.perTranscript).toHaveLength(5);
+      expect(result.aggregate.timedOutOrUnreachable).toBe(1);
+
+      const failedRow = result.perTranscript.find((r) => r.timedOutOrUnreachable);
+      expect(failedRow).toBeDefined();
+      expect(failedRow?.schemaValid).toBe(false);
+      expect(failedRow?.labelMatch).toBe(false);
+      expect(failedRow?.entityPrecision).toBe(0);
+      expect(failedRow?.entityRecall).toBe(0);
+      expect(failedRow?.confidence).toBe(0);
+
+      const scoredRows = result.perTranscript.filter((r) => !r.timedOutOrUnreachable);
+      expect(scoredRows).toHaveLength(4);
+      for (const row of scoredRows) {
+        expect(row.schemaValid).toBe(true);
+        expect(row.timedOutOrUnreachable).toBe(false);
+      }
+    });
+
+    it("does not count LLMUnreachableError toward schemaValidRate failures beyond the overall invalid set", async () => {
+      const result = await runClassifierFixtureEval(
+        async (_: string): Promise<ClassifyResult> => {
+          throw new LLMUnreachableError("test-lane", "timeout");
+        },
+        FIXTURES_DIR,
+        { limit: 3 },
+      );
+
+      expect(result.aggregate.timedOutOrUnreachable).toBe(3);
+      expect(result.aggregate.schemaValidRate).toBe(0);
+      for (const row of result.perTranscript) {
+        expect(row.timedOutOrUnreachable).toBe(true);
+        expect(row.schemaValid).toBe(false);
+      }
     });
   });
 

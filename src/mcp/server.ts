@@ -449,7 +449,7 @@ export async function getFactHistoryHandler(
   }
 }
 
-const CITE_SESSION_DESCRIPTION = `Log that you used a previously-surfaced session in your response. Pass the session ID. This lets NLM learn which surfaced sessions are actually useful, training a per-operator reranker over time. Call after writing your response, with one cite per surfaced session you actually drew from.`;
+const CITE_SESSION_DESCRIPTION = `Log that you used a previously-surfaced session in your response. Pass the session ID. This feeds the recall precision metric, which measures what fraction of surfaced sessions were actually useful. Call after writing your response, with one cite per surfaced session you actually drew from.`;
 
 const RECALL_DESCRIPTION = `Search prior AI sessions across every runtime the user has connected (Claude Code,
 Hermes, pi, Codex, Gemini, Aider). Local-first, fast (~200-400ms warm), idempotent,
@@ -491,7 +491,7 @@ Skip ONLY when the request is purely forward-looking with no plausible prior
 context — drafting wholly new content, naming something new, brainstorming
 greenfield ideas. When in doubt, call.
 
-When you reference a returned session in your response, call \`cite_session(id)\` to log it so the recall layer can learn what is useful.
+When you reference a returned session in your response, call \`cite_session(id)\` to log it so NLM can measure which surfaced sessions are useful.
 
 Args:
   - query: keyword(s) to search. Token-weighted match against label, decisions,
@@ -952,7 +952,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
         reason: z
           .string()
           .optional()
-          .describe("Why this session was useful. Optional but encouraged — articulating the reason is a weak training signal."),
+          .describe("Why this session was useful. Optional but encouraged; the reason is recorded with the citation for later review."),
       },
       annotations: {
         readOnlyHint: false,

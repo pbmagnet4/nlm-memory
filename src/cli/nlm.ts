@@ -22,6 +22,7 @@
  *   nlm disconnect claude-code — remove MCP block from ~/.mcp.json
  *   nlm disconnect codex       — remove Codex plugin
  *   nlm digest   — print a daily-activity digest (or --telegram to post)
+ *   nlm init     - print (or write) the agent recall contract snippet
  */
 
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -77,6 +78,7 @@ import {
   uninstallWindsurfRules,
 } from "../install/rules-install.js";
 import { runSupersedeCommand } from "./supersede.js";
+import { runInitCommand } from "./init.js";
 import { getUpdateStatus } from "../core/update-check/check.js";
 import { connectHermes, disconnectHermes, hermesConfigPath } from "../install/hermes.js";
 import { connectHermesAgent, disconnectHermesAgent, hermesAgentPluginDir } from "../install/hermes-agent.js";
@@ -370,6 +372,9 @@ export async function runClassifierEvalCommand(deps: ClassifierEvalDeps): Promis
   deps.stdout(`conf-calibration: ${pct(a.confidenceCalibrationRate)}\n`);
   deps.stdout(`p50-latency:      ${a.p50LatencyMs}ms\n`);
   deps.stdout(`p95-latency:      ${a.p95LatencyMs}ms\n`);
+  if (a.timedOutOrUnreachable > 0) {
+    deps.stdout(`timed-out:        ${a.timedOutOrUnreachable} fixture(s) scored as failures (LLM unreachable/timeout)\n`);
+  }
   deps.stdout(`see: docs/classifier-tiers.md\n`);
 }
 
@@ -1198,11 +1203,13 @@ program
   )
   .option("-l, --limit <n>", "max sessions to process this run", (v) => Number.parseInt(v, 10))
   .option("--min-confidence <f>", "also reprocess same-model sessions below this confidence", (v) => Number.parseFloat(v))
+  .option("--only-null", "select only sessions with no classifier stamp yet (safe lane-switch resume: sessions already stamped by a stronger model are left untouched)")
+  .option("--exclude-model <tag>", "exclude sessions stamped by this model tag (repeatable; use once per model to preserve corpus quality when switching classifier lanes)", (v: string, prev: string[]) => [...prev, v], [] as string[])
   .option("--state <path>", "resume state file (default ~/.nlm/reprocess.state)")
   .option("--dry-run", "print cohort report without writing")
   .option("-v, --verbose", "per-session progress on stderr")
   .option("--force-embed", "proceed even when the stored prose embedding lane mismatches the runtime embedder")
-  .action(async (opts: { limit?: number; minConfidence?: number; state?: string; dryRun?: boolean; verbose?: boolean; forceEmbed?: boolean }) => {
+  .action(async (opts: { limit?: number; minConfidence?: number; onlyNull?: boolean; excludeModel?: string[]; state?: string; dryRun?: boolean; verbose?: boolean; forceEmbed?: boolean }) => {
     const { reprocess: runReprocess } = await import("../core/ingest/reprocess.js");
     const stack = await buildStack();
     try {
@@ -1226,6 +1233,8 @@ program
         {
           ...(opts.limit ? { limit: opts.limit } : {}),
           ...(opts.minConfidence !== undefined ? { minConfidence: opts.minConfidence } : {}),
+          ...(opts.onlyNull ? { onlyNull: true } : {}),
+          ...(opts.excludeModel && opts.excludeModel.length > 0 ? { excludeModels: opts.excludeModel } : {}),
           ...(opts.state ? { statePath: opts.state } : {}),
           dryRun: Boolean(opts.dryRun),
           verbose: Boolean(opts.verbose),
@@ -2496,6 +2505,22 @@ program
     }
     console.log(`Staged ${opts.from} (${validation.sessions} sessions, schema v${validation.schemaVersion}).`);
     console.log("Run `nlm restart` to apply — the current DB is archived aside, not deleted.");
+  });
+
+program
+  .command("init")
+  .description("Print (or write) the agent recall contract snippet")
+  .requiredOption("--agent <name>", "agent variant: claude-code or generic")
+  .option("--write <path>", "append the contract to this file instead of printing to stdout")
+  .option("--force", "when --write: replace the existing block instead of refusing")
+  .action((opts) => {
+    runInitCommand({
+      agent: opts.agent as string,
+      write: opts.write as string | undefined,
+      force: Boolean(opts.force),
+      stdout: (s) => { process.stdout.write(s); },
+      stderr: (s) => { process.stderr.write(s); },
+    });
   });
 
 // Entrypoint guard: only parse argv when this file IS the executed script.
