@@ -23,6 +23,7 @@ import { chunkSessionText } from "@core/embedding/chunk-body.js";
 import { batchWinners } from "./fact-batch.js";
 import { loadActionOverlayPg, openQuestionId } from "@core/actions/overlay.js";
 import type { ActionOverlay } from "@core/actions/overlay.js";
+import { liveSessionStatus } from "./live-status.js";
 
 type SessionRow = {
   id: string;
@@ -724,7 +725,7 @@ function rowToSession(
     durationMin: row.duration_min,
     label: row.label,
     summary: row.summary,
-    status: row.status,
+    status: liveSessionStatus(row.transcript_path, row.status),
     transcriptKind: row.transcript_kind ?? "",
     transcriptPath: row.transcript_path,
     body: row.body ?? "",

@@ -11,6 +11,8 @@
  */
 
 import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
@@ -113,5 +115,37 @@ describe.skipIf(!PG_TEST_URL)("pg session reads apply the action overlay", () =>
     const [readBack] = await storage.sessions.getByIds([session.id]);
     expect(readBack!.open).toEqual(["Is this working?"]);
     expect(readBack!.entities).toEqual(["NLM"]);
+  });
+
+  describe("rowToSession computes live status (Task 7)", () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = mkdtempSync(join(tmpdir(), "nlm-live-status-"));
+    });
+
+    afterAll(() => {
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    });
+
+    it("reads status as active when transcript_path points at a recently modified file", async () => {
+      const transcriptPath = join(tmpDir, "session.jsonl");
+      writeFileSync(transcriptPath, "");
+      const session = makeSession({
+        id: "sess_live_status",
+        status: "closed",
+        transcriptPath,
+      });
+      await storage.sessions.insertSessionForTest(session);
+      const [readBack] = await storage.sessions.getByIds([session.id]);
+      expect(readBack!.status).toBe("active");
+    });
+
+    it("reads status as closed when transcript_path is null", async () => {
+      const session = makeSession({ id: "sess_live_null_path", status: "closed", transcriptPath: null });
+      await storage.sessions.insertSessionForTest(session);
+      const [readBack] = await storage.sessions.getByIds([session.id]);
+      expect(readBack!.status).toBe("closed");
+    });
   });
 });
