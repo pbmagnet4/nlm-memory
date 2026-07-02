@@ -84,14 +84,14 @@ comparison tooling, and the LongMemEval-S dataset setup.
 
 ## Baselines
 
-> Floor and cloud rows measured 2026-07-02 with `nlm eval --classifier --json` (n=20 shipped fixtures). Mid row TBD. Fill or refresh by running
+> All rows measured 2026-07-02 with `nlm eval --classifier --json` (n=20 shipped fixtures). Fill or refresh by running
 > `nlm eval --classifier --json` with each tier configured. See the upgrade
 > path below for how to switch lanes before measuring.
 
 | Tier | Example model | Schema validity | Label accuracy | Entity F1 | Decision F1 | Calibration | p50 latency |
 |---|---|---|---|---|---|---|---|
 | Floor | `qwen3.5-4b` (local, OpenAI-compatible endpoint) | 100% | 80% | 48% | 44% | 85% | 24.0s |
-| Mid | `qwen3:32b` (OpenAI-compatible endpoint) | TBD | TBD | TBD | TBD | TBD | TBD |
+| Mid | `qwen3.6-35b-a3b` (MoE, OpenAI-compatible endpoint) | 100% | 80% | 54% | 57% | 95% | 42.2s |
 | Cloud | `deepseek-v4-flash` | 100% | 95% | 66% | 55% | 95% | 9.0s |
 
 Columns are the aggregate fields from `nlm eval --classifier --json`:
