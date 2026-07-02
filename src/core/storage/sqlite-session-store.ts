@@ -172,6 +172,8 @@ function findContinuesPredecessor(
 
 export class SqliteSessionStore implements SessionStore {
   private readonly db: Database.Database;
+  private overlayCache: ActionOverlay | null = null;
+  private overlayCacheAt = 0;
 
   /**
    * @internal. Construct via SqliteStorage.create(...) instead. Direct
@@ -212,6 +214,22 @@ export class SqliteSessionStore implements SessionStore {
    *  directly from the recall path — it bypasses the SessionStore port. */
   rawDb(): Database.Database {
     return this.db;
+  }
+
+  invalidateOverlayCache(): void {
+    this.overlayCache = null;
+  }
+
+  private overlay(): ActionOverlay {
+    // TTL backstop: explicit invalidation covers the daemon's own writers; the
+    // 30s expiry bounds staleness if another process ever writes actions to
+    // this database file.
+    if (this.overlayCache !== null && Date.now() - this.overlayCacheAt < 30_000) {
+      return this.overlayCache;
+    }
+    this.overlayCache = loadActionOverlay(this.db);
+    this.overlayCacheAt = Date.now();
+    return this.overlayCache;
   }
 
   /** Recently-written sessions ordered by created_at desc. Powers /live Writes column. */
@@ -554,7 +572,7 @@ export class SqliteSessionStore implements SessionStore {
     const ids = rows.map((r) => r.id);
     const entitiesByIdMap = this.loadEntities(ids);
     const markersByIdMap = this.loadMarkers(ids);
-    const overlay = loadActionOverlay(this.db);
+    const overlay = this.overlay();
 
     const sessions = rows.map((r) => this.rowToSession(r, entitiesByIdMap, markersByIdMap, overlay));
 
@@ -583,7 +601,7 @@ export class SqliteSessionStore implements SessionStore {
     const entities = this.loadEntities([sessionId]);
     const markers = this.loadMarkers([sessionId]);
     const edges = this.loadSessionEdges([sessionId]);
-    const overlay = loadActionOverlay(this.db);
+    const overlay = this.overlay();
     return this.rowToSession(row, entities, markers, overlay, edges);
   }
 
@@ -609,7 +627,7 @@ export class SqliteSessionStore implements SessionStore {
     const foundIds = rows.map((r) => r.id);
     const entitiesByIdMap = this.loadEntities(foundIds);
     const markersByIdMap = this.loadMarkers(foundIds);
-    const overlay = loadActionOverlay(this.db);
+    const overlay = this.overlay();
     return rows.map((r) =>
       this.rowToSession({ ...r, body: null }, entitiesByIdMap, markersByIdMap, overlay),
     );
@@ -629,7 +647,7 @@ export class SqliteSessionStore implements SessionStore {
     const ids = rows.map((r) => r.id);
     const entitiesByIdMap = this.loadEntities(ids);
     const markersByIdMap = this.loadMarkers(ids);
-    const overlay = loadActionOverlay(this.db);
+    const overlay = this.overlay();
     return rows.map((r) =>
       this.rowToSession({ ...r, body: null }, entitiesByIdMap, markersByIdMap, overlay),
     );

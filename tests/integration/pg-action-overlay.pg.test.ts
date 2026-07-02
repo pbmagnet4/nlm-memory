@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { PgStorage } from "../../src/core/storage/pg-storage.js";
-import { writeActionsBatchPg } from "../../src/core/actions/actions-log.js";
+import { writeActionsBatchPg, writeActionPg } from "../../src/core/actions/actions-log.js";
 import { openQuestionId } from "../../src/core/actions/overlay.js";
 import { makeSession } from "../fixtures/sessions.js";
 
@@ -55,6 +55,7 @@ describe.skipIf(!PG_TEST_URL)("pg session reads apply the action overlay", () =>
 
   beforeEach(async () => {
     await pool.query(TRUNCATE_SQL);
+    storage.sessions.invalidateOverlayCache();
   });
 
   it("resolve_open action hides the open question from pg session reads", async () => {
@@ -115,6 +116,21 @@ describe.skipIf(!PG_TEST_URL)("pg session reads apply the action overlay", () =>
     const [readBack] = await storage.sessions.getByIds([session.id]);
     expect(readBack!.open).toEqual(["Is this working?"]);
     expect(readBack!.entities).toEqual(["NLM"]);
+  });
+
+  it("pg overlay cache: a write without invalidation stays hidden until invalidateOverlayCache is called", async () => {
+    const openText = "Cache liveness check?";
+    const session = makeSession({ id: "sess_pg_cache_live", open: [openText] });
+    await storage.sessions.insertSessionForTest(session);
+
+    await storage.sessions.getByIds([session.id]); // populate cache
+    const oqId = openQuestionId(session.id, openText);
+    await writeActionPg(pool, { kind: "resolve_open", subjectType: "open_question", subjectId: oqId });
+    const stale = await storage.sessions.getByIds([session.id]);
+    expect(stale[0]?.open?.some((q) => q === openText)).toBe(true); // cache still active
+    storage.sessions.invalidateOverlayCache();
+    const fresh = await storage.sessions.getByIds([session.id]);
+    expect(fresh[0]?.open?.some((q) => q === openText)).toBe(false);
   });
 
   describe("rowToSession computes live status (Task 7)", () => {

@@ -1187,6 +1187,7 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
     const id = store instanceof PgSessionStore
       ? await writeActionPg(store.pool, parsed)
       : writeAction(store.rawDb(), parsed);
+    store.invalidateOverlayCache();
     return c.json({ id, timestamp: new Date().toISOString() });
   });
 
@@ -1202,6 +1203,7 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
     const ids = store instanceof PgSessionStore
       ? await writeActionsBatchPg(store.pool, inputs)
       : writeActionsBatch(store.rawDb(), inputs);
+    store.invalidateOverlayCache();
     return c.json({ accepted: ids.length, ids });
   });
 
@@ -1212,6 +1214,7 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
       ? await undoActionPg(store.pool, c.req.param("id"))
       : undoAction(store.rawDb(), c.req.param("id"));
     if (!result) return c.json({ error: "action not found or already undone" }, 404);
+    store.invalidateOverlayCache();
     return c.json({ id: result.undoId, timestamp: new Date().toISOString() });
   });
 
