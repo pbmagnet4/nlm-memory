@@ -16,6 +16,7 @@ import type {
 } from "@ports/session-store.js";
 import type { Fact, Session, SessionStatus } from "@shared/types.js";
 import type { BackfillCandidate, BackfillCandidateFilter, IngestRecord, RecentMarker, RecentWrite, Supersedes } from "./sqlite-session-store.js";
+import { tokenize } from "@core/recall/tokenize.js";
 import type { PgFactStore } from "./pg-fact-store.js";
 import { ingestSessionFactsOnClient } from "./pg-fact-ingest.js";
 import { chunkSessionText } from "@core/embedding/chunk-body.js";
@@ -187,7 +188,9 @@ export class PgSessionStore implements SessionStore {
     limit: number,
     opts?: SearchOptions,
   ): Promise<ReadonlyArray<KeywordNeighbor>> {
-    if (!query.trim()) return [];
+    const terms = tokenize(query).map(sanitizeTsToken).filter(Boolean);
+    if (terms.length === 0) return [];
+    const tsQuery = terms.join(" | ");
     const k = Math.max(1, Math.trunc(limit));
     const statusFilter =
       opts?.includeSuperseded === true
@@ -195,13 +198,13 @@ export class PgSessionStore implements SessionStore {
         : "status NOT IN ('superseded', 'replaced')";
     const result = await this.pool.query<{ session_id: string; score: number }>(
       `SELECT id AS session_id,
-              ts_rank_cd(fts_vector, websearch_to_tsquery('english', $1)) AS score
+              ts_rank_cd(fts_vector, to_tsquery('english', $1)) AS score
        FROM sessions
-       WHERE fts_vector @@ websearch_to_tsquery('english', $1)
+       WHERE fts_vector @@ to_tsquery('english', $1)
          AND ${statusFilter}
        ORDER BY score DESC
        LIMIT $2`,
-      [query, k],
+      [tsQuery, k],
     );
     return result.rows.map((r) => ({ sessionId: r.session_id, score: r.score }));
   }
@@ -682,6 +685,10 @@ export class PgSessionStore implements SessionStore {
     }
     return out;
   }
+}
+
+function sanitizeTsToken(token: string): string {
+  return token.replace(/[&|!():*'<]/g, "");
 }
 
 function rowToSession(
