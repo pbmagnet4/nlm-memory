@@ -63,6 +63,7 @@ export interface IngestRecord {
   readonly entities: ReadonlyArray<string>;
   readonly decisions: ReadonlyArray<string>;
   readonly openQuestions: ReadonlyArray<string>;
+  readonly classifier?: { readonly provider: string; readonly model: string; readonly confidence: number };
 }
 
 /**
@@ -92,6 +93,9 @@ type SessionRow = {
   transcript_path: string | null;
   body: string | null;
   workstream_id: string | null;
+  classifier_provider?: string | null;
+  classifier_model?: string | null;
+  classifier_confidence?: number | null;
 };
 
 type EntityRow = { session_id: string; entity_canonical: string };
@@ -281,8 +285,9 @@ export class SqliteSessionStore implements SessionStore {
    * Atomic ingest: writes the session row, markers, entity rows + links,
    * supersedes edge (if any), and the embedding (best-effort) in one
    * transaction. Idempotent on re-ingest — ON CONFLICT updates the session
-   * in place; markers are deleted and rewritten; entity links use INSERT OR
-   * IGNORE; embedding row is DELETE+INSERT (vec0 doesn't UPDATE).
+   * in place; markers are deleted and rewritten; entity links are replaced
+   * (DELETE + re-insert, session_count recomputed exactly); embedding row is
+   * DELETE+INSERT (vec0 doesn't UPDATE).
    *
    * Mirrors Python's SQLiteStore.insert_session. Markdown projection is not
    * yet ported and skipped here.
@@ -299,10 +304,12 @@ export class SqliteSessionStore implements SessionStore {
         INSERT INTO sessions (
           id, runtime, runtime_session_id, started_at, ended_at, duration_min,
           label, summary, body, status,
-          transcript_kind, transcript_path, transcript_offset, transcript_length
+          transcript_kind, transcript_path, transcript_offset, transcript_length,
+          classifier_provider, classifier_model, classifier_confidence
         ) VALUES (@id, @runtime, @runtimeSessionId, @startedAt, @endedAt, @durationMin,
           @label, @summary, @body, @status,
-          @transcriptKind, @transcriptPath, @transcriptOffset, @transcriptLength)
+          @transcriptKind, @transcriptPath, @transcriptOffset, @transcriptLength,
+          @classifierProvider, @classifierModel, @classifierConfidence)
         ON CONFLICT(id) DO UPDATE SET
           ended_at = excluded.ended_at,
           duration_min = excluded.duration_min,
@@ -310,6 +317,9 @@ export class SqliteSessionStore implements SessionStore {
           summary = excluded.summary,
           body = excluded.body,
           status = excluded.status,
+          classifier_provider = excluded.classifier_provider,
+          classifier_model = excluded.classifier_model,
+          classifier_confidence = excluded.classifier_confidence,
           updated_at = datetime('now')
       `).run({
         id: record.id,
@@ -326,6 +336,9 @@ export class SqliteSessionStore implements SessionStore {
         transcriptPath: record.transcriptPath,
         transcriptOffset: record.transcriptOffset,
         transcriptLength: record.transcriptLength,
+        classifierProvider: record.classifier?.provider ?? null,
+        classifierModel: record.classifier?.model ?? null,
+        classifierConfidence: record.classifier?.confidence ?? null,
       });
 
       db.prepare("DELETE FROM markers WHERE session_id = ?").run(record.id);
@@ -335,25 +348,47 @@ export class SqliteSessionStore implements SessionStore {
       record.decisions.forEach((d, i) => markerStmt.run(record.id, "decision", d.trim(), i));
       record.openQuestions.forEach((q, i) => markerStmt.run(record.id, "open", q.trim(), i));
 
+      // Replace entity-link semantics: delete the session's existing links, then
+      // re-insert for the new entity list. Without this, nlm reprocess amplifies
+      // stale links (INSERT OR IGNORE keeps dropped entities forever) and
+      // double-counts session_count on every re-ingest pass.
+      const newEntities = [...new Set(record.entities.map((e) => e.trim()).filter(Boolean))];
+      const oldEntityRows = db
+        .prepare<[string], { entity_canonical: string }>(
+          "SELECT entity_canonical FROM session_entities WHERE session_id = ?",
+        )
+        .all(record.id);
+      const oldEntities = new Set(oldEntityRows.map((r) => r.entity_canonical));
+
+      db.prepare("DELETE FROM session_entities WHERE session_id = ?").run(record.id);
+
       const insertEnt = db.prepare(`
         INSERT OR IGNORE INTO entities
           (canonical, type, status, source, first_seen_session, last_seen_session, session_count)
         VALUES (?, 'candidate', 'candidate', 'auto-detected', ?, ?, 0)
       `);
-      const touchEnt = db.prepare(`
-        UPDATE entities
-        SET last_seen_session = ?, session_count = session_count + 1, updated_at = datetime('now')
-        WHERE canonical = ?
-      `);
-      const linkEnt = db.prepare(
-        "INSERT OR IGNORE INTO session_entities (session_id, entity_canonical) VALUES (?, ?)",
+      const touchLastSeen = db.prepare(
+        "UPDATE entities SET last_seen_session = ?, updated_at = datetime('now') WHERE canonical = ?",
       );
-      for (const raw of record.entities) {
-        const name = raw.trim();
-        if (!name) continue;
+      const linkEnt = db.prepare(
+        "INSERT INTO session_entities (session_id, entity_canonical) VALUES (?, ?)",
+      );
+      for (const name of newEntities) {
         insertEnt.run(name, record.id, record.id);
-        touchEnt.run(record.id, name);
+        // Update last_seen for entities newly added to this session; matches prior touch semantics.
+        if (!oldEntities.has(name)) {
+          touchLastSeen.run(record.id, name);
+        }
         linkEnt.run(record.id, name);
+      }
+
+      // Recompute session_count exactly for every entity in (old union new) so
+      // counts reflect reality regardless of prior drift.
+      const recomputeCount = db.prepare(
+        "UPDATE entities SET session_count = (SELECT COUNT(*) FROM session_entities WHERE entity_canonical = ?), updated_at = datetime('now') WHERE canonical = ?",
+      );
+      for (const name of new Set([...oldEntities, ...newEntities])) {
+        recomputeCount.run(name, name);
       }
 
       if (supersedes && supersedes.priorSessionId !== record.id) {
@@ -561,7 +596,8 @@ export class SqliteSessionStore implements SessionStore {
     const rows = this.db
       .prepare<[], SessionRow>(`
         SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
-               label, summary, status, transcript_kind, transcript_path, body
+               label, summary, status, transcript_kind, transcript_path, body,
+               classifier_provider, classifier_model, classifier_confidence
         FROM sessions
         ORDER BY started_at ASC
       `)
@@ -591,7 +627,8 @@ export class SqliteSessionStore implements SessionStore {
     const row = this.db
       .prepare<[string], SessionRow>(`
         SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
-               label, summary, status, transcript_kind, transcript_path, body
+               label, summary, status, transcript_kind, transcript_path, body,
+               classifier_provider, classifier_model, classifier_confidence
         FROM sessions
         WHERE id = ?
       `)
@@ -1107,6 +1144,9 @@ export class SqliteSessionStore implements SessionStore {
         ? { supersededBy: edges.supersededBy, supersedes: edges.supersedes }
         : {}),
       workstreamId: row.workstream_id ?? null,
+      classifierProvider: row.classifier_provider ?? null,
+      classifierModel: row.classifier_model ?? null,
+      classifierConfidence: row.classifier_confidence ?? null,
     };
   }
 }

@@ -37,6 +37,8 @@ export interface IngestDeps {
   readonly embedder: LLMClient;
   readonly store: SqliteSessionStore | PgSessionStore;
   readonly factStore?: SqliteFactStore | PgFactStore;
+  /** Provider and model name of the active classifier, for provenance stamping. */
+  readonly classifierDescriptor?: { readonly provider: string; readonly model: string };
   /** Optional logger — defaults to console.error. */
   readonly log?: (msg: string) => void;
 }
@@ -103,6 +105,9 @@ export async function ingestSession(input: IngestInput, deps: IngestDeps): Promi
     entities: classification.entities,
     decisions: classification.decisions,
     openQuestions: classification.open,
+    ...(deps.classifierDescriptor !== undefined
+      ? { classifier: { ...deps.classifierDescriptor, confidence: classification.confidence } }
+      : {}),
   };
 
   const facts: ReadonlyArray<Fact> = deps.factStore

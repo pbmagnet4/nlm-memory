@@ -1,0 +1,121 @@
+User: I need to set up nginx as a reverse proxy for gridhost with TLS from Let's Encrypt. The app is running on port 8080 on the same machine. Domain is gridhost.example.com.
+
+Agent: [Bash: nginx -v]
+
+```
+nginx version: nginx/1.24.0
+```
+
+[Bash: which certbot]
+
+```
+/usr/bin/certbot
+```
+
+Both are present. Let me check what's currently in /etc/nginx/sites-available/.
+
+[Bash: ls /etc/nginx/sites-available/]
+
+```
+default
+```
+
+Only the default site. I'll create a new config for gridhost.example.com, get the certificate, then update the config to use it.
+
+First, the initial HTTP-only config for the ACME challenge:
+
+[Write: /etc/nginx/sites-available/gridhost]
+
+```nginx
+server {
+    listen 80;
+    server_name gridhost.example.com;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+```
+
+[Bash: ln -s /etc/nginx/sites-available/gridhost /etc/nginx/sites-enabled/gridhost]
+[Bash: nginx -t]
+
+```
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+```
+
+[Bash: systemctl reload nginx]
+
+[Bash: certbot certonly --webroot -w /var/www/certbot -d gridhost.example.com --non-interactive --agree-tos -m ops@example.com]
+
+```
+Successfully received certificate.
+Certificate is saved at: /etc/letsencrypt/live/gridhost.example.com/fullchain.pem
+Key is saved at:         /etc/letsencrypt/live/gridhost.example.com/privkey.pem
+```
+
+Now updating the config to add TLS and the proxy:
+
+[Edit: /etc/nginx/sites-available/gridhost]
+
+```nginx
+server {
+    listen 80;
+    server_name gridhost.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name gridhost.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/gridhost.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/gridhost.example.com/privkey.pem;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+
+    location / {
+        proxy_pass         http://127.0.0.1:8080;
+        proxy_set_header   Host $host;
+        proxy_set_header   X-Real-IP $remote_addr;
+        proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+[Bash: nginx -t && systemctl reload nginx]
+
+```
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+```
+
+User: Does Let's Encrypt auto-renew?
+
+Agent: certbot installs a systemd timer or cron job during installation that runs `certbot renew` twice daily. Renewal happens automatically when the certificate is within 30 days of expiry. To confirm it's active:
+
+[Bash: systemctl status certbot.timer]
+
+```
+Active: active (waiting)
+Trigger: Fri 2026-06-05 12:00:00 UTC
+```
+
+Active. You don't need to do anything manual for renewal.
+
+User: Add a cron fallback in case the timer is disabled.
+
+Agent: [Bash: crontab -l]
+
+No existing crontab. Adding:
+
+[Bash: (crontab -l 2>/dev/null; echo "0 3 * * * certbot renew --quiet --post-hook 'systemctl reload nginx'") | crontab -]
+
+Runs at 3am daily; the post-hook reloads nginx after a successful renewal so the new certificate is served without a restart.
+
+User: Perfect. TLS is live.

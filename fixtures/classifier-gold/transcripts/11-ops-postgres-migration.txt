@@ -1,0 +1,74 @@
+User: I need to add indexes to the sessions table in our Postgres database. The table has 8 million rows and I can't afford a full table lock. The migration is in alembic/versions/0042_session_indexes.py.
+
+Agent: [Read: alembic/versions/0042_session_indexes.py]
+
+```python
+def upgrade() -> None:
+    op.create_index("idx_sessions_created_at", "sessions", ["created_at"])
+    op.create_index("idx_sessions_workspace_id", "sessions", ["workspace_id"])
+    op.create_index("idx_sessions_workspace_created", "sessions", ["workspace_id", "created_at"])
+```
+
+These use standard CREATE INDEX, which takes an AccessShareExclusive lock for the full duration on an 8M-row table. That will block reads and writes for minutes.
+
+The fix is to use CREATE INDEX CONCURRENTLY, which only takes a brief lock at the start and end. Alembic supports this via `postgresql_concurrently=True`.
+
+User: Switch them all to concurrent.
+
+Agent: [Edit: alembic/versions/0042_session_indexes.py]
+
+```python
+def upgrade() -> None:
+    with op.get_context().autocommit_block():
+        op.create_index(
+            "idx_sessions_created_at", "sessions", ["created_at"],
+            postgresql_concurrently=True,
+        )
+        op.create_index(
+            "idx_sessions_workspace_id", "sessions", ["workspace_id"],
+            postgresql_concurrently=True,
+        )
+        op.create_index(
+            "idx_sessions_workspace_created", "sessions",
+            ["workspace_id", "created_at"],
+            postgresql_concurrently=True,
+        )
+```
+
+The `autocommit_block()` is required because CREATE INDEX CONCURRENTLY cannot run inside a transaction.
+
+User: What about statement_timeout? Our default is 30 seconds which would kill a concurrent index build.
+
+Agent: Good catch. Concurrent index builds on large tables can take several minutes. You should set `statement_timeout = 0` for the migration connection only, not globally. In psql:
+
+```sql
+SET statement_timeout = 0;
+```
+
+Or in the Alembic migration, before the index creates:
+
+```python
+op.execute("SET statement_timeout = 0")
+```
+
+I'll add that at the top of the upgrade function.
+
+[Edit: alembic/versions/0042_session_indexes.py]
+
+Added `op.execute("SET statement_timeout = 0")` as the first statement inside `autocommit_block()`.
+
+User: Can we run the migration now, or should we wait for off-peak?
+
+Agent: CONCURRENTLY is safe to run any time without locking, but the index build will consume IO and CPU proportional to table size. On an 8M-row table expect 2-5 minutes. Running during peak hours won't cause downtime, but it will increase query latency while the build is in progress. Off-peak is safer for user experience.
+
+User: We'll run it tonight. Anything else?
+
+Agent: One thing to verify before running: check there are no long-running transactions open, as CONCURRENTLY waits for them to complete before starting. Run:
+
+```sql
+SELECT pid, now() - pg_stat_activity.query_start AS duration, query
+FROM pg_stat_activity
+WHERE state = 'active' AND now() - pg_stat_activity.query_start > interval '1 minute';
+```
+
+If any show up, investigate before starting the migration.

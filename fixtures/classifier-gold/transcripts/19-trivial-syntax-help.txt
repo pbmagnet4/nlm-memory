@@ -1,0 +1,29 @@
+User: How do I iterate over an array in TypeScript and get both the index and the value?
+
+Agent: Use `Array.prototype.entries()` with a `for...of` loop:
+
+```typescript
+const items = ["a", "b", "c"];
+for (const [index, value] of items.entries()) {
+  console.log(index, value);
+}
+```
+
+Output:
+```
+0 a
+1 b
+2 c
+```
+
+Alternatively, `forEach` with two parameters:
+
+```typescript
+items.forEach((value, index) => {
+  console.log(index, value);
+});
+```
+
+The `for...of` with `.entries()` is generally preferred in modern TypeScript because it works with `break` and `continue`, which `forEach` does not.
+
+User: Got it, thanks.

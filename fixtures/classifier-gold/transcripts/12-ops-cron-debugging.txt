@@ -1,0 +1,73 @@
+User: A nightly report cron job on the flarepath server stopped running three days ago. No errors in the app logs. It was set up in the user crontab. Can you help debug?
+
+Agent: [Bash: crontab -l]
+
+```
+0 2 * * * /opt/flarepath/scripts/nightly-report.sh >> /var/log/flarepath/nightly.log 2>&1
+```
+
+The crontab entry looks correct syntactically. Let me check if cron itself is running and whether it logged anything.
+
+[Bash: systemctl status cron]
+
+```
+Active: active (running) since Mon 2026-06-15 09:12:44 UTC; 3 days ago
+```
+
+Cron is running. Check its log:
+
+[Bash: grep nightly-report /var/log/syslog | tail -20]
+
+```
+Jun 15 02:00:01 flarepath CRON[84231]: (ubuntu) CMD (/opt/flarepath/scripts/nightly-report.sh >> /var/log/flarepath/nightly.log 2>&1)
+Jun 15 02:00:01 flarepath CRON[84232]: (CRON) error (grandchild #84231 failed with exit status 126)
+```
+
+Exit code 126 means "permission denied" or "not executable". The script exists but is not executable.
+
+[Bash: ls -la /opt/flarepath/scripts/nightly-report.sh]
+
+```
+-rw-r--r-- 1 ubuntu ubuntu 1842 Jun 14 18:32 /opt/flarepath/scripts/nightly-report.sh
+```
+
+No execute bit. The script was edited on June 14 and the execute permission was lost, likely from a git checkout that replaced the file.
+
+User: Fix it.
+
+Agent: [Bash: chmod +x /opt/flarepath/scripts/nightly-report.sh]
+
+[Bash: ls -la /opt/flarepath/scripts/nightly-report.sh]
+
+```
+-rwxr-xr-x 1 ubuntu ubuntu 1842 Jun 14 18:32 /opt/flarepath/scripts/nightly-report.sh
+```
+
+Fixed. Run a manual test now to confirm it executes cleanly:
+
+[Bash: /opt/flarepath/scripts/nightly-report.sh]
+
+```
+[2026-06-18 14:23:01] Generating nightly report...
+[2026-06-18 14:23:04] Fetched 2341 records
+[2026-06-18 14:23:05] Report written to /var/log/flarepath/reports/2026-06-18.json
+[2026-06-18 14:23:05] Done.
+```
+
+Runs cleanly.
+
+User: Should we track this in git so it doesn't happen again?
+
+Agent: Yes. The issue is that git does not preserve execute bits by default on some checkout configurations. Two options: set `core.fileMode = true` in the repo's git config (the default on Linux, but can be overridden), or add an explicit `chmod` call to the deploy script so the script is always made executable after checkout.
+
+The deploy script approach is more robust since it works regardless of git config.
+
+User: Let's add it to the deploy script.
+
+Agent: [Read: scripts/deploy.sh]
+
+[Edit: scripts/deploy.sh]
+
+Added `chmod +x /opt/flarepath/scripts/nightly-report.sh` after the git pull step.
+
+The cron job will run correctly from 2am tonight. The root cause was a git checkout stripping the execute bit; the deploy script now re-applies it on every deploy.

@@ -39,6 +39,9 @@ type SessionRow = {
   transcript_path: string | null;
   body: string | null;
   workstream_id: string | null;
+  classifier_provider?: string | null;
+  classifier_model?: string | null;
+  classifier_confidence?: number | null;
 };
 
 /**
@@ -99,7 +102,8 @@ export class PgSessionStore implements SessionStore {
   async list(filter?: SessionFilter): Promise<ReadonlyArray<Session>> {
     const result = await this.pool.query<SessionRow>(
       `SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
-              label, summary, status, transcript_kind, transcript_path, body
+              label, summary, status, transcript_kind, transcript_path, body,
+              classifier_provider, classifier_model, classifier_confidence
        FROM sessions ORDER BY started_at ASC`,
     );
     if (result.rows.length === 0) return [];
@@ -122,7 +126,8 @@ export class PgSessionStore implements SessionStore {
   async getById(sessionId: string): Promise<Session | null> {
     const result = await this.pool.query<SessionRow>(
       `SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
-              label, summary, status, transcript_kind, transcript_path, body
+              label, summary, status, transcript_kind, transcript_path, body,
+              classifier_provider, classifier_model, classifier_confidence
        FROM sessions WHERE id = $1`,
       [sessionId],
     );
@@ -452,8 +457,9 @@ export class PgSessionStore implements SessionStore {
         `INSERT INTO sessions (
            id, runtime, runtime_session_id, started_at, ended_at, duration_min,
            label, summary, body, status, transcript_kind, transcript_path,
-           transcript_offset, transcript_length
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+           transcript_offset, transcript_length,
+           classifier_provider, classifier_model, classifier_confidence
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
          ON CONFLICT (id) DO UPDATE SET
            ended_at = EXCLUDED.ended_at,
            duration_min = EXCLUDED.duration_min,
@@ -461,6 +467,9 @@ export class PgSessionStore implements SessionStore {
            summary = EXCLUDED.summary,
            body = EXCLUDED.body,
            status = EXCLUDED.status,
+           classifier_provider = EXCLUDED.classifier_provider,
+           classifier_model = EXCLUDED.classifier_model,
+           classifier_confidence = EXCLUDED.classifier_confidence,
            updated_at = NOW()`,
         [
           record.id, record.runtime, record.runtimeSessionId,
@@ -469,6 +478,9 @@ export class PgSessionStore implements SessionStore {
           record.status === "idle" ? "active" : record.status,
           record.transcriptKind, record.transcriptPath,
           record.transcriptOffset, record.transcriptLength,
+          record.classifier?.provider ?? null,
+          record.classifier?.model ?? null,
+          record.classifier?.confidence ?? null,
         ],
       );
       await client.query("DELETE FROM markers WHERE session_id = $1", [record.id]);
@@ -484,21 +496,46 @@ export class PgSessionStore implements SessionStore {
           [record.id, record.openQuestions[i]!.trim(), i],
         );
       }
-      for (const raw of record.entities) {
-        const name = raw.trim();
-        if (!name) continue;
+      // Replace entity-link semantics: delete the session's existing links, then
+      // re-insert for the new entity list. Without this, nlm reprocess amplifies
+      // stale links (ON CONFLICT DO NOTHING keeps dropped entities forever) and
+      // double-counts session_count on every re-ingest pass.
+      const newEntities = [...new Set(record.entities.map((e) => e.trim()).filter(Boolean))];
+      const oldRes = await client.query<{ entity_canonical: string }>(
+        "SELECT entity_canonical FROM session_entities WHERE session_id = $1",
+        [record.id],
+      );
+      const oldEntities = new Set(oldRes.rows.map((r) => r.entity_canonical));
+
+      await client.query("DELETE FROM session_entities WHERE session_id = $1", [record.id]);
+
+      for (const name of newEntities) {
         await client.query(
           `INSERT INTO entities (canonical, type, status, source, first_seen_session, last_seen_session, session_count)
            VALUES ($1, 'candidate', 'candidate', 'auto-detected', $2, $2, 0)
-           ON CONFLICT (canonical) DO UPDATE SET
-             last_seen_session = $2,
-             session_count = entities.session_count + 1,
-             updated_at = NOW()`,
+           ON CONFLICT (canonical) DO NOTHING`,
           [name, record.id],
         );
+        // Update last_seen for entities newly added to this session; matches prior touch semantics.
+        if (!oldEntities.has(name)) {
+          await client.query(
+            "UPDATE entities SET last_seen_session = $1, updated_at = NOW() WHERE canonical = $2",
+            [record.id, name],
+          );
+        }
         await client.query(
-          "INSERT INTO session_entities (session_id, entity_canonical) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+          "INSERT INTO session_entities (session_id, entity_canonical) VALUES ($1, $2)",
           [record.id, name],
+        );
+      }
+
+      // Recompute session_count exactly for every entity in (old union new) so
+      // counts reflect reality regardless of prior drift.
+      const allTouched = [...new Set([...oldEntities, ...newEntities])];
+      for (const name of allTouched) {
+        await client.query(
+          "UPDATE entities SET session_count = (SELECT COUNT(*) FROM session_entities WHERE entity_canonical = $1), updated_at = NOW() WHERE canonical = $1",
+          [name],
         );
       }
       if (supersedes && supersedes.priorSessionId !== record.id) {
@@ -777,5 +814,8 @@ function rowToSession(
       ? { supersededBy: edges.supersededBy, supersedes: edges.supersedes }
       : {}),
     workstreamId: row.workstream_id ?? null,
+    classifierProvider: row.classifier_provider ?? null,
+    classifierModel: row.classifier_model ?? null,
+    classifierConfidence: row.classifier_confidence ?? null,
   };
 }

@@ -658,4 +658,30 @@ describe("ScanScheduler.tick", () => {
     expect(sess).toHaveLength(1);
     expect(sess[0]?.label).toBe("Oversized label");
   });
+
+  it("writes classifier provenance when classifierDescriptor is provided", async () => {
+    const adapter = new ClaudeCodeAdapter({ projectsPath: projects, idleMinutes: 15 });
+    const classifier = new StubClassifier();
+    const scheduler = new ScanScheduler({
+      store,
+      adapters: [adapter],
+      classifier,
+      embedder: null,
+      classifierDescriptor: { provider: "ollama", model: "deepseek-r1:7b" },
+      logger: () => {},
+    });
+
+    const report = await scheduler.tick();
+    expect(report.inserted).toBe(1);
+
+    const db = store.rawDb();
+    const row = db.prepare<[], {
+      classifier_provider: string | null;
+      classifier_model: string | null;
+      classifier_confidence: number | null;
+    }>("SELECT classifier_provider, classifier_model, classifier_confidence FROM sessions").get();
+    expect(row?.classifier_provider).toBe("ollama");
+    expect(row?.classifier_model).toBe("deepseek-r1:7b");
+    expect(row?.classifier_confidence).toBeCloseTo(0.9);
+  });
 });

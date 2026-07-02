@@ -316,4 +316,70 @@ describe("reclassifyOversized", () => {
     expect(second).not.toBeNull();
     expect(second!.label).toBe("Isolated");
   });
+
+  it("writes classifier provenance when classifierDescriptor mirrors nlm.ts reclassify-oversized composition", async () => {
+    // Mirrors the deps shape nlm.ts passes to reclassifyOversized: classifierDescriptor is built
+    // from stack.classifier.provider and stack.classifier.model, exactly as the CLI does.
+    const storage = SqliteStorage.create({ dbPath, migrationsDir: MIGRATIONS });
+    const db = storage.rawDb();
+
+    db.prepare(
+      `INSERT INTO adapter_state (adapter_name, source_path, last_offset, file_size, session_id, failure_count)
+       VALUES ('claude-code', ?, 0, 120000, NULL, 3)`,
+    ).run(srcPath);
+
+    const chunk: SessionChunk = {
+      id: "cc_prov1",
+      runtime: "claude-code",
+      runtimeSessionId: "rsp1",
+      sourcePath: srcPath,
+      startedAt: "2026-04-14T00:00:00.000Z",
+      endedAt: "2026-04-14T01:00:00.000Z",
+      durationMin: 60,
+      turnCount: 10,
+      byteRange: [0, 120000],
+      projectDir: "/p",
+      gitBranch: "main",
+      text: "y".repeat(120_000),
+      label: "raw",
+    };
+
+    const result: ClassifyResult = {
+      label: "Provenance session",
+      summary: "s",
+      entities: [],
+      decisions: [],
+      open: [],
+      confidence: 0.88,
+      facts: [],
+    };
+
+    // Stub that exposes .provider and .model, matching the ClassifierBox contract
+    // that nlm.ts reads to build classifierDescriptor.
+    const stubClassifier = Object.assign(fakeClassifier(result), {
+      provider: "ollama" as const,
+      model: "qwen3:4b-instruct",
+    });
+
+    const out = await reclassifyOversized(
+      {
+        db,
+        store: storage.sessions,
+        factStore: storage.facts,
+        embedder: fakeClassifier(result),
+        classifier: stubClassifier,
+        classifierDescriptor: { provider: stubClassifier.provider, model: stubClassifier.model },
+        adapters: [fakeAdapter(chunk)],
+      },
+      {},
+    );
+
+    expect(out.ingested).toBe(1);
+
+    const sess = await storage.sessions.getById("cc_prov1");
+    expect(sess).not.toBeNull();
+    expect(sess!.classifierProvider).toBe("ollama");
+    expect(sess!.classifierModel).toBe("qwen3:4b-instruct");
+    expect(sess!.classifierConfidence).toBeCloseTo(0.88);
+  });
 });

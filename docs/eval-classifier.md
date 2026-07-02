@@ -52,6 +52,18 @@ with random diversity fill across runtime and length buckets. Never write to
 
 ## Running
 
+Before running this full LLM-judge eval, verify that your classifier lane
+produces well-formed output by running the deterministic fixture eval first:
+
+```sh
+nlm eval --classifier
+```
+
+This takes minutes, requires no additional data files, and will surface schema
+failures or calibration problems early. See `docs/classifier-tiers.md` for
+metric definitions and tier baselines. Once the fixture eval passes, proceed
+with the judge-based eval below.
+
 ```bash
 NLM_EVAL_DATA_DIR=/tmp/nlm-309 \
 NLM_OLLAMA_URL=http://localhost:11434 \

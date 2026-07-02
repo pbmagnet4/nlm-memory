@@ -1,0 +1,14 @@
+User: What files are in the src/ directory?
+
+Agent: [Bash: ls src/]
+
+```
+app.ts
+config.ts
+index.ts
+routes.ts
+```
+
+Four files: app.ts, config.ts, index.ts, and routes.ts.
+
+User: Thanks.

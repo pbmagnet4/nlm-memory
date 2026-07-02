@@ -1,0 +1,59 @@
+User: For pulsearch I need to pick a vector database. The candidates are pgvector, Qdrant, and Weaviate. We're embedding 2-3 million documents, need sub-100ms p99 search, and I want to avoid managing a separate service if possible. Can you compare them?
+
+Agent: Here's a structured comparison for the pulsearch use case:
+
+pgvector
+- Runs as a Postgres extension, so no separate service if you're already on Postgres
+- At 2-3M vectors, IVFFlat and HNSW indexes both work but require tuning (lists parameter for IVFFlat, ef_construction for HNSW)
+- Sub-100ms p99 is achievable at this scale with HNSW and appropriate connection pool sizing
+- Filtering on metadata is native SQL, which is convenient
+- Writes block on the HNSW index during bulk inserts; need to insert then create index, not the other way around
+
+Qdrant
+- Dedicated vector database, separate service (Docker or cloud)
+- HNSW index is its primary structure, very well tuned; consistently strong benchmark numbers at 1-10M scale
+- Payload filtering is first-class and done before the ANN step, not post-filter, which matters for selective queries
+- REST and gRPC APIs; client libraries for Python, TypeScript, Go
+- Requires running and operating another service
+
+Weaviate
+- Dedicated vector database with a built-in GraphQL query layer
+- More opinionated about data modeling (schemas with classes)
+- Larger operational footprint than Qdrant
+- Better fit when you need hybrid BM25+vector search out of the box
+
+For pulsearch specifically:
+- If Postgres is already in your stack and ops simplicity is the priority, pgvector with HNSW is reasonable at 2-3M documents
+- If you want best-in-class ANN performance and are comfortable running another service, Qdrant is the stronger choice at this scale
+- Weaviate adds complexity without clear benefit unless you need its GraphQL layer
+
+User: We're already running Postgres, but search quality is the top priority. What do you recommend?
+
+Agent: Go with Qdrant. At 2-3M documents with sub-100ms p99 as a hard requirement, Qdrant's HNSW implementation is more predictable than pgvector's, and payload filtering before the ANN step means selective filters don't degrade recall. The operational overhead of one additional Docker container is low.
+
+You can keep Postgres for everything else and run Qdrant alongside it. The pulsearch embedding pipeline writes to both: Postgres for the source record, Qdrant for the vector.
+
+User: Agreed. What collection configuration would you recommend for pulsearch?
+
+Agent: For 2-3M documents with 1536-dim embeddings (if using text-embedding-3-small) or 768-dim (if using a local model):
+
+```python
+client.create_collection(
+    collection_name="pulsearch-docs",
+    vectors_config=VectorParams(
+        size=1536,        # adjust to your embedding dim
+        distance=Distance.COSINE,
+    ),
+    hnsw_config=HnswConfigDiff(
+        m=16,
+        ef_construct=100,
+    ),
+    optimizers_config=OptimizersConfigDiff(
+        indexing_threshold=10_000,  # don't index small batches
+    ),
+)
+```
+
+HNSW m=16 and ef_construct=100 are conservative defaults that hit sub-100ms comfortably at this scale. You can increase ef_construct for higher recall at the cost of slower indexing.
+
+User: Perfect. Let's go with Qdrant.

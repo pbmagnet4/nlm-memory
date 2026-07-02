@@ -1,0 +1,61 @@
+User: crestapi needs API rate limiting. We're getting abuse from a handful of API keys hammering the search endpoint. I want per-API-key rate limiting: 100 requests per minute, returning 429 with a Retry-After header when exceeded.
+
+Agent: The standard approach for FastAPI is slowapi, which wraps limits.py and integrates as middleware. It supports Redis as the backing store so limits are shared across multiple crestapi workers. Let me check what's already in requirements.txt and whether Redis is already a dependency.
+
+[Bash: grep -E "redis|slowapi|limits" requirements.txt]
+
+```
+redis==5.0.4
+```
+
+Redis is there. slowapi is not yet installed. I'll add it.
+
+User: Go ahead and add slowapi.
+
+Agent: [Edit: requirements.txt]
+
+Added `slowapi==0.1.9`.
+
+[Read: src/main.py]
+
+[Edit: src/main.py]
+
+```python
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+
+def get_api_key(request: Request) -> str:
+    return request.headers.get("X-API-Key", get_remote_address(request))
+
+limiter = Limiter(key_func=get_api_key, storage_uri=settings.REDIS_URL)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
+```
+
+[Read: src/routes/search.py]
+
+[Edit: src/routes/search.py]
+
+Added the `@limiter.limit("100/minute")` decorator to the search endpoint handler.
+
+User: Will the 429 response include a Retry-After header?
+
+Agent: slowapi's built-in _rate_limit_exceeded_handler sets the Retry-After header automatically based on the window reset time. You don't need to add it manually.
+
+User: Good. What happens to unauthenticated requests with no API key header?
+
+Agent: The `get_api_key` function falls back to `get_remote_address`, which returns the client IP. So unauthenticated clients are rate-limited by IP at the same 100 req/min threshold. If you want a stricter limit for unauthenticated access you'd need a separate decorator with a lower limit on those routes.
+
+User: Keep it the same limit for now. Run the tests.
+
+Agent: [Bash: pip install -r requirements.txt -q && pytest tests/ -q]
+
+```
+...................................
+35 passed in 2.14s
+```
+
+All passing. slowapi with Redis backing installed and wired to the search endpoint.

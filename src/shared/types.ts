@@ -40,6 +40,10 @@ export interface Session {
   readonly supersededBy?: string | null;
   /** Live binding to a workstream, if any. Populated by projections that select it (e.g. listByDateRange); absent elsewhere. */
   readonly workstreamId?: string | null;
+  /** Classifier that produced this session's classification. NULL = classified before provenance tracking. */
+  readonly classifierProvider?: string | null;
+  readonly classifierModel?: string | null;
+  readonly classifierConfidence?: number | null;
 }
 
 /**

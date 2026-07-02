@@ -1,0 +1,318 @@
+[
+  {
+    "id": "01-bug-fix-null-pointer-api",
+    "label": "Fix null pointer bug in corvid-api events route",
+    "labelAlternates": [
+      "corvid-api POST events null source fix",
+      "Fix missing source field TypeError in events handler"
+    ],
+    "entities": [
+      "corvid-api",
+      "Express",
+      "Postgres"
+    ],
+    "decisions": [
+      "Reject requests missing source field with 400 instead of defaulting"
+    ],
+    "expectLowConfidence": false
+  },
+  {
+    "id": "02-bug-fix-race-condition-queue",
+    "label": "Fix duplicate job execution race condition in taskvine",
+    "labelAlternates": [
+      "taskvine worker race condition fix with SELECT FOR UPDATE",
+      "Fix concurrent worker job claim race in taskvine"
+    ],
+    "entities": [
+      "taskvine",
+      "PostgreSQL",
+      "SQLAlchemy"
+    ],
+    "decisions": [
+      "Replace unlocked SELECT with SELECT FOR UPDATE SKIP LOCKED to eliminate duplicate job claims"
+    ],
+    "expectLowConfidence": false
+  },
+  {
+    "id": "03-bug-fix-jwt-clock-skew",
+    "label": "Fix JWT clock skew validation failures in bridgeauth",
+    "labelAlternates": [
+      "bridgeauth JWT expiry leeway fix",
+      "Add clock skew leeway to PyJWT token validation"
+    ],
+    "entities": [
+      "bridgeauth",
+      "PyJWT",
+      "HS256"
+    ],
+    "decisions": [
+      "Add clock-skew leeway to JWT validation"
+    ],
+    "expectLowConfidence": false
+  },
+  {
+    "id": "04-feature-webhook-retry",
+    "label": "Add exponential backoff webhook retry queue to taskstream",
+    "labelAlternates": [
+      "taskstream webhook retry with Redis sorted set",
+      "Implement webhook retry with exponential backoff in taskstream"
+    ],
+    "entities": [
+      "taskstream",
+      "Redis"
+    ],
+    "decisions": [
+      "Use Redis sorted set with score as next-attempt timestamp for retry queue",
+      "Dead-letter failed jobs after 5 attempts with exponential backoff"
+    ],
+    "expectLowConfidence": false
+  },
+  {
+    "id": "05-feature-csv-export",
+    "label": "Add streaming CSV export endpoint to lumens",
+    "labelAlternates": [
+      "lumens GET /reports/export CSV streaming",
+      "Implement CSV export with streaming response in lumens"
+    ],
+    "entities": [
+      "lumens",
+      "encoding/csv"
+    ],
+    "decisions": [
+      "Stream CSV directly to http.ResponseWriter instead of buffering in memory"
+    ],
+    "expectLowConfidence": false
+  },
+  {
+    "id": "06-feature-rate-limiting",
+    "label": "Add Redis-backed rate limiting to crestapi search endpoint",
+    "labelAlternates": [
+      "crestapi API rate limiting with slowapi and Redis",
+      "Implement per-API-key rate limiting in crestapi"
+    ],
+    "entities": [
+      "crestapi",
+      "FastAPI",
+      "Redis",
+      "slowapi"
+    ],
+    "decisions": [
+      "Use slowapi with Redis backend for 100 requests per minute per API key"
+    ],
+    "expectLowConfidence": false
+  },
+  {
+    "id": "07-refactor-db-abstraction",
+    "label": "Extract DbAdapter interface to ports layer in vaultdb",
+    "labelAlternates": [
+      "vaultdb database adapter abstraction refactor",
+      "Refactor vaultdb to depend on DbAdapter interface not Postgres directly"
+    ],
+    "entities": [
+      "vaultdb",
+      "TypeScript",
+      "Postgres",
+      "SQLite"
+    ],
+    "decisions": [
+      "Extract DbAdapter interface to ports layer so core modules do not import Postgres directly"
+    ],
+    "expectLowConfidence": false
+  },
+  {
+    "id": "08-refactor-config-loading",
+    "label": "Centralize config into Pydantic Settings class in axiom-worker",
+    "labelAlternates": [
+      "axiom-worker config refactor using Pydantic Settings",
+      "Replace scattered os.getenv calls with Pydantic Settings in axiom-worker"
+    ],
+    "entities": [
+      "axiom-worker",
+      "Pydantic",
+      "pydantic-settings"
+    ],
+    "decisions": [
+      "Replace scattered os.getenv calls with a single Pydantic Settings class loaded at startup"
+    ],
+    "expectLowConfidence": false
+  },
+  {
+    "id": "09-ops-docker-staging",
+    "label": "Set up Docker Compose staging environment with Traefik for droneflow",
+    "labelAlternates": [
+      "droneflow staging docker-compose with Traefik and TLS",
+      "Create staging Docker Compose stack for droneflow"
+    ],
+    "entities": [
+      "droneflow",
+      "Docker Compose",
+      "Traefik"
+    ],
+    "decisions": [
+      "Use Traefik for TLS termination and routing in staging",
+      "Keep staging deploys explicit via deploy script rather than auto-pull"
+    ],
+    "expectLowConfidence": false
+  },
+  {
+    "id": "10-ops-nginx-ssl",
+    "label": "Configure nginx reverse proxy with TLS for gridhost",
+    "labelAlternates": [
+      "gridhost nginx TLS setup with certbot and Let's Encrypt",
+      "Set up nginx with Let's Encrypt certificate for gridhost"
+    ],
+    "entities": [
+      "gridhost",
+      "nginx",
+      "certbot"
+    ],
+    "decisions": [
+      "Terminate TLS at nginx and proxy to app on port 8080",
+      "Add cron fallback for certbot renewal in case systemd timer is disabled"
+    ],
+    "expectLowConfidence": false
+  },
+  {
+    "id": "11-ops-postgres-migration",
+    "label": "Run concurrent index migration on Postgres sessions table",
+    "labelAlternates": [
+      "Add CONCURRENTLY indexes to sessions table via Alembic",
+      "Postgres sessions table index migration without table lock"
+    ],
+    "entities": [
+      "PostgreSQL",
+      "Alembic"
+    ],
+    "decisions": [
+      "Use CREATE INDEX CONCURRENTLY to avoid locking the 8-million-row sessions table",
+      "Set statement_timeout to 0 for the migration connection to prevent timeout killing the index build"
+    ],
+    "expectLowConfidence": false
+  },
+  {
+    "id": "12-ops-cron-debugging",
+    "label": "Debug and fix flarepath nightly cron job not running",
+    "labelAlternates": [
+      "flarepath cron exit 126 permission denied fix",
+      "Fix missing execute bit on flarepath nightly report script"
+    ],
+    "entities": [
+      "flarepath"
+    ],
+    "decisions": [
+      "Add chmod to deploy script to re-apply execute bit after git checkout"
+    ],
+    "expectLowConfidence": false
+  },
+  {
+    "id": "13-research-vector-db-comparison",
+    "label": "Vector database comparison and Qdrant selection for pulsearch",
+    "labelAlternates": [
+      "pulsearch vector DB evaluation: pgvector vs Qdrant vs Weaviate",
+      "Choose Qdrant for pulsearch vector search"
+    ],
+    "entities": [
+      "pulsearch",
+      "Qdrant",
+      "pgvector",
+      "Weaviate"
+    ],
+    "decisions": [
+      "Use Qdrant for pulsearch instead of pgvector due to stronger ANN performance and pre-filter payload filtering"
+    ],
+    "expectLowConfidence": false
+  },
+  {
+    "id": "14-research-oauth-provider",
+    "label": "OAuth provider evaluation and Keycloak selection for irongate",
+    "labelAlternates": [
+      "irongate auth provider comparison: Keycloak vs Auth0 vs SuperTokens",
+      "Choose Keycloak self-hosted for irongate customer auth"
+    ],
+    "entities": [
+      "irongate",
+      "Keycloak",
+      "Auth0",
+      "SuperTokens"
+    ],
+    "decisions": [
+      "Use Keycloak self-hosted backed by Postgres for irongate auth because it covers LDAP federation without additional cost"
+    ],
+    "expectLowConfidence": false
+  },
+  {
+    "id": "15-writing-api-docs",
+    "label": "Draft OpenAPI 3.0 documentation for cobalt-api with Swagger UI",
+    "labelAlternates": [
+      "cobalt-api OpenAPI spec and Swagger UI setup",
+      "Set up OpenAPI docs for cobalt-api served at /api-docs"
+    ],
+    "entities": [
+      "cobalt-api",
+      "OpenAPI",
+      "Swagger UI"
+    ],
+    "decisions": [
+      "Use OpenAPI 3.0 format and host docs publicly at /api-docs via swagger-ui-express"
+    ],
+    "expectLowConfidence": false
+  },
+  {
+    "id": "16-meeting-sprint-planning",
+    "label": "Sprint 5 planning notes for orbitflow team",
+    "labelAlternates": [
+      "orbitflow sprint 5 planning: webhook retry, rate limiting, deferrals",
+      "orbitflow sprint 5 commitments and deferrals"
+    ],
+    "entities": [
+      "orbitflow"
+    ],
+    "decisions": [
+      "Webhook retry is top backend priority for sprint 5",
+      "Analytics dashboard deferred to sprint 6",
+      "Rate limiting assigned to backend as secondary sprint 5 item",
+      "Mobile push notifications deferred to sprint 6 backlog"
+    ],
+    "expectLowConfidence": false
+  },
+  {
+    "id": "17-trivial-list-files",
+    "label": "List files in src directory",
+    "labelAlternates": [
+      "Directory listing of src folder"
+    ],
+    "entities": [],
+    "decisions": [],
+    "expectLowConfidence": true
+  },
+  {
+    "id": "18-trivial-version-check",
+    "label": "Check Node.js and npm versions",
+    "labelAlternates": [
+      "Node.js npm version query"
+    ],
+    "entities": [],
+    "decisions": [],
+    "expectLowConfidence": true
+  },
+  {
+    "id": "19-trivial-syntax-help",
+    "label": "TypeScript array iteration syntax question",
+    "labelAlternates": [
+      "How to iterate array with index in TypeScript"
+    ],
+    "entities": [],
+    "decisions": [],
+    "expectLowConfidence": true
+  },
+  {
+    "id": "20-trivial-read-package-json",
+    "label": "Read package.json and confirm dependencies installed",
+    "labelAlternates": [
+      "Check installed npm dependencies from package.json"
+    ],
+    "entities": [],
+    "decisions": [],
+    "expectLowConfidence": true
+  }
+]

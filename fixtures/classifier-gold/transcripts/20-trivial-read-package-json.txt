@@ -1,0 +1,41 @@
+User: Read the package.json and tell me what dependencies are listed.
+
+Agent: [Read: package.json]
+
+```json
+{
+  "name": "my-project",
+  "version": "1.0.0",
+  "dependencies": {
+    "express": "^4.18.2",
+    "pg": "^8.11.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3",
+    "vitest": "^1.2.0"
+  }
+}
+```
+
+Dependencies:
+- express ^4.18.2
+- pg ^8.11.0
+
+Dev dependencies:
+- typescript ^5.3.3
+- vitest ^1.2.0
+
+User: Are they installed?
+
+Agent: [Bash: ls node_modules | grep -E "^(express|pg|typescript|vitest)$"]
+
+```
+express
+pg
+typescript
+vitest
+```
+
+All four are installed in node_modules.
+
+User: Perfect, thanks.
