@@ -13,6 +13,7 @@
 
 import type { PoolClient } from "pg";
 import type { Fact } from "@shared/types.js";
+import { batchWinners } from "./fact-batch.js";
 
 export async function ingestSessionFactsOnClient(
   client: PoolClient,
@@ -32,9 +33,7 @@ export async function ingestSessionFactsOnClient(
     );
   }
 
-  const winners = new Map<string, Fact>();
-  for (const f of facts) winners.set(`${f.subject}\u0000${f.predicate}`, f);
-  for (const f of winners.values()) {
+  for (const f of batchWinners(facts)) {
     const collapsed = await client.query<{ id: string }>(
       `UPDATE facts SET superseded_by = $1
        WHERE subject = $2 AND predicate = $3 AND superseded_by IS NULL AND id != $1

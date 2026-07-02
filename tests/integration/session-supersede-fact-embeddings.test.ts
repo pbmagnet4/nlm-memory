@@ -9,6 +9,17 @@ import type {
 } from "../../src/core/storage/sqlite-session-store.js";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { makeFact } from "../fixtures/facts.js";
+import { runChecksOnSqlite } from "../../src/core/integrity/check-invariants.js";
+import type { EmbedResult, LLMClient } from "../../src/ports/llm-client.js";
+
+class StubEmbedder implements LLMClient {
+  async embed(): Promise<EmbedResult> {
+    return { vector: new Float32Array(768).fill(0.1), model: "stub" };
+  }
+  async rewriteForRecall(): Promise<never> { throw new Error("stub"); }
+  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
+  async classify(): Promise<never> { throw new Error("stub"); }
+}
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 
@@ -138,5 +149,31 @@ describe("session markSuperseded cascade -- embedding cleanup (sqlite)", () => {
     // f_a has no matching successor so it must remain active with its embedding.
     expect((await factStore.getById("f_a"))?.supersededBy).toBeNull();
     expect(embeddingExists("f_a")).toBe(true);
+  });
+
+  it("intra-batch (subject,predicate) duplicate: loser gets no embedding, winner gets one, I7 clean", async () => {
+    const fLoser = makeFact({
+      id: "f_dup_loser",
+      subject: "svc",
+      predicate: "db",
+      value: "Postgres",
+      sourceSessionId: "sess_dup",
+    });
+    const fWinner = makeFact({
+      id: "f_dup_winner",
+      subject: "svc",
+      predicate: "db",
+      value: "SQLite",
+      sourceSessionId: "sess_dup",
+    });
+    const embedder = new StubEmbedder();
+    await sessions.insertSession(makeRecord({ id: "sess_dup" }), embedder, null, {
+      factStore,
+      facts: [fLoser, fWinner],
+    });
+
+    expect(embeddingExists("f_dup_winner")).toBe(true);
+    expect(embeddingExists("f_dup_loser")).toBe(false);
+    expect(runChecksOnSqlite(storage.rawDb()).find((v) => v.id === "I7")).toBeUndefined();
   });
 });

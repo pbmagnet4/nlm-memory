@@ -19,6 +19,7 @@ import type { BackfillCandidate, BackfillCandidateFilter, IngestRecord, RecentMa
 import type { PgFactStore } from "./pg-fact-store.js";
 import { ingestSessionFactsOnClient } from "./pg-fact-ingest.js";
 import { chunkSessionText } from "@core/embedding/chunk-body.js";
+import { batchWinners } from "./fact-batch.js";
 
 type SessionRow = {
   id: string;
@@ -511,7 +512,7 @@ export class PgSessionStore implements SessionStore {
       // SQLite path. A per-fact embed failure leaves the fact current but
       // semantically unreachable until a future re-ingest.
       if (factSink !== null) {
-        for (const fact of factSink.facts) {
+        for (const fact of batchWinners(factSink.facts)) {
           const factText = `${fact.subject} ${fact.predicate} ${fact.value}`.trim();
           if (!factText) continue;
           try {
@@ -601,7 +602,7 @@ export class PgSessionStore implements SessionStore {
       client.release();
     }
     if (embedder) {
-      for (const fact of facts) {
+      for (const fact of batchWinners(facts)) {
         const factText = `${fact.subject} ${fact.predicate} ${fact.value}`.trim();
         if (!factText) continue;
         try {

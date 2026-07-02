@@ -17,6 +17,17 @@ import type { Pool } from "pg";
 import { PgStorage } from "../../src/core/storage/pg-storage.js";
 import { makeFact } from "../fixtures/facts.js";
 import { makeSession } from "../fixtures/sessions.js";
+import { runChecksOnPg } from "../../src/core/integrity/check-invariants.js";
+import type { EmbedResult, LLMClient } from "../../src/ports/llm-client.js";
+
+class StubEmbedder implements LLMClient {
+  async embed(): Promise<EmbedResult> {
+    return { vector: new Float32Array(768).fill(0.1), model: "stub" };
+  }
+  async rewriteForRecall(): Promise<never> { throw new Error("stub"); }
+  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
+  async classify(): Promise<never> { throw new Error("stub"); }
+}
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
 const MIGRATIONS_DIR = join(
@@ -93,5 +104,53 @@ describe.skipIf(!PG_TEST_URL)("pg fact ingest correctness (#351 parity)", () => 
       "SELECT id FROM facts WHERE subject = 'svc' AND superseded_by IS NULL",
     )).rows;
     expect(active).toEqual([{ id: "f_1b" }]);
+  });
+
+  it("insertSession: intra-batch (subject,predicate) duplicate yields no ghost embedding and I7 clean", async () => {
+    const embedder = new StubEmbedder();
+    const record = {
+      id: "sess_dup_pg",
+      runtime: "claude-code",
+      runtimeSessionId: null,
+      startedAt: "2026-05-19T10:00:00Z",
+      endedAt: "2026-05-19T10:30:00Z",
+      durationMin: 30,
+      label: "L",
+      summary: "S",
+      body: "",
+      status: "closed" as const,
+      transcriptKind: "claude-code-jsonl" as const,
+      transcriptPath: null,
+      transcriptOffset: null,
+      transcriptLength: null,
+      entities: [],
+      decisions: [],
+      openQuestions: [],
+    };
+    const fLoser = makeFact({ id: "pg_dup_loser", subject: "db", predicate: "engine", value: "pg", sourceSessionId: "sess_dup_pg" });
+    const fWinner = makeFact({ id: "pg_dup_winner", subject: "db", predicate: "engine", value: "sqlite", sourceSessionId: "sess_dup_pg" });
+    await storage.sessions.insertSession(record, embedder, null, {
+      factStore: storage.facts,
+      facts: [fLoser, fWinner],
+    });
+
+    const loserEmb = (await pool.query("SELECT fact_id FROM fact_embeddings WHERE fact_id = $1", ["pg_dup_loser"])).rows;
+    const winnerEmb = (await pool.query("SELECT fact_id FROM fact_embeddings WHERE fact_id = $1", ["pg_dup_winner"])).rows;
+    expect(loserEmb).toHaveLength(0);
+    expect(winnerEmb).toHaveLength(1);
+    expect((await runChecksOnPg(pool)).find((v) => v.id === "I7")).toBeUndefined();
+  });
+
+  it("insertFactsForSession: intra-batch (subject,predicate) duplicate yields no ghost embedding and I7 clean", async () => {
+    const embedder = new StubEmbedder();
+    const fLoser = makeFact({ id: "pg_bkfl_loser", subject: "orm", predicate: "lib", value: "Prisma", sourceSessionId: "s1" });
+    const fWinner = makeFact({ id: "pg_bkfl_winner", subject: "orm", predicate: "lib", value: "Drizzle", sourceSessionId: "s1" });
+    await storage.sessions.insertFactsForSession("s1", storage.facts, [fLoser, fWinner], embedder);
+
+    const loserEmb = (await pool.query("SELECT fact_id FROM fact_embeddings WHERE fact_id = $1", ["pg_bkfl_loser"])).rows;
+    const winnerEmb = (await pool.query("SELECT fact_id FROM fact_embeddings WHERE fact_id = $1", ["pg_bkfl_winner"])).rows;
+    expect(loserEmb).toHaveLength(0);
+    expect(winnerEmb).toHaveLength(1);
+    expect((await runChecksOnPg(pool)).find((v) => v.id === "I7")).toBeUndefined();
   });
 });

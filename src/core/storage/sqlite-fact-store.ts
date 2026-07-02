@@ -26,6 +26,7 @@ import type {
   FactStore,
 } from "@ports/fact-store.js";
 import type { Fact, FactHistoryChain, FactKind } from "@shared/types.js";
+import { batchWinners } from "./fact-batch.js";
 
 type FactRow = {
   id: string;
@@ -406,9 +407,7 @@ export class SqliteFactStore implements FactStore {
     // both end recall-ineligible forever (NLM #351 bug 2). Last fact in the
     // batch for a given (subject, predicate) wins; every other active fact —
     // batch duplicates and prior facts alike — collapses under it.
-    const winners = new Map<string, Fact>();
-    for (const f of facts) winners.set(`${f.subject}\u0000${f.predicate}`, f);
-    for (const f of winners.values()) {
+    for (const f of batchWinners(facts)) {
       // Capture which facts this collapse supersedes BEFORE the update, then
       // drop their embeddings — a superseded fact must not linger in the ANN
       // index (NLM #351). Same reason markSuperseded/retire delete embeddings.
