@@ -1190,6 +1190,55 @@ program
   });
 
 program
+  .command("reprocess")
+  .description(
+    "Retroactive: re-classify sessions that lack classification or were classified by a weaker lane.\n" +
+    "Workstream binding (workstream_id) is NOT changed by this command.",
+  )
+  .option("-l, --limit <n>", "max sessions to process this run", (v) => Number.parseInt(v, 10))
+  .option("--min-confidence <f>", "also reprocess same-model sessions below this confidence", (v) => Number.parseFloat(v))
+  .option("--state <path>", "resume state file (default ~/.nlm/reprocess.state)")
+  .option("--dry-run", "print cohort report without writing")
+  .option("-v, --verbose", "per-session progress on stderr")
+  .action(async (opts: { limit?: number; minConfidence?: number; state?: string; dryRun?: boolean; verbose?: boolean }) => {
+    const { reprocess: runReprocess } = await import("../core/ingest/reprocess.js");
+    const stack = await buildStack();
+    try {
+      if (!(stack.storage instanceof SqliteStorage)) {
+        console.error("reprocess: only supported with SQLite storage (NLM_PG_URL must not be set)");
+        await stack.storage.close();
+        process.exit(1);
+      }
+      const report = await runReprocess(
+        {
+          db: stack.storage.rawDb(),
+          store: stack.storage.sessions,
+          factStore: stack.storage.facts,
+          embedder: stack.embedder,
+          classifier: stack.classifier,
+          classifierDescriptor: { provider: stack.classifier.provider, model: stack.classifier.model },
+        },
+        {
+          ...(opts.limit ? { limit: opts.limit } : {}),
+          ...(opts.minConfidence !== undefined ? { minConfidence: opts.minConfidence } : {}),
+          ...(opts.state ? { statePath: opts.state } : {}),
+          dryRun: Boolean(opts.dryRun),
+          ...(opts.verbose
+            ? {
+                onProgress: (i: number, n: number, sid: string, status: string) => {
+                  process.stderr.write(`  [${i}/${n}] ${sid}  ${status}\n`);
+                },
+              }
+            : {}),
+        },
+      );
+      process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+    } finally {
+      await stack.storage.close();
+    }
+  });
+
+program
   .command("mcp")
   .description("Run as an MCP stdio server (for ~/.mcp.json)")
   .action(async () => {
