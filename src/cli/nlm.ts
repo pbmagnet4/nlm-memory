@@ -43,9 +43,8 @@ import { applyPendingRestore, stageRestore } from "../core/storage/db-restore.js
 import { listBackupDates, resolveBackup, runRollingBackup } from "../core/storage/backup-rotation.js";
 import { createApp } from "../http/app.js";
 import { createMcpServer, listMergeSuggestionsHandler, mergeWorkstreamsHandler, rebindSessionHandler, recallWorkstreamHandler, renameWorkstreamHandler, retireWorkstreamHandler } from "../mcp/server.js";
-import { ClassifierBox, type ClassifierProvider } from "../llm/classifier-box.js";
-import { DeepSeekClient } from "../llm/deepseek-client.js";
 import { classifierEgressNotice } from "../llm/classifier-egress.js";
+import { buildClassifier } from "../llm/build-classifier.js";
 import { OllamaCodeEmbedder } from "../llm/ollama-code-embedder.js";
 import { OpenAICodeEmbedderClient } from "../llm/openai-code-embedder-client.js";
 import { resolveEmbedderInfo } from "../llm/embedder-info.js";
@@ -165,40 +164,6 @@ function loadTopicProvider(): TopicProvider {
   } catch {
     return defaultTopicProvider;
   }
-}
-
-function buildClassifier(): ClassifierBox {
-  // qwen3.5:4b is the production classifier as of 2026-06-12 (NLM task #320).
-  // Scored 74.4% decision-precision vs qwen3:4b-instruct-2507-q4_K_M's 58.7% in
-  // the 2026-06-11 eval. Requires think:false (handled by ClassifierBox via
-  // classifierNeedsThinkDisabled) to stay within the 180s classify timeout.
-  // Ollama is the default to keep the daemon local-first and key-free; DeepSeek
-  // remains available via NLM_CLASSIFIER=deepseek for users who prioritize speed.
-  // The `openai` provider points classification at any OpenAI-compatible
-  // endpoint (local — LM Studio, oMLX, vLLM — or cloud), configured via
-  // NLM_CLASSIFIER_BASE_URL (+ optional NLM_CLASSIFIER_API_KEY). This lets the
-  // heavy classify lane run off-box (e.g. on a dedicated inference host)
-  // instead of taxing the local machine's Ollama.
-  const provider = ((process.env["NLM_CLASSIFIER"] ?? "ollama").toLowerCase() as ClassifierProvider);
-  if (provider !== "ollama") autoloadEnv();
-  const modelDefault =
-    provider === "ollama" ? "qwen3.5:4b" : provider === "deepseek" ? "deepseek-v4-flash" : undefined;
-  const model = process.env["NLM_CLASSIFIER_MODEL"] ?? modelDefault;
-  if (!model) {
-    throw new Error(
-      "NLM_CLASSIFIER=openai requires NLM_CLASSIFIER_MODEL (the model id served by your endpoint), " +
-        "e.g. qwen3.5-4b-mlx.",
-    );
-  }
-  const maxTokensRaw = Number.parseInt(process.env["NLM_CLASSIFIER_MAX_TOKENS"] ?? "", 10);
-  return new ClassifierBox({
-    provider,
-    model,
-    ollamaUrl: ollamaUrl(),
-    ...(process.env["NLM_CLASSIFIER_BASE_URL"] ? { baseUrl: process.env["NLM_CLASSIFIER_BASE_URL"] } : {}),
-    ...(process.env["NLM_CLASSIFIER_API_KEY"] ? { apiKey: process.env["NLM_CLASSIFIER_API_KEY"] } : {}),
-    ...(Number.isFinite(maxTokensRaw) && maxTokensRaw > 0 ? { maxTokens: maxTokensRaw } : {}),
-  });
 }
 
 /** Build the recall/document embedder. Delegates to the shared factory in
