@@ -14,7 +14,7 @@ import Database from "better-sqlite3";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { ClaudeCodeAdapter } from "../../src/core/adapters/claude-code.js";
 import { ScanScheduler } from "../../src/core/scheduler/scheduler.js";
-import type { ClassifyResult, LLMClient } from "../../src/ports/llm-client.js";
+import type { ClassifyResult, EmbedResult, LLMClient } from "../../src/ports/llm-client.js";
 import { StubEmbedder } from "../fixtures/llm-stubs.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
