@@ -129,6 +129,8 @@ export interface SchedulerOptions {
   /** WorkstreamStore for flag-gated session binding. When set and
    *  NLM_WORKSTREAM_BIND=true, each ingested session is bound to a workstream. */
   readonly workstreams?: WorkstreamStore | null;
+  /** Provider and model name of the active classifier, for provenance stamping. */
+  readonly classifierDescriptor?: { readonly provider: string; readonly model: string };
   readonly intervalMs?: number;
   readonly classifyTimeoutMs?: number;
   readonly confidenceFloor?: number;
@@ -146,7 +148,7 @@ export interface TickReport {
 }
 
 export class ScanScheduler {
-  private readonly opts: Required<Omit<SchedulerOptions, "embedder" | "factStore" | "signalStore" | "installScope" | "exemplarStore" | "codeEmbedder" | "workstreams">> & {
+  private readonly opts: Required<Omit<SchedulerOptions, "embedder" | "factStore" | "signalStore" | "installScope" | "exemplarStore" | "codeEmbedder" | "workstreams" | "classifierDescriptor">> & {
     readonly embedder: LLMClient | null;
     readonly factStore: SqliteFactStore | PgFactStore | null;
     readonly signalStore: SignalStore | null;
@@ -154,6 +156,7 @@ export class ScanScheduler {
     readonly exemplarStore: CodeExemplarStore | null;
     readonly codeEmbedder: CodeEmbedder | null;
     readonly workstreams: WorkstreamStore | null;
+    readonly classifierDescriptor: { readonly provider: string; readonly model: string } | undefined;
   };
   private readonly aliasToLabel: ReadonlyMap<string, string>;
   private stopped = true;
@@ -171,6 +174,7 @@ export class ScanScheduler {
       exemplarStore: opts.exemplarStore ?? null,
       codeEmbedder: opts.codeEmbedder ?? null,
       workstreams: opts.workstreams ?? null,
+      classifierDescriptor: opts.classifierDescriptor,
       intervalMs: opts.intervalMs ?? DEFAULT_INTERVAL_MS,
       classifyTimeoutMs: opts.classifyTimeoutMs ?? DEFAULT_CLASSIFY_TIMEOUT_MS,
       confidenceFloor: opts.confidenceFloor ?? DEFAULT_CONFIDENCE_FLOOR,
@@ -298,6 +302,9 @@ export class ScanScheduler {
           entities: classification.entities,
           decisions: classification.decisions,
           openQuestions: classification.open,
+          ...(this.opts.classifierDescriptor !== undefined
+            ? { classifier: { ...this.opts.classifierDescriptor, confidence: classification.confidence } }
+            : {}),
         };
 
         const supersedesArg = supersedes ? { priorSessionId: supersedes, kind: "replaces" as const } : null;

@@ -22,6 +22,8 @@ export interface ReclassifyDeps {
   readonly embedder: LLMClient;
   readonly classifier: LLMClient;
   readonly adapters: ReadonlyArray<TranscriptAdapter>;
+  /** Provider and model name of the active classifier, for provenance stamping. */
+  readonly classifierDescriptor?: { readonly provider: string; readonly model: string };
   readonly log?: (msg: string) => void;
 }
 
@@ -130,6 +132,9 @@ export async function reclassifyOversized(
       entities: classification.entities,
       decisions: classification.decisions,
       openQuestions: classification.open,
+      ...(deps.classifierDescriptor !== undefined
+        ? { classifier: { ...deps.classifierDescriptor, confidence: classification.confidence } }
+        : {}),
     };
 
     const extracted = extractFacts(classification, chunk.id, chunk.startedAt);

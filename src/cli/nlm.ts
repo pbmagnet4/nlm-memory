@@ -511,6 +511,7 @@ program
           exemplarStore: storage.exemplars,
           codeEmbedder: buildCodeEmbedder(),
           workstreams: storage.workstreams,
+          classifierDescriptor: { provider: classifier.provider, model: classifier.model },
         });
         scheduler.start();
         console.error(

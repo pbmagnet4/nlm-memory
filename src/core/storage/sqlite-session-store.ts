@@ -63,6 +63,7 @@ export interface IngestRecord {
   readonly entities: ReadonlyArray<string>;
   readonly decisions: ReadonlyArray<string>;
   readonly openQuestions: ReadonlyArray<string>;
+  readonly classifier?: { readonly provider: string; readonly model: string; readonly confidence: number };
 }
 
 /**
@@ -92,6 +93,9 @@ type SessionRow = {
   transcript_path: string | null;
   body: string | null;
   workstream_id: string | null;
+  classifier_provider?: string | null;
+  classifier_model?: string | null;
+  classifier_confidence?: number | null;
 };
 
 type EntityRow = { session_id: string; entity_canonical: string };
@@ -299,10 +303,12 @@ export class SqliteSessionStore implements SessionStore {
         INSERT INTO sessions (
           id, runtime, runtime_session_id, started_at, ended_at, duration_min,
           label, summary, body, status,
-          transcript_kind, transcript_path, transcript_offset, transcript_length
+          transcript_kind, transcript_path, transcript_offset, transcript_length,
+          classifier_provider, classifier_model, classifier_confidence
         ) VALUES (@id, @runtime, @runtimeSessionId, @startedAt, @endedAt, @durationMin,
           @label, @summary, @body, @status,
-          @transcriptKind, @transcriptPath, @transcriptOffset, @transcriptLength)
+          @transcriptKind, @transcriptPath, @transcriptOffset, @transcriptLength,
+          @classifierProvider, @classifierModel, @classifierConfidence)
         ON CONFLICT(id) DO UPDATE SET
           ended_at = excluded.ended_at,
           duration_min = excluded.duration_min,
@@ -310,6 +316,9 @@ export class SqliteSessionStore implements SessionStore {
           summary = excluded.summary,
           body = excluded.body,
           status = excluded.status,
+          classifier_provider = excluded.classifier_provider,
+          classifier_model = excluded.classifier_model,
+          classifier_confidence = excluded.classifier_confidence,
           updated_at = datetime('now')
       `).run({
         id: record.id,
@@ -326,6 +335,9 @@ export class SqliteSessionStore implements SessionStore {
         transcriptPath: record.transcriptPath,
         transcriptOffset: record.transcriptOffset,
         transcriptLength: record.transcriptLength,
+        classifierProvider: record.classifier?.provider ?? null,
+        classifierModel: record.classifier?.model ?? null,
+        classifierConfidence: record.classifier?.confidence ?? null,
       });
 
       db.prepare("DELETE FROM markers WHERE session_id = ?").run(record.id);
@@ -561,7 +573,8 @@ export class SqliteSessionStore implements SessionStore {
     const rows = this.db
       .prepare<[], SessionRow>(`
         SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
-               label, summary, status, transcript_kind, transcript_path, body
+               label, summary, status, transcript_kind, transcript_path, body,
+               classifier_provider, classifier_model, classifier_confidence
         FROM sessions
         ORDER BY started_at ASC
       `)
@@ -591,7 +604,8 @@ export class SqliteSessionStore implements SessionStore {
     const row = this.db
       .prepare<[string], SessionRow>(`
         SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
-               label, summary, status, transcript_kind, transcript_path, body
+               label, summary, status, transcript_kind, transcript_path, body,
+               classifier_provider, classifier_model, classifier_confidence
         FROM sessions
         WHERE id = ?
       `)
@@ -1107,6 +1121,9 @@ export class SqliteSessionStore implements SessionStore {
         ? { supersededBy: edges.supersededBy, supersedes: edges.supersedes }
         : {}),
       workstreamId: row.workstream_id ?? null,
+      classifierProvider: row.classifier_provider ?? null,
+      classifierModel: row.classifier_model ?? null,
+      classifierConfidence: row.classifier_confidence ?? null,
     };
   }
 }

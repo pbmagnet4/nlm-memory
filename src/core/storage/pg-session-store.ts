@@ -39,6 +39,9 @@ type SessionRow = {
   transcript_path: string | null;
   body: string | null;
   workstream_id: string | null;
+  classifier_provider?: string | null;
+  classifier_model?: string | null;
+  classifier_confidence?: number | null;
 };
 
 /**
@@ -99,7 +102,8 @@ export class PgSessionStore implements SessionStore {
   async list(filter?: SessionFilter): Promise<ReadonlyArray<Session>> {
     const result = await this.pool.query<SessionRow>(
       `SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
-              label, summary, status, transcript_kind, transcript_path, body
+              label, summary, status, transcript_kind, transcript_path, body,
+              classifier_provider, classifier_model, classifier_confidence
        FROM sessions ORDER BY started_at ASC`,
     );
     if (result.rows.length === 0) return [];
@@ -122,7 +126,8 @@ export class PgSessionStore implements SessionStore {
   async getById(sessionId: string): Promise<Session | null> {
     const result = await this.pool.query<SessionRow>(
       `SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
-              label, summary, status, transcript_kind, transcript_path, body
+              label, summary, status, transcript_kind, transcript_path, body,
+              classifier_provider, classifier_model, classifier_confidence
        FROM sessions WHERE id = $1`,
       [sessionId],
     );
@@ -452,8 +457,9 @@ export class PgSessionStore implements SessionStore {
         `INSERT INTO sessions (
            id, runtime, runtime_session_id, started_at, ended_at, duration_min,
            label, summary, body, status, transcript_kind, transcript_path,
-           transcript_offset, transcript_length
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+           transcript_offset, transcript_length,
+           classifier_provider, classifier_model, classifier_confidence
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
          ON CONFLICT (id) DO UPDATE SET
            ended_at = EXCLUDED.ended_at,
            duration_min = EXCLUDED.duration_min,
@@ -461,6 +467,9 @@ export class PgSessionStore implements SessionStore {
            summary = EXCLUDED.summary,
            body = EXCLUDED.body,
            status = EXCLUDED.status,
+           classifier_provider = EXCLUDED.classifier_provider,
+           classifier_model = EXCLUDED.classifier_model,
+           classifier_confidence = EXCLUDED.classifier_confidence,
            updated_at = NOW()`,
         [
           record.id, record.runtime, record.runtimeSessionId,
@@ -469,6 +478,9 @@ export class PgSessionStore implements SessionStore {
           record.status === "idle" ? "active" : record.status,
           record.transcriptKind, record.transcriptPath,
           record.transcriptOffset, record.transcriptLength,
+          record.classifier?.provider ?? null,
+          record.classifier?.model ?? null,
+          record.classifier?.confidence ?? null,
         ],
       );
       await client.query("DELETE FROM markers WHERE session_id = $1", [record.id]);
@@ -777,5 +789,8 @@ function rowToSession(
       ? { supersededBy: edges.supersededBy, supersedes: edges.supersedes }
       : {}),
     workstreamId: row.workstream_id ?? null,
+    classifierProvider: row.classifier_provider ?? null,
+    classifierModel: row.classifier_model ?? null,
+    classifierConfidence: row.classifier_confidence ?? null,
   };
 }
