@@ -93,7 +93,6 @@ import { setLaneHealth } from "../core/health/embedding-lane-state.js";
 import { reconcileLane } from "../core/embedding/embedding-config.js";
 import type { EmbeddingConfigStore, EmbeddingLaneConfig } from "../core/embedding/embedding-config.js";
 import { backfillFacts } from "../core/facts/backfill-facts.js";
-import { normalizeEmbeddings } from "../core/embedding/embed-normalize.js";
 import { ScanScheduler } from "../core/scheduler/scheduler.js";
 import { MemoSweepScheduler } from "../core/hook/memo-sweep.js";
 import { isAgentLoaded, isBenignBootoutError } from "./launchctl-helpers.js";
@@ -1124,22 +1123,6 @@ program
     } finally {
       await stack.storage.close();
     }
-  });
-
-program
-  .command("embed-normalize")
-  .description("L2-normalize every row in session_embeddings (idempotent)")
-  .option("--dim <n>", "vector dimension (default 768)", (v) => Number.parseInt(v, 10), 768)
-  .option("--batch <n>", "rows per commit batch (default 100)", (v) => Number.parseInt(v, 10), 100)
-  .option("--dry-run", "report what would change without writing")
-  .action((opts) => {
-    const report = normalizeEmbeddings({
-      dbPath: dbPath(),
-      dim: opts.dim,
-      batchSize: opts.batch,
-      dryRun: Boolean(opts.dryRun),
-    });
-    process.stdout.write(JSON.stringify(report, null, 2) + "\n");
   });
 
 program

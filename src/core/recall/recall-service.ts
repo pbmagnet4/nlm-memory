@@ -487,7 +487,7 @@ function clampLimit(limit: number | undefined): number {
 }
 
 function cosineFromL2(distance: number): number {
-  // session_embeddings stores unit-normalized vectors. For unit vectors,
+  // session_embedding_chunks stores unit-normalized vectors. For unit vectors,
   // cos_sim = 1 - L2^2 / 2. Mirrors recall.py:_run_semantic.
   const cos = 1 - (distance * distance) / 2;
   return round4(Math.max(-1, Math.min(1, cos)));

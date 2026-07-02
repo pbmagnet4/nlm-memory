@@ -1,7 +1,6 @@
 /**
  * embed-backfill — re-embed every session in canonical.sqlite into the
- * chunk + max-pool index (session_embedding_chunks). Replaces the prior
- * one-vector-per-session backfill that wrote to session_embeddings.
+ * chunk + max-pool index (session_embedding_chunks).
  *
  * For each session: chunk (label + summary + body) via chunkSessionText,
  * embed each chunk with kind="document", and write to the chunk table +

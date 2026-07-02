@@ -1,7 +1,6 @@
 /**
- * Integration tests for embed-backfill + embed-normalize against a real
- * SQLite + sqlite-vec store. No network: a deterministic fake LLMClient
- * stands in for Ollama.
+ * Integration tests for embed-backfill against a real SQLite + sqlite-vec
+ * store. No network: a deterministic fake LLMClient stands in for Ollama.
  */
 
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
@@ -12,7 +11,6 @@ import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { reembedCorpus } from "../../src/core/embedding/embed-backfill.js";
-import { normalizeEmbeddings } from "../../src/core/embedding/embed-normalize.js";
 import type { EmbedResult, LLMClient } from "../../src/ports/llm-client.js";
 import type { Session } from "../../src/shared/types.js";
 import { makeSession } from "../fixtures/sessions.js";
@@ -228,83 +226,5 @@ describe("rebuild on dim mismatch", () => {
 
     expect(countAfterSecond).toBe(3);
     expect(feCount).toBe(1);
-  });
-});
-
-describe("normalizeEmbeddings", () => {
-  let tmp: string;
-  let dbPath: string;
-
-  beforeEach(async () => {
-    tmp = mkdtempSync(join(tmpdir(), "nlm-norm-"));
-    dbPath = join(tmp, "canonical.sqlite");
-    const storage = SqliteStorage.create({ dbPath, migrationsDir: MIGRATIONS_DIR });
-    await storage.init();
-    storage.sessions.insertSessionForTest(makeSession({ id: "raw" }));
-    storage.sessions.insertSessionForTest(makeSession({ id: "already" }));
-    storage.sessions.insertSessionForTest(makeSession({ id: "zero" }));
-    await storage.close();
-    // embed-normalize operates on the legacy session_embeddings table that
-    // migration 003 still creates (left in place for rollback safety after
-    // the chunk + max-pool migration). Seed it directly via raw SQL — the
-    // session store's helpers now target session_embedding_chunks.
-    const db = new Database(dbPath);
-    sqliteVec.load(db);
-    const ins = db.prepare(
-      "INSERT INTO session_embeddings (session_id, embedding) VALUES (?, ?)",
-    );
-    const toBlob = (v: Float32Array): Buffer =>
-      Buffer.from(v.buffer, v.byteOffset, v.byteLength);
-    // raw: non-unit (||v|| = sqrt(768 * 0.25) ≈ 13.86)
-    ins.run("raw", toBlob(new Float32Array(768).fill(0.5)));
-    // already: unit (one component at 1.0)
-    const unit = new Float32Array(768);
-    unit[0] = 1;
-    ins.run("already", toBlob(unit));
-    // zero: zero vector
-    ins.run("zero", toBlob(new Float32Array(768)));
-    db.close();
-  });
-
-  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
-
-  it("rewrites only the non-unit non-zero row", () => {
-    const report = normalizeEmbeddings({ dbPath });
-    expect(report.total).toBe(3);
-    expect(report.rewritten).toBe(1);
-    expect(report.alreadyNormalized).toBe(1);
-    expect(report.zeroVector).toBe(1);
-  });
-
-  it("dry-run reports the same counts without writing", () => {
-    const beforeDb = new Database(dbPath);
-    sqliteVec.load(beforeDb);
-    const beforeBlob = beforeDb
-      .prepare<[string], { embedding: Buffer }>(
-        "SELECT embedding FROM session_embeddings WHERE session_id = ?",
-      )
-      .get("raw")!.embedding;
-    beforeDb.close();
-
-    const report = normalizeEmbeddings({ dbPath, dryRun: true });
-    expect(report.rewritten).toBe(1);
-    expect(report.dryRun).toBe(true);
-
-    const afterDb = new Database(dbPath);
-    sqliteVec.load(afterDb);
-    const afterBlob = afterDb
-      .prepare<[string], { embedding: Buffer }>(
-        "SELECT embedding FROM session_embeddings WHERE session_id = ?",
-      )
-      .get("raw")!.embedding;
-    afterDb.close();
-    expect(afterBlob.equals(beforeBlob)).toBe(true);
-  });
-
-  it("is idempotent — second run rewrites nothing", () => {
-    normalizeEmbeddings({ dbPath });
-    const report = normalizeEmbeddings({ dbPath });
-    expect(report.rewritten).toBe(0);
-    expect(report.alreadyNormalized).toBe(2); // raw is now unit too
   });
 });

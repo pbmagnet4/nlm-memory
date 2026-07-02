@@ -21,7 +21,7 @@ function unit(values: number[]): Float32Array {
   values.forEach((v, i) => {
     padded[i] = v;
   });
-  // normalize to unit length (session_embeddings expects unit vectors)
+  // normalize to unit length (session_embedding_chunks expects unit vectors)
   let sum = 0;
   for (const v of padded) sum += v * v;
   const norm = Math.sqrt(sum) || 1;

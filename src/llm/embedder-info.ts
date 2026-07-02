@@ -4,8 +4,8 @@
  * the same env, so the UI shows the embedder that's actually running rather
  * than a hardcoded default.
  *
- * Pass `dim` when a live probe is available; omits the argument to keep 768
- * as the default for callers that do not probe.
+ * Pass `dim` from the live embedder probe; without it, the descriptor
+ * defaults to 768, which may not match the active embedder's dims.
  */
 
 import { DEFAULT_OPENAI_EMBED_MODEL } from "./openai-embedder-client.js";
