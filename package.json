@@ -63,7 +63,8 @@
     "eval:code-exemplar": "tsx scripts/eval/code-exemplar-eval.ts",
     "eval:reranker": "tsx scripts/eval/reranker-ablation.ts",
     "eval:floor": "tsx scripts/eval/floor-calibration.ts",
-    "eval:matcher": "tsx scripts/eval/tune-matcher.ts"
+    "eval:matcher": "tsx scripts/eval/tune-matcher.ts",
+    "eval:naming": "tsx scripts/eval/tune-naming.ts"
   },
   "dependencies": {
     "@clack/prompts": "^1.4.0",
