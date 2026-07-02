@@ -1,15 +1,7 @@
 // src/core/workstream/compose-recall.ts
-import type { Workstream } from "./model.js";
-import type { Fact, CodeExemplar } from "../../shared/types.js";
+import type { WorkstreamRollup } from "./model.js";
 
-export interface WorkstreamRecallView {
-  readonly workstream: Workstream;
-  readonly sessionIds: ReadonlyArray<string>;
-  readonly facts: ReadonlyArray<Fact>;
-  readonly exemplars: ReadonlyArray<CodeExemplar>;
-}
-
-export function composeWorkstreamRecall(view: WorkstreamRecallView): string {
+export function composeWorkstreamRecall(view: WorkstreamRollup): string {
   const { workstream, sessionIds, facts, exemplars } = view;
   const lines: string[] = [];
   lines.push(`WORKSTREAM: ${workstream.label}`);
