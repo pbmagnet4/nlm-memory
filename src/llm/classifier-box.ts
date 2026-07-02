@@ -18,15 +18,9 @@ import type {
 import { stripInjectedContext } from "@core/hook/strip-injected-context.js";
 import { DeepSeekClient } from "./deepseek-client.js";
 import { OllamaClient } from "./ollama-client.js";
+import { classifierNeedsThinkDisabled } from "./model-quirks.js";
 
 export type ClassifierProvider = "deepseek" | "ollama" | "openai";
-
-/** Qwen 3.5+ models default to extended chain-of-thought, which blows the
- * classify timeout. Disable thinking for them; non-thinking models like
- * qwen3:4b-instruct are unaffected. */
-export function classifierNeedsThinkDisabled(model: string): boolean {
-  return /qwen3\.5/i.test(model);
-}
 
 export interface ClassifierBoxOptions {
   readonly provider: ClassifierProvider;

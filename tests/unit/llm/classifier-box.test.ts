@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ClassifierBox, classifierNeedsThinkDisabled } from "../../../src/llm/classifier-box.js";
+import { ClassifierBox } from "../../../src/llm/classifier-box.js";
+import { classifierNeedsThinkDisabled } from "../../../src/llm/model-quirks.js";
 import { formatPointerBlock } from "../../../src/core/hook/pointer-block.js";
 import type { ClassifyResult, LLMClient } from "../../../src/ports/llm-client.js";
 

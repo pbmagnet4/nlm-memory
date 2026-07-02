@@ -21,24 +21,15 @@ import type {
   WorkstreamCandidateHint,
 } from "@ports/llm-client.js";
 import { ClassifierSchemaError, LLMUnreachableError } from "@ports/llm-client.js";
-import { classifierNeedsThinkDisabled } from "./classifier-box.js";
+import { classifierNeedsThinkDisabled } from "./model-quirks.js";
+import { buildNamingSystemPrompt, parseLongestLabel } from "./naming.js";
+import { classifyWithRetry, parseClassifierContent, rewriteTimeoutMs } from "./client-shared.js";
 import {
   CLASSIFIER_SYSTEM_PROMPT,
   CLASSIFIER_JSON_SCHEMA,
   buildUserPrompt,
-  coerceClassifyResult,
-  stripJsonFences,
-  validateClassifierJson,
 } from "@core/classifier/prompt.js";
 import { REWRITE_SYSTEM_PROMPT, parseRewriteJson } from "@core/recall/rewrite-prompt.js";
-
-const DEFAULT_REWRITE_TIMEOUT_MS = 5_000;
-function rewriteTimeoutMs(): number {
-  const raw = process.env["NLM_RECALL_REWRITE_TIMEOUT_MS"];
-  if (!raw) return DEFAULT_REWRITE_TIMEOUT_MS;
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_REWRITE_TIMEOUT_MS;
-}
 
 export type FetchImpl = typeof fetch;
 
@@ -165,23 +156,8 @@ export class OllamaClient implements LLMClient {
     }
   }
 
-  /**
-   * Classify a transcript, retrying up to `classifyAttempts` times on transient
-   * schema/unreachable errors before rethrowing the last error. Each attempt
-   * sends the transcript through the Ollama classifier and returns a
-   * ClassifyResult on success, or throws LLMUnreachableError / ClassifierSchemaError.
-   */
   async classify(transcript: string, priorContext: string = ""): Promise<ClassifyResult> {
-    let lastErr: unknown;
-    for (let attempt = 1; attempt <= this.classifyAttempts; attempt++) {
-      try {
-        return await this.classifyOnce(transcript, priorContext);
-      } catch (e) {
-        if (!(e instanceof ClassifierSchemaError || e instanceof LLMUnreachableError)) throw e;
-        lastErr = e;
-      }
-    }
-    throw lastErr;
+    return classifyWithRetry(this.classifyAttempts, () => this.classifyOnce(transcript, priorContext));
   }
 
   private async classifyOnce(transcript: string, priorContext: string): Promise<ClassifyResult> {
@@ -210,18 +186,7 @@ export class OllamaClient implements LLMClient {
         throw new LLMUnreachableError("ollama", `status ${res.status}`);
       }
       const data = (await res.json()) as ChatResponse;
-      const rawContent = data.message?.content?.trim() ?? "";
-      const content = stripJsonFences(rawContent);
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(content);
-      } catch {
-        throw new ClassifierSchemaError("ollama returned non-JSON content");
-      }
-      if (!validateClassifierJson(parsed)) {
-        throw new ClassifierSchemaError("ollama response missing required keys");
-      }
-      return coerceClassifyResult(parsed);
+      return parseClassifierContent(data.message?.content ?? "", "ollama");
     } catch (e) {
       if (e instanceof LLMUnreachableError || e instanceof ClassifierSchemaError) throw e;
       throw new LLMUnreachableError("ollama", e);
@@ -268,10 +233,7 @@ export class OllamaClient implements LLMClient {
     candidates: ReadonlyArray<WorkstreamCandidateHint>,
   ): Promise<string | null> {
     if (candidates.length === 0) return null;
-    const list = candidates.map((c) => `- ${c.label}`).join("\n");
-    const sys =
-      `You label a work session by which project it belongs to. Known projects:\n${list}\n` +
-      `If it belongs to NONE of these, answer "none". Reply with ONLY the exact project name from the list, or "none".`;
+    const sys = buildNamingSystemPrompt(candidates);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.classifyTimeoutMs);
     const needsThinkOff = classifierNeedsThinkDisabled(this.classifyModel);
@@ -292,16 +254,8 @@ export class OllamaClient implements LLMClient {
       });
       if (!res.ok) return null;
       const data = (await res.json()) as ChatResponse;
-      const out = (data.message?.content ?? "").toLowerCase();
-      let best: string | null = null;
-      let bestLen = 0;
-      for (const c of candidates) {
-        if (out.includes(c.label.toLowerCase()) && c.label.length > bestLen) {
-          best = c.label;
-          bestLen = c.label.length;
-        }
-      }
-      return best;
+      const out = data.message?.content ?? "";
+      return parseLongestLabel(out, candidates);
     } catch {
       return null;
     } finally {
