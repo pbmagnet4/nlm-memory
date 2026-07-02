@@ -81,6 +81,8 @@ Field-level attribution in the `matchedIn` badge is recovered after the fact by 
 
 The classifier produces high-quality labels and entity tags from the session transcript, which is what makes keyword-only retrieval beat what naive substring matching would give. The classifier IS the moat for keyword performance, even though the BM25 retrieval itself doesn't call the classifier at search time.
 
+For tier expectations, how to measure your configured lane, and the classifier upgrade runbook, see `docs/classifier-tiers.md`.
+
 ## Where this number can break
 
 - **Without classifier output**: a fresh install with no classified sessions has nothing for keyword to score against. Body-only fallback works but is closer to grep than to the 97.2% figure.
