@@ -8,7 +8,7 @@ import { ClassifierSchemaError } from "@ports/llm-client.js";
 
 const FIXTURES_DIR = join(
   fileURLToPath(new URL("../../../../", import.meta.url)),
-  "tests/fixtures/classifier-gold",
+  "fixtures/classifier-gold",
 );
 
 interface RefEntry {

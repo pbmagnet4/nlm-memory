@@ -114,6 +114,7 @@ import { resolveWorkstreamId } from "../core/workstream/resolve.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
+const CLASSIFIER_FIXTURES_DIR = resolve(__dirname, "../../fixtures/classifier-gold");
 const PG_MIGRATIONS_DIR = join(
   fileURLToPath(new URL(".", import.meta.url)),
   "../../migrations/pg",
@@ -335,6 +336,41 @@ async function buildStack() {
   });
   const factRecall = new FactRecallService({ factStore: facts, llm: embedder });
   return { storage, store, facts, signals, scope, sources, providers, recall, factRecall, embedder, classifier };
+}
+
+export interface ClassifierEvalDeps {
+  readonly classify: (transcript: string) => Promise<import("../ports/llm-client.js").ClassifyResult>;
+  readonly provider: string;
+  readonly model: string;
+  readonly fixturesDir: string;
+  readonly limit?: number;
+  readonly json: boolean;
+  readonly stdout: (s: string) => void;
+}
+
+export async function runClassifierEvalCommand(deps: ClassifierEvalDeps): Promise<void> {
+  const { runClassifierFixtureEval } = await import("../core/eval/classifier-fixture-eval.js");
+  const result = await runClassifierFixtureEval(
+    deps.classify,
+    deps.fixturesDir,
+    deps.limit !== undefined ? { limit: deps.limit } : undefined,
+  );
+  if (deps.json) {
+    deps.stdout(JSON.stringify({ ...result, provider: deps.provider, model: deps.model }, null, 2) + "\n");
+    return;
+  }
+  const a = result.aggregate;
+  const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
+  deps.stdout(`lane: ${deps.provider}/${deps.model}\n`);
+  deps.stdout(`n=${result.perTranscript.length}\n`);
+  deps.stdout(`schema-valid:     ${pct(a.schemaValidRate)}\n`);
+  deps.stdout(`label-accuracy:   ${pct(a.labelAccuracy)}\n`);
+  deps.stdout(`entity-F1:        ${pct(a.entityF1)}\n`);
+  deps.stdout(`decision-F1:      ${pct(a.decisionF1)}\n`);
+  deps.stdout(`conf-calibration: ${pct(a.confidenceCalibrationRate)}\n`);
+  deps.stdout(`p50-latency:      ${a.p50LatencyMs}ms\n`);
+  deps.stdout(`p95-latency:      ${a.p95LatencyMs}ms\n`);
+  deps.stdout(`see: docs/classifier-tiers.md\n`);
 }
 
 const program = new Command();
@@ -700,11 +736,36 @@ program
 
 program
   .command("eval")
-  .description("Run R@k/MRR over an operator-supplied query set (queries never bundled)")
-  .requiredOption("--queries <file>", "JSON file: [{ query, expectedIds }]")
-  .option("--mode <mode>", "keyword | semantic | hybrid", "keyword")
+  .description("Evaluate recall quality (--queries) or classifier extraction quality (--classifier)")
+  .option("--queries <file>", "JSON file: [{ query, expectedIds }]")
+  .option("--classifier", "benchmark the configured classifier lane against shipped gold fixtures")
+  .option("--limit <n>", "run only the first N fixtures (classifier mode)", (v) => Number.parseInt(v, 10))
+  .option("--mode <mode>", "keyword | semantic | hybrid (queries mode)", "keyword")
   .option("--json", "emit JSON instead of a table")
   .action(async (opts) => {
+    if (opts.classifier) {
+      const stack = await buildStack();
+      try {
+        const limitVal = opts.limit as number | undefined;
+        await runClassifierEvalCommand({
+          classify: (t) => stack.classifier.classify(t),
+          provider: stack.classifier.provider,
+          model: stack.classifier.model,
+          fixturesDir: CLASSIFIER_FIXTURES_DIR,
+          ...(limitVal !== undefined ? { limit: limitVal } : {}),
+          json: Boolean(opts.json),
+          stdout: (s) => { process.stdout.write(s); },
+        });
+      } finally {
+        await stack.storage.close();
+      }
+      return;
+    }
+    if (!opts.queries) {
+      process.stderr.write("error: required option '--queries <file>' not specified\n");
+      process.exitCode = 1;
+      return;
+    }
     const { readFile } = await import("node:fs/promises");
     const queries = JSON.parse(await readFile(opts.queries, "utf8"));
     const { runEval } = await import("../core/eval/run-eval.js");
