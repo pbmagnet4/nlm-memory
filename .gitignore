@@ -25,3 +25,7 @@ CLAUDE.md
 
 # SDD scratch (briefs, reports, ledger, review packages)
 .superpowers/
+
+# throwaway eval scratch, never publish
+scripts/eval/_r3e-*.ts
+scripts/eval/judge-calibration.ts
