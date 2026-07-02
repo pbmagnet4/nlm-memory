@@ -252,6 +252,54 @@ export function runFactStoreContract(h: FactStoreContractHarness): void {
       });
     });
 
+    describe("retired_at column visibility across read methods", () => {
+      it("getById returns retiredAt null for a live fact", async () => {
+        await storage.facts.insert(makeFact({ id: "f_ra_live", subject: "ra_sub", sourceSessionId: "sess_parent" }));
+        const f = await storage.facts.getById("f_ra_live");
+        expect(f!.retiredAt).toBeNull();
+      });
+
+      it("getById returns non-null retiredAt after retire", async () => {
+        await storage.facts.insert(makeFact({ id: "f_ra_getbyid", sourceSessionId: "sess_parent" }));
+        await storage.facts.retire("f_ra_getbyid");
+        const f = await storage.facts.getById("f_ra_getbyid");
+        expect(f!.retiredAt).not.toBeNull();
+      });
+
+      it("findCurrent returns retiredAt null for a live fact", async () => {
+        await storage.facts.insert(makeFact({ id: "f_ra_fc", subject: "ra_fc_sub", predicate: "ra_fc_pred", sourceSessionId: "sess_parent" }));
+        const f = await storage.facts.findCurrent("ra_fc_sub", "ra_fc_pred");
+        expect(f!.retiredAt).toBeNull();
+      });
+
+      it("list returns retiredAt null for live facts", async () => {
+        await storage.facts.insert(makeFact({ id: "f_ra_list", subject: "ra_list_sub", sourceSessionId: "sess_parent" }));
+        const facts = await storage.facts.list({ subject: "ra_list_sub" });
+        expect(facts[0]!.retiredAt).toBeNull();
+      });
+
+      it("list with includeSuperseded returns non-null retiredAt for retired facts", async () => {
+        await storage.facts.insert(makeFact({ id: "f_ra_list_ret", subject: "ra_list_ret_sub", sourceSessionId: "sess_parent" }));
+        await storage.facts.retire("f_ra_list_ret");
+        const facts = await storage.facts.list({ subject: "ra_list_ret_sub", includeSuperseded: true });
+        const f = facts.find((x) => x.id === "f_ra_list_ret");
+        expect(f!.retiredAt).not.toBeNull();
+      });
+
+      it("listBySession returns retiredAt null for live facts", async () => {
+        await storage.facts.insert(makeFact({ id: "f_ra_lbs", subject: "ra_lbs_sub", sourceSessionId: "sess_parent" }));
+        const facts = await storage.facts.listBySession("sess_parent");
+        const f = facts.find((x) => x.id === "f_ra_lbs");
+        expect(f!.retiredAt).toBeNull();
+      });
+
+      it("listForRecall returns retiredAt null for live facts", async () => {
+        await storage.facts.insert(makeFact({ id: "f_ra_lfr", subject: "ra_lfr_sub", sourceSessionId: "sess_parent" }));
+        const facts = await storage.facts.listForRecall({ subject: "ra_lfr_sub" });
+        expect(facts[0]!.retiredAt).toBeNull();
+      });
+    });
+
     it("CHECK constraints reject invalid kind", async () => {
       await expect(
         storage.facts.insert(
