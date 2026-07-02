@@ -191,7 +191,7 @@ export class PgSessionStore implements SessionStore {
   ): Promise<ReadonlyArray<KeywordNeighbor>> {
     const terms = tokenize(query).map(sanitizeTsToken).filter(Boolean);
     if (terms.length === 0) return [];
-    const tsQuery = terms.join(" | ");
+    const tsQuery = terms.join(" OR ");
     const k = Math.max(1, Math.trunc(limit));
     const statusFilter =
       opts?.includeSuperseded === true
@@ -199,9 +199,9 @@ export class PgSessionStore implements SessionStore {
         : "status NOT IN ('superseded', 'replaced')";
     const result = await this.pool.query<{ session_id: string; score: number }>(
       `SELECT id AS session_id,
-              ts_rank_cd(fts_vector, to_tsquery('english', $1)) AS score
+              ts_rank_cd(fts_vector, websearch_to_tsquery('english', $1)) AS score
        FROM sessions
-       WHERE fts_vector @@ to_tsquery('english', $1)
+       WHERE fts_vector @@ websearch_to_tsquery('english', $1)
          AND ${statusFilter}
        ORDER BY score DESC
        LIMIT $2`,

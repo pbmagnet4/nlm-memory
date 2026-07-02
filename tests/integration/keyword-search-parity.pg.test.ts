@@ -88,4 +88,25 @@ describe.skipIf(!PG_TEST_URL)("keywordSearch OR semantics parity (pg)", () => {
     const results = await store.keywordSearch("---", 10);
     expect(results).toEqual([]);
   });
+
+  it("all-stopword query returns empty without throwing", async () => {
+    const store = storage.sessions;
+    await store.insertSession(makeRecord("kw_parity_3", "test content about something"));
+
+    const results = await store.keywordSearch("the and is", 10);
+    expect(results).toEqual([]);
+  });
+
+  it("multi-term OR behavior returns session when any term matches", async () => {
+    const store = storage.sessions;
+    await store.insertSession(
+      makeRecord("kw_parity_4", "discussion about pgvector and kubernetes"),
+    );
+
+    const results = await store.keywordSearch("pgvector kubernetes deployment", 10);
+    const ids = results.map((r) => r.sessionId);
+
+    expect(ids).toContain("kw_parity_4");
+    expect(results.find((r) => r.sessionId === "kw_parity_4")!.score).toBeGreaterThan(0);
+  });
 });
