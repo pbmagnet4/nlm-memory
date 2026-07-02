@@ -76,6 +76,14 @@ describe("SqliteSessionStore.semanticSearch", () => {
     expect(sessionIds).not.toContain("s_old_semantic");
   });
 
+  it("returns empty immediately when workstreamIds is an empty array", async () => {
+    store.insertSessionForTest(makeSession({ id: "s_ws_empty", label: "kafka pipeline" }));
+    store.insertEmbeddingForTest("s_ws_empty", unit([1, 0, 0]));
+    const q = unit([1, 0, 0]);
+    const results = await store.semanticSearch(q, 10, { workstreamIds: [] });
+    expect(results).toHaveLength(0);
+  });
+
   it("returns only non-superseded sessions when multiple exist", async () => {
     // Insert three sessions, supersede one
     store.insertSessionForTest(

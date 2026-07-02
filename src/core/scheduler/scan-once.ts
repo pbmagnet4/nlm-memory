@@ -133,14 +133,6 @@ export function recordFailed(
   ).run(adapterName, sourcePath, fileSize, fileSize);
 }
 
-export function getFileSize(sourcePath: string): number | null {
-  try {
-    return statSync(sourcePath).size;
-  } catch {
-    return null;
-  }
-}
-
 export async function scanOncePg(
   adapter: TranscriptAdapter,
   idleMinutes: number,

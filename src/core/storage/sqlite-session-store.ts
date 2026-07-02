@@ -687,6 +687,7 @@ export class SqliteSessionStore implements SessionStore {
     const best = new Map<string, number>();
     const excludedSessionIds = new Set<string>();
     const wsIds = opts?.workstreamIds;
+    if (wsIds !== undefined && wsIds.length === 0) return [];
     // First pass: collect all unique session IDs to check their status + workstream
     const uniqueSessionIds = [...new Set(rows.map((r) => r.session_id))];
     if (uniqueSessionIds.length > 0) {
