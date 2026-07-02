@@ -21,7 +21,7 @@ import type {
   WorkstreamCandidateHint,
 } from "@ports/llm-client.js";
 import { ClassifierSchemaError, LLMUnreachableError } from "@ports/llm-client.js";
-import { classifierNeedsThinkDisabled } from "./classifier-box.js";
+import { classifierNeedsThinkDisabled } from "./model-quirks.js";
 import { buildNamingSystemPrompt, parseLongestLabel } from "./naming.js";
 import {
   CLASSIFIER_SYSTEM_PROMPT,
