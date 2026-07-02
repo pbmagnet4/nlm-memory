@@ -269,6 +269,28 @@ git commit -m "fix(storage): every fact SELECT returns retired_at on both adapte
 
 ---
 
+### Task 7: pg rowToSession computes live status (parity defect found in Task 1 review)
+
+sqlite's rowToSession returns `status: liveSessionStatus(row.transcript_path, row.status)` (sqlite-session-store.ts:1066); pg returns `status: row.status` raw (pg-session-store.ts:720 post-Task-1). A live session whose transcript is still open can project a different status on pg vs sqlite.
+
+**Files:**
+- Modify: `src/core/storage/pg-session-store.ts` (rowToSession)
+- Test: extend `tests/integration/pg-action-overlay.pg.test.ts` or the session-search pg test with one status-projection case
+- Reference: where `liveSessionStatus` lives and what it needs (sqlite-session-store.ts imports it; confirm it is a pure/portable helper importable from pg code without sqlite deps)
+
+- [ ] **Step 1: Failing test** seeding a session whose transcript_path points at a fixture file that mimics a live transcript per liveSessionStatus's rules (read the helper first to learn its liveness criterion), asserting the pg read-back status matches what sqlite would compute.
+
+- [ ] **Step 2: Wrap the status** in pg rowToSession with the same helper; if the helper is sqlite-adapter-local, move it to a shared module both adapters import (no behavior change for sqlite).
+
+- [ ] **Step 3: Green, gate, commit**
+
+```bash
+git add src/core/storage/pg-session-store.ts tests/
+git commit -m "fix(pg): rowToSession computes live session status, matching sqlite"
+```
+
+---
+
 ## Out of scope
 
 O-1 overlay caching (both adapters, after this wave the pg cost is one extra query per read call, same class as sqlite's full scan); pg batch INSERT round-trips and ivfflat-friendly semanticSearch (O-8); `findByNormalizedLabel` full-table scan on pg (fine at current scale). The factSink ghost-embedding test nicety from the Wave 2a review is CLOSED (covered by the batchWinners fix tests).
