@@ -252,4 +252,58 @@ describe("hermes-agent hook endpoints", () => {
     });
     expect(res.status).toBe(400);
   });
+
+  it("pre-turn applies the relative floor and drops low-score hits", async () => {
+    const now = new Date().toISOString();
+    const mockRecall = {
+      search: async () => ({
+        query: "recall hook",
+        entity: null,
+        kind: null,
+        mode: "keyword",
+        limit: 5,
+        total: 2,
+        results: [
+          {
+            id: "sess_high",
+            label: "high relevance session",
+            startedAt: now,
+            summary: "",
+            entities: [],
+            decisions: [],
+            open: [],
+            status: "closed",
+            matchScore: 0.95,
+            matchedIn: ["label"],
+            supersededBy: null,
+          },
+          {
+            id: "sess_low",
+            label: "low relevance session",
+            startedAt: now,
+            summary: "",
+            entities: [],
+            decisions: [],
+            open: [],
+            status: "closed",
+            matchScore: 0.10,
+            matchedIn: ["label"],
+            supersededBy: null,
+          },
+        ],
+        relatedFacts: [],
+        relatedExemplars: [],
+      }),
+    } as unknown as RecallService;
+    const floorApp = createApp({ recall: mockRecall, store: storage.sessions, citationLogPath });
+    const res = await floorApp.request("/api/hook/hermes-agent/pre-turn", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: "sess_floor_test", user_message: "recall hook" }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body["context"]).toContain("sess_high");
+    expect(body["context"]).not.toContain("sess_low");
+  });
 });

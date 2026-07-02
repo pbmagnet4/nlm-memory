@@ -77,6 +77,25 @@ export class PgSessionStore implements SessionStore {
   // functions) can share the same connection pool. See docs/plans/2026-05-31-pg-adapter.md.
   constructor(readonly pool: Pool) {}
 
+  private overlayCache: ActionOverlay | null = null;
+  private overlayCacheAt = 0;
+
+  invalidateOverlayCache(): void {
+    this.overlayCache = null;
+  }
+
+  private async overlay(): Promise<ActionOverlay> {
+    // TTL backstop: explicit invalidation covers the daemon's own writers; the
+    // 30s expiry bounds staleness if another process ever writes actions to
+    // this database.
+    if (this.overlayCache !== null && Date.now() - this.overlayCacheAt < 30_000) {
+      return this.overlayCache;
+    }
+    this.overlayCache = await loadActionOverlayPg(this.pool);
+    this.overlayCacheAt = Date.now();
+    return this.overlayCache;
+  }
+
   async list(filter?: SessionFilter): Promise<ReadonlyArray<Session>> {
     const result = await this.pool.query<SessionRow>(
       `SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
@@ -88,7 +107,7 @@ export class PgSessionStore implements SessionStore {
     const [entitiesMap, markersMap, overlay] = await Promise.all([
       this.loadEntities(ids),
       this.loadMarkers(ids),
-      loadActionOverlayPg(this.pool),
+      this.overlay(),
     ]);
     const sessions = result.rows.map((r) => rowToSession(r, entitiesMap, markersMap, overlay));
     if (!filter) return sessions;
@@ -112,7 +131,7 @@ export class PgSessionStore implements SessionStore {
       this.loadEntities([sessionId]),
       this.loadMarkers([sessionId]),
       this.loadEdges([sessionId]),
-      loadActionOverlayPg(this.pool),
+      this.overlay(),
     ]);
     const edges = edgesMap.get(sessionId);
     return rowToSession(result.rows[0], entitiesMap, markersMap, overlay, edges);
@@ -132,7 +151,7 @@ export class PgSessionStore implements SessionStore {
     const [entitiesMap, markersMap, overlay] = await Promise.all([
       this.loadEntities(foundIds),
       this.loadMarkers(foundIds),
-      loadActionOverlayPg(this.pool),
+      this.overlay(),
     ]);
     return result.rows.map((r) => rowToSession({ ...r, body: null }, entitiesMap, markersMap, overlay));
   }
@@ -151,7 +170,7 @@ export class PgSessionStore implements SessionStore {
     const [entitiesMap, markersMap, overlay] = await Promise.all([
       this.loadEntities(ids),
       this.loadMarkers(ids),
-      loadActionOverlayPg(this.pool),
+      this.overlay(),
     ]);
     return result.rows.map((r) => rowToSession({ ...r, body: null }, entitiesMap, markersMap, overlay));
   }
@@ -161,12 +180,22 @@ export class PgSessionStore implements SessionStore {
     limit: number,
     opts?: SearchOptions,
   ): Promise<ReadonlyArray<SemanticNeighbor>> {
+    const wsIds = opts?.workstreamIds;
+    if (wsIds !== undefined && wsIds.length === 0) return [];
     const k = Math.max(1, Math.trunc(limit));
     const vecStr = `[${Array.from(queryVector).join(",")}]`;
     const statusFilter =
       opts?.includeSuperseded === true
         ? "s.status != 'replaced'"
         : "s.status NOT IN ('superseded', 'replaced')";
+    const params: unknown[] = [vecStr];
+    let wsClause = "";
+    if (wsIds?.length) {
+      params.push(wsIds);
+      wsClause = `AND s.workstream_id = ANY($${params.length}::text[])`;
+    }
+    params.push(k);
+    const limitParam = `$${params.length}`;
     const result = await this.pool.query<{
       session_id: string;
       distance: number;
@@ -175,11 +204,12 @@ export class PgSessionStore implements SessionStore {
       `SELECT sec.session_id, MIN(sec.embedding <-> $1::vector) AS distance, s.status
        FROM session_embedding_chunks sec
        JOIN sessions s ON s.id = sec.session_id
+       WHERE TRUE ${wsClause}
        GROUP BY sec.session_id, s.status
        HAVING ${statusFilter}
        ORDER BY distance
-       LIMIT $2`,
-      [vecStr, k],
+       LIMIT ${limitParam}`,
+      params,
     );
     return result.rows.map((r) => ({ sessionId: r.session_id, distance: r.distance }));
   }
@@ -189,6 +219,8 @@ export class PgSessionStore implements SessionStore {
     limit: number,
     opts?: SearchOptions,
   ): Promise<ReadonlyArray<KeywordNeighbor>> {
+    const wsIds = opts?.workstreamIds;
+    if (wsIds !== undefined && wsIds.length === 0) return [];
     const terms = tokenize(query).map(sanitizeTsToken).filter(Boolean);
     if (terms.length === 0) return [];
     const tsQuery = terms.join(" OR ");
@@ -197,15 +229,24 @@ export class PgSessionStore implements SessionStore {
       opts?.includeSuperseded === true
         ? "status != 'replaced'"
         : "status NOT IN ('superseded', 'replaced')";
+    const params: unknown[] = [tsQuery];
+    let wsClause = "";
+    if (wsIds?.length) {
+      params.push(wsIds);
+      wsClause = `AND workstream_id = ANY($${params.length}::text[])`;
+    }
+    params.push(k);
+    const limitParam = `$${params.length}`;
     const result = await this.pool.query<{ session_id: string; score: number }>(
       `SELECT id AS session_id,
               ts_rank_cd(fts_vector, websearch_to_tsquery('english', $1)) AS score
        FROM sessions
        WHERE fts_vector @@ websearch_to_tsquery('english', $1)
          AND ${statusFilter}
+         ${wsClause}
        ORDER BY score DESC
-       LIMIT $2`,
-      [tsQuery, k],
+       LIMIT ${limitParam}`,
+      params,
     );
     return result.rows.map((r) => ({ sessionId: r.session_id, score: r.score }));
   }

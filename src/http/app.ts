@@ -106,6 +106,10 @@ import { recallCode } from "@core/exemplars/recall-code.js";
 import { composeEmbedText } from "@core/exemplars/embed-text.js";
 import { buildFailureModeBlock } from "@core/signals/failure-mode-recall.js";
 import { aggregateFailureModes } from "@core/signals/aggregate.js";
+import { parseRelativeFloor } from "../hook/score-floor.js";
+import { warmupSnapshot } from "@core/health/warmup-state.js";
+
+const HERMES_RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 
 export interface HttpDeps {
   readonly recall: RecallService;
@@ -525,7 +529,7 @@ function renderAuthPage(): string {
 
 function registerHealthRoute(app: Hono): void {
   app.get("/api/health", (c) =>
-    c.json({ status: "ok", service: "nlm-memory", version: pkg.version }),
+    c.json({ status: "ok", service: "nlm-memory", version: pkg.version, warmup: warmupSnapshot() }),
   );
 
   // Passive update poll for the UI. Same daily-cached check the CLI
@@ -873,7 +877,7 @@ function registerHermesAgentHookRoutes(app: Hono, deps: HttpDeps): void {
         matchScore: r.matchScore,
       }));
       const surfaced = loadSurfaced(sessionId);
-      const selected = selectHits({ hits, surfaced, scoreThreshold: 0, perFireCap: 3, perConversationCap: 10 });
+      const selected = selectHits({ hits, surfaced, scoreThreshold: 0, relativeFloor: HERMES_RELATIVE_FLOOR, perFireCap: 3, perConversationCap: 10 });
       if (
         selected.length === 0 &&
         (result.relatedFacts ?? []).length === 0 &&
@@ -1184,6 +1188,7 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
     const id = store instanceof PgSessionStore
       ? await writeActionPg(store.pool, parsed)
       : writeAction(store.rawDb(), parsed);
+    store.invalidateOverlayCache();
     return c.json({ id, timestamp: new Date().toISOString() });
   });
 
@@ -1199,6 +1204,7 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
     const ids = store instanceof PgSessionStore
       ? await writeActionsBatchPg(store.pool, inputs)
       : writeActionsBatch(store.rawDb(), inputs);
+    store.invalidateOverlayCache();
     return c.json({ accepted: ids.length, ids });
   });
 
@@ -1209,6 +1215,7 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
       ? await undoActionPg(store.pool, c.req.param("id"))
       : undoAction(store.rawDb(), c.req.param("id"));
     if (!result) return c.json({ error: "action not found or already undone" }, 404);
+    store.invalidateOverlayCache();
     return c.json({ id: result.undoId, timestamp: new Date().toISOString() });
   });
 

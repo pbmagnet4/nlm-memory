@@ -13,6 +13,7 @@ import type { LLMClient } from "@ports/llm-client.js";
 import { LLMUnreachableError } from "@ports/llm-client.js";
 import type {
   KeywordNeighbor,
+  SearchOptions,
   SemanticNeighbor,
   SessionStore,
 } from "@ports/session-store.js";
@@ -69,11 +70,12 @@ export interface RecallServiceDeps {
   readonly installScope?: string;
   /**
    * Optional resolver for workstream-filter queries. Given an idOrLabel,
-   * returns the Set of session ids bound to that workstream (merge chains
-   * resolve to the live survivor). When absent, `query.workstream` is a no-op.
-   * Injected by buildStack() / createApp(); tests can stub with a plain fn.
+   * returns the array of member workstream ids (merge chains resolve to the
+   * live survivor). Passed as `workstreamIds` into both search legs so the
+   * SQL layer filters by workstream_id. When absent, `query.workstream` is a
+   * no-op. Injected by buildStack(); tests can stub with a plain fn.
    */
-  readonly resolveWorkstreamSessions?: (idOrLabel: string) => Promise<Set<string>>;
+  readonly resolveWorkstreamMembers?: (idOrLabel: string) => Promise<ReadonlyArray<string>>;
 }
 
 export class RecallService {
@@ -122,8 +124,19 @@ export class RecallService {
       }
     }
 
-    // 1. Search legs — ranked neighbor IDs only. No session bodies loaded.
-    const searchOpts = input.includeSuperseded === true ? { includeSuperseded: true } : undefined;
+    // 1. Resolve workstream membership before the search legs so the SQL can
+    //    filter by workstream_id directly, eliminating the post-fetch JS filter.
+    let workstreamIds: ReadonlyArray<string> | null = null;
+    if (input.workstream && this.deps.resolveWorkstreamMembers) {
+      workstreamIds = await this.deps.resolveWorkstreamMembers(input.workstream);
+      if (workstreamIds.length === 0) return empty;
+    }
+
+    const searchOpts: SearchOptions = {
+      ...(input.includeSuperseded === true ? { includeSuperseded: true } : {}),
+      ...(workstreamIds ? { workstreamIds } : {}),
+    };
+
     const kwNeighbors: ReadonlyArray<KeywordNeighbor> =
       (mode === "keyword" || mode === "hybrid") && keywordQuery
         ? await this.deps.store.keywordSearch(keywordQuery, limit * KEYWORD_OVERFETCH, searchOpts)
@@ -161,20 +174,8 @@ export class RecallService {
     if (input.entity !== undefined) filterArgs.entity = input.entity;
     if (input.kind !== undefined) filterArgs.kind = input.kind;
 
-    // Optional workstream filter: resolve the idOrLabel → allowed session-id
-    // Set and drop any hit not in the set. Applied before the final limit so
-    // the caller always gets up to `limit` workstream-bound hits, not a
-    // post-limit slice that would under-fill the result. No-op when the dep
-    // is not wired or the query does not carry a workstream field.
-    let allowedWorkstreamIds: Set<string> | null = null;
-    if (input.workstream && this.deps.resolveWorkstreamSessions) {
-      allowedWorkstreamIds = await this.deps.resolveWorkstreamSessions(input.workstream);
-    }
-
     const byId = new Map<string, Session>(
-      applyFilter(hitSessions, filterArgs)
-        .filter((s) => allowedWorkstreamIds === null || allowedWorkstreamIds.has(s.id))
-        .map((s) => [s.id, s]),
+      applyFilter(hitSessions, filterArgs).map((s) => [s.id, s]),
     );
 
     // 3. Build hits from the resolved sessions, preserving leg rank order.

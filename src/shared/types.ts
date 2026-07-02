@@ -107,7 +107,7 @@ export interface RecallQuery {
    * Optional workstream id or label to filter recall results. When set, only
    * sessions bound to the resolved workstream (or any member of its merge
    * chain) are returned. Merge chains resolve to the live survivor. No-op
-   * when omitted or when `resolveWorkstreamSessions` is not wired into
+   * when omitted or when `resolveWorkstreamMembers` is not wired into
    * RecallServiceDeps.
    */
   readonly workstream?: string;

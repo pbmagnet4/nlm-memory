@@ -8,7 +8,7 @@
  * absent. Tables are truncated between tests.
  */
 
-import { mkdtempSync, rmSync, writeFileSync, utimesSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,7 +16,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { PgStorage } from "../../src/core/storage/pg-storage.js";
 import { ScanScheduler } from "../../src/core/scheduler/scheduler.js";
-import { getFileSize } from "../../src/core/scheduler/scan-once.js";
 import type {
   DetectionResult,
   SessionChunk,
@@ -192,7 +191,7 @@ class FixtureAdapter implements TranscriptAdapter {
       endedAt: "2026-05-19T10:30:00Z",
       durationMin: 30,
       turnCount: 1,
-      byteRange: [0, getFileSize(sourcePath) ?? 0] as const,
+      byteRange: [0, statSync(sourcePath).size] as const,
       projectDir: "project_a",
       gitBranch: "main",
       text: "session body text",

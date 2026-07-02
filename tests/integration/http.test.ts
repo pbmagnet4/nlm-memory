@@ -87,11 +87,14 @@ describe("HTTP adapter", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("GET /api/health returns ok", async () => {
+  it("GET /api/health returns ok with warmup readiness fields", async () => {
     const res = await app.request("/api/health");
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { status: string };
+    const body = (await res.json()) as { status: string; warmup: { fts5: boolean; textEmbedder: boolean; ready: boolean } };
     expect(body.status).toBe("ok");
+    expect(typeof body.warmup.fts5).toBe("boolean");
+    expect(typeof body.warmup.textEmbedder).toBe("boolean");
+    expect(typeof body.warmup.ready).toBe("boolean");
   });
 
   it("GET /api/recall?q=pgvector returns the matching session", async () => {

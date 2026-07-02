@@ -494,10 +494,33 @@ function extractRecallQuery(prompt) {
   return contentWords.join(" ");
 }
 
+// src/hook/hook-helpers.ts
+function readStdin() {
+  return new Promise((resolve2) => {
+    let data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => data += chunk);
+    process.stdin.on("end", () => resolve2(data));
+    process.stdin.on("error", () => resolve2(data));
+  });
+}
+async function fetchWithTimeout(url, init, ms) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function hookModeFromEnv() {
+  return process.env["NLM_HOOK_MODE"] === "live" ? "live" : "shadow";
+}
+
 // src/hook/recall-over-http.ts
 var RECALL_LIMIT = 5;
 var RECALL_TIMEOUT_MS = 2e3;
-async function recallOverHttp(prompt, runtime, conversationId) {
+async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword") {
   const query = extractRecallQuery(prompt);
   if (query === null) return { hits: [], facts: [], exemplars: [] };
   const portValue = process.env["NLM_PORT"] ?? "3940";
@@ -505,17 +528,12 @@ async function recallOverHttp(prompt, runtime, conversationId) {
     // 127.0.0.1, not localhost: each hook is a fresh process with no connection
     // reuse, and Node resolves localhost to IPv6 ::1 first — a measured ~50-300ms
     // per-fire connect penalty vs ~3ms on the explicit IPv4 loopback.
-    `http://127.0.0.1:${portValue}/api/recall?q=${encodeURIComponent(query)}&mode=keyword&limit=${RECALL_LIMIT}&withFacts=true&withExemplars=true` + (conversationId ? `&conversation_id=${encodeURIComponent(conversationId)}` : "")
+    `http://127.0.0.1:${portValue}/api/recall?q=${encodeURIComponent(query)}&mode=${mode}&limit=${RECALL_LIMIT}&withFacts=true&withExemplars=true` + (conversationId ? `&conversation_id=${encodeURIComponent(conversationId)}` : "")
   );
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), RECALL_TIMEOUT_MS);
   try {
     const extra = { "x-recall-source": "hook" };
     if (runtime) extra["x-recall-runtime"] = runtime;
-    const res = await fetch(url, {
-      headers: hookAuthHeaders(extra),
-      signal: controller.signal
-    });
+    const res = await fetchWithTimeout(url, { headers: hookAuthHeaders(extra) }, RECALL_TIMEOUT_MS);
     if (!res.ok) return { hits: [], facts: [], exemplars: [] };
     let body;
     try {
@@ -543,8 +561,8 @@ async function recallOverHttp(prompt, runtime, conversationId) {
       taskContext: e.taskContext
     }));
     return { hits, facts, exemplars };
-  } finally {
-    clearTimeout(timer);
+  } catch {
+    return { hits: [], facts: [], exemplars: [] };
   }
 }
 
@@ -574,39 +592,38 @@ function parseRecallGateMode(env = process.env) {
 var GATE_TIMEOUT_MS = 4e3;
 function makeOllamaGate(url, model = RECALL_GATE_MODEL, timeoutMs = GATE_TIMEOUT_MS) {
   return async (prompt, candidate) => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const r = await fetch(`${url}/api/chat`, {
-        method: "POST",
-        signal: controller.signal,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model,
-          stream: false,
-          think: false,
-          // Keep the gate model resident between fires so only the first fire
-          // pays the cold-load; subsequent gates are ~1 judge call.
-          keep_alive: "15m",
-          format: GATE_FORMAT,
-          options: GATE_OPTS,
-          messages: [
-            { role: "system", content: RECALL_GATE_SYSTEM },
-            { role: "user", content: `USER PROMPT:
+      const r = await fetchWithTimeout(
+        `${url}/api/chat`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model,
+            stream: false,
+            think: false,
+            // Keep the gate model resident between fires so only the first fire
+            // pays the cold-load; subsequent gates are ~1 judge call.
+            keep_alive: "15m",
+            format: GATE_FORMAT,
+            options: GATE_OPTS,
+            messages: [
+              { role: "system", content: RECALL_GATE_SYSTEM },
+              { role: "user", content: `USER PROMPT:
 ${prompt}
 
 CANDIDATE CONTEXT:
 ${candidate}` }
-          ]
-        })
-      });
+            ]
+          })
+        },
+        timeoutMs
+      );
       const d = await r.json();
       const v = JSON.parse(d.message?.content ?? "{}").gate;
       return v === "irrelevant" ? "irrelevant" : "relevant";
     } catch {
       return "relevant";
-    } finally {
-      clearTimeout(timer);
     }
   };
 }
@@ -617,6 +634,24 @@ var RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9
 var PER_FIRE_CAP = 3;
 var PER_CONVERSATION_CAP = 10;
 var PROMPT_PREVIEW_CHARS = 200;
+function parseHookDeadline(raw) {
+  if (raw === void 0) return 4e3;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 4e3;
+}
+var HOOK_DEADLINE_MS = parseHookDeadline(process.env["NLM_HOOK_DEADLINE_MS"]);
+async function withDeadline(p, ms, fallback) {
+  if (ms <= 0) return fallback;
+  let timer;
+  const timeout = new Promise((resolve2) => {
+    timer = setTimeout(() => resolve2(fallback), ms);
+  });
+  try {
+    return await Promise.race([p, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 function hookRuntimeFromEnv(env = process.env) {
   const raw = env["NLM_HOOK_RUNTIME"]?.trim();
   return raw ? raw : "claude-code";
@@ -652,9 +687,12 @@ async function runHook(input, deps) {
     });
     return "";
   }
+  const deadline = Date.now() + (deps.deadlineMs ?? HOOK_DEADLINE_MS);
   let fetched = { hits: [], facts: [] };
   try {
-    fetched = normalizeRecall(await deps.recall(buildRecallQuery(input)));
+    fetched = normalizeRecall(
+      await withDeadline(deps.recall(buildRecallQuery(input)), deadline - Date.now(), { hits: [], facts: [] })
+    );
   } catch {
     fetched = { hits: [], facts: [] };
   }
@@ -673,10 +711,18 @@ async function runHook(input, deps) {
   if (deps.recallGate && selected.length > 0) {
     const g = deps.recallGate;
     const toGate = g.maxCandidates ? selected.slice(0, g.maxCandidates) : selected;
-    gateDecisions = await Promise.all(
-      toGate.map(async (h) => ({ id: h.id, gate: await g.judge(input.prompt, `${h.label}
-${h.summary ?? ""}`) }))
-    );
+    const remaining = deadline - Date.now();
+    const gateFallback = toGate.map((h) => ({ id: h.id, gate: "relevant" }));
+    if (remaining <= 0) {
+      gateDecisions = gateFallback;
+    } else {
+      gateDecisions = await withDeadline(
+        Promise.all(toGate.map(async (h) => ({ id: h.id, gate: await g.judge(input.prompt, `${h.label}
+${h.summary ?? ""}`) }))),
+        remaining,
+        gateFallback
+      );
+    }
     if (g.mode === "live") {
       const drop = new Set(gateDecisions.filter((d) => d.gate === "irrelevant").map((d) => d.id));
       injected = selected.filter((h) => !drop.has(h.id));
@@ -701,15 +747,6 @@ ${h.summary ?? ""}`) }))
   }
   return "";
 }
-function readStdin() {
-  return new Promise((resolve2) => {
-    let data = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => data += chunk);
-    process.stdin.on("end", () => resolve2(data));
-    process.stdin.on("error", () => resolve2(data));
-  });
-}
 async function main() {
   try {
     autoloadEnv();
@@ -720,7 +757,7 @@ async function main() {
     const transcriptPath = typeof payload.transcript_path === "string" ? payload.transcript_path : void 0;
     if (!prompt) return;
     if (!promptRecallEnabled()) return;
-    const mode = process.env["NLM_HOOK_MODE"] === "live" ? "live" : "shadow";
+    const mode = hookModeFromEnv();
     const runtime = hookRuntimeFromEnv();
     const gateMode = parseRecallGateMode();
     const gateUrl = process.env["OLLAMA_URL"] ?? "http://127.0.0.1:11434";
@@ -743,6 +780,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 export {
   buildRecallQuery,
   hookRuntimeFromEnv,
+  parseHookDeadline,
   promptRecallEnabled,
   runHook
 };

@@ -14,31 +14,27 @@ import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { makeWorkstreamId, normalizeLabel } from "../../src/core/workstream/model.js";
 import { resolveWorkstreamId } from "../../src/core/workstream/resolve.js";
 import type { WorkstreamStore } from "../../src/ports/workstream-store.js";
-import type { SessionStore } from "../../src/ports/session-store.js";
 import { makeSession } from "../fixtures/sessions.js";
 import { FixedEmbedder } from "../fixtures/llm-stubs.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 
 /**
- * Exact mirror of the resolveWorkstreamSessions closure in buildStack() (src/cli/nlm.ts).
- * Using the real resolveWorkstreamId + normalizeLabel + listAll + listSessionIdsByWorkstreams
- * ensures the test goes through the genuine merge-chain resolution path.
+ * Exact mirror of the resolveWorkstreamMembers closure in buildStack() (src/cli/nlm.ts).
+ * Returns member workstream ids for the given idOrLabel, resolving merge chains.
  */
 function buildWorkstreamResolver(
   wsStore: WorkstreamStore,
-  sessionStore: SessionStore,
-): (idOrLabel: string) => Promise<Set<string>> {
+): (idOrLabel: string) => Promise<ReadonlyArray<string>> {
   return async (idOrLabel: string) => {
     const all = await wsStore.listAll();
     const byId = new Map(all.map((w) => [w.id, { id: w.id, mergedInto: w.mergedInto }]));
     const target =
       all.find((w) => w.id === idOrLabel) ??
       all.find((w) => normalizeLabel(w.label) === normalizeLabel(idOrLabel));
-    if (!target) return new Set();
+    if (!target) return [];
     const survivor = resolveWorkstreamId(target.id, byId);
-    const members = all.filter((w) => resolveWorkstreamId(w.id, byId) === survivor).map((w) => w.id);
-    return new Set(await sessionStore.listSessionIdsByWorkstreams(members));
+    return all.filter((w) => resolveWorkstreamId(w.id, byId) === survivor).map((w) => w.id);
   };
 }
 
@@ -75,13 +71,10 @@ describe("RecallService workstream filter (integration)", () => {
     await wsStore.create({ id: wsId, label: "NLM" });
     await store.setWorkstreamBinding(s1.id, wsId, "operator", 1.0);
 
-    // resolveWorkstreamSessions: exact same closure as buildStack() in nlm.ts
-    const resolveWorkstreamSessions = buildWorkstreamResolver(wsStore, store);
-
     const svc = new RecallService({
       store,
       llm: new FixedEmbedder(),
-      resolveWorkstreamSessions,
+      resolveWorkstreamMembers: buildWorkstreamResolver(wsStore),
     });
 
     // With workstream filter: only s1
@@ -115,12 +108,10 @@ describe("RecallService workstream filter (integration)", () => {
     store.insertSessionForTest(s);
     await store.setWorkstreamBinding(s.id, ancestorId, "operator", 1.0);
 
-    // Wire RecallService with the real buildStack resolver — the same closure
-    // used in production (resolveWorkstreamId + normalizeLabel + listAll + listSessionIdsByWorkstreams).
     const svc = new RecallService({
       store,
       llm: new FixedEmbedder(),
-      resolveWorkstreamSessions: buildWorkstreamResolver(wsStore, store),
+      resolveWorkstreamMembers: buildWorkstreamResolver(wsStore),
     });
 
     // Searching by survivor label must return the ancestor-bound session because

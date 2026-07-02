@@ -3,6 +3,7 @@ import { RecallService } from "../../../src/core/recall/recall-service.js";
 import { StubEmbedder } from "../../fixtures/llm-stubs.js";
 import type {
   KeywordNeighbor,
+  SearchOptions,
   SessionStore,
   SemanticNeighbor,
 } from "../../../src/ports/session-store.js";
@@ -15,6 +16,7 @@ import { makeSession } from "../../fixtures/sessions.js";
 class InMemoryStore implements SessionStore {
   listCalls = 0;
   getByIdsCalls = 0;
+  lastKeywordOpts: SearchOptions | undefined = undefined;
   constructor(
     private readonly sessions: Session[],
     private readonly neighbors: SemanticNeighbor[] = [],
@@ -34,7 +36,8 @@ class InMemoryStore implements SessionStore {
   async semanticSearch(): Promise<ReadonlyArray<SemanticNeighbor>> {
     return this.neighbors;
   }
-  async keywordSearch(): Promise<ReadonlyArray<KeywordNeighbor>> {
+  async keywordSearch(_q: string, _l: number, opts?: SearchOptions): Promise<ReadonlyArray<KeywordNeighbor>> {
+    this.lastKeywordOpts = opts;
     return this.keywordHits;
   }
   async resolveSuccessors(ids: ReadonlyArray<string>): Promise<Map<string, string>> {
@@ -342,6 +345,38 @@ describe("RecallService.search", () => {
       // down-rank still does not flip this pair (s2 ≫ s5's 4); the badge +
       // successor pointer is what the stranger needed.
       expect(s2.matchScore).toBeCloseTo(12 * 0.7 * 1.13, 4);
+    });
+  });
+
+  describe("workstream SQL push (O-7)", () => {
+    it("passes resolved member workstream ids into the keyword search leg opts", async () => {
+      const store = new InMemoryStore(corpus, [], [{ sessionId: "a", score: 5 }]);
+      const svc = new RecallService({
+        store,
+        llm: new StubEmbedder(),
+        resolveWorkstreamMembers: async () => ["ws_a"],
+      });
+      await svc.search({ query: "hono", mode: "keyword", workstream: "Project A" });
+      expect(store.lastKeywordOpts?.workstreamIds).toEqual(["ws_a"]);
+    });
+
+    it("returns empty immediately when the workstream resolves to no members", async () => {
+      const store = new InMemoryStore(corpus, [], [{ sessionId: "a", score: 5 }]);
+      const svc = new RecallService({
+        store,
+        llm: new StubEmbedder(),
+        resolveWorkstreamMembers: async () => [],
+      });
+      const result = await svc.search({ query: "hono", mode: "keyword", workstream: "Ghost" });
+      expect(result.results).toEqual([]);
+      expect(store.lastKeywordOpts).toBeUndefined();
+    });
+
+    it("unfiltered query does not set workstreamIds on the search leg", async () => {
+      const store = new InMemoryStore(corpus, [], [{ sessionId: "a", score: 5 }]);
+      const svc = new RecallService({ store, llm: new StubEmbedder() });
+      await svc.search({ query: "hono", mode: "keyword" });
+      expect(store.lastKeywordOpts?.workstreamIds).toBeUndefined();
     });
   });
 });

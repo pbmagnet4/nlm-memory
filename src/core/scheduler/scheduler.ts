@@ -37,7 +37,7 @@ import type {
 import { PgSessionStore } from "@core/storage/pg-session-store.js";
 import type { PgFactStore } from "@core/storage/pg-fact-store.js";
 import type { Fact, Signal } from "@shared/types.js";
-import { MAX_CLASSIFY_FAILURES, getFileSize, recordClassified, recordClassifiedPg, recordFailed, recordFailedPg, recordSkippedLowConfidence, recordSkippedLowConfidencePg, scanOnce, scanOncePg } from "./scan-once.js";
+import { MAX_CLASSIFY_FAILURES, recordClassified, recordClassifiedPg, recordFailed, recordFailedPg, recordSkippedLowConfidence, recordSkippedLowConfidencePg, scanOnce, scanOncePg } from "./scan-once.js";
 import { runCheapChecksOnSqlite } from "@core/integrity/check-invariants.js";
 import { classifyAdaptive } from "@core/classifier/hierarchical-classify.js";
 import { TimeoutError } from "@core/util/with-timeout.js";
@@ -239,7 +239,7 @@ export class ScanScheduler {
         continue;
       }
 
-      for (const { chunk, supersedes } of results) {
+      for (const { chunk, supersedes, fileSize } of results) {
         chunksSeen += 1;
         await this.drainSignals(chunk);
 
@@ -253,9 +253,9 @@ export class ScanScheduler {
           const reason = e instanceof TimeoutError ? "timed out" : `error: ${e instanceof Error ? e.message : String(e)}`;
           let count: number;
           if (_pgPool) {
-            count = await recordFailedPg(_pgPool, adapter.name, chunk.sourcePath, getFileSize(chunk.sourcePath));
+            count = await recordFailedPg(_pgPool, adapter.name, chunk.sourcePath, fileSize);
           } else {
-            recordFailed(sqliteDb!, adapter.name, chunk.sourcePath);
+            recordFailed(sqliteDb!, adapter.name, chunk.sourcePath, fileSize);
             count = sqliteDb!
               .prepare<[string, string], { failure_count: number }>(
                 "SELECT COALESCE(failure_count, 0) AS failure_count FROM adapter_state WHERE adapter_name = ? AND source_path = ?",
@@ -270,9 +270,9 @@ export class ScanScheduler {
         if (classification.confidence < this.opts.confidenceFloor) {
           skippedLowConfidence += 1;
           if (_pgPool) {
-            await recordSkippedLowConfidencePg(_pgPool, adapter.name, chunk.sourcePath);
+            await recordSkippedLowConfidencePg(_pgPool, adapter.name, chunk.sourcePath, fileSize);
           } else {
-            recordSkippedLowConfidence(sqliteDb!, adapter.name, chunk.sourcePath);
+            recordSkippedLowConfidence(sqliteDb!, adapter.name, chunk.sourcePath, fileSize);
           }
           this.opts.logger(
             `[scheduler] low-confidence (${classification.confidence} < ${this.opts.confidenceFloor}) for ${chunk.id} - skipping until file grows`,
@@ -317,9 +317,9 @@ export class ScanScheduler {
               this.opts.factStore ? { factStore: this.opts.factStore as SqliteFactStore, facts } : null);
           }
           if (_pgPool) {
-            await recordClassifiedPg(_pgPool, adapter.name, chunk.sourcePath, chunk.id);
+            await recordClassifiedPg(_pgPool, adapter.name, chunk.sourcePath, chunk.id, fileSize);
           } else {
-            recordClassified(sqliteDb!, adapter.name, chunk.sourcePath, chunk.id);
+            recordClassified(sqliteDb!, adapter.name, chunk.sourcePath, chunk.id, fileSize);
           }
           inserted += 1;
           if (bindWorkstreamsEnabled() && this.opts.workstreams) {
@@ -358,9 +358,9 @@ export class ScanScheduler {
         } catch (e) {
           storageFailures += 1;
           if (_pgPool) {
-            await recordFailedPg(_pgPool, adapter.name, chunk.sourcePath, getFileSize(chunk.sourcePath));
+            await recordFailedPg(_pgPool, adapter.name, chunk.sourcePath, fileSize);
           } else {
-            recordFailed(sqliteDb!, adapter.name, chunk.sourcePath);
+            recordFailed(sqliteDb!, adapter.name, chunk.sourcePath, fileSize);
           }
           this.opts.logger(
             `[scheduler] storage error for ${chunk.id}: ${e instanceof Error ? e.message : String(e)}`,
