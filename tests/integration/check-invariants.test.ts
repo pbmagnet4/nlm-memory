@@ -460,6 +460,49 @@ describe("check-invariants (SQLite)", () => {
     });
   });
 
+  describe("I7b chunk ghost invariants", () => {
+    it("I7b-1 fires when a chunk has no map row", () => {
+      const db = store.rawDb();
+      const blob = Buffer.alloc(768 * 4);
+      db.prepare("INSERT INTO session_embedding_chunks (embedding, session_id, chunk_idx) VALUES (?, ?, ?)").run(blob, "orphan-session", BigInt(0));
+      const violations = runChecksOnSqlite(db);
+      const v = violations.find((v) => v.id === "I7b-1");
+      expect(v).toBeDefined();
+      expect(v!.count).toBeGreaterThanOrEqual(1);
+    });
+
+    it("I7b-1 does not fire when all chunks have map entries", () => {
+      store.insertSessionForTest(makeSession({ id: "s_chunk_clean" }));
+      const db = store.rawDb();
+      const blob = Buffer.alloc(768 * 4);
+      const info = db.prepare("INSERT INTO session_embedding_chunks (embedding, session_id, chunk_idx) VALUES (?, ?, ?)").run(blob, "s_chunk_clean", BigInt(0));
+      const chunkId = Number(info.lastInsertRowid);
+      db.prepare("INSERT INTO session_chunk_map (chunk_id, session_id, chunk_idx) VALUES (?, ?, ?)").run(chunkId, "s_chunk_clean", 0);
+      const violations = runChecksOnSqlite(db);
+      expect(violations.find((v) => v.id === "I7b-1")).toBeUndefined();
+    });
+
+    it("I7b-2 fires when a map row references a missing session", () => {
+      const db = store.rawDb();
+      db.pragma("foreign_keys = OFF");
+      db.prepare("INSERT INTO session_chunk_map (chunk_id, session_id, chunk_idx) VALUES (?, ?, ?)").run(9999, "ghost-session-i7b2", 0);
+      db.pragma("foreign_keys = ON");
+      const violations = runChecksOnSqlite(db);
+      const v = violations.find((v) => v.id === "I7b-2");
+      expect(v).toBeDefined();
+      expect(v!.count).toBeGreaterThanOrEqual(1);
+      expect(v!.sampleIds).toContain("ghost-session-i7b2");
+    });
+
+    it("I7b-2 does not fire when all map rows have valid sessions", () => {
+      store.insertSessionForTest(makeSession({ id: "s_map_valid" }));
+      const db = store.rawDb();
+      db.prepare("INSERT INTO session_chunk_map (chunk_id, session_id, chunk_idx) VALUES (?, ?, ?)").run(1, "s_map_valid", 0);
+      const violations = runChecksOnSqlite(db);
+      expect(violations.find((v) => v.id === "I7b-2")).toBeUndefined();
+    });
+  });
+
   describe("runCheapChecksOnSqlite: I7 in cheap subset", () => {
     function seedEmbedding(db: ReturnType<typeof store.rawDb>, factId: string): void {
       const blob = Buffer.alloc(768 * 4);

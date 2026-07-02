@@ -283,6 +283,20 @@ describe.skipIf(!PG_TEST_URL)("check-invariants (PostgreSQL)", () => {
     });
   });
 
+  describe("I7b chunk ghost invariants (FK-impossible on PG)", () => {
+    it("I7b-1 passes trivially on clean DB", async () => {
+      await insertSession(pool, "s_pg_i7b1");
+      const violations = await runChecksOnPg(pool);
+      expect(violations.find((v) => v.id === "I7b-1")).toBeUndefined();
+    });
+
+    it("I7b-2 passes trivially on clean DB", async () => {
+      await insertSession(pool, "s_pg_i7b2");
+      const violations = await runChecksOnPg(pool);
+      expect(violations.find((v) => v.id === "I7b-2")).toBeUndefined();
+    });
+  });
+
   describe("runCheapChecksOnPg: I7 in cheap subset", () => {
     async function insertFact(sessionId: string, factId: string, predicate = "p"): Promise<void> {
       await pool.query(
