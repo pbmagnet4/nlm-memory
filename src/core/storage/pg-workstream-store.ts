@@ -50,20 +50,28 @@ export class PgWorkstreamStore implements WorkstreamStore {
 
   async merge(fromId: string, intoId: string): Promise<void> {
     // Pointer first (source of truth for resolution), then derived entity union, then clear.
-    // No multi-statement transaction here to match this adapter's per-query style; a mid-failure
-    // leaves merged_into correct (resolution works) with at worst a stale duplicate entity row.
-    await this.pool.query(
-      "UPDATE workstreams SET merged_into = $1, status = 'merged', updated_at = NOW() WHERE id = $2",
-      [intoId, fromId],
-    );
-    await this.pool.query(
-      `INSERT INTO workstream_entities (workstream_id, entity_canonical, session_count)
-       SELECT $1, entity_canonical, session_count FROM workstream_entities WHERE workstream_id = $2
-       ON CONFLICT (workstream_id, entity_canonical)
-       DO UPDATE SET session_count = workstream_entities.session_count + excluded.session_count`,
-      [intoId, fromId],
-    );
-    await this.pool.query("DELETE FROM workstream_entities WHERE workstream_id = $1", [fromId]);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "UPDATE workstreams SET merged_into = $1, status = 'merged', updated_at = NOW() WHERE id = $2",
+        [intoId, fromId],
+      );
+      await client.query(
+        `INSERT INTO workstream_entities (workstream_id, entity_canonical, session_count)
+         SELECT $1, entity_canonical, session_count FROM workstream_entities WHERE workstream_id = $2
+         ON CONFLICT (workstream_id, entity_canonical)
+         DO UPDATE SET session_count = workstream_entities.session_count + excluded.session_count`,
+        [intoId, fromId],
+      );
+      await client.query("DELETE FROM workstream_entities WHERE workstream_id = $1", [fromId]);
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async upsertEntities(workstreamId: string, entities: ReadonlyArray<string>): Promise<void> {
