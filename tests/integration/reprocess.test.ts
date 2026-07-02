@@ -244,7 +244,7 @@ describe("reprocess", () => {
       expect(chunkRows.length).toBeGreaterThan(0);
     });
 
-    it("leaves workstream binding untouched", async () => {
+    it("leaves workstream binding (workstream_id, binding_source, binding_confidence) untouched", async () => {
       await store.insertSession(baseRecord({ id: "sess_ws", startedAt: "2026-01-01T10:00:00Z" }));
 
       const db = store.rawDb();
@@ -252,7 +252,7 @@ describe("reprocess", () => {
         "INSERT INTO workstreams (id, label, status, created_at) VALUES ('ws_1', 'TestWS', 'active', datetime('now'))",
       ).run();
       db.prepare(
-        "UPDATE sessions SET workstream_id = 'ws_1' WHERE id = 'sess_ws'",
+        "UPDATE sessions SET workstream_id = 'ws_1', binding_source = 'auto', binding_confidence = 0.77 WHERE id = 'sess_ws'",
       ).run();
 
       const newClassification: ClassifyResult = {
@@ -278,11 +278,13 @@ describe("reprocess", () => {
       );
 
       const row = db
-        .prepare<[string], { workstream_id: string | null }>(
-          "SELECT workstream_id FROM sessions WHERE id = ?",
+        .prepare<[string], { workstream_id: string | null; binding_source: string | null; binding_confidence: number | null }>(
+          "SELECT workstream_id, binding_source, binding_confidence FROM sessions WHERE id = ?",
         )
         .get("sess_ws");
       expect(row?.workstream_id).toBe("ws_1");
+      expect(row?.binding_source).toBe("auto");
+      expect(row?.binding_confidence).toBeCloseTo(0.77);
     });
 
     it("replaces entity links: old entities removed, new entities added", async () => {
@@ -331,10 +333,17 @@ describe("reprocess", () => {
       expect(links()).toEqual(["Beta", "Gamma"]);
     });
 
-    it("counts belowFloorOverwrites but still ingests", async () => {
-      await store.insertSession(baseRecord({ id: "sess_low_conf", startedAt: "2026-01-01T10:00:00Z" }));
+    it("counts belowFloorOverwrites and updates session row but preserves prior facts", async () => {
+      await store.insertSession(
+        baseRecord({ id: "sess_low_conf", startedAt: "2026-01-01T10:00:00Z", label: "Original label" }),
+      );
 
       const db = store.rawDb();
+      db.prepare(
+        "INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, created_at, confidence) " +
+        "VALUES ('fact_seed', 'attribute', 'user', 'theme', 'dark', 'sess_low_conf', '2026-01-01T10:00:00Z', 0.9)",
+      ).run();
+
       const lowConf: ClassifyResult = {
         label: "Low confidence",
         summary: "Low",
@@ -342,7 +351,7 @@ describe("reprocess", () => {
         decisions: [],
         open: [],
         confidence: 0.2,
-        facts: [],
+        facts: [{ kind: "attribute", subject: "user", predicate: "theme", value: "light" }],
       };
 
       const report = await reprocess(
@@ -361,7 +370,12 @@ describe("reprocess", () => {
       expect(report.succeeded).toBe(1);
 
       const sess = await store.getById("sess_low_conf");
+      expect(sess?.label).toBe("Low confidence");
       expect(sess?.classifierConfidence).toBeCloseTo(0.2);
+
+      const facts = await factStore.listBySession("sess_low_conf");
+      expect(facts.length).toBe(1);
+      expect(facts[0]?.value).toBe("dark");
     });
   });
 
@@ -611,6 +625,41 @@ describe("reprocess", () => {
       );
 
       expect(report.failed).toBe(1);
+      expect(report.succeeded).toBe(1);
+    });
+
+    it("separates skippedAlreadyDone (state-file) from limitSkipped (--limit cutoff)", async () => {
+      await store.insertSession(baseRecord({ id: "sess_r1", startedAt: "2026-01-01T10:00:00Z" }));
+      await store.insertSession(baseRecord({ id: "sess_r2", startedAt: "2026-01-02T10:00:00Z" }));
+      await store.insertSession(baseRecord({ id: "sess_r3", startedAt: "2026-01-03T10:00:00Z" }));
+
+      const statePath = join(stateTmp, "reprocess.state");
+      const lane = { provider: "deepseek", model: "current-model" };
+      writeFileSync(statePath, JSON.stringify({ done: ["sess_r1"], lane }));
+
+      const db = store.rawDb();
+      const report = await reprocess(
+        {
+          db,
+          store,
+          factStore,
+          embedder: fakeEmbedder(),
+          classifier: fakeClassifier({
+            label: "L",
+            summary: "S",
+            entities: [],
+            decisions: [],
+            open: [],
+            confidence: 0.9,
+            facts: [],
+          }),
+          classifierDescriptor: { provider: "deepseek", model: "current-model" },
+        },
+        { statePath, limit: 1 },
+      );
+
+      expect(report.skippedAlreadyDone).toBe(1);
+      expect(report.limitSkipped).toBe(1);
       expect(report.succeeded).toBe(1);
     });
   });

@@ -1193,7 +1193,8 @@ program
   .command("reprocess")
   .description(
     "Retroactive: re-classify sessions that lack classification or were classified by a weaker lane.\n" +
-    "Workstream binding (workstream_id) is NOT changed by this command.",
+    "Workstream binding (workstream_id) is NOT changed by this command.\n" +
+    "Below-floor results (<0.4 confidence) update the session row but preserve its prior facts.",
   )
   .option("-l, --limit <n>", "max sessions to process this run", (v) => Number.parseInt(v, 10))
   .option("--min-confidence <f>", "also reprocess same-model sessions below this confidence", (v) => Number.parseFloat(v))
@@ -1223,6 +1224,7 @@ program
           ...(opts.minConfidence !== undefined ? { minConfidence: opts.minConfidence } : {}),
           ...(opts.state ? { statePath: opts.state } : {}),
           dryRun: Boolean(opts.dryRun),
+          verbose: Boolean(opts.verbose),
           ...(opts.verbose
             ? {
                 onProgress: (i: number, n: number, sid: string, status: string) => {

@@ -1,5 +1,5 @@
 /**
- * reprocess — retroactive re-classification of prior sessions under a
+ * reprocess: retroactive re-classification of prior sessions under a
  * stronger configured lane.
  *
  * Selection: sessions with a non-empty body whose classifier_model is NULL,
@@ -7,8 +7,9 @@
  * whose stored confidence falls below the threshold even for the same model.
  *
  * Per session: classifyAdaptive on the stored body, then a full insertSession
- * upsert (refreshes chunks + facts). A below-floor classification still
- * overwrites (operator intent) but is counted separately in the report.
+ * upsert (refreshes chunks + facts). A below-floor classification updates the
+ * session row (label, summary, markers, provenance) but preserves prior facts
+ * and their embeddings unchanged. It is counted in belowFloorOverwrites.
  * Workstream binding (workstream_id) is NOT touched by the upsert.
  *
  * Resumable via a JSON state file (default ~/.nlm/reprocess.state). A lane
@@ -48,6 +49,7 @@ export interface ReprocessOptions {
   readonly minConfidence?: number;
   readonly statePath?: string;
   readonly classifyTimeoutMs?: number;
+  readonly verbose?: boolean;
   readonly onProgress?: (i: number, n: number, sid: string, status: string) => void;
 }
 
@@ -64,6 +66,7 @@ export interface ReprocessReport {
   readonly succeeded: number;
   readonly failed: number;
   readonly skippedAlreadyDone: number;
+  readonly limitSkipped: number;
   readonly belowFloorOverwrites: number;
   readonly meanConfidenceOld: number | null;
   readonly meanConfidenceNew: number | null;
@@ -169,7 +172,7 @@ export async function reprocess(
   if (opts.dryRun) {
     const groupMap = new Map<string, CohortGroup>();
     for (const row of allCandidates) {
-      const key = `${row.classifier_provider ?? ""}\0${row.classifier_model ?? ""}\0${confidenceBand(row.classifier_confidence)}`;
+      const key = `${row.classifier_provider ?? ""}\u0000${row.classifier_model ?? ""}\u0000${confidenceBand(row.classifier_confidence)}`;
       const existing = groupMap.get(key);
       if (existing) {
         groupMap.set(key, { ...existing, count: existing.count + 1 });
@@ -189,6 +192,7 @@ export async function reprocess(
       succeeded: 0,
       failed: 0,
       skippedAlreadyDone: 0,
+      limitSkipped: 0,
       belowFloorOverwrites: 0,
       meanConfidenceOld: null,
       meanConfidenceNew: null,
@@ -237,12 +241,15 @@ export async function reprocess(
     sumConfidenceNew += classification.confidence;
     countNew++;
 
-    if (classification.confidence < CONFIDENCE_FLOOR) {
+    const belowFloor = classification.confidence < CONFIDENCE_FLOOR;
+    if (belowFloor) {
       belowFloorOverwrites++;
-      log(
-        `[reprocess] below-floor ${sid}: old=${row.classifier_confidence ?? "null"} new=${classification.confidence}`,
-      );
-    } else {
+      if (opts.verbose) {
+        log(
+          `[reprocess] below-floor ${sid}: old=${row.classifier_confidence ?? "null"} new=${classification.confidence}`,
+        );
+      }
+    } else if (opts.verbose) {
       log(
         `[reprocess] ${sid}: old=${row.classifier_confidence ?? "null"} new=${classification.confidence}`,
       );
@@ -269,10 +276,11 @@ export async function reprocess(
       classifier: { ...classifierDescriptor, confidence: classification.confidence },
     };
 
-    const extracted = extractFacts(classification, sid, row.started_at);
-
     try {
-      await store.insertSession(record, embedder, null, { factStore, facts: extracted });
+      const factSinkArg = belowFloor
+        ? null
+        : { factStore, facts: extractFacts(classification, sid, row.started_at) };
+      await store.insertSession(record, embedder, null, factSinkArg);
       done.add(sid);
       succeeded++;
       processed++;
@@ -295,7 +303,8 @@ export async function reprocess(
     processed,
     succeeded,
     failed,
-    skippedAlreadyDone: skippedByState + limitSkipped,
+    skippedAlreadyDone: skippedByState,
+    limitSkipped,
     belowFloorOverwrites,
     meanConfidenceOld: countOld > 0 ? sumConfidenceOld / countOld : null,
     meanConfidenceNew: countNew > 0 ? sumConfidenceNew / countNew : null,
