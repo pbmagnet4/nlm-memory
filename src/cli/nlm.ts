@@ -372,6 +372,9 @@ export async function runClassifierEvalCommand(deps: ClassifierEvalDeps): Promis
   deps.stdout(`conf-calibration: ${pct(a.confidenceCalibrationRate)}\n`);
   deps.stdout(`p50-latency:      ${a.p50LatencyMs}ms\n`);
   deps.stdout(`p95-latency:      ${a.p95LatencyMs}ms\n`);
+  if (a.timedOutOrUnreachable > 0) {
+    deps.stdout(`timed-out:        ${a.timedOutOrUnreachable} fixture(s) scored as failures (LLM unreachable/timeout)\n`);
+  }
   deps.stdout(`see: docs/classifier-tiers.md\n`);
 }
 

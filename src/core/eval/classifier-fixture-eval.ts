@@ -1,13 +1,14 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join, basename } from "node:path";
 import type { ClassifyResult } from "@ports/llm-client.js";
-import { ClassifierSchemaError } from "@ports/llm-client.js";
+import { ClassifierSchemaError, LLMUnreachableError } from "@ports/llm-client.js";
 import { rate } from "@core/eval/extraction-scoring.js";
 
 export interface FixtureEvalResult {
   readonly perTranscript: ReadonlyArray<{
     readonly id: string;
     readonly schemaValid: boolean;
+    readonly timedOutOrUnreachable: boolean;
     readonly labelMatch: boolean;
     readonly entityPrecision: number;
     readonly entityRecall: number;
@@ -25,6 +26,7 @@ export interface FixtureEvalResult {
     readonly confidenceCalibrationRate: number;
     readonly p50LatencyMs: number;
     readonly p95LatencyMs: number;
+    readonly timedOutOrUnreachable: number;
   };
 }
 
@@ -195,12 +197,16 @@ export async function runClassifierFixtureEval(
 
     let result: ClassifyResult | null = null;
     let schemaValid = true;
+    let timedOutOrUnreachable = false;
 
     try {
       result = await classify(transcript);
     } catch (err) {
       if (err instanceof ClassifierSchemaError) {
         schemaValid = false;
+      } else if (err instanceof LLMUnreachableError) {
+        schemaValid = false;
+        timedOutOrUnreachable = true;
       } else {
         throw err;
       }
@@ -212,6 +218,7 @@ export async function runClassifierFixtureEval(
       perTranscript.push({
         id,
         schemaValid: false,
+        timedOutOrUnreachable,
         labelMatch: false,
         entityPrecision: 0,
         entityRecall: 0,
@@ -238,6 +245,7 @@ export async function runClassifierFixtureEval(
     perTranscript.push({
       id,
       schemaValid: true,
+      timedOutOrUnreachable: false,
       labelMatch: lm,
       entityPrecision: ep,
       entityRecall: er,
@@ -253,6 +261,7 @@ export async function runClassifierFixtureEval(
   const schemaValidRate = n === 0 ? 0 : perTranscript.filter((r) => r.schemaValid).length / n;
   const labelAccuracy = n === 0 ? 0 : perTranscript.filter((r) => r.labelMatch).length / n;
   const confidenceCalibrationRate = n === 0 ? 0 : perTranscript.filter((r) => r.confidenceCalibrated).length / n;
+  const timedOutOrUnreachable = perTranscript.filter((r) => r.timedOutOrUnreachable).length;
 
   const entityF1 = macroF1(perTranscript.map((r) => ({ p: r.entityPrecision, r: r.entityRecall })));
   const decisionF1 = macroF1(perTranscript.map((r) => ({ p: r.decisionPrecision, r: r.decisionRecall })));
@@ -271,6 +280,7 @@ export async function runClassifierFixtureEval(
       confidenceCalibrationRate,
       p50LatencyMs,
       p95LatencyMs,
+      timedOutOrUnreachable,
     },
   };
 }
