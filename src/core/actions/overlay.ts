@@ -5,7 +5,7 @@
  * at read time without mutating the underlying store.
  *
  * Shared by buildDataset (UI projection) and SqliteSessionStore (recall
- * path), so the same overlay drives both surfaces. Append-only — every
+ * path), so the same overlay drives both surfaces. Append-only; every
  * mutation lives as a row in `actions`.
  */
 

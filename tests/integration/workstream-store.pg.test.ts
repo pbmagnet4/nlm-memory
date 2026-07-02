@@ -1,5 +1,5 @@
 /**
- * PgStorage adapter — WorkstreamStore contract.
+ * PgStorage adapter: WorkstreamStore contract.
  *
  * Requires a running PostgreSQL instance. Set NLM_PG_TEST_URL to a
  * connection string, e.g.:
