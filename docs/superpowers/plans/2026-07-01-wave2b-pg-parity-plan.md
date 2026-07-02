@@ -304,12 +304,6 @@ node-postgres parses TIMESTAMPTZ (OID 1184) as JS Date objects by default, but e
 
 - [ ] **Step 2: Per-pool parser.** In PgStorage.create, construct the pool with a custom types parser so the override is scoped to NLM's pool, not process-global:
 
-```typescript
-import { Pool, types } from "pg";
-
-const pgTypes = new types.TypeParsers ? undefined : undefined;
-```
-
 If the installed pg version supports per-pool `types` (check node_modules/pg docs: `new Pool({ connectionString, types: { getTypeParser } })`), use that shape: delegate to `types.getTypeParser` for everything except OID 1184 (TIMESTAMPTZ) and 1114 (TIMESTAMP), which return `(val) => new Date(val).toISOString()`. If per-pool types are awkward in the installed version, fall back to module-level `types.setTypeParser(1184, ...)` + `(1114, ...)` in pg-storage.ts with a comment stating the process-global scope and why it is safe (every NLM pg annotation expects strings). State which route you took in your report.
 
 - [ ] **Step 3: Audit other TIMESTAMPTZ reads.** Grep migrations/pg for TIMESTAMPTZ/TIMESTAMP columns and every SELECT reading them; confirm each consumer is now receiving ISO strings and nothing depended on Date objects (recentWrites/recentMarkers JSON serialization keeps working; schema_migrations applied_at is display-only). List the audited columns in your report.
