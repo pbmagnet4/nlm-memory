@@ -25,6 +25,7 @@ import type {
   RecallResult,
   Session,
 } from "@shared/types.js";
+import { laneHealth } from "@core/health/embedding-lane-state.js";
 import { applyFilter } from "./filter.js";
 import { keywordMatchFields } from "./match-fields.js";
 import { detectQueryShape } from "./query-shape.js";
@@ -145,18 +146,22 @@ export class RecallService {
     let semNeighbors: ReadonlyArray<SemanticNeighbor> = [];
     let semError: "ollama_unreachable" | null = null;
     if ((mode === "semantic" || mode === "hybrid") && semanticQuery) {
-      try {
-        const embedding = await this.deps.llm.embed(semanticQuery, "query");
-        semNeighbors = await this.deps.store.semanticSearch(
-          embedding.vector,
-          limit * SEMANTIC_OVERFETCH,
-          searchOpts,
-        );
-      } catch (err) {
-        if (err instanceof LLMUnreachableError) {
-          semError = "ollama_unreachable";
-        } else {
-          throw err;
+      if (laneHealth("prose") === "stale") {
+        semError = "ollama_unreachable";
+      } else {
+        try {
+          const embedding = await this.deps.llm.embed(semanticQuery, "query");
+          semNeighbors = await this.deps.store.semanticSearch(
+            embedding.vector,
+            limit * SEMANTIC_OVERFETCH,
+            searchOpts,
+          );
+        } catch (err) {
+          if (err instanceof LLMUnreachableError) {
+            semError = "ollama_unreachable";
+          } else {
+            throw err;
+          }
         }
       }
     }

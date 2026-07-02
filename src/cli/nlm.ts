@@ -45,7 +45,7 @@ import { createApp } from "../http/app.js";
 import { createMcpServer, listMergeSuggestionsHandler, mergeWorkstreamsHandler, rebindSessionHandler, recallWorkstreamHandler, renameWorkstreamHandler, retireWorkstreamHandler } from "../mcp/server.js";
 import { classifierEgressNotice } from "../llm/classifier-egress.js";
 import { buildClassifier } from "../llm/build-classifier.js";
-import { OllamaCodeEmbedder } from "../llm/ollama-code-embedder.js";
+import { OllamaCodeEmbedder, DEFAULT_CODE_EMBED_MODEL } from "../llm/ollama-code-embedder.js";
 import { OpenAICodeEmbedderClient } from "../llm/openai-code-embedder-client.js";
 import { resolveEmbedderInfo } from "../llm/embedder-info.js";
 import type { CodeEmbedder } from "../ports/code-embedder.js";
@@ -88,6 +88,9 @@ import { reembedCorpus } from "../core/embedding/embed-backfill.js";
 import { backfillExemplarEmbeddings } from "../core/exemplars/embed-backfill.js";
 import { warmCodeEmbedder } from "../core/exemplars/warm-embedder.js";
 import { markWarm } from "../core/health/warmup-state.js";
+import { setLaneHealth } from "../core/health/embedding-lane-state.js";
+import { reconcileLane } from "../core/embedding/embedding-config.js";
+import type { EmbeddingConfigStore, EmbeddingLaneConfig } from "../core/embedding/embedding-config.js";
 import { backfillFacts } from "../core/facts/backfill-facts.js";
 import { normalizeEmbeddings } from "../core/embedding/embed-normalize.js";
 import { ScanScheduler } from "../core/scheduler/scheduler.js";
@@ -198,6 +201,59 @@ function buildCodeEmbedder(): CodeEmbedder {
   return new OllamaCodeEmbedder({ baseUrl: ollamaUrl() });
 }
 
+async function reconcileEmbeddingLanes(
+  storage: SqliteStorage | PgStorage,
+  embedder: LLMClient,
+  codeEmbedder: CodeEmbedder,
+): Promise<void> {
+  const configStore = (storage as { embeddingConfig?: EmbeddingConfigStore }).embeddingConfig;
+  if (!configStore) return;
+
+  const nowIso = new Date().toISOString();
+
+  try {
+    const result = await embedder.embed("nlm dimension probe", "query");
+    const dim = result.vector.length;
+    const info = resolveEmbedderInfo(process.env, dim);
+    const runtime: EmbeddingLaneConfig = { lane: "prose", provider: info.provider, model: info.model, dim };
+    const rec = reconcileLane(configStore, runtime, nowIso);
+    if (rec.state === "stale") {
+      const stored = rec.stored!;
+      console.error(
+        `nlm-memory: prose embedding lane stale: stored ${stored.provider}/${stored.model}@${stored.dim}` +
+        ` vs runtime ${info.provider}/${info.model}@${dim}; run \`nlm embed-backfill\` to re-embed`,
+      );
+      setLaneHealth("prose", "stale");
+    } else {
+      setLaneHealth("prose", "ok");
+    }
+  } catch {
+    // probe failure; prose lane stays unknown
+  }
+
+  if (process.env["NLM_CODE_EXEMPLARS_ENABLED"] !== "1") return;
+  try {
+    const result = await codeEmbedder.embed("nlm dimension probe", "query");
+    const dim = result.dim;
+    const provider = (process.env["NLM_EMBED_PROVIDER"] ?? "ollama").toLowerCase();
+    const model = process.env["NLM_CODE_EMBED_MODEL"] ?? DEFAULT_CODE_EMBED_MODEL;
+    const runtime: EmbeddingLaneConfig = { lane: "code", provider, model, dim };
+    const rec = reconcileLane(configStore, runtime, nowIso);
+    if (rec.state === "stale") {
+      const stored = rec.stored!;
+      console.error(
+        `nlm-memory: code embedding lane stale: stored ${stored.provider}/${stored.model}@${stored.dim}` +
+        ` vs runtime ${provider}/${model}@${dim}; run \`nlm embed-backfill --exemplars\` to re-embed`,
+      );
+      setLaneHealth("code", "stale");
+    } else {
+      setLaneHealth("code", "ok");
+    }
+  } catch {
+    // probe failure; code lane stays unknown
+  }
+}
+
 async function buildAdapters(sources: SourceRegistryPort): Promise<TranscriptAdapter[]> {
   // Sources table is the source of truth. Each enabled row maps to one
   // adapter via adapterFromSource(). Detection still gates registration —
@@ -303,6 +359,7 @@ program
     const { storage, store, facts, signals, scope, sources, providers, recall, factRecall, embedder, classifier } = await buildStack();
     const { existsSync } = await import("node:fs");
     const hasMcpToken = Boolean(process.env["NLM_MCP_TOKEN"]);
+    const codeEmb = buildCodeEmbedder();
     const app = createApp({
       recall,
       store,
@@ -325,7 +382,7 @@ program
       // NLM_CODE_EXEMPLARS_ENABLED flag gates capture (POST /api/signal) and
       // the /api/exemplar + /api/recall-code routes at request time.
       exemplarStore: storage.exemplars,
-      codeEmbedder: buildCodeEmbedder(),
+      codeEmbedder: codeEmb,
       embedderInfo: resolveEmbedderInfo(),
       ...(existsSync(UI_DIST) ? { uiDist: UI_DIST } : {}),
       // Wire POST /mcp only when NLM_MCP_TOKEN is present. Absent = route never
@@ -341,7 +398,7 @@ program
               // Parity with the stdio `nlm mcp` server: remote/container MCP
               // clients hitting POST /mcp get recall_code too when the flag is on.
               exemplarStore: storage.exemplars,
-              codeEmbedder: buildCodeEmbedder(),
+              codeEmbedder: codeEmb,
               installScope: scope,
               workDigest: { store, topicProvider: loadTopicProvider(), workstreams: storage.workstreams, ...workDigestEnv() },
               workstreams: { store: storage.workstreams, sessions: store, facts: facts, exemplars: storage.exemplars },
@@ -349,7 +406,8 @@ program
           }
         : {}),
     });
-    warmCodeEmbedder(buildCodeEmbedder());
+    warmCodeEmbedder(codeEmb);
+    void reconcileEmbeddingLanes(storage, embedder, codeEmb).catch(() => {});
 
     void embedder
       .embed("warmup init", "query")

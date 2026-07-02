@@ -11,6 +11,7 @@ import type { CodeEmbedder } from "@ports/code-embedder.js";
 import type { CodeExemplarSearchFilter, CodeExemplarStore } from "@ports/code-exemplar-store.js";
 import type { LLMClient } from "@ports/llm-client.js";
 import type { CodeExemplarHit } from "@shared/types.js";
+import { laneHealth } from "@core/health/embedding-lane-state.js";
 
 export interface RecallCodeOptions extends CodeExemplarSearchFilter {
   /** Natural-language description of the task. Used to build the query vector. */
@@ -32,6 +33,10 @@ export async function recallCode(
   codeEmbedder: CodeEmbedder | null,
   proseFallback: LLMClient | null,
 ): Promise<RecallCodeResult> {
+  if (laneHealth("code") === "stale") {
+    return { positives: [], negatives: [] };
+  }
+
   let queryVector: Float32Array | null = null;
 
   if (codeEmbedder) {
