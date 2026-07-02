@@ -19,8 +19,12 @@
  *     --classifier none
  *
  * The `--classifier` flag enables classifier-in-the-loop benchmarking.
- * Values: "none" (default, body-only — published 97.2% baseline path), or
+ * Values: "none" (default, body-only, published 97.2% baseline path),
+ * "configured" (reads NLM_CLASSIFIER / NLM_CLASSIFIER_MODEL /
+ * NLM_CLASSIFIER_BASE_URL / NLM_CLASSIFIER_API_KEY from the env; supports
+ * the openai provider lane in addition to ollama/deepseek), or
  * "<provider>:<model>" where provider is "ollama" or "deepseek". Example:
+ *   --classifier configured
  *   --classifier ollama:qwen3:4b-instruct-2507-q4_K_M
  *   --classifier deepseek:deepseek-v4-flash
  * Classification results cache in ~/.cache/longmemeval/classifier.sqlite
@@ -53,10 +57,17 @@ import { ClassifierCache, type ClassifierClient } from "./classifier-cache.js";
 import { scoreOne, aggregate, type SingleScore } from "./scorer.js";
 import { turnsToBody, type LongMemEvalInstance } from "./types.js";
 import { chunkSessionText } from "../../src/core/embedding/chunk-body.js";
+import { buildClassifier } from "../../src/llm/build-classifier.js";
 
 interface ClassifierSpec {
   readonly provider: "ollama" | "deepseek";
   readonly model: string;
+}
+
+interface ResolvedClassifier {
+  readonly provider: string;
+  readonly model: string;
+  readonly client: ClassifierClient;
 }
 
 interface Args {
@@ -67,30 +78,31 @@ interface Args {
   readonly reportDir: string;
   readonly cacheDir: string;
   readonly migrationsDir: string;
-  readonly classifier: ClassifierSpec | null;
+  readonly classifier: ClassifierSpec | "configured" | null;
   /** When true, pick `limit` instances evenly distributed across question_type. */
   readonly stratify: boolean;
 }
 
-function parseClassifierFlag(raw: string): ClassifierSpec | null {
+function parseClassifierFlag(raw: string): ClassifierSpec | "configured" | null {
   const trimmed = raw.trim();
   if (!trimmed || trimmed === "none" || trimmed === "off") return null;
+  if (trimmed === "configured") return "configured";
   const idx = trimmed.indexOf(":");
   if (idx < 1) {
     throw new Error(
-      `--classifier expects "<provider>:<model>" (e.g. "ollama:qwen3:4b-instruct-2507-q4_K_M") or "none", got ${JSON.stringify(raw)}`,
+      `--classifier expects "<provider>:<model>" (e.g. "ollama:qwen3:4b-instruct-2507-q4_K_M"), "none", or "configured", got ${JSON.stringify(raw)}`,
     );
   }
   const provider = trimmed.slice(0, idx) as ClassifierSpec["provider"];
   const model = trimmed.slice(idx + 1);
   if (provider !== "ollama" && provider !== "deepseek") {
-    throw new Error(`--classifier: unsupported provider ${JSON.stringify(provider)} (use "ollama" or "deepseek")`);
+    throw new Error(`--classifier: unsupported provider ${JSON.stringify(provider)} (use "ollama", "deepseek", or "configured" for the env-configured lane)`);
   }
   if (!model) throw new Error(`--classifier: model is empty`);
   return { provider, model };
 }
 
-function classifierSlug(spec: ClassifierSpec | null): string {
+function classifierSlug(spec: { provider: string; model: string } | null): string {
   if (!spec) return "body-only";
   return `${spec.provider}-${spec.model.replace(/[:/]/g, "_")}`;
 }
@@ -298,14 +310,27 @@ async function runInstance(
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+
+  let resolvedClassifier: ResolvedClassifier | null = null;
+  if (args.classifier === "configured") {
+    const box = buildClassifier();
+    resolvedClassifier = { provider: box.provider, model: box.model, client: box };
+  } else if (args.classifier !== null) {
+    resolvedClassifier = {
+      provider: args.classifier.provider,
+      model: args.classifier.model,
+      client: buildClassifierClient(args.classifier),
+    };
+  }
+
   console.log(`longmemeval-harness: loading ${args.datasetPath}`);
   const raw = readFileSync(args.datasetPath, "utf8");
   const dataset = JSON.parse(raw) as LongMemEvalInstance[];
   const slice = args.stratify
     ? stratifiedPick(dataset, args.limit)
     : dataset.slice(0, args.limit);
-  const classifierLabel = args.classifier
-    ? `${args.classifier.provider}:${args.classifier.model}`
+  const classifierLabel = resolvedClassifier
+    ? `${resolvedClassifier.provider}:${resolvedClassifier.model}`
     : "none (body-only)";
   const samplingLabel = args.stratify ? "stratified" : "first-N";
   console.log(
@@ -326,13 +351,12 @@ async function main(): Promise<void> {
   const embedder = new CachingEmbedder(cache);
 
   let classifierCache: ClassifierCache | null = null;
-  if (args.classifier) {
-    const client = buildClassifierClient(args.classifier);
+  if (resolvedClassifier) {
     classifierCache = new ClassifierCache({
       dbPath: join(args.cacheDir, "classifier.sqlite"),
-      provider: args.classifier.provider,
-      model: args.classifier.model,
-      client,
+      provider: resolvedClassifier.provider,
+      model: resolvedClassifier.model,
+      client: resolvedClassifier.client,
     });
     const s = classifierCache.stats();
     console.log(
@@ -381,7 +405,7 @@ async function main(): Promise<void> {
   }
 
   const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
-  const slug = classifierSlug(args.classifier);
+  const slug = classifierSlug(resolvedClassifier);
   const outDir = join(args.reportDir, `${stamp}-${slug}`);
   mkdirSync(outDir, { recursive: true });
   const classifierStats = classifierCache ? classifierCache.stats() : null;
@@ -393,10 +417,10 @@ async function main(): Promise<void> {
     k: args.k,
     modes: args.modes,
     sampling: args.stratify ? "stratified" : "first-N",
-    classifier: args.classifier
+    classifier: resolvedClassifier
       ? {
-          provider: args.classifier.provider,
-          model: args.classifier.model,
+          provider: resolvedClassifier.provider,
+          model: resolvedClassifier.model,
           cache_total: classifierStats?.total ?? 0,
           cache_ok: classifierStats?.ok ?? 0,
           cache_failed: classifierStats?.failed ?? 0,
