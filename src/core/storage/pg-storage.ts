@@ -8,7 +8,7 @@
  * Storage interface. Tracked for removal in #215a (PG branch).
  */
 
-import { Pool } from "pg";
+import { Pool, TypeOverrides } from "pg";
 import type { Storage } from "@ports/storage.js";
 import { runMigrationsPg } from "./pg-migrate.js";
 import { PgFactStore } from "./pg-fact-store.js";
@@ -48,7 +48,11 @@ export class PgStorage implements Storage {
   }
 
   static create(opts: PgStorageOptions): PgStorage {
-    const pool = new Pool({ connectionString: opts.connectionString });
+    const types = new TypeOverrides();
+    const isoParser = (val: string) => new Date(val).toISOString();
+    types.setTypeParser(1184, isoParser); // TIMESTAMPTZ
+    types.setTypeParser(1114, isoParser); // TIMESTAMP
+    const pool = new Pool({ connectionString: opts.connectionString, types });
     return new PgStorage(pool, opts.migrationsDir);
   }
 

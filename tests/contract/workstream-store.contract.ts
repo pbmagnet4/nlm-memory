@@ -60,11 +60,13 @@ export function runWorkstreamStoreContract(h: WorkstreamStoreContractHarness): v
       expect(all.map((w) => w.id).sort()).toEqual(["ws_1", "ws_2"]);
     });
 
-    it("touchLastSession updates lastSessionAt to non-null", async () => {
+    it("touchLastSession updates lastSessionAt to a string matching the input instant", async () => {
       await storage.workstreams.create({ id: "ws_1", label: "NLM" });
-      await storage.workstreams.touchLastSession("ws_1", "2026-06-24T00:00:00Z");
+      const atIso = "2026-06-24T00:00:00.000Z";
+      await storage.workstreams.touchLastSession("ws_1", atIso);
       const ws = await storage.workstreams.getById("ws_1");
-      expect(ws!.lastSessionAt).toBeTruthy();
+      expect(typeof ws!.lastSessionAt).toBe("string");
+      expect(new Date(ws!.lastSessionAt!).toISOString()).toBe(new Date(atIso).toISOString());
     });
 
     it("setLabel updates the label", async () => {
