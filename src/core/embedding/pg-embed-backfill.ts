@@ -117,6 +117,11 @@ export async function reembedCorpusPg(opts: PgBackfillOptions): Promise<Backfill
       }
     }
 
+    // Resume state: stored config differs from runtime, but the state file already
+    // carries the new config (tables were rebuilt in a prior interrupted run).
+    // No column alter is needed, but facts must still be reembedded to finish the run.
+    const isResumeState = storedConfig !== null && !configMatch && !needsRebuild;
+
     if (opts.dryRun) {
       if (needsRebuild) {
         const stored = storedConfig!;
@@ -125,10 +130,26 @@ export async function reembedCorpusPg(opts: PgBackfillOptions): Promise<Backfill
           ` runtime ${provider}/${model}@${dim}.` +
           ` Would ALTER session_embedding_chunks and fact_embeddings to vector(${dim}).\n`,
         );
+      } else if (isResumeState) {
+        const stored = storedConfig!;
+        process.stderr.write(
+          `[pg-embed-backfill] resume state: interrupted rebuild detected.` +
+          ` Stored config ${stored.provider}/${stored.model}@${stored.dim}` +
+          ` differs from runtime ${provider}/${model}@${dim},` +
+          ` but state file already matches runtime.` +
+          ` No column alter; facts would be reembedded to complete the interrupted rebuild.\n`,
+        );
       } else {
         process.stderr.write(
           `[pg-embed-backfill] dry-run: config matches (${provider}/${model}@${dim}), no rebuild needed.\n`,
         );
+      }
+      let dryRunFactCount = 0;
+      if (isResumeState) {
+        const countResult = await pool.query<{ cnt: string }>(
+          "SELECT COUNT(*) AS cnt FROM facts WHERE superseded_by IS NULL AND retired_at IS NULL",
+        );
+        dryRunFactCount = Number(countResult.rows[0]?.cnt ?? 0);
       }
       return {
         total: 0,
@@ -139,7 +160,7 @@ export async function reembedCorpusPg(opts: PgBackfillOptions): Promise<Backfill
         dbMissing: false,
         dryRun: true,
         rebuilt: needsRebuild,
-        factsReembedded: 0,
+        factsReembedded: dryRunFactCount,
       };
     }
 

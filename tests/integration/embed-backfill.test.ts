@@ -229,6 +229,71 @@ describe("rebuild on dim mismatch", () => {
     expect(feCount).toBe(1);
   });
 
+  it("dry-run reports resume state when state file carries new config but embedding_config is stale", async () => {
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(statePath, JSON.stringify({
+      done: ["s_a", "s_b", "s_c"],
+      config: { provider: "test", model: "stub-8d", dim: 8 },
+    }));
+
+    const rawDb = new Database(dbPath);
+    sqliteVec.load(rawDb);
+    rawDb.exec("DROP TABLE IF EXISTS fact_embeddings");
+    rawDb.exec(
+      "CREATE VIRTUAL TABLE fact_embeddings USING vec0(fact_id TEXT PRIMARY KEY, embedding float[8])",
+    );
+    rawDb.close();
+
+    const embedder = new Dim8Embedder();
+    const report = await reembedCorpus({
+      dbPath,
+      embedder,
+      statePath,
+      embedderProvider: "test",
+      dryRun: true,
+    });
+
+    expect(report.rebuilt).toBe(false);
+    expect(report.dryRun).toBe(true);
+    // factsReembedded reflects how many facts would be reembedded (1 seeded in beforeEach)
+    expect(report.factsReembedded).toBe(1);
+  });
+
+  it("DELETE+INSERT counts correctly when fact already has an embedding (doubly-interrupted path)", async () => {
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(statePath, JSON.stringify({
+      done: ["s_a", "s_b", "s_c"],
+      config: { provider: "test", model: "stub-8d", dim: 8 },
+    }));
+
+    // Simulate a prior interrupted fact-reembed: tables already have 8-dim schema
+    // and fact_embeddings already has the row (partial prior run wrote it).
+    const rawDb = new Database(dbPath);
+    sqliteVec.load(rawDb);
+    rawDb.exec("DROP TABLE IF EXISTS fact_embeddings");
+    rawDb.exec(
+      "CREATE VIRTUAL TABLE fact_embeddings USING vec0(fact_id TEXT PRIMARY KEY, embedding float[8])",
+    );
+    const existingBlob = Buffer.from(new Float32Array(8).fill(0.99).buffer);
+    rawDb.prepare("INSERT INTO fact_embeddings (fact_id, embedding) VALUES (?, ?)").run("f_1", existingBlob);
+    rawDb.close();
+
+    const embedder = new Dim8Embedder();
+    const report = await reembedCorpus({ dbPath, embedder, statePath, embedderProvider: "test" });
+
+    // DELETE+INSERT must count the fact even though a row already existed.
+    expect(report.rebuilt).toBe(false);
+    expect(report.factsReembedded).toBe(1);
+
+    const db2 = new Database(dbPath);
+    sqliteVec.load(db2);
+    const feCount = (
+      db2.prepare<[], { c: number }>("SELECT COUNT(*) as c FROM fact_embeddings").get()!
+    ).c;
+    db2.close();
+    expect(feCount).toBe(1);
+  });
+
   it("resume after interrupted rebuild: facts are reembedded even when state file has new config", async () => {
     // Simulate an interrupted rebuild:
     // - The state file already carries the new (8-dim) config (the rebuild saved it mid-run)

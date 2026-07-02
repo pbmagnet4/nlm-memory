@@ -159,6 +159,11 @@ export async function reembedCorpus(opts: BackfillOptions): Promise<BackfillRepo
       }
     }
 
+    // Resume state: stored config differs from runtime, but the state file already
+    // carries the new config (tables were rebuilt in a prior interrupted run).
+    // No re-drop is needed, but facts must still be reembedded to finish the run.
+    const isResumeState = storedConfig !== null && !configMatch && !needsRebuild;
+
     if (opts.dryRun) {
       if (needsRebuild) {
         const stored = storedConfig!;
@@ -167,10 +172,27 @@ export async function reembedCorpus(opts: BackfillOptions): Promise<BackfillRepo
           ` runtime ${provider}/${model}@${dim}.` +
           ` Would DROP session_embedding_chunks, session_chunk_map entries, fact_embeddings.\n`,
         );
+      } else if (isResumeState) {
+        const stored = storedConfig!;
+        process.stderr.write(
+          `[embed-backfill] resume state: interrupted rebuild detected.` +
+          ` Stored config ${stored.provider}/${stored.model}@${stored.dim}` +
+          ` differs from runtime ${provider}/${model}@${dim},` +
+          ` but state file already matches runtime.` +
+          ` No re-drop; facts would be reembedded to complete the interrupted rebuild.\n`,
+        );
       } else {
         process.stderr.write(
           `[embed-backfill] dry-run: config matches (${provider}/${model}@${dim}), no rebuild needed.\n`,
         );
+      }
+      let dryRunFactCount = 0;
+      if (isResumeState) {
+        dryRunFactCount = db
+          .prepare<[], { id: string }>(
+            "SELECT id FROM facts WHERE superseded_by IS NULL AND retired_at IS NULL",
+          )
+          .all().length;
       }
       return {
         total: 0,
@@ -181,7 +203,7 @@ export async function reembedCorpus(opts: BackfillOptions): Promise<BackfillRepo
         dbMissing: false,
         dryRun: true,
         rebuilt: needsRebuild,
-        factsReembedded: 0,
+        factsReembedded: dryRunFactCount,
       };
     }
 
@@ -336,8 +358,9 @@ export async function reembedCorpus(opts: BackfillOptions): Promise<BackfillRepo
           " WHERE superseded_by IS NULL AND retired_at IS NULL",
         )
         .all();
+      const delFactEmb = db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ?");
       const insFactEmb = db.prepare(
-        "INSERT OR REPLACE INTO fact_embeddings (fact_id, embedding) VALUES (?, ?)",
+        "INSERT INTO fact_embeddings (fact_id, embedding) VALUES (?, ?)",
       );
       for (const fact of factRows) {
         const factText = `${fact.subject} ${fact.predicate} ${fact.value}`.trim();
@@ -345,6 +368,7 @@ export async function reembedCorpus(opts: BackfillOptions): Promise<BackfillRepo
         try {
           const out = await opts.embedder.embed(factText, "document");
           const blob = Buffer.from(out.vector.buffer, out.vector.byteOffset, out.vector.byteLength);
+          delFactEmb.run(fact.id);
           insFactEmb.run(fact.id, blob);
           factsReembedded += 1;
         } catch {

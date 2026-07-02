@@ -13,6 +13,8 @@ is affected while the lane is stale.
 | `NLM_EMBED_MODEL` | Model tag or name passed to the provider | `nomic-embed-text` |
 | `NLM_EMBED_API_KEY` | API key (required for `openai` provider) | unset |
 
+> **Note:** On the `ollama` provider, a leftover `NLM_EMBED_MODEL` value is used as the embed model tag (it is no longer ignored); unset it if you intend to rely on the default.
+
 ## Steps
 
 1. Stop the daemon.
