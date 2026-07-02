@@ -16,6 +16,9 @@
  *       references an existing facts.id; superseded_by forms no cycle (I5c)
  *   I6  every non-null adapter_state.session_id references a sessions.id
  *   I7  every fact_embeddings row has a live (active, non-retired) parent fact
+ *   I7b chunk-level ghost: every session_embedding_chunks row has a map entry
+ *       (I7b-1); every session_chunk_map row references an existing session
+ *       (I7b-2)
  */
 
 import type Database from "better-sqlite3";
@@ -123,6 +126,48 @@ const SQL_I7_GHOST_PG = `
   FROM fact_embeddings fe
   LEFT JOIN facts f ON f.id = fe.fact_id
   WHERE f.id IS NULL OR f.superseded_by IS NOT NULL OR f.retired_at IS NOT NULL
+  LIMIT 6
+`;
+
+// I7b-1: chunk vectors with no map row (vec0 has no FK; interrupted deletes
+// orphan here). Uses the session_embedding_chunks_rowids shadow table for
+// full-scan access: vec0 tables do not support unfiltered SELECT without a
+// KNN predicate. For INTEGER PK vec0 tables the shadow column is chunk_id
+// (not id, which is null for non-text PKs).
+const SQL_I7B_1_GHOST_SQLITE = `
+  SELECT CAST(r.chunk_id AS TEXT) AS bad_id
+  FROM session_embedding_chunks_rowids r
+  LEFT JOIN session_chunk_map m ON m.chunk_id = r.chunk_id
+  WHERE m.chunk_id IS NULL
+  LIMIT 6
+`;
+
+// I7b-2: map rows pointing at missing sessions (SQLite; FK ON DELETE CASCADE
+// fires in normal operation but vec0 deletes are not atomic with the map).
+const SQL_I7B_2_ORPHAN_MAP_SQLITE = `
+  SELECT m.session_id AS bad_id
+  FROM session_chunk_map m
+  LEFT JOIN sessions s ON s.id = m.session_id
+  WHERE s.id IS NULL
+  LIMIT 6
+`;
+
+// PG: session_embedding_chunks.session_id and session_chunk_map both carry
+// FK ON DELETE CASCADE to sessions; both checks are FK-impossible in practice
+// and land as regression guards.
+const SQL_I7B_1_GHOST_PG = `
+  SELECT CAST(c.chunk_id AS TEXT) AS bad_id
+  FROM session_embedding_chunks c
+  LEFT JOIN session_chunk_map m ON m.chunk_id = c.chunk_id
+  WHERE m.chunk_id IS NULL
+  LIMIT 6
+`;
+
+const SQL_I7B_2_ORPHAN_MAP_PG = `
+  SELECT m.session_id AS bad_id
+  FROM session_chunk_map m
+  LEFT JOIN sessions s ON s.id = m.session_id
+  WHERE s.id IS NULL
   LIMIT 6
 `;
 
@@ -272,6 +317,20 @@ export function runChecksOnSqlite(db: Database.Database): ReadonlyArray<Violatio
     violations.push(buildViolation("I7", "fact embedding without a live parent fact", i7Samples, count));
   }
 
+  // I7b-1
+  const i7b1Samples = sqliteRows(db, SQL_I7B_1_GHOST_SQLITE);
+  if (i7b1Samples.length > 0) {
+    const count = sqliteCount(db, SQL_I7B_1_GHOST_SQLITE);
+    violations.push(buildViolation("I7b-1", "chunk embedding without a map entry", i7b1Samples, count));
+  }
+
+  // I7b-2
+  const i7b2Samples = sqliteRows(db, SQL_I7B_2_ORPHAN_MAP_SQLITE);
+  if (i7b2Samples.length > 0) {
+    const count = sqliteCount(db, SQL_I7B_2_ORPHAN_MAP_SQLITE);
+    violations.push(buildViolation("I7b-2", "session_chunk_map references non-existent session", i7b2Samples, count));
+  }
+
   return violations;
 }
 
@@ -369,6 +428,20 @@ export async function runChecksOnPg(pool: Pool): Promise<ReadonlyArray<Violation
     violations.push(buildViolation("I7", "fact embedding without a live parent fact", i7Samples, count));
   }
 
+  // I7b-1
+  const i7b1Samples = await pgRows(pool, SQL_I7B_1_GHOST_PG);
+  if (i7b1Samples.length > 0) {
+    const count = await pgCount(pool, SQL_I7B_1_GHOST_PG);
+    violations.push(buildViolation("I7b-1", "chunk embedding without a map entry", i7b1Samples, count));
+  }
+
+  // I7b-2
+  const i7b2Samples = await pgRows(pool, SQL_I7B_2_ORPHAN_MAP_PG);
+  if (i7b2Samples.length > 0) {
+    const count = await pgCount(pool, SQL_I7B_2_ORPHAN_MAP_PG);
+    violations.push(buildViolation("I7b-2", "session_chunk_map references non-existent session", i7b2Samples, count));
+  }
+
   return violations;
 }
 
@@ -402,18 +475,32 @@ export function runCheapChecksOnSqlite(db: Database.Database): ReadonlyArray<Vio
     violations.push(buildViolation("I7", "fact embedding without a live parent fact", i7Samples, sqliteCount(db, SQL_I7_GHOST_SQLITE)));
   }
 
+  // I7b-1
+  const i7b1CheapSamples = sqliteRows(db, SQL_I7B_1_GHOST_SQLITE);
+  if (i7b1CheapSamples.length > 0) {
+    violations.push(buildViolation("I7b-1", "chunk embedding without a map entry", i7b1CheapSamples, sqliteCount(db, SQL_I7B_1_GHOST_SQLITE)));
+  }
+
+  // I7b-2
+  const i7b2CheapSamples = sqliteRows(db, SQL_I7B_2_ORPHAN_MAP_SQLITE);
+  if (i7b2CheapSamples.length > 0) {
+    violations.push(buildViolation("I7b-2", "session_chunk_map references non-existent session", i7b2CheapSamples, sqliteCount(db, SQL_I7B_2_ORPHAN_MAP_SQLITE)));
+  }
+
   return violations;
 }
 
 export async function runCheapChecksOnPg(pool: Pool): Promise<ReadonlyArray<Violation>> {
   const violations: Violation[] = [];
 
-  const [i1, i2, i2r, i6, i7] = await Promise.all([
+  const [i1, i2, i2r, i6, i7, i7b1, i7b2] = await Promise.all([
     pgRows(pool, SQL_I1),
     pgRows(pool, SQL_I2_ORPHANED),
     pgRows(pool, SQL_I2_ORPHANED_REPLACED),
     pgRows(pool, SQL_I6),
     pgRows(pool, SQL_I7_GHOST_PG),
+    pgRows(pool, SQL_I7B_1_GHOST_PG),
+    pgRows(pool, SQL_I7B_2_ORPHAN_MAP_PG),
   ]);
 
   if (i1.length > 0) {
@@ -430,6 +517,12 @@ export async function runCheapChecksOnPg(pool: Pool): Promise<ReadonlyArray<Viol
   }
   if (i7.length > 0) {
     violations.push(buildViolation("I7", "fact embedding without a live parent fact", i7, await pgCount(pool, SQL_I7_GHOST_PG)));
+  }
+  if (i7b1.length > 0) {
+    violations.push(buildViolation("I7b-1", "chunk embedding without a map entry", i7b1, await pgCount(pool, SQL_I7B_1_GHOST_PG)));
+  }
+  if (i7b2.length > 0) {
+    violations.push(buildViolation("I7b-2", "session_chunk_map references non-existent session", i7b2, await pgCount(pool, SQL_I7B_2_ORPHAN_MAP_PG)));
   }
 
   return violations;

@@ -13,6 +13,7 @@
 import type Database from "better-sqlite3";
 import type { Storage } from "@ports/storage.js";
 import { SqliteCodeExemplarStore } from "./sqlite-code-exemplar-store.js";
+import { SqliteEmbeddingConfigStore } from "./sqlite-embedding-config.js";
 import { SqliteFactStore } from "./sqlite-fact-store.js";
 import { SqliteSessionStore } from "./sqlite-session-store.js";
 import { SqliteSignalStore } from "./sqlite-signal-store.js";
@@ -31,6 +32,7 @@ export class SqliteStorage implements Storage {
   readonly signals: SqliteSignalStore;
   readonly exemplars: SqliteCodeExemplarStore;
   readonly workstreams: SqliteWorkstreamStore;
+  readonly embeddingConfig: SqliteEmbeddingConfigStore;
   readonly sources: SourceRegistry;
   readonly providers: ProviderRegistry;
 
@@ -40,6 +42,7 @@ export class SqliteStorage implements Storage {
     signals: SqliteSignalStore,
     exemplars: SqliteCodeExemplarStore,
     workstreams: SqliteWorkstreamStore,
+    embeddingConfig: SqliteEmbeddingConfigStore,
     sources: SourceRegistry,
     providers: ProviderRegistry,
   ) {
@@ -48,6 +51,7 @@ export class SqliteStorage implements Storage {
     this.signals = signals;
     this.exemplars = exemplars;
     this.workstreams = workstreams;
+    this.embeddingConfig = embeddingConfig;
     this.sources = sources;
     this.providers = providers;
   }
@@ -58,9 +62,10 @@ export class SqliteStorage implements Storage {
     const signals = new SqliteSignalStore(sessions.rawDb());
     const exemplars = new SqliteCodeExemplarStore(sessions.rawDb());
     const workstreams = new SqliteWorkstreamStore(sessions.rawDb());
+    const embeddingConfig = new SqliteEmbeddingConfigStore(sessions.rawDb());
     const sources = new SourceRegistry(sessions.rawDb());
     const providers = new ProviderRegistry(sessions.rawDb());
-    return new SqliteStorage(sessions, facts, signals, exemplars, workstreams, sources, providers);
+    return new SqliteStorage(sessions, facts, signals, exemplars, workstreams, embeddingConfig, sources, providers);
   }
 
   async init(): Promise<void> {

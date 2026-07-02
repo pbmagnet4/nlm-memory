@@ -7,9 +7,9 @@
  * of core depends on the SessionStore *port*, never on this file.
  *
  * Schema parity with the Python daemon: sessions row + session_entities +
- * markers + session_embeddings (vec0). Idle-status overlay (computed from
- * transcript mtime) is deferred to a later phase — A.2 returns the persisted
- * status verbatim.
+ * markers + session_embedding_chunks (vec0). Idle-status overlay (computed
+ * from transcript mtime) is deferred to a later phase; A.2 returns the
+ * persisted status verbatim.
  */
 
 import { existsSync, mkdirSync } from "node:fs";

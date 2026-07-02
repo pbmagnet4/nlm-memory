@@ -33,14 +33,14 @@ import { REWRITE_SYSTEM_PROMPT, parseRewriteJson } from "@core/recall/rewrite-pr
 
 export type FetchImpl = typeof fetch;
 
-// Tried raising 8000 → 28000 on 2026-05-25 to recover the answer-tail of
-// long gold sessions (median LongMemEval-S gold body is 14,294 chars). The
-// Ollama /api/embeddings endpoint returned 500 on 54% of those large
-// inputs despite nomic-embed-text's nominal 8192-token context — semantic
-// R@5 collapsed from 87.2% → 15.8%. Reverted. Real fix is chunk + max-pool
-// (each body split into ≤8K-char chunks, store all vectors, score against
-// max cosine at query time) so coverage doesn't depend on a single embed
-// call. Filed as #174.
+// MAX_EMBED_CHARS is the per-transport-call cap for the Ollama
+// /api/embeddings endpoint. Chunking shipped in migration 009: session
+// text splits into 5500-char chunks with 500-char overlap; recall scores
+// against max cosine across all chunks for that session (max-pool at query
+// time). Raising this cap to 28000 on 2026-05-25 caused Ollama 500s on
+// 54% of long inputs and semantic R@5 collapsed from 87.2% to 15.8%;
+// the cap stays at 8000 while each chunk remains well under the Ollama
+// failure cliff.
 export const MAX_EMBED_CHARS = 8_000;
 
 export const EMBED_PREFIXES: Record<EmbeddingKind, string> = {

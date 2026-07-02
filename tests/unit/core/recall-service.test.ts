@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { RecallService } from "../../../src/core/recall/recall-service.js";
 import { StubEmbedder } from "../../fixtures/llm-stubs.js";
 import type {
@@ -9,6 +9,10 @@ import type {
 } from "../../../src/ports/session-store.js";
 import type { Session } from "../../../src/shared/types.js";
 import { makeSession } from "../../fixtures/sessions.js";
+import {
+  resetLaneHealthForTests,
+  setLaneHealth,
+} from "../../../src/core/health/embedding-lane-state.js";
 
 // Fake store: keyword and semantic hits are pre-baked. Unit tests here cover
 // RecallService orchestration (filter, merge, limit, error handling) — not
@@ -79,6 +83,8 @@ const corpus: Session[] = [
 ];
 
 describe("RecallService.search", () => {
+  beforeEach(resetLaneHealthForTests);
+
   it("returns empty result when query and filters are all blank", async () => {
     const svc = new RecallService({
       store: new InMemoryStore(corpus),
@@ -377,6 +383,48 @@ describe("RecallService.search", () => {
       const svc = new RecallService({ store, llm: new StubEmbedder() });
       await svc.search({ query: "hono", mode: "keyword" });
       expect(store.lastKeywordOpts?.workstreamIds).toBeUndefined();
+    });
+  });
+
+  describe("stale prose lane gating", () => {
+    beforeEach(() => resetLaneHealthForTests());
+
+    it("semantic mode skips embed and returns modeUnavailable when prose lane is stale", async () => {
+      setLaneHealth("prose", "stale");
+      const svc = new RecallService({
+        store: new InMemoryStore(corpus),
+        llm: new StubEmbedder(),
+      });
+      const result = await svc.search({ query: "anything", mode: "semantic" });
+      expect(result.modeUnavailable).toBe("ollama_unreachable");
+      expect(result.results).toEqual([]);
+    });
+
+    it("hybrid mode degrades to keyword-only when prose lane is stale", async () => {
+      setLaneHealth("prose", "stale");
+      const store = new InMemoryStore(corpus, [], [{ sessionId: "b", score: 7 }]);
+      const svc = new RecallService({ store, llm: new StubEmbedder() });
+      const result = await svc.search({ query: "pgvector", mode: "hybrid" });
+      expect(result.modeUnavailable).toBe("ollama_unreachable");
+      expect(result.results).toHaveLength(1);
+      expect(result.results[0]?.id).toBe("b");
+    });
+
+    it("ok prose lane proceeds normally through semantic embed", async () => {
+      setLaneHealth("prose", "ok");
+      const store = new InMemoryStore(corpus, [{ sessionId: "a", distance: 0 }]);
+      const svc = new RecallService({ store, llm: new StubEmbedder() });
+      const result = await svc.search({ query: "anything", mode: "semantic" });
+      expect(result.modeUnavailable).toBeUndefined();
+      expect(result.results).toHaveLength(1);
+    });
+
+    it("unknown prose lane proceeds normally through semantic embed", async () => {
+      const store = new InMemoryStore(corpus, [{ sessionId: "a", distance: 0 }]);
+      const svc = new RecallService({ store, llm: new StubEmbedder() });
+      const result = await svc.search({ query: "anything", mode: "semantic" });
+      expect(result.modeUnavailable).toBeUndefined();
+      expect(result.results).toHaveLength(1);
     });
   });
 });

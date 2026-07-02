@@ -24,4 +24,15 @@ describe("resolveEmbedderInfo", () => {
   it("is case-insensitive on the provider", () => {
     expect(resolveEmbedderInfo({ NLM_EMBED_PROVIDER: "OpenAI" }).provider).toBe("openai");
   });
+
+  it("ollama provider uses NLM_EMBED_MODEL when set", () => {
+    const info = resolveEmbedderInfo({ NLM_EMBED_MODEL: "mxbai-embed-large" });
+    expect(info.provider).toBe("ollama");
+    expect(info.model).toBe("mxbai-embed-large");
+  });
+
+  it("ollama provider falls back to nomic-embed-text when NLM_EMBED_MODEL is unset", () => {
+    const info = resolveEmbedderInfo({});
+    expect(info.model).toBe("nomic-embed-text");
+  });
 });

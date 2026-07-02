@@ -31,6 +31,7 @@ import type {
   FactRecallResult,
   RecallMode,
 } from "@shared/types.js";
+import { laneHealth } from "@core/health/embedding-lane-state.js";
 import { tokenSet } from "@core/recall/tokenize.js";
 
 const DEFAULT_LIMIT = 10;
@@ -116,13 +117,17 @@ export class FactRecallService {
     let semHits: ReadonlyArray<SemanticHit> = [];
     let semError: "ollama_unreachable" | null = null;
     if ((mode === "semantic" || mode === "hybrid") && queryText) {
-      try {
-        semHits = await this.runSemantic(queryText, byId, accept, limit * SEMANTIC_OVERFETCH);
-      } catch (err) {
-        if (err instanceof LLMUnreachableError) {
-          semError = "ollama_unreachable";
-        } else {
-          throw err;
+      if (laneHealth("prose") === "stale") {
+        semError = "ollama_unreachable";
+      } else {
+        try {
+          semHits = await this.runSemantic(queryText, byId, accept, limit * SEMANTIC_OVERFETCH);
+        } catch (err) {
+          if (err instanceof LLMUnreachableError) {
+            semError = "ollama_unreachable";
+          } else {
+            throw err;
+          }
         }
       }
     }

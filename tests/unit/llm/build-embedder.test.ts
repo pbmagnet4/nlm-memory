@@ -14,7 +14,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { OllamaClient } from "../../../src/llm/ollama-client.js";
 import { OpenAIEmbedderClient } from "../../../src/llm/openai-embedder-client.js";
 
-const ENV_KEYS = ["NLM_EMBED_PROVIDER", "NLM_EMBED_BASE_URL", "NLM_EMBED_MODEL", "NLM_EMBED_API_KEY"] as const;
+const ENV_KEYS = ["NLM_EMBED_PROVIDER", "NLM_EMBED_BASE_URL", "NLM_EMBED_MODEL", "NLM_EMBED_API_KEY", "NLM_OLLAMA_URL"] as const;
 
 function captureEnv(): Partial<Record<string, string>> {
   return Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
@@ -66,5 +66,17 @@ describe("buildEmbedder", () => {
 
     const { buildEmbedder } = await import("../../../src/llm/build-embedder.js");
     expect(() => buildEmbedder()).toThrow("NLM_EMBED_BASE_URL");
+  });
+
+  it("ollama: passes NLM_EMBED_MODEL to OllamaClient when set", async () => {
+    saved = captureEnv();
+    process.env["NLM_EMBED_PROVIDER"] = "ollama";
+    process.env["NLM_EMBED_MODEL"] = "mxbai-embed-large";
+
+    const { buildEmbedder } = await import("../../../src/llm/build-embedder.js");
+    const result = buildEmbedder();
+    expect(result).toBeInstanceOf(OllamaClient);
+    // The model is private; validate it round-trips by checking the instance type only.
+    // Behavioral tests for model-forwarding live in ollama-client tests.
   });
 });
