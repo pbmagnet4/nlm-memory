@@ -26,7 +26,7 @@ describe("bindSessionToWorkstream", () => {
       aliasToLabel: new Map<string, string>(),
     } as unknown as BindDeps;
     const r = await bindSessionToWorkstream(deps, baseInput);
-    expect(r).toEqual({ workstreamId: "ws_nlm", created: false, confidence: null });
+    expect(r).toEqual({ workstreamId: "ws_nlm" });
     expect(set).toEqual([["s1", "ws_nlm", "classifier"]]);
   });
 
@@ -62,7 +62,7 @@ describe("bindSessionToWorkstream", () => {
       aliasToLabel,
     } as unknown as BindDeps;
     const r = await bindSessionToWorkstream(deps, { ...baseInput, sessionId: "s3", label: "acme work" });
-    expect(r).toEqual({ workstreamId: "ws_acme", created: false, confidence: null });
+    expect(r).toEqual({ workstreamId: "ws_acme" });
     expect(set[0]).toEqual(["s3", "ws_acme", "classifier"]);
   });
 
@@ -137,11 +137,11 @@ describe("bindSessionToWorkstream", () => {
     expect(capturedContent).toContain("built the scheduler");
   });
 
-  it("passes empty aliases to namer regardless of aliasToLabel contents", async () => {
-    let capturedHints: ReadonlyArray<{ label: string; aliases: string[] }> = [];
+  it("passes label-only hints to namer", async () => {
+    let capturedHints: ReadonlyArray<{ label: string }> = [];
     const deps: BindDeps = {
       namer: {
-        nameWorkstream: async (_content: string, hints: ReadonlyArray<{ label: string; aliases: string[] }>) => {
+        nameWorkstream: async (_content: string, hints: ReadonlyArray<{ label: string }>) => {
           capturedHints = hints;
           return "NLM";
         },
@@ -158,7 +158,7 @@ describe("bindSessionToWorkstream", () => {
     } as unknown as BindDeps;
     await bindSessionToWorkstream(deps, baseInput);
     expect(capturedHints).toHaveLength(1);
-    expect(capturedHints[0]!.aliases).toEqual([]);
+    expect(capturedHints[0]).toEqual({ label: "NLM" });
   });
 
   it("truncates body to NAMING_CONTENT_CHARS", async () => {

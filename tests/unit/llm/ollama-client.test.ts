@@ -146,7 +146,7 @@ describe("OllamaClient.classify", () => {
 });
 
 describe("OllamaClient.nameWorkstream", () => {
-  const cands = [{ label: "NLM", aliases: ["nlm-memory"] }];
+  const cands = [{ label: "NLM" }];
   it("returns the matched label", async () => {
     const fetchImpl = (async () => new Response(JSON.stringify({ message: { content: "NLM" } }), { status: 200 })) as unknown as typeof fetch;
     const c = new OllamaClient({ baseUrl: "http://x", classifyModel: "qwen3:4b-instruct", fetchImpl });
