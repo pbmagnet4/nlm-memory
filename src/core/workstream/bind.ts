@@ -4,7 +4,6 @@ import type { SessionStore } from "@ports/session-store.js";
 import type { LLMClient } from "@ports/llm-client.js";
 import type { BindingSource } from "./model.js";
 import { decideWorkstreamByName } from "./name-match.js";
-import { aliasesForLabel } from "./work-topics.js";
 
 export const NAMING_CONTENT_CHARS = 8000;
 
@@ -33,7 +32,7 @@ export interface BindResult {
 export async function bindSessionToWorkstream(deps: BindDeps, input: BindInput): Promise<BindResult | null> {
   try {
     const ws = await deps.workstreams.listAll();
-    const hints = ws.map((w) => ({ label: w.label, aliases: aliasesForLabel(deps.aliasToLabel, w.label) }));
+    const hints = ws.map((w) => ({ label: w.label }));
     const content = `${input.label}\n${(input.body || input.summary).slice(0, NAMING_CONTENT_CHARS)}`;
     const named = await deps.namer.nameWorkstream(content, hints);
     const decision = decideWorkstreamByName(named, ws, deps.aliasToLabel);

@@ -1,6 +1,6 @@
 // tests/unit/core/workstream/work-topics.test.ts
 import { describe, expect, it } from "vitest";
-import { parseWorkTopics, aliasToLabelMap, aliasesForLabel } from "../../../../src/core/workstream/work-topics.js";
+import { parseWorkTopics, aliasToLabelMap } from "../../../../src/core/workstream/work-topics.js";
 
 describe("parseWorkTopics", () => {
   it("parses array shape", () => {
@@ -57,43 +57,6 @@ describe("aliasToLabelMap", () => {
     ];
     const map = aliasToLabelMap(topics);
     expect(map.get("shared")).toBe("B");
-  });
-});
-
-describe("aliasesForLabel", () => {
-  it("returns alias keys for the label, excluding the normalized label itself", () => {
-    const map = new Map([
-      ["nlm", "NLM"],
-      ["nlm-memory", "NLM"],
-      ["factstore", "NLM"],
-      ["navflow", "NavFlow"],
-    ]);
-    const result = aliasesForLabel(map, "NLM");
-    expect(result).toEqual(["nlm-memory", "factstore"]);
-  });
-
-  it("excludes an alias that equals the label case-insensitively", () => {
-    const map = new Map([
-      ["acme", "Acme"],
-      ["acme corp", "Acme"],
-    ]);
-    const result = aliasesForLabel(map, "Acme");
-    expect(result).toEqual(["acme corp"]);
-  });
-
-  it("caps at 12 aliases", () => {
-    const entries: Array<[string, string]> = Array.from({ length: 15 }, (_, i) => [`alias-${i}`, "Foo"]);
-    const map = new Map(entries);
-    expect(aliasesForLabel(map, "Foo")).toHaveLength(12);
-  });
-
-  it("returns empty array when no aliases exist for the label", () => {
-    const map = new Map([["other", "Other"]]);
-    expect(aliasesForLabel(map, "NLM")).toEqual([]);
-  });
-
-  it("returns empty array for an empty map", () => {
-    expect(aliasesForLabel(new Map(), "NLM")).toEqual([]);
   });
 });
 

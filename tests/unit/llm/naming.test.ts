@@ -3,8 +3,8 @@ import { buildNamingSystemPrompt, parseLongestLabel } from "../../../src/llm/nam
 import type { WorkstreamCandidateHint } from "../../../src/ports/llm-client.js";
 
 const TWO = [
-  { label: "Alpha", aliases: [] },
-  { label: "Beta", aliases: [] },
+  { label: "Alpha" },
+  { label: "Beta" },
 ] satisfies ReadonlyArray<WorkstreamCandidateHint>;
 
 describe("buildNamingSystemPrompt", () => {
@@ -32,35 +32,15 @@ describe("buildNamingSystemPrompt", () => {
   });
 
   it("handles a single candidate", () => {
-    const result = buildNamingSystemPrompt([{ label: "NLM", aliases: [] }]);
+    const result = buildNamingSystemPrompt([{ label: "NLM" }]);
     expect(result).toContain("- NLM\n");
-  });
-
-  it("empty aliases produce byte-identical candidate lines", () => {
-    const result = buildNamingSystemPrompt(TWO);
-    expect(result).toContain("- Alpha\n");
-    expect(result).toContain("- Beta\n");
-    expect(result).not.toContain("aka");
-  });
-
-  it("renders aliases in the candidate line when non-empty", () => {
-    const candidates: ReadonlyArray<WorkstreamCandidateHint> = [
-      { label: "NLM", aliases: ["factstore", "recallservice"] },
-      { label: "NavFlow", aliases: [] },
-    ];
-    const result = buildNamingSystemPrompt(candidates);
-    const expected =
-      `You label a work session by which project it belongs to. Known projects:\n- NLM (aka factstore, recallservice)\n- NavFlow\n` +
-      `Answer with a project name only when the session's actual work is on that project; a passing mention is not enough. ` +
-      `If it belongs to NONE of these, or you are unsure, answer "none". Reply with ONLY the exact project name from the list, or "none".`;
-    expect(result).toBe(expected);
   });
 });
 
 describe("parseLongestLabel", () => {
   const candidates: ReadonlyArray<WorkstreamCandidateHint> = [
-    { label: "NLM", aliases: [] },
-    { label: "NLM UI", aliases: [] },
+    { label: "NLM" },
+    { label: "NLM UI" },
   ];
 
   it("picks the longest matching label when a shorter label is a substring of a longer one", () => {
@@ -80,7 +60,7 @@ describe("parseLongestLabel", () => {
   });
 
   it("is case-insensitive on both the output and the candidate labels", () => {
-    const mixed: ReadonlyArray<WorkstreamCandidateHint> = [{ label: "PolySignal", aliases: [] }];
+    const mixed: ReadonlyArray<WorkstreamCandidateHint> = [{ label: "PolySignal" }];
     expect(parseLongestLabel("POLYSIGNAL is the answer", mixed)).toBe("PolySignal");
   });
 
