@@ -1,0 +1,75 @@
+User: The POST /events endpoint in corvid-api is throwing a TypeError in production. Stack trace says "Cannot read properties of undefined (reading 'source')" on line 47 of src/routes/events.ts. Can you find the bug?
+
+Agent: Let me read the route handler.
+
+[Read: src/routes/events.ts]
+
+```typescript
+export async function postEvent(req: Request, res: Response) {
+  const { source, payload } = req.body;
+  // line 47
+  const normalized = source.toLowerCase();
+  await db.events.insert({ source: normalized, payload, createdAt: new Date() });
+  res.status(201).json({ ok: true });
+}
+```
+
+The bug is on line 47. When the request body omits the `source` field, `source` is `undefined` and calling `.toLowerCase()` throws. There is no guard before the property access.
+
+User: Right. What's the fix?
+
+Agent: Two options: reject requests missing `source` with a 400, or default it to "unknown". Given this is an event ingestion endpoint where source identity matters for routing downstream, rejecting is safer.
+
+User: Agreed. Reject with 400.
+
+Agent: Updating the handler now.
+
+[Edit: src/routes/events.ts]
+
+```typescript
+export async function postEvent(req: Request, res: Response) {
+  const { source, payload } = req.body;
+  if (typeof source !== "string" || source.trim().length === 0) {
+    res.status(400).json({ error: "source is required" });
+    return;
+  }
+  const normalized = source.toLowerCase().trim();
+  await db.events.insert({ source: normalized, payload, createdAt: new Date() });
+  res.status(201).json({ ok: true });
+}
+```
+
+User: Good. Add a test for the missing-source case.
+
+Agent: Adding to tests/routes/events.test.ts.
+
+[Read: tests/routes/events.test.ts]
+
+[Edit: tests/routes/events.test.ts]
+
+Added a test case:
+
+```typescript
+it("returns 400 when source is missing", async () => {
+  const res = await request(app).post("/events").send({ payload: { x: 1 } });
+  expect(res.status).toBe(400);
+  expect(res.body.error).toBe("source is required");
+});
+```
+
+User: Run the tests to confirm.
+
+Agent: [Bash: npm test -- --testPathPattern=events]
+
+Output:
+```
+PASS tests/routes/events.test.ts
+  POST /events
+    ✓ returns 201 for valid event (42ms)
+    ✓ returns 400 when source is missing (8ms)
+    ✓ returns 400 when source is empty string (6ms)
+```
+
+All passing. The fix guards on both undefined and empty-string cases since `trim().length === 0` catches whitespace-only inputs too.
+
+User: Perfect. Ship it.

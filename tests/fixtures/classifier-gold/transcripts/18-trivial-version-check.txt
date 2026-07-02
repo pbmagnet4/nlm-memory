@@ -1,0 +1,21 @@
+User: What version of Node.js is installed?
+
+Agent: [Bash: node --version]
+
+```
+v22.4.0
+```
+
+Node.js v22.4.0.
+
+User: And npm?
+
+Agent: [Bash: npm --version]
+
+```
+10.8.1
+```
+
+npm 10.8.1.
+
+User: Good, that's what I needed.

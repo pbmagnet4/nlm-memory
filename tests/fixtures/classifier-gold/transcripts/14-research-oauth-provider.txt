@@ -1,0 +1,74 @@
+User: irongate needs customer-facing OAuth 2.0. I'm evaluating Keycloak self-hosted versus Auth0 versus SuperTokens. The main requirements are: LDAP integration for our enterprise customers, self-hosted option, OIDC compliance. What do you think?
+
+Agent: All three support OIDC. The differentiating factor for your requirements is the LDAP integration:
+
+Keycloak
+- Full LDAP and Active Directory federation, built-in and well-documented
+- Self-hosted; runs as a Java service (Quarkus distribution, Docker-friendly)
+- Enterprise-grade: major deployments at scale, active community
+- Admin UI is functional but has a learning curve
+- Free and open source (Apache 2.0)
+
+Auth0
+- LDAP integration via Enterprise Connections, which requires the Business tier ($800+/month for even modest user counts)
+- Managed SaaS; a self-hosted option exists via Auth0 Private Cloud but is expensive and not truly self-hosted
+- Developer experience is excellent; SDKs are polished
+- Cost scales with monthly active users, which gets expensive fast
+
+SuperTokens
+- Self-hosted option available (open source core)
+- No native LDAP integration; enterprise SSO via their Enterprise tier which supports SAML but LDAP is not supported as a user federation source
+- Better for consumer apps; gaps in enterprise identity features
+
+For irongate with the LDAP requirement, Keycloak is the clear choice. It is the only option that covers all three requirements (LDAP federation, self-hosted, OIDC) without additional cost.
+
+User: What's the operational complexity of running Keycloak?
+
+Agent: Moderate. Key considerations:
+
+- Runs as a stateless application backed by Postgres (recommended) or H2 for dev
+- Horizontal scaling works but requires a shared Postgres backend and sticky sessions for the admin console
+- Startup time is 15-30 seconds cold; plan for that in your container orchestration health checks
+- The default Keycloak Docker image needs a few environment variables: KEYCLOAK_ADMIN, KEYCLOAK_ADMIN_PASSWORD, KC_DB_URL, KC_DB_USERNAME, KC_DB_PASSWORD
+- Realm export/import is the standard backup mechanism; automate this
+
+For irongate at this stage (pre-scale), a single Keycloak instance behind your nginx proxy on a dedicated small VM is sufficient. You can add a replica later.
+
+User: Let's go with Keycloak self-hosted backed by Postgres.
+
+Agent: Good choice. I'll draft the Docker Compose configuration for the irongate auth stack.
+
+[Write: docker-compose.auth.yml]
+
+```yaml
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    command: start
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://auth-db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KC_DB_PASSWORD}
+      KC_HOSTNAME: auth.irongate.example.com
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+    depends_on:
+      - auth-db
+    ports:
+      - "8180:8080"
+
+  auth-db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: ${KC_DB_PASSWORD}
+    volumes:
+      - keycloak-pgdata:/var/lib/postgresql/data
+
+volumes:
+  keycloak-pgdata:
+```
+
+User: Perfect. We'll proceed with Keycloak.

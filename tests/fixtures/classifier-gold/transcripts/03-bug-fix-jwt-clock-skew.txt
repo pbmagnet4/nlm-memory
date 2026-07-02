@@ -1,0 +1,86 @@
+User: Users are reporting random login failures in bridgeauth. The error in logs is "Token is not yet valid" and "Signature has expired". It's intermittent and seems worse around the token boundary. Here's the validation code in src/auth/token.py.
+
+Agent: [Read: src/auth/token.py]
+
+```python
+import jwt
+
+SECRET = os.environ["JWT_SECRET"]
+ALGORITHM = "HS256"
+
+def validate_token(token: str) -> dict:
+    return jwt.decode(token, SECRET, algorithms=[ALGORITHM])
+```
+
+The validation call has no leeway parameter. JWT tokens have an `exp` claim and PyJWT validates it against the current time. When there is a small clock difference between the server that issued the token and the server validating it, tokens can appear expired seconds before their actual expiry from the issuer's perspective.
+
+The standard fix is to add a leeway value, typically 10-30 seconds, which tells PyJWT to accept tokens that expired within that window.
+
+User: How big is the clock drift between our services likely to be?
+
+Agent: For services within the same datacenter using NTP, drift is usually under 1 second. But network-synchronized clocks under load can drift up to 5 seconds. A 10-second leeway covers realistic cases without meaningfully extending token validity from a security perspective.
+
+User: Let's add 10 seconds of leeway.
+
+Agent: [Edit: src/auth/token.py]
+
+```python
+import jwt
+from datetime import timedelta
+
+SECRET = os.environ["JWT_SECRET"]
+ALGORITHM = "HS256"
+CLOCK_SKEW_LEEWAY = timedelta(seconds=10)
+
+def validate_token(token: str) -> dict:
+    return jwt.decode(
+        token,
+        SECRET,
+        algorithms=[ALGORITHM],
+        leeway=CLOCK_SKEW_LEEWAY,
+    )
+```
+
+User: Are there tests for the expiry behavior?
+
+Agent: [Bash: grep -n "expir\|leeway\|exp" tests/auth/test_token.py]
+
+```
+12: def make_token(exp_offset_seconds=300):
+14:     payload = {"sub": "user-1", "exp": now + timedelta(seconds=exp_offset_seconds)}
+```
+
+No test covers the boundary case. I'll add one that creates a token with `exp` set 5 seconds in the past and confirms it is now accepted with leeway.
+
+[Edit: tests/auth/test_token.py]
+
+Added:
+
+```python
+def test_validates_token_within_leeway():
+    # Token expired 5 seconds ago; should pass with 10s leeway
+    payload = {"sub": "user-1", "exp": datetime.utcnow() - timedelta(seconds=5)}
+    token = jwt.encode(payload, SECRET, algorithm="HS256")
+    result = validate_token(token)
+    assert result["sub"] == "user-1"
+
+def test_rejects_token_outside_leeway():
+    # Token expired 60 seconds ago; must fail even with leeway
+    payload = {"sub": "user-1", "exp": datetime.utcnow() - timedelta(seconds=60)}
+    token = jwt.encode(payload, SECRET, algorithm="HS256")
+    with pytest.raises(jwt.ExpiredSignatureError):
+        validate_token(token)
+```
+
+User: Run the tests.
+
+Agent: [Bash: pytest tests/auth/test_token.py -v]
+
+```
+tests/auth/test_token.py::test_validates_valid_token PASSED
+tests/auth/test_token.py::test_rejects_expired_token PASSED
+tests/auth/test_token.py::test_validates_token_within_leeway PASSED
+tests/auth/test_token.py::test_rejects_token_outside_leeway PASSED
+```
+
+All green. The 10-second leeway resolves the clock-skew login failures.

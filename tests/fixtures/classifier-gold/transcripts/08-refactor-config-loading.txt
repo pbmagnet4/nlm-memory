@@ -1,0 +1,89 @@
+User: axiom-worker has config scattered across the codebase. I want to centralize it into a single Pydantic Settings class loaded once at startup. Can you audit how config is currently read?
+
+Agent: [Bash: grep -rn "os.getenv\|os.environ" src/ --include="*.py"]
+
+```
+src/worker/processor.py:14: DB_URL = os.getenv("DATABASE_URL", "")
+src/worker/processor.py:31: BATCH_SIZE = int(os.getenv("BATCH_SIZE", "50"))
+src/jobs/runner.py:8:  QUEUE_URL = os.environ["QUEUE_URL"]
+src/jobs/runner.py:9:  RETRY_LIMIT = int(os.environ.get("RETRY_LIMIT", "3"))
+src/notifier/slack.py:3: SLACK_WEBHOOK = os.environ["SLACK_WEBHOOK_URL"]
+src/health/check.py:22: PORT = int(os.getenv("PORT", "8080"))
+```
+
+Six separate call sites across four files. Some use `os.getenv` with defaults, some use `os.environ` which raises on missing keys. Inconsistent.
+
+User: Consolidate these into a Pydantic Settings class.
+
+Agent: [Write: src/config.py]
+
+```python
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
+    database_url: str
+    queue_url: str
+    slack_webhook_url: str
+    batch_size: int = 50
+    retry_limit: int = 3
+    port: int = 8080
+
+settings = Settings()
+```
+
+`database_url`, `queue_url`, and `slack_webhook_url` have no default, so startup fails fast with a clear Pydantic ValidationError if they are missing rather than silently proceeding with an empty string.
+
+[Edit: src/worker/processor.py]
+[Edit: src/jobs/runner.py]
+[Edit: src/notifier/slack.py]
+[Edit: src/health/check.py]
+
+Replaced all `os.getenv`/`os.environ` calls with imports from `src/config.py`.
+
+User: Is pydantic-settings already a dependency?
+
+Agent: [Bash: grep "pydantic" requirements.txt]
+
+```
+pydantic==2.7.1
+```
+
+pydantic-settings is a separate package. I'll add it.
+
+[Edit: requirements.txt]
+
+Added `pydantic-settings==2.3.4`.
+
+User: Any tests need updating?
+
+Agent: [Bash: grep -rn "os.environ\|os.getenv\|monkeypatch.setenv" tests/ --include="*.py"]
+
+```
+tests/test_processor.py:12: monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
+tests/test_processor.py:13: monkeypatch.setenv("BATCH_SIZE", "5")
+tests/test_runner.py:9:  monkeypatch.setenv("QUEUE_URL", "amqp://localhost")
+```
+
+These tests set env vars which Pydantic Settings will pick up automatically since it reads from the environment. However, the Settings object is a module-level singleton in config.py, so it is initialized once at import time before `monkeypatch.setenv` runs.
+
+The fix is to move Settings instantiation to a function and call it inside each module that needs it, or to use pydantic-settings' `_env_file` override per test. The simpler fix for tests: patch `src.config.settings` directly.
+
+I'll update the tests to patch the singleton.
+
+[Edit: tests/test_processor.py]
+[Edit: tests/test_runner.py]
+
+User: Run the tests.
+
+Agent: [Bash: pip install pydantic-settings==2.3.4 -q && pytest tests/ -v]
+
+```
+tests/test_processor.py::test_batch_size_respected PASSED
+tests/test_runner.py::test_retry_on_failure PASSED
+tests/test_health_check.py::test_port_default PASSED
+5 passed in 1.87s
+```
+
+All green. Config is now centralized in a single Pydantic Settings class loaded at startup.
