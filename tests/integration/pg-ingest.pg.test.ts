@@ -22,7 +22,8 @@ import type {
   SessionChunk,
   TranscriptAdapter,
 } from "../../src/ports/transcript-adapter.js";
-import type { ClassifyResult, EmbedResult, LLMClient } from "../../src/ports/llm-client.js";
+import type { ClassifyResult, LLMClient } from "../../src/ports/llm-client.js";
+import { StubEmbedder } from "../fixtures/llm-stubs.js";
 import type { Fact } from "../../src/shared/types.js";
 import type { IngestRecord } from "../../src/core/storage/sqlite-session-store.js";
 import { ingestSession } from "../../src/core/ingest/ingest-session.js";
@@ -80,16 +81,6 @@ function record(over: Partial<IngestRecord> & { id: string }): IngestRecord {
   };
 }
 
-class StubEmbedder implements LLMClient {
-  async embed(): Promise<EmbedResult> {
-    const v = new Float32Array(768);
-    v[0] = 1;
-    return { vector: v, model: "stub" };
-  }
-  async rewriteForRecall(): Promise<never> { throw new Error("not used"); }
-  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
-  async classify(): Promise<never> { throw new Error("not used"); }
-}
 
 describe.skipIf(!PG_TEST_URL)("PgSessionStore.insertSession factSink (PG)", () => {
   let storage: PgStorage;

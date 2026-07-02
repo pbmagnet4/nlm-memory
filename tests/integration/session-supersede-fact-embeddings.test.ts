@@ -10,16 +10,7 @@ import type {
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { makeFact } from "../fixtures/facts.js";
 import { runChecksOnSqlite } from "../../src/core/integrity/check-invariants.js";
-import type { EmbedResult, LLMClient } from "../../src/ports/llm-client.js";
-
-class StubEmbedder implements LLMClient {
-  async embed(): Promise<EmbedResult> {
-    return { vector: new Float32Array(768).fill(0.1), model: "stub" };
-  }
-  async rewriteForRecall(): Promise<never> { throw new Error("stub"); }
-  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
-  async classify(): Promise<never> { throw new Error("stub"); }
-}
+import { StubEmbedder } from "../fixtures/llm-stubs.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 

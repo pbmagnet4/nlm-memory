@@ -14,7 +14,8 @@ import Database from "better-sqlite3";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { ClaudeCodeAdapter } from "../../src/core/adapters/claude-code.js";
 import { ScanScheduler } from "../../src/core/scheduler/scheduler.js";
-import type { ClassifyResult, EmbedResult, LLMClient } from "../../src/ports/llm-client.js";
+import type { ClassifyResult, LLMClient } from "../../src/ports/llm-client.js";
+import { StubEmbedder } from "../fixtures/llm-stubs.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 
@@ -35,16 +36,6 @@ class StubClassifier implements LLMClient {
   }
 }
 
-class StubEmbedder implements LLMClient {
-  async embed(): Promise<EmbedResult> {
-    const v = new Float32Array(768);
-    v[0] = 1;
-    return { vector: v, model: "stub" };
-  }
-  async rewriteForRecall(): Promise<never> { throw new Error("not used"); }
-  async nameWorkstream(): Promise<string | null> { return null; }
-  async classify(): Promise<ClassifyResult> { throw new Error("not used"); }
-}
 
 function buildFixture(projects: string): void {
   const projDir = join(projects, "proj");

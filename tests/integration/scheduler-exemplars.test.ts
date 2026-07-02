@@ -11,25 +11,12 @@ import Database from "better-sqlite3";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { ClaudeCodeAdapter } from "../../src/core/adapters/claude-code.js";
 import { ScanScheduler } from "../../src/core/scheduler/scheduler.js";
-import type { ClassifyResult, EmbedResult, LLMClient } from "../../src/ports/llm-client.js";
 import type { CodeEmbedder } from "../../src/ports/code-embedder.js";
+import { StubClassifier, StubEmbedder } from "../fixtures/llm-stubs.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 
-class StubClassifier implements LLMClient {
-  async embed(): Promise<EmbedResult> { throw new Error("nu"); }
-  async rewriteForRecall(): Promise<never> { throw new Error("nu"); }
-  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
-  async classify(): Promise<ClassifyResult> {
-    return { label: "L", summary: "Added throttle", entities: ["throttle"], decisions: ["chose throttle"], open: [], confidence: 0.9, facts: [] };
-  }
-}
-class StubEmbedder implements LLMClient {
-  async embed(): Promise<EmbedResult> { const v = new Float32Array(768); v[0] = 1; return { vector: v, model: "stub" }; }
-  async rewriteForRecall(): Promise<never> { throw new Error("nu"); }
-  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
-  async classify(): Promise<never> { throw new Error("nu"); }
-}
+const EXEMPLAR_CLASSIFY_RESULT = { label: "L", summary: "Added throttle", entities: ["throttle"], decisions: ["chose throttle"], open: [], confidence: 0.9, facts: [] } as const;
 const stubCodeEmbedder: CodeEmbedder = { async embed() { const v = new Float32Array(768); v[1] = 1; return { vector: v, dim: 768 }; } };
 
 function git(repo: string, ...args: string[]): string {
@@ -75,7 +62,7 @@ describe("scheduler captures exemplars from committed sessions", () => {
     const scheduler = new ScanScheduler({
       store: storage.sessions,
       adapters: [adapter],
-      classifier: new StubClassifier(),
+      classifier: new StubClassifier(EXEMPLAR_CLASSIFY_RESULT),
       embedder: new StubEmbedder(),
       installScope: "install-test",
       exemplarStore: storage.exemplars,

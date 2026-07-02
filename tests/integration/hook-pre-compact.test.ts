@@ -11,22 +11,9 @@ import type { Hono } from "hono";
 import { RecallService } from "../../src/core/recall/recall-service.js";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { createApp } from "../../src/http/app.js";
-import type { EmbedResult, LLMClient } from "../../src/ports/llm-client.js";
+import { FixedEmbedder } from "../fixtures/llm-stubs.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
-
-class FixedEmbedder implements LLMClient {
-  async embed(): Promise<EmbedResult> {
-    return { vector: new Float32Array(768), model: "fixed-test" };
-  }
-  async rewriteForRecall(): Promise<never> {
-    throw new Error("not used in tests");
-  }
-  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
-  async classify(): Promise<never> {
-    throw new Error("not used");
-  }
-}
 
 describe("POST /api/hook/pre-compact", () => {
   let tmp: string;

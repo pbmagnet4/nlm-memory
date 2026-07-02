@@ -20,8 +20,8 @@ import {
   type SupersedeIO,
 } from "../../src/cli/supersede.js";
 import { LLMUnreachableError } from "../../src/ports/llm-client.js";
-import type { EmbedResult, LLMClient } from "../../src/ports/llm-client.js";
 import { makeSession } from "../fixtures/sessions.js";
+import { FixedEmbedder } from "../fixtures/llm-stubs.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 
@@ -35,20 +35,6 @@ function unit(values: number[]): Float32Array {
   const norm = Math.sqrt(sum) || 1;
   for (let i = 0; i < padded.length; i++) padded[i] = (padded[i] ?? 0) / norm;
   return padded;
-}
-
-class FixedEmbedder implements LLMClient {
-  constructor(private readonly vector: Float32Array) {}
-  async embed(): Promise<EmbedResult> {
-    return { vector: this.vector, model: "fixed-test" };
-  }
-  async rewriteForRecall(): Promise<never> {
-    throw new Error("not used in tests");
-  }
-  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
-  async classify(): Promise<never> {
-    throw new Error("not used");
-  }
 }
 
 interface CapturedIO extends SupersedeIO {

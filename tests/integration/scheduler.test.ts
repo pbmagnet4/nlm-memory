@@ -15,11 +15,7 @@ import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { ClaudeCodeAdapter } from "../../src/core/adapters/claude-code.js";
 import { ScanScheduler } from "../../src/core/scheduler/scheduler.js";
 import { MAX_CLASSIFY_FAILURES } from "../../src/core/scheduler/scan-once.js";
-import type {
-  ClassifyResult,
-  EmbedResult,
-  LLMClient,
-} from "../../src/ports/llm-client.js";
+import { StubClassifier, StubEmbedder } from "../fixtures/llm-stubs.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 const FIXTURES = resolve(__dirname, "../fixtures/claude_code");
@@ -34,50 +30,6 @@ function ageFiles(dir: string, ageMs: number): void {
   }
 }
 
-class StubClassifier implements LLMClient {
-  calls = 0;
-  constructor(
-    private readonly result: ClassifyResult = {
-      label: "Stub label",
-      summary: "Stub summary",
-      entities: ["NLM"],
-      decisions: ["chose Hono"],
-      open: [],
-      confidence: 0.9,
-      facts: [],
-    },
-    private readonly throwError: boolean = false,
-  ) {}
-  async embed(): Promise<EmbedResult> {
-    throw new Error("not used");
-  }
-  async rewriteForRecall(): Promise<never> {
-    throw new Error("not used in tests");
-  }
-  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
-  async classify(): Promise<ClassifyResult> {
-    this.calls += 1;
-    if (this.throwError) throw new Error("classifier blew up");
-    return this.result;
-  }
-}
-
-class StubEmbedder implements LLMClient {
-  calls = 0;
-  async embed(): Promise<EmbedResult> {
-    this.calls += 1;
-    const v = new Float32Array(768);
-    v[0] = 1;
-    return { vector: v, model: "stub" };
-  }
-  async rewriteForRecall(): Promise<never> {
-    throw new Error("not used in tests");
-  }
-  nameWorkstream(): Promise<string | null> { throw new Error("stub"); }
-  async classify(): Promise<ClassifyResult> {
-    throw new Error("not used");
-  }
-}
 
 describe("ScanScheduler.tick", () => {
   let tmp: string;
