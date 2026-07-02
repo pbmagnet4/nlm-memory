@@ -140,15 +140,17 @@ async function main(): Promise<void> {
       typeof payload.project_name === "string" ? payload.project_name : "";
     const query = buildQuery(workingDirectory, projectName);
     const mode: HookMode = hookModeFromEnv();
-    const out = await runHook(
-      { conversationId, query },
-      {
-        mode,
-        recall: async (q, cid) =>
-          (await recallOverHttp(q, "claude-code", cid === "unknown" ? undefined : cid, "hybrid")).hits,
-      },
-    );
-    const failureModes = mode === "live" ? await fetchFailureModeBlock(workingDirectory) : "";
+    const [out, failureModes] = await Promise.all([
+      runHook(
+        { conversationId, query },
+        {
+          mode,
+          recall: async (q, cid) =>
+            (await recallOverHttp(q, "claude-code", cid === "unknown" ? undefined : cid, "hybrid")).hits,
+        },
+      ),
+      mode === "live" ? fetchFailureModeBlock(workingDirectory) : Promise.resolve(""),
+    ]);
     const combined = composeSessionStartOutput(failureModes, out);
     if (combined) process.stdout.write(combined);
   } catch {

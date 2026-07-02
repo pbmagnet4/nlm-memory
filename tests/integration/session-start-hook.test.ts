@@ -105,6 +105,22 @@ describe("session-start runHook", () => {
     expect(entry["promptPreview"]).toBe("example-agent session recall");
   });
 
+  it("runHook resolves even when the recall dep is slow", async () => {
+    const start = Date.now();
+    const out = await runHook(
+      { conversationId: "c-slow", query: "slow query" },
+      {
+        mode: "live",
+        recall: async () => {
+          await new Promise((r) => setTimeout(r, 50));
+          return hits("sess_y");
+        },
+      },
+    );
+    expect(Date.now() - start).toBeLessThan(500);
+    expect(out).toContain("sess_y");
+  });
+
   it("live mode writes memo for each new session ID across multiple fires", async () => {
     // First fire surfaces sess_a
     await runHook(

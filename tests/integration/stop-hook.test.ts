@@ -454,6 +454,61 @@ describe("runStopHook", () => {
     );
   });
 
+  it("fires citation POSTs concurrently, not serially", async () => {
+    recordSurfaced("conv-conc", ["cc_sub_a139f4ab7ca5aa909", "cc_ff88cd96-d1f9-428c-8a97-2e4ca431acbe"]);
+    const transcript = join(tmp, "t-conc.jsonl");
+    writeTranscript(transcript, [
+      {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "text",
+              text: "cc_sub_a139f4ab7ca5aa909 and cc_ff88cd96-d1f9-428c-8a97-2e4ca431acbe",
+            },
+          ],
+        },
+      },
+    ]);
+    const input = { conversationId: "conv-conc", transcriptPath: transcript, stopHookActive: false };
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const postCitation = async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 20));
+      inFlight--;
+    };
+    await runStopHook(input, { postCitation });
+    expect(maxInFlight).toBeGreaterThan(1);
+  });
+
+  it("a rejected citation POST does not abort the others or throw", async () => {
+    recordSurfaced("conv-reject", ["cc_sub_a139f4ab7ca5aa909", "cc_ff88cd96-d1f9-428c-8a97-2e4ca431acbe"]);
+    const transcript = join(tmp, "t-reject.jsonl");
+    writeTranscript(transcript, [
+      {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "text",
+              text: "cc_sub_a139f4ab7ca5aa909 and cc_ff88cd96-d1f9-428c-8a97-2e4ca431acbe",
+            },
+          ],
+        },
+      },
+    ]);
+    const input = { conversationId: "conv-reject", transcriptPath: transcript, stopHookActive: false };
+    let calls = 0;
+    const postCitation = async () => {
+      calls++;
+      if (calls === 1) throw new Error("daemon down");
+    };
+    await expect(runStopHook(input, { postCitation })).resolves.toBeDefined();
+    expect(calls).toBeGreaterThan(1);
+  });
+
   it("records a citation locally even if postCitation fails — prevents reposting on next fire", async () => {
     recordSurfaced("conv-failopen", ["cc_sub_a139f4ab7ca5aa909"]);
     const transcript = join(tmp, "t.jsonl");

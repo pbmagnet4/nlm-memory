@@ -106,6 +106,9 @@ import { recallCode } from "@core/exemplars/recall-code.js";
 import { composeEmbedText } from "@core/exemplars/embed-text.js";
 import { buildFailureModeBlock } from "@core/signals/failure-mode-recall.js";
 import { aggregateFailureModes } from "@core/signals/aggregate.js";
+import { parseRelativeFloor } from "../hook/score-floor.js";
+
+const HERMES_RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 
 export interface HttpDeps {
   readonly recall: RecallService;
@@ -873,7 +876,7 @@ function registerHermesAgentHookRoutes(app: Hono, deps: HttpDeps): void {
         matchScore: r.matchScore,
       }));
       const surfaced = loadSurfaced(sessionId);
-      const selected = selectHits({ hits, surfaced, scoreThreshold: 0, perFireCap: 3, perConversationCap: 10 });
+      const selected = selectHits({ hits, surfaced, scoreThreshold: 0, relativeFloor: HERMES_RELATIVE_FLOOR, perFireCap: 3, perConversationCap: 10 });
       if (
         selected.length === 0 &&
         (result.relatedFacts ?? []).length === 0 &&

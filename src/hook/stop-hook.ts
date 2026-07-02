@@ -137,14 +137,9 @@ export async function runStopHook(
   const lastText = turns[turns.length - 1]?.text ?? "";
   const preview = lastText.slice(0, RESPONSE_PREVIEW_CHARS);
 
-  for (const c of fresh) {
-    try {
-      await deps.postCitation(input.conversationId, c.id, c.kind, preview);
-    } catch {
-      // Daemon down or HTTP error — local memo update below still records
-      // the citation so we don't repost on the next Stop fire.
-    }
-  }
+  await Promise.allSettled(
+    fresh.map((c) => deps.postCitation(input.conversationId, c.id, c.kind, preview)),
+  );
   if (fresh.length > 0) {
     recordCited(input.conversationId, fresh.map((c) => c.id));
   }
