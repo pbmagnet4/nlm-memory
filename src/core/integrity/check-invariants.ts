@@ -396,17 +396,24 @@ export function runCheapChecksOnSqlite(db: Database.Database): ReadonlyArray<Vio
     violations.push(buildViolation("I6", "adapter_state.session_id references non-existent sessions.id", i6Samples, sqliteCount(db, SQL_I6)));
   }
 
+  // I7: LEFT JOIN over fact_embeddings is index-only; within the cheap budget.
+  const i7Samples = sqliteRows(db, SQL_I7_GHOST_SQLITE);
+  if (i7Samples.length > 0) {
+    violations.push(buildViolation("I7", "fact embedding without a live parent fact", i7Samples, sqliteCount(db, SQL_I7_GHOST_SQLITE)));
+  }
+
   return violations;
 }
 
 export async function runCheapChecksOnPg(pool: Pool): Promise<ReadonlyArray<Violation>> {
   const violations: Violation[] = [];
 
-  const [i1, i2, i2r, i6] = await Promise.all([
+  const [i1, i2, i2r, i6, i7] = await Promise.all([
     pgRows(pool, SQL_I1),
     pgRows(pool, SQL_I2_ORPHANED),
     pgRows(pool, SQL_I2_ORPHANED_REPLACED),
     pgRows(pool, SQL_I6),
+    pgRows(pool, SQL_I7_GHOST_PG),
   ]);
 
   if (i1.length > 0) {
@@ -420,6 +427,9 @@ export async function runCheapChecksOnPg(pool: Pool): Promise<ReadonlyArray<Viol
   }
   if (i6.length > 0) {
     violations.push(buildViolation("I6", "adapter_state.session_id references non-existent sessions.id", i6, await pgCount(pool, SQL_I6)));
+  }
+  if (i7.length > 0) {
+    violations.push(buildViolation("I7", "fact embedding without a live parent fact", i7, await pgCount(pool, SQL_I7_GHOST_PG)));
   }
 
   return violations;
