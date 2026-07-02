@@ -50,6 +50,8 @@ export class SqliteFactStore implements FactStore {
    */
   constructor(private readonly db: Database.Database) {}
 
+  private cachedInsertStmt: Database.Statement<FactRow> | undefined;
+
   async insert(fact: Fact): Promise<void> {
     this.insertStmt().run(this.toRow(fact));
   }
@@ -408,16 +410,19 @@ export class SqliteFactStore implements FactStore {
     }
   }
 
-  private insertStmt() {
-    return this.db.prepare<FactRow>(`
-      INSERT INTO facts (
-        id, kind, subject, predicate, value, source_session_id,
-        source_quote, created_at, superseded_by, confidence, retired_at
-      ) VALUES (
-        @id, @kind, @subject, @predicate, @value, @source_session_id,
-        @source_quote, @created_at, @superseded_by, @confidence, @retired_at
-      )
-    `);
+  private insertStmt(): Database.Statement<FactRow> {
+    if (!this.cachedInsertStmt) {
+      this.cachedInsertStmt = this.db.prepare<FactRow>(`
+        INSERT INTO facts (
+          id, kind, subject, predicate, value, source_session_id,
+          source_quote, created_at, superseded_by, confidence, retired_at
+        ) VALUES (
+          @id, @kind, @subject, @predicate, @value, @source_session_id,
+          @source_quote, @created_at, @superseded_by, @confidence, @retired_at
+        )
+      `);
+    }
+    return this.cachedInsertStmt;
   }
 
   private toRow(fact: Fact): FactRow {

@@ -557,4 +557,28 @@ describe("readAllAssistantTurns", () => {
     expect(turns).toHaveLength(1);
     expect(turns[0]?.text).toBe("real");
   });
+
+  it("readAllAssistantTurns returns every turn for a file under the cap", () => {
+    const path = join(tmp, "small.jsonl");
+    writeTranscript(path, [
+      { type: "assistant", message: { content: [{ type: "text", text: "alpha" }] } },
+      { type: "assistant", message: { content: [{ type: "text", text: "beta" }] } },
+    ]);
+    const turns = readAllAssistantTurns(path);
+    expect(turns.map((t) => t.text)).toEqual(["alpha", "beta"]);
+  });
+
+  it("readAllAssistantTurns tail-reads and drops the truncated leading line for a file over the cap", () => {
+    const path = join(tmp, "big.jsonl");
+    const filler = { type: "assistant", message: { content: [{ type: "text", text: "x".repeat(4096) }] } };
+    const lines: object[] = [];
+    lines.push({ type: "assistant", message: { content: [{ type: "text", text: "OLDEST_MARKER" }] } });
+    for (let i = 0; i < 200; i++) lines.push(filler);
+    lines.push({ type: "assistant", message: { content: [{ type: "text", text: "NEWEST_MARKER" }] } });
+    writeTranscript(path, lines);
+    const turns = readAllAssistantTurns(path);
+    const texts = turns.map((t) => t.text);
+    expect(texts).toContain("NEWEST_MARKER");
+    expect(texts).not.toContain("OLDEST_MARKER");
+  });
 });

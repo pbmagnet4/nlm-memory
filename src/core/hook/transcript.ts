@@ -18,7 +18,7 @@
  * the Stop hook must never break on transcript I/O.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
 
 interface ContentBlock {
   readonly type: string;
@@ -66,10 +66,23 @@ function parseTurn(parsed: TranscriptLine): AssistantTurn | null {
   return { text: textParts.join("\n"), toolUses };
 }
 
+const MAX_TRANSCRIPT_BYTES = 256 * 1024;
+
 function readLines(transcriptPath: string): string[] | null {
   if (!transcriptPath || !existsSync(transcriptPath)) return null;
   try {
-    return readFileSync(transcriptPath, "utf8").split("\n");
+    const fd = openSync(transcriptPath, "r");
+    try {
+      const size = fstatSync(fd).size;
+      const start = size > MAX_TRANSCRIPT_BYTES ? size - MAX_TRANSCRIPT_BYTES : 0;
+      const len = size - start;
+      if (len <= 0) return [];
+      const buf = Buffer.alloc(len);
+      readSync(fd, buf, 0, len, start);
+      return buf.toString("utf8").split("\n");
+    } finally {
+      closeSync(fd);
+    }
   } catch {
     return null;
   }
