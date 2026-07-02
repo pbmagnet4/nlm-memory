@@ -107,6 +107,7 @@ import { composeEmbedText } from "@core/exemplars/embed-text.js";
 import { buildFailureModeBlock } from "@core/signals/failure-mode-recall.js";
 import { aggregateFailureModes } from "@core/signals/aggregate.js";
 import { parseRelativeFloor } from "../hook/score-floor.js";
+import { warmupSnapshot } from "@core/health/warmup-state.js";
 
 const HERMES_RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 
@@ -528,7 +529,7 @@ function renderAuthPage(): string {
 
 function registerHealthRoute(app: Hono): void {
   app.get("/api/health", (c) =>
-    c.json({ status: "ok", service: "nlm-memory", version: pkg.version }),
+    c.json({ status: "ok", service: "nlm-memory", version: pkg.version, warmup: warmupSnapshot() }),
   );
 
   // Passive update poll for the UI. Same daily-cached check the CLI

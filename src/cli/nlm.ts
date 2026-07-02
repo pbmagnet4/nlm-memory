@@ -87,6 +87,7 @@ import { runParity } from "./classify-parity.js";
 import { reembedCorpus } from "../core/embedding/embed-backfill.js";
 import { backfillExemplarEmbeddings } from "../core/exemplars/embed-backfill.js";
 import { warmCodeEmbedder } from "../core/exemplars/warm-embedder.js";
+import { markWarm } from "../core/health/warmup-state.js";
 import { backfillFacts } from "../core/facts/backfill-facts.js";
 import { normalizeEmbeddings } from "../core/embedding/embed-normalize.js";
 import { ScanScheduler } from "../core/scheduler/scheduler.js";
@@ -349,19 +350,23 @@ program
           }
         : {}),
     });
-    // Warm the code embedder once at boot so the first real capture isn't
-    // cold (capture embeds fire-and-forget; a cold model drops the vector and
-    // recall_code is vector-only). Gated on the flag, non-blocking, best-effort.
     warmCodeEmbedder(buildCodeEmbedder());
+
+    void embedder
+      .embed("warmup init", "query")
+      .then(() => markWarm("textEmbedder"))
+      .catch(() => {});
+
+    setImmediate(() => {
+      void recall
+        .search({ query: "warmup init", mode: "keyword", limit: 1 })
+        .then(() => markWarm("fts5"))
+        .catch(() => {});
+    });
 
     const p = port();
     serve({ fetch: app.fetch, port: p, hostname: "127.0.0.1" }, (info) => {
       console.error(`nlm-memory http listening on http://localhost:${info.port}`);
-      // Warm the FTS5 page cache so the first user prompt doesn't hit a cold-
-      // start latency spike. The canonical DB is 444MB+; loading FTS5 B-tree
-      // pages from a cold OS page cache costs 30–40s. One keyword search forces
-      // those pages into the cache so subsequent warm calls land at ~0.03s.
-      void recall.search({ query: "warmup init", mode: "keyword", limit: 1 }).catch(() => {});
       if (hasMcpToken) {
         console.error(`  mcp:    http://localhost:${info.port}/mcp (token-gated)`);
       }
