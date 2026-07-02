@@ -204,7 +204,7 @@ async function postCitationOverHttp(
   responsePreview: string,
 ): Promise<void> {
   const port = process.env["NLM_PORT"] ?? "3940";
-  const url = `http://localhost:${port}/api/recall/cite-event`;
+  const url = `http://127.0.0.1:${port}/api/recall/cite-event`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), POST_TIMEOUT_MS);
   try {

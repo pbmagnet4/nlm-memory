@@ -97,7 +97,7 @@ export function composeSessionStartOutput(failureModeBlock: string, recallBlock:
 async function fetchFailureModeBlock(repo: string): Promise<string> {
   if (!repo) return "";
   const portValue = process.env["NLM_PORT"] ?? "3940";
-  const url = `http://localhost:${portValue}/api/signals/failure-modes?repo=${encodeURIComponent(repo)}`;
+  const url = `http://127.0.0.1:${portValue}/api/signals/failure-modes?repo=${encodeURIComponent(repo)}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), RECALL_TIMEOUT_MS);
   try {
@@ -135,7 +135,7 @@ function readStdin(): Promise<string> {
 async function recallOverHttp(query: string, conversationId?: string): Promise<ReadonlyArray<RecallHitInput>> {
   const portValue = process.env["NLM_PORT"] ?? "3940";
   const url =
-    `http://localhost:${portValue}/api/recall` +
+    `http://127.0.0.1:${portValue}/api/recall` +
     `?q=${encodeURIComponent(query)}&mode=hybrid&limit=${RECALL_LIMIT}` +
     (conversationId ? `&conversation_id=${encodeURIComponent(conversationId)}` : "");
   const controller = new AbortController();
