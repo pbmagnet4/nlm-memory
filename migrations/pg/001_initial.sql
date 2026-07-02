@@ -280,8 +280,12 @@ CREATE TABLE IF NOT EXISTS workstream_entities (
 CREATE INDEX IF NOT EXISTS idx_workstream_entities_entity ON workstream_entities(entity_canonical);
 
 -- FK from sessions.workstream_id to workstreams (deferred so workstreams exists first)
-ALTER TABLE sessions
-  ADD CONSTRAINT fk_sessions_workstream
-  FOREIGN KEY (workstream_id) REFERENCES workstreams(id);
+DO $$
+BEGIN
+  ALTER TABLE sessions
+    ADD CONSTRAINT fk_sessions_workstream
+    FOREIGN KEY (workstream_id) REFERENCES workstreams(id);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_sessions_workstream ON sessions(workstream_id);

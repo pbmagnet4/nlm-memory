@@ -163,6 +163,23 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore.insertSession factSink (PG)", () =
     const prior = await storage.facts.getById("fact_a");
     expect(prior?.supersededBy).toBe("fact_b");
   });
+
+  it("factSink intra-batch duplicate (subject,predicate) does not create a mutual supersedence cycle", async () => {
+    const fa = fact({ id: "dup_a", value: "Express", sourceSessionId: "dup_sess" });
+    const fb = fact({ id: "dup_b", value: "Hono", sourceSessionId: "dup_sess" });
+    await storage.sessions.insertSession(
+      record({ id: "dup_sess" }), null, null,
+      { factStore: storage.facts, facts: [fa, fb] },
+    );
+    const rows = (await pool.query<{ id: string; superseded_by: string | null }>(
+      "SELECT id, superseded_by FROM facts WHERE subject = 'ProjectAtlas' ORDER BY id",
+    )).rows;
+    // dup_a superseded by dup_b (last wins); dup_b active. No mutual cycle.
+    expect(rows).toEqual([
+      { id: "dup_a", superseded_by: "dup_b" },
+      { id: "dup_b", superseded_by: null },
+    ]);
+  });
 });
 
 class FixtureAdapter implements TranscriptAdapter {

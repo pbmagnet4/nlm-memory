@@ -36,6 +36,7 @@ import { runMigrations } from "./migrate.js";
 import type { SqliteFactStore } from "./sqlite-fact-store.js";
 import { tokenize } from "@core/recall/tokenize.js";
 import { chunkSessionText } from "@core/embedding/chunk-body.js";
+import { batchWinners } from "./fact-batch.js";
 
 export interface SqliteSessionStoreOptions {
   readonly dbPath: string;
@@ -524,7 +525,7 @@ export class SqliteSessionStore implements SessionStore {
     facts: ReadonlyArray<Fact>,
     embedder: import("@ports/llm-client.js").LLMClient,
   ): Promise<void> {
-    for (const fact of facts) {
+    for (const fact of batchWinners(facts)) {
       const factText = `${fact.subject} ${fact.predicate} ${fact.value}`.trim();
       if (!factText) continue;
       try {
@@ -842,12 +843,14 @@ export class SqliteSessionStore implements SessionStore {
       const updateFactSuperseded = this.db.prepare(
         "UPDATE facts SET superseded_by = ? WHERE id = ?"
       );
+      const delFactEmbedding = this.db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ?");
 
       const predecessorFacts = selectPredFacts.all(predecessorId);
       for (const pFact of predecessorFacts) {
         const successor = selectSuccFact.get(successorId, pFact.subject, pFact.predicate);
         if (successor) {
           updateFactSuperseded.run(successor.id, pFact.id);
+          delFactEmbedding.run(pFact.id);
         }
       }
     });

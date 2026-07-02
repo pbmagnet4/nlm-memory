@@ -45,7 +45,7 @@ describe("check-invariants (SQLite)", () => {
     expect(violations).toHaveLength(0);
   });
 
-  describe("I1 — self-loop edges", () => {
+  describe("I1: self-loop edges", () => {
     it("detects self-loop edge", () => {
       store.insertSessionForTest(makeSession({ id: "s1" }));
       store.rawDb()
@@ -364,6 +364,98 @@ describe("check-invariants (SQLite)", () => {
       // g1 superseded by g2 (normal), g2 active — no cycle.
       store.rawDb().prepare("UPDATE facts SET superseded_by = 'g2' WHERE id = 'g1'").run();
       expect(runChecksOnSqlite(store.rawDb()).some((v) => v.id === "I5c")).toBe(false);
+    });
+  });
+
+  describe("I7: ghost fact embeddings", () => {
+    function seedEmbedding(factId: string): void {
+      const blob = Buffer.alloc(768 * 4);
+      store
+        .rawDb()
+        .prepare("INSERT INTO fact_embeddings (fact_id, embedding) VALUES (?, ?)")
+        .run(factId, blob);
+    }
+
+    it("flags an embedding whose fact was superseded without cleanup", () => {
+      store.insertSessionForTest(makeSession({ id: "s_i7a" }));
+      const db = store.rawDb();
+      db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+        VALUES (?, 'attribute', 's', 'p', 'old', 's_i7a', 1.0)`).run("f_ghost_sup");
+      db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+        VALUES (?, 'attribute', 's', 'p', 'new', 's_i7a', 1.0)`).run("f_live_sup");
+      seedEmbedding("f_ghost_sup");
+      db.prepare("UPDATE facts SET superseded_by = 'f_live_sup' WHERE id = 'f_ghost_sup'").run();
+      const violations = runChecksOnSqlite(db);
+      const i7 = violations.find((v) => v.id === "I7");
+      expect(i7).toBeDefined();
+      expect(i7!.count).toBeGreaterThanOrEqual(1);
+      expect(i7!.sampleIds).toContain("f_ghost_sup");
+    });
+
+    it("flags an embedding whose fact is retired", () => {
+      store.insertSessionForTest(makeSession({ id: "s_i7b" }));
+      const db = store.rawDb();
+      db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+        VALUES (?, 'attribute', 's', 'p_ret', 'v', 's_i7b', 1.0)`).run("f_ret");
+      seedEmbedding("f_ret");
+      db.prepare("UPDATE facts SET retired_at = '2026-01-01T00:00:00Z' WHERE id = 'f_ret'").run();
+      const violations = runChecksOnSqlite(db);
+      const i7 = violations.find((v) => v.id === "I7");
+      expect(i7).toBeDefined();
+      expect(i7!.sampleIds).toContain("f_ret");
+    });
+
+    it("flags an embedding with no facts row at all (sqlite only; pg FK forbids)", () => {
+      seedEmbedding("f_orphan");
+      const violations = runChecksOnSqlite(store.rawDb());
+      const i7 = violations.find((v) => v.id === "I7");
+      expect(i7).toBeDefined();
+      expect(i7!.sampleIds).toContain("f_orphan");
+    });
+
+    it("does not flag an embedding with a live parent fact", () => {
+      store.insertSessionForTest(makeSession({ id: "s_i7_clean" }));
+      const db = store.rawDb();
+      db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+        VALUES (?, 'attribute', 's', 'p_live', 'v', 's_i7_clean', 1.0)`).run("f_live_clean");
+      seedEmbedding("f_live_clean");
+      expect(runChecksOnSqlite(db).find((v) => v.id === "I7")).toBeUndefined();
+    });
+
+    it("--fix deletes exactly the violating embedding rows and is idempotent", () => {
+      store.insertSessionForTest(makeSession({ id: "s_i7_fix" }));
+      const db = store.rawDb();
+      db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+        VALUES (?, 'attribute', 's', 'p_live', 'v', 's_i7_fix', 1.0)`).run("f_live_i7");
+      seedEmbedding("f_live_i7");
+      db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+        VALUES (?, 'attribute', 's', 'p_sup', 'old', 's_i7_fix', 1.0)`).run("f_sup_i7");
+      db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+        VALUES (?, 'attribute', 's', 'p_sup', 'new', 's_i7_fix', 1.0)`).run("f_sup_new_i7");
+      seedEmbedding("f_sup_i7");
+      db.prepare("UPDATE facts SET superseded_by = 'f_sup_new_i7' WHERE id = 'f_sup_i7'").run();
+      seedEmbedding("f_orphan_i7");
+
+      const report = applyFixOnSqlite(db);
+      expect(report.deletedGhostEmbeddings).toBe(2);
+
+      const badCount = db
+        .prepare<[], { n: number }>(`
+          SELECT COUNT(*) AS n
+          FROM fact_embeddings_rowids r
+          LEFT JOIN facts f ON f.id = r.id
+          WHERE f.id IS NULL OR f.superseded_by IS NOT NULL OR f.retired_at IS NOT NULL
+        `)
+        .get();
+      expect(badCount?.n).toBe(0);
+
+      const liveRow = db
+        .prepare<[], { id: string }>("SELECT id FROM fact_embeddings_rowids WHERE id = 'f_live_i7'")
+        .get();
+      expect(liveRow).toBeDefined();
+
+      const second = applyFixOnSqlite(db);
+      expect(second.deletedGhostEmbeddings).toBe(0);
     });
   });
 });

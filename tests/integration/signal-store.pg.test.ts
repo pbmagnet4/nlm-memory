@@ -4,11 +4,11 @@ import { PgStorage } from "../../src/core/storage/pg-storage.js";
 import { runSignalStoreContract } from "../contract/signal-store.contract.js";
 import { resolve } from "node:path";
 
-const PG_URL = process.env["NLM_TEST_PG_URL"];
+const PG_URL = process.env["NLM_PG_TEST_URL"];
 const PG_MIGRATIONS_DIR = resolve(__dirname, "../../migrations/pg");
 
 if (!PG_URL) {
-  describe.skip("SignalStore contract: pg (NLM_TEST_PG_URL unset)", () => {
+  describe.skip("SignalStore contract: pg (NLM_PG_TEST_URL unset)", () => {
     it("skipped", () => {});
   });
 } else {

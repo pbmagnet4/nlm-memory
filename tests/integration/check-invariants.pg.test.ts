@@ -65,7 +65,7 @@ describe.skipIf(!PG_TEST_URL)("check-invariants (PostgreSQL)", () => {
     expect(violations).toHaveLength(0);
   });
 
-  describe("I1 — self-loop edges", () => {
+  describe("I1: self-loop edges", () => {
     it("detects self-loop edge", async () => {
       await insertSession(pool, "s1");
       await pool.query(
@@ -152,6 +152,90 @@ describe.skipIf(!PG_TEST_URL)("check-invariants (PostgreSQL)", () => {
       );
       const violations = await runChecksOnPg(pool);
       expect(violations.find((v) => v.id === "I6")).toBeUndefined();
+    });
+  });
+
+  describe("I7: ghost fact embeddings", () => {
+    async function insertFact(sessionId: string, factId: string, predicate = "p"): Promise<void> {
+      await pool.query(
+        `INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+         VALUES ($1, 'attribute', 's', $2, 'v', $3, 1.0)`,
+        [factId, predicate, sessionId],
+      );
+    }
+
+    async function insertFactEmbedding(factId: string): Promise<void> {
+      const zeroVec = `[${Array(768).fill("0").join(",")}]`;
+      await pool.query(
+        "INSERT INTO fact_embeddings (fact_id, embedding) VALUES ($1, $2::vector)",
+        [factId, zeroVec],
+      );
+    }
+
+    it("flags an embedding whose fact was superseded without cleanup", async () => {
+      await insertSession(pool, "s_i7_pg");
+      await insertFact("s_i7_pg", "f_ghost_pg", "p1");
+      await insertFact("s_i7_pg", "f_live_pg", "p1b");
+      await insertFactEmbedding("f_ghost_pg");
+      await pool.query("UPDATE facts SET superseded_by = $1 WHERE id = $2", ["f_live_pg", "f_ghost_pg"]);
+      const violations = await runChecksOnPg(pool);
+      const i7 = violations.find((v) => v.id === "I7");
+      expect(i7).toBeDefined();
+      expect(i7!.sampleIds).toContain("f_ghost_pg");
+    });
+
+    it("flags an embedding whose fact is retired", async () => {
+      await insertSession(pool, "s_i7_pgr");
+      await insertFact("s_i7_pgr", "f_ret_pg", "p2");
+      await insertFactEmbedding("f_ret_pg");
+      await pool.query(
+        "UPDATE facts SET retired_at = '2026-01-01T00:00:00Z' WHERE id = $1",
+        ["f_ret_pg"],
+      );
+      const violations = await runChecksOnPg(pool);
+      const i7 = violations.find((v) => v.id === "I7");
+      expect(i7).toBeDefined();
+      expect(i7!.sampleIds).toContain("f_ret_pg");
+    });
+
+    it("does not flag an embedding with a live parent fact", async () => {
+      await insertSession(pool, "s_i7_clean_pg");
+      await insertFact("s_i7_clean_pg", "f_live_clean_pg", "p3");
+      await insertFactEmbedding("f_live_clean_pg");
+      expect((await runChecksOnPg(pool)).find((v) => v.id === "I7")).toBeUndefined();
+    });
+
+    it("--fix deletes exactly the violating embedding rows and is idempotent", async () => {
+      await insertSession(pool, "s_fix_i7_pg");
+      await insertFact("s_fix_i7_pg", "f_live_pg_fix", "p_live");
+      await insertFactEmbedding("f_live_pg_fix");
+      await insertFact("s_fix_i7_pg", "f_old_pg_fix", "p_sup");
+      await insertFact("s_fix_i7_pg", "f_new_pg_fix", "p_supb");
+      await insertFactEmbedding("f_old_pg_fix");
+      await pool.query(
+        "UPDATE facts SET superseded_by = $1 WHERE id = $2",
+        ["f_new_pg_fix", "f_old_pg_fix"],
+      );
+
+      const report = await applyFixOnPg(pool);
+      expect(report.deletedGhostEmbeddings).toBe(1);
+
+      const badResult = await pool.query<{ n: string }>(`
+        SELECT COUNT(*) AS n
+        FROM fact_embeddings fe
+        LEFT JOIN facts f ON f.id = fe.fact_id
+        WHERE f.id IS NULL OR f.superseded_by IS NOT NULL OR f.retired_at IS NOT NULL
+      `);
+      expect(Number.parseInt(badResult.rows[0]!.n, 10)).toBe(0);
+
+      const liveRow = await pool.query<{ fact_id: string }>(
+        "SELECT fact_id FROM fact_embeddings WHERE fact_id = $1",
+        ["f_live_pg_fix"],
+      );
+      expect(liveRow.rows).toHaveLength(1);
+
+      const second = await applyFixOnPg(pool);
+      expect(second.deletedGhostEmbeddings).toBe(0);
     });
   });
 
