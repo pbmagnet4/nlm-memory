@@ -22,6 +22,7 @@
  *   nlm disconnect claude-code — remove MCP block from ~/.mcp.json
  *   nlm disconnect codex       — remove Codex plugin
  *   nlm digest   — print a daily-activity digest (or --telegram to post)
+ *   nlm init     - print (or write) the agent recall contract snippet
  */
 
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -77,6 +78,7 @@ import {
   uninstallWindsurfRules,
 } from "../install/rules-install.js";
 import { runSupersedeCommand } from "./supersede.js";
+import { runInitCommand } from "./init.js";
 import { getUpdateStatus } from "../core/update-check/check.js";
 import { connectHermes, disconnectHermes, hermesConfigPath } from "../install/hermes.js";
 import { connectHermesAgent, disconnectHermesAgent, hermesAgentPluginDir } from "../install/hermes-agent.js";
@@ -2500,6 +2502,22 @@ program
     }
     console.log(`Staged ${opts.from} (${validation.sessions} sessions, schema v${validation.schemaVersion}).`);
     console.log("Run `nlm restart` to apply — the current DB is archived aside, not deleted.");
+  });
+
+program
+  .command("init")
+  .description("Print (or write) the agent recall contract snippet")
+  .requiredOption("--agent <name>", "agent variant: claude-code or generic")
+  .option("--write <path>", "append the contract to this file instead of printing to stdout")
+  .option("--force", "when --write: replace the existing block instead of refusing")
+  .action((opts) => {
+    runInitCommand({
+      agent: opts.agent as string,
+      write: opts.write as string | undefined,
+      force: Boolean(opts.force),
+      stdout: (s) => { process.stdout.write(s); },
+      stderr: (s) => { process.stderr.write(s); },
+    });
   });
 
 // Entrypoint guard: only parse argv when this file IS the executed script.
