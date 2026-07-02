@@ -8,10 +8,9 @@
  * Storage interface. Tracked for removal in #215a (PG branch).
  */
 
-import { Pool } from "pg";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { Pool, TypeOverrides } from "pg";
 import type { Storage } from "@ports/storage.js";
+import { runMigrationsPg } from "./pg-migrate.js";
 import { PgFactStore } from "./pg-fact-store.js";
 import { PgSessionStore } from "./pg-session-store.js";
 import { PgSignalStore } from "./pg-signal-store.js";
@@ -49,13 +48,16 @@ export class PgStorage implements Storage {
   }
 
   static create(opts: PgStorageOptions): PgStorage {
-    const pool = new Pool({ connectionString: opts.connectionString });
+    const types = new TypeOverrides();
+    const isoParser = (val: string) => new Date(val).toISOString();
+    types.setTypeParser(1184, isoParser); // TIMESTAMPTZ
+    types.setTypeParser(1114, isoParser); // TIMESTAMP
+    const pool = new Pool({ connectionString: opts.connectionString, types });
     return new PgStorage(pool, opts.migrationsDir);
   }
 
   async init(): Promise<void> {
-    const sql = readFileSync(join(this._migrationsDir, "001_initial.sql"), "utf8");
-    await this._pool.query(sql);
+    await runMigrationsPg(this._pool, this._migrationsDir);
   }
 
   async close(): Promise<void> {

@@ -11,6 +11,7 @@ import type { SqliteSessionStore } from "../../src/core/storage/sqlite-session-s
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import {
   runChecksOnSqlite,
+  runCheapChecksOnSqlite,
   applyFixOnSqlite,
 } from "../../src/core/integrity/check-invariants.js";
 import { makeSession } from "../fixtures/sessions.js";
@@ -456,6 +457,38 @@ describe("check-invariants (SQLite)", () => {
 
       const second = applyFixOnSqlite(db);
       expect(second.deletedGhostEmbeddings).toBe(0);
+    });
+  });
+
+  describe("runCheapChecksOnSqlite: I7 in cheap subset", () => {
+    function seedEmbedding(db: ReturnType<typeof store.rawDb>, factId: string): void {
+      const blob = Buffer.alloc(768 * 4);
+      db.prepare("INSERT INTO fact_embeddings (fact_id, embedding) VALUES (?, ?)").run(factId, blob);
+    }
+
+    it("reports I7 when a superseded ghost embedding exists", () => {
+      store.insertSessionForTest(makeSession({ id: "s_cheap_i7" }));
+      const db = store.rawDb();
+      db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+        VALUES (?, 'attribute', 's', 'p', 'old', 's_cheap_i7', 1.0)`).run("f_ghost_cheap");
+      db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+        VALUES (?, 'attribute', 's', 'p', 'new', 's_cheap_i7', 1.0)`).run("f_live_cheap");
+      seedEmbedding(db, "f_ghost_cheap");
+      db.prepare("UPDATE facts SET superseded_by = 'f_live_cheap' WHERE id = 'f_ghost_cheap'").run();
+      const violations = runCheapChecksOnSqlite(db);
+      const i7 = violations.find((v) => v.id === "I7");
+      expect(i7).toBeDefined();
+      expect(i7!.sampleIds).toContain("f_ghost_cheap");
+    });
+
+    it("does not report I7 when all embeddings have live parent facts", () => {
+      store.insertSessionForTest(makeSession({ id: "s_cheap_clean" }));
+      const db = store.rawDb();
+      db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+        VALUES (?, 'attribute', 's', 'p_clean', 'v', 's_cheap_clean', 1.0)`).run("f_clean_cheap");
+      seedEmbedding(db, "f_clean_cheap");
+      const violations = runCheapChecksOnSqlite(db);
+      expect(violations.find((v) => v.id === "I7")).toBeUndefined();
     });
   });
 });

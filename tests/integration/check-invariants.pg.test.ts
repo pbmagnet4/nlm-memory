@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PgStorage } from "../../src/core/storage/pg-storage.js";
 import {
   runChecksOnPg,
+  runCheapChecksOnPg,
   applyFixOnPg,
 } from "../../src/core/integrity/check-invariants.js";
 import type { Pool } from "pg";
@@ -279,6 +280,44 @@ describe.skipIf(!PG_TEST_URL)("check-invariants (PostgreSQL)", () => {
       );
       const report = await applyFixOnPg(pool);
       expect(report.restoredToClosed).toBe(0);
+    });
+  });
+
+  describe("runCheapChecksOnPg: I7 in cheap subset", () => {
+    async function insertFact(sessionId: string, factId: string, predicate = "p"): Promise<void> {
+      await pool.query(
+        `INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+         VALUES ($1, 'attribute', 's', $2, 'v', $3, 1.0)`,
+        [factId, predicate, sessionId],
+      );
+    }
+
+    async function insertFactEmbedding(factId: string): Promise<void> {
+      const zeroVec = `[${Array(768).fill("0").join(",")}]`;
+      await pool.query(
+        "INSERT INTO fact_embeddings (fact_id, embedding) VALUES ($1, $2::vector)",
+        [factId, zeroVec],
+      );
+    }
+
+    it("reports I7 when a superseded ghost embedding exists", async () => {
+      await insertSession(pool, "s_cheap_pg");
+      await insertFact("s_cheap_pg", "f_ghost_cheap_pg", "p1");
+      await insertFact("s_cheap_pg", "f_live_cheap_pg", "p2");
+      await insertFactEmbedding("f_ghost_cheap_pg");
+      await pool.query("UPDATE facts SET superseded_by = $1 WHERE id = $2", ["f_live_cheap_pg", "f_ghost_cheap_pg"]);
+      const violations = await runCheapChecksOnPg(pool);
+      const i7 = violations.find((v) => v.id === "I7");
+      expect(i7).toBeDefined();
+      expect(i7!.sampleIds).toContain("f_ghost_cheap_pg");
+    });
+
+    it("does not report I7 when all embeddings have live parent facts", async () => {
+      await insertSession(pool, "s_cheap_clean_pg");
+      await insertFact("s_cheap_clean_pg", "f_clean_cheap_pg", "p3");
+      await insertFactEmbedding("f_clean_cheap_pg");
+      const violations = await runCheapChecksOnPg(pool);
+      expect(violations.find((v) => v.id === "I7")).toBeUndefined();
     });
   });
 });

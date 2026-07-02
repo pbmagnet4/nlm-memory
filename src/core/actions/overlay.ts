@@ -5,40 +5,41 @@
  * at read time without mutating the underlying store.
  *
  * Shared by buildDataset (UI projection) and SqliteSessionStore (recall
- * path), so the same overlay drives both surfaces. Append-only — every
+ * path), so the same overlay drives both surfaces. Append-only; every
  * mutation lives as a row in `actions`.
  */
 
 import type Database from "better-sqlite3";
+import type { Pool } from "pg";
 
 export interface ActionOverlay {
   readonly dismissedAlerts: Set<string>;
-  readonly snoozedAlerts: Map<string, string>; // alert id → snoozed_until ISO
+  readonly snoozedAlerts: Map<string, string>; // alert id -> snoozed_until ISO
   readonly retiredEntities: Set<string>;
   readonly snoozedEntities: Map<string, string>;
   readonly labeledEntities: Map<string, string>;
-  /** entity canonical → new display label. Storage canonical is untouched;
+  /** entity canonical -> new display label. Storage canonical is untouched;
    *  legacy-name recall still resolves because sessions stay tagged with
    *  the original canonical. Last non-reverted rename per subject wins. */
   readonly renamedEntities: Map<string, string>;
   /** open-question ids resolved without becoming decisions */
   readonly resolvedOpens: Set<string>;
-  /** open-question id → resolution text (becomes a decision at projection time) */
+  /** open-question id -> resolution text (becomes a decision at projection time) */
   readonly promotedOpens: Map<string, string>;
   /** decision ids hidden from the projection (the underlying session body keeps the original line). */
   readonly dismissedDecisions: Set<string>;
-  /** decision id → corrected text shown in place of the original. */
+  /** decision id -> corrected text shown in place of the original. */
   readonly revisedDecisions: Map<string, string>;
-  /** entity canonical → user-asserted coherence bucket. Overrides the
+  /** entity canonical -> user-asserted coherence bucket. Overrides the
    *  computed (session_count + age) classification at projection time;
    *  last non-reverted write wins. */
   readonly coherenceOverrides: Map<string, "active" | "sparse" | "stale">;
-  /** source canonical → target canonical. Source is hidden at projection
+  /** source canonical -> target canonical. Source is hidden at projection
    *  time (treated as retired); target absorbs the source's session count. */
   readonly mergedEntities: Map<string, string>;
 }
 
-interface ActionRow {
+export interface ActionRow {
   kind: string;
   subject_type: string;
   subject_id: string;
@@ -60,12 +61,12 @@ export const EMPTY_OVERLAY: ActionOverlay = {
   mergedEntities: new Map(),
 };
 
-export function loadActionOverlay(db: Database.Database): ActionOverlay {
-  const hasActions = db
-    .prepare<[], { name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='actions'")
-    .get();
-  if (!hasActions) return EMPTY_OVERLAY;
-
+/**
+ * Pure reducer: folds a sequence of action rows (ordered by id, reverted rows
+ * excluded by caller) into an ActionOverlay. Used by both the SQLite and PG
+ * loaders so the projection logic is shared and not duplicated per backend.
+ */
+export function reduceActionRows(rows: ReadonlyArray<ActionRow>): ActionOverlay {
   const overlay: ActionOverlay = {
     dismissedAlerts: new Set(),
     snoozedAlerts: new Map(),
@@ -80,17 +81,6 @@ export function loadActionOverlay(db: Database.Database): ActionOverlay {
     coherenceOverrides: new Map(),
     mergedEntities: new Map(),
   };
-
-  // ORDER BY id keeps reducer deterministic: later writes overwrite earlier
-  // ones, so the latest non-reverted rename per subject wins.
-  const rows = db
-    .prepare<[], ActionRow>(`
-      SELECT kind, subject_type, subject_id, payload
-      FROM actions
-      WHERE reverted_by IS NULL
-      ORDER BY id
-    `)
-    .all();
 
   const now = new Date().toISOString();
   for (const r of rows) {
@@ -132,12 +122,41 @@ export function loadActionOverlay(db: Database.Database): ActionOverlay {
       if (state === "active" || state === "sparse" || state === "stale") {
         overlay.coherenceOverrides.set(r.subject_id, state);
       } else {
-        // Empty payload reverts to the computed bucket.
         overlay.coherenceOverrides.delete(r.subject_id);
       }
     }
   }
   return overlay;
+}
+
+export function loadActionOverlay(db: Database.Database): ActionOverlay {
+  const hasActions = db
+    .prepare<[], { name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='actions'")
+    .get();
+  if (!hasActions) return EMPTY_OVERLAY;
+
+  // ORDER BY id keeps reducer deterministic: later writes overwrite earlier
+  // ones, so the latest non-reverted rename per subject wins.
+  const rows = db
+    .prepare<[], ActionRow>(`
+      SELECT kind, subject_type, subject_id, payload
+      FROM actions
+      WHERE reverted_by IS NULL
+      ORDER BY id
+    `)
+    .all();
+
+  return reduceActionRows(rows);
+}
+
+export async function loadActionOverlayPg(pool: Pool): Promise<ActionOverlay> {
+  const result = await pool.query<ActionRow>(
+    `SELECT kind, subject_type, subject_id, payload
+     FROM actions
+     WHERE reverted_by IS NULL
+     ORDER BY id`,
+  );
+  return reduceActionRows(result.rows);
 }
 
 /**

@@ -67,7 +67,7 @@ export class SqliteFactStore implements FactStore {
     const row = this.db
       .prepare<[string], FactRow>(
         `SELECT id, kind, subject, predicate, value, source_session_id,
-                source_quote, created_at, superseded_by, confidence
+                source_quote, created_at, superseded_by, confidence, retired_at
          FROM facts WHERE id = ?`,
       )
       .get(id);
@@ -91,7 +91,7 @@ export class SqliteFactStore implements FactStore {
     const row = this.db
       .prepare<[string, string], FactRow>(
         `SELECT id, kind, subject, predicate, value, source_session_id,
-                source_quote, created_at, superseded_by, confidence
+                source_quote, created_at, superseded_by, confidence, retired_at
          FROM facts
          WHERE subject = ? AND predicate = ? AND superseded_by IS NULL AND retired_at IS NULL
          ORDER BY created_at DESC
@@ -120,7 +120,7 @@ export class SqliteFactStore implements FactStore {
     const rows = this.db
       .prepare<Array<string | number>, FactRow>(
         `SELECT id, kind, subject, predicate, value, source_session_id,
-                source_quote, created_at, superseded_by, confidence
+                source_quote, created_at, superseded_by, confidence, retired_at
          FROM facts
          WHERE ${where.join(" AND ")}
          ORDER BY created_at DESC
@@ -134,7 +134,7 @@ export class SqliteFactStore implements FactStore {
     const rows = this.db
       .prepare<[string], FactRow>(
         `SELECT id, kind, subject, predicate, value, source_session_id,
-                source_quote, created_at, superseded_by, confidence
+                source_quote, created_at, superseded_by, confidence, retired_at
          FROM facts
          WHERE source_session_id = ?
          ORDER BY created_at ASC`,
@@ -184,7 +184,7 @@ export class SqliteFactStore implements FactStore {
     params.push(limit);
     const sql = `
       SELECT id, kind, subject, predicate, value, source_session_id,
-             source_quote, created_at, superseded_by, confidence
+             source_quote, created_at, superseded_by, confidence, retired_at
       FROM facts
       ${where.length > 0 ? "WHERE " + where.join(" AND ") : ""}
       ORDER BY created_at DESC

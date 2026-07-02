@@ -67,7 +67,7 @@ export class PgFactStore implements FactStore {
   async getById(id: string): Promise<Fact | null> {
     const result = await this.pool.query<FactRow>(
       `SELECT id, kind, subject, predicate, value, source_session_id,
-              source_quote, created_at, superseded_by, confidence
+              source_quote, created_at, superseded_by, confidence, retired_at
        FROM facts WHERE id = $1`,
       [id],
     );
@@ -88,7 +88,7 @@ export class PgFactStore implements FactStore {
   async findCurrent(subject: string, predicate: string): Promise<Fact | null> {
     const result = await this.pool.query<FactRow>(
       `SELECT id, kind, subject, predicate, value, source_session_id,
-              source_quote, created_at, superseded_by, confidence
+              source_quote, created_at, superseded_by, confidence, retired_at
        FROM facts
        WHERE subject = $1 AND predicate = $2 AND superseded_by IS NULL AND retired_at IS NULL
        ORDER BY created_at DESC
@@ -115,7 +115,7 @@ export class PgFactStore implements FactStore {
     params.push(limit);
     const result = await this.pool.query<FactRow>(
       `SELECT id, kind, subject, predicate, value, source_session_id,
-              source_quote, created_at, superseded_by, confidence
+              source_quote, created_at, superseded_by, confidence, retired_at
        FROM facts
        WHERE ${where.join(" AND ")}
        ORDER BY created_at DESC
@@ -128,7 +128,7 @@ export class PgFactStore implements FactStore {
   async listBySession(sessionId: string): Promise<ReadonlyArray<Fact>> {
     const result = await this.pool.query<FactRow>(
       `SELECT id, kind, subject, predicate, value, source_session_id,
-              source_quote, created_at, superseded_by, confidence
+              source_quote, created_at, superseded_by, confidence, retired_at
        FROM facts
        WHERE source_session_id = $1
        ORDER BY created_at ASC`,
@@ -166,7 +166,7 @@ export class PgFactStore implements FactStore {
     params.push(limit);
     const sql = `
       SELECT id, kind, subject, predicate, value, source_session_id,
-             source_quote, created_at, superseded_by, confidence
+             source_quote, created_at, superseded_by, confidence, retired_at
       FROM facts
       ${where.length > 0 ? "WHERE " + where.join(" AND ") : ""}
       ORDER BY created_at DESC
@@ -282,7 +282,7 @@ export class PgFactStore implements FactStore {
     const result = predicate
       ? await this.pool.query<FactRow>(
           `SELECT id, kind, subject, predicate, value, source_session_id,
-                  source_quote, created_at, superseded_by, confidence
+                  source_quote, created_at, superseded_by, confidence, retired_at
            FROM facts
            WHERE subject = $1 AND predicate = $2
            ORDER BY predicate ASC, created_at DESC`,
@@ -290,7 +290,7 @@ export class PgFactStore implements FactStore {
         )
       : await this.pool.query<FactRow>(
           `SELECT id, kind, subject, predicate, value, source_session_id,
-                  source_quote, created_at, superseded_by, confidence
+                  source_quote, created_at, superseded_by, confidence, retired_at
            FROM facts
            WHERE subject = $1
            ORDER BY predicate ASC, created_at DESC`,

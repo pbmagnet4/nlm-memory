@@ -1,9 +1,10 @@
 -- PG parity for SQLite migration 019: split the mechanical `replaces` relation
 -- out of `supersedes`.
 --
--- One-shot repair, applied manually by an operator against a PG canonical store
--- (PgStorage.init only runs 001_initial.sql; there is no version-gated runner on
--- the PG side). Mirrors migrations/019_split_replaces.sql.
+-- Idempotent: safe to re-apply on a database that already has this shape.
+-- DROP CONSTRAINT IF EXISTS removes any existing named constraint before the
+-- DO-block re-adds it, so duplicate_object is never raised in practice;
+-- the EXCEPTION clause is defensive for parity with the 001 pattern.
 --
 -- Widens the CHECK constraints on sessions.status and session_edges.kind to
 -- admit 'replaced' / 'replaces', then reclassifies existing mechanical edges:
@@ -13,12 +14,20 @@
 BEGIN;
 
 ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_status_check;
-ALTER TABLE sessions ADD CONSTRAINT sessions_status_check
-  CHECK (status IN ('active', 'closed', 'superseded', 'replaced'));
+DO $$
+BEGIN
+  ALTER TABLE sessions ADD CONSTRAINT sessions_status_check
+    CHECK (status IN ('active', 'closed', 'superseded', 'replaced'));
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 ALTER TABLE session_edges DROP CONSTRAINT IF EXISTS session_edges_kind_check;
-ALTER TABLE session_edges ADD CONSTRAINT session_edges_kind_check
-  CHECK (kind IN ('supersedes', 'replaces', 'continues'));
+DO $$
+BEGIN
+  ALTER TABLE session_edges ADD CONSTRAINT session_edges_kind_check
+    CHECK (kind IN ('supersedes', 'replaces', 'continues'));
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 UPDATE session_edges e SET kind = 'replaces'
 WHERE e.kind = 'supersedes'
