@@ -2,9 +2,6 @@
 
 // src/hook/stop-hook.ts
 import { pathToFileURL } from "node:url";
-import { appendFileSync, mkdirSync as mkdirSync3 } from "node:fs";
-import { homedir as homedir5 } from "node:os";
-import { dirname as dirname2, join as join4 } from "node:path";
 
 // src/core/hook/citation-detect.ts
 var MIN_ID_LEN = 6;
@@ -171,10 +168,10 @@ function isEnabled() {
   if (raw === void 0) return true;
   return raw !== "0" && raw.toLowerCase() !== "false";
 }
-async function appendMisses(entries, logPath2) {
+async function appendMisses(entries, logPath) {
   if (!isEnabled()) return;
   if (entries.length === 0) return;
-  const path = logPath2 ?? defaultLogPath();
+  const path = logPath ?? defaultLogPath();
   try {
     await mkdir(dirname(path), { recursive: true });
     const ts = (/* @__PURE__ */ new Date()).toISOString();
@@ -186,7 +183,7 @@ async function appendMisses(entries, logPath2) {
 }
 
 // src/core/hook/transcript.ts
-import { existsSync as existsSync3, readFileSync as readFileSync3 } from "node:fs";
+import { closeSync, existsSync as existsSync3, fstatSync, openSync, readSync } from "node:fs";
 function parseTurn(parsed) {
   if (parsed.type !== "assistant" || !parsed.message) return null;
   const content = parsed.message.content;
@@ -206,10 +203,22 @@ function parseTurn(parsed) {
   if (textParts.length === 0 && toolUses.length === 0) return null;
   return { text: textParts.join("\n"), toolUses };
 }
+var MAX_TRANSCRIPT_BYTES = 256 * 1024;
 function readLines(transcriptPath) {
   if (!transcriptPath || !existsSync3(transcriptPath)) return null;
   try {
-    return readFileSync3(transcriptPath, "utf8").split("\n");
+    const fd = openSync(transcriptPath, "r");
+    try {
+      const size = fstatSync(fd).size;
+      const start = size > MAX_TRANSCRIPT_BYTES ? size - MAX_TRANSCRIPT_BYTES : 0;
+      const len = size - start;
+      if (len <= 0) return [];
+      const buf = Buffer.alloc(len);
+      readSync(fd, buf, 0, len, start);
+      return buf.toString("utf8").split("\n");
+    } finally {
+      closeSync(fd);
+    }
   } catch {
     return null;
   }
@@ -234,7 +243,7 @@ function readAllAssistantTurns(transcriptPath) {
 }
 
 // src/llm/env-autoload.ts
-import { readFileSync as readFileSync4, existsSync as existsSync4 } from "node:fs";
+import { readFileSync as readFileSync3, existsSync as existsSync4 } from "node:fs";
 import { homedir as homedir4 } from "node:os";
 import { resolve } from "node:path";
 var DEFAULT_SEARCH_PATHS = [
@@ -254,7 +263,7 @@ function autoloadEnv(extraPaths = []) {
     const path = expandHome(raw);
     if (!existsSync4(path)) continue;
     try {
-      const content = readFileSync4(path, "utf8");
+      const content = readFileSync3(path, "utf8");
       for (const line of content.split("\n")) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) continue;
@@ -281,6 +290,41 @@ function hookAuthHeaders(extra = {}) {
   const token = process.env["NLM_MCP_TOKEN"];
   if (!token) return { ...extra };
   return { ...extra, authorization: `Bearer ${token}` };
+}
+
+// src/hook/hook-helpers.ts
+import { appendFileSync, mkdirSync as mkdirSync3 } from "node:fs";
+import { homedir as homedir5 } from "node:os";
+import { dirname as dirname2, join as join4 } from "node:path";
+function readStdin() {
+  return new Promise((resolve2) => {
+    let data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => data += chunk);
+    process.stdin.on("end", () => resolve2(data));
+    process.stdin.on("error", () => resolve2(data));
+  });
+}
+async function fetchWithTimeout(url, init, ms) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function hookModeFromEnv() {
+  return process.env["NLM_HOOK_MODE"] === "live" ? "live" : "shadow";
+}
+function appendHookEvent(data) {
+  try {
+    const path = process.env["NLM_HOOK_LOG"] ?? join4(homedir5(), ".nlm", "hook-log.jsonl");
+    mkdirSync3(dirname2(path), { recursive: true });
+    appendFileSync(path, `${JSON.stringify(data)}
+`, "utf8");
+  } catch {
+  }
 }
 
 // src/hook/stop-hook.ts
@@ -343,12 +387,9 @@ async function runStopHook(input, deps) {
   }
   const lastText = turns[turns.length - 1]?.text ?? "";
   const preview = lastText.slice(0, RESPONSE_PREVIEW_CHARS);
-  for (const c of fresh) {
-    try {
-      await deps.postCitation(input.conversationId, c.id, c.kind, preview);
-    } catch {
-    }
-  }
+  await Promise.allSettled(
+    fresh.map((c) => deps.postCitation(input.conversationId, c.id, c.kind, preview))
+  );
   if (fresh.length > 0) {
     recordCited(input.conversationId, fresh.map((c) => c.id));
   }
@@ -360,60 +401,31 @@ async function runStopHook(input, deps) {
     skipped: false
   };
 }
-function logPath() {
-  return process.env["NLM_HOOK_LOG"] ?? join4(homedir5(), ".nlm", "hook-log.jsonl");
-}
 function logStopResult(result) {
-  try {
-    const path = logPath();
-    mkdirSync3(dirname2(path), { recursive: true });
-    appendFileSync(
-      path,
-      `${JSON.stringify({
-        ts: (/* @__PURE__ */ new Date()).toISOString(),
-        kind: "stop",
-        conversationId: result.conversationId,
-        surfacedCount: result.surfacedCount,
-        citedIds: result.citations.map((c) => c.id),
-        citationKinds: result.citations.map((c) => c.kind),
-        skipped: result.skipped,
-        mode: process.env["NLM_HOOK_MODE"] === "live" ? "live" : "shadow"
-      })}
-`,
-      "utf8"
-    );
-  } catch {
-  }
-}
-function readStdin() {
-  return new Promise((resolve2) => {
-    let data = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => data += chunk);
-    process.stdin.on("end", () => resolve2(data));
-    process.stdin.on("error", () => resolve2(data));
+  appendHookEvent({
+    ts: (/* @__PURE__ */ new Date()).toISOString(),
+    kind: "stop",
+    conversationId: result.conversationId,
+    surfacedCount: result.surfacedCount,
+    citedIds: result.citations.map((c) => c.id),
+    citationKinds: result.citations.map((c) => c.kind),
+    skipped: result.skipped,
+    mode: hookModeFromEnv()
   });
 }
 async function postCitationOverHttp(conversationId, citedId, kind, responsePreview) {
   const port = process.env["NLM_PORT"] ?? "3940";
-  const url = `http://localhost:${port}/api/recall/cite-event`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), POST_TIMEOUT_MS);
-  try {
-    await fetch(url, {
-      method: "POST",
-      headers: hookAuthHeaders({ "content-type": "application/json" }),
-      body: JSON.stringify({
-        ...conversationId !== "unknown" ? { conversation_id: conversationId } : {},
-        cited_id: citedId,
-        kind,
-        response_preview: responsePreview
-      }),
-      signal: controller.signal
-    });
-  } finally {
-    clearTimeout(timer);
-  }
+  const url = `http://127.0.0.1:${port}/api/recall/cite-event`;
+  await fetchWithTimeout(url, {
+    method: "POST",
+    headers: hookAuthHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({
+      ...conversationId !== "unknown" ? { conversation_id: conversationId } : {},
+      cited_id: citedId,
+      kind,
+      response_preview: responsePreview
+    })
+  }, POST_TIMEOUT_MS);
 }
 async function main() {
   try {

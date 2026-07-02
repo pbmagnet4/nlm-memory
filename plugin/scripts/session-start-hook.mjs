@@ -177,13 +177,226 @@ function parseRelativeFloor(raw, fallback) {
   return parsed;
 }
 
+// src/core/hook/query-extract.ts
+var STOPWORDS = /* @__PURE__ */ new Set([
+  "a",
+  "an",
+  "the",
+  "is",
+  "are",
+  "was",
+  "were",
+  "be",
+  "been",
+  "being",
+  "have",
+  "has",
+  "had",
+  "do",
+  "does",
+  "did",
+  "will",
+  "would",
+  "could",
+  "should",
+  "may",
+  "might",
+  "shall",
+  "can",
+  "dare",
+  "ought",
+  "yes",
+  "no",
+  "not",
+  "please",
+  "thank",
+  "thanks",
+  "ok",
+  "okay",
+  "i",
+  "me",
+  "my",
+  "we",
+  "us",
+  "our",
+  "you",
+  "your",
+  "it",
+  "its",
+  "this",
+  "that",
+  "these",
+  "those",
+  "and",
+  "or",
+  "but",
+  "if",
+  "so",
+  "to",
+  "of",
+  "in",
+  "on",
+  "at",
+  "by",
+  "for",
+  "from",
+  "with",
+  "about",
+  "into",
+  "through",
+  "during",
+  "before",
+  "after",
+  "above",
+  "below",
+  "up",
+  "down",
+  "out",
+  "off",
+  "over",
+  "under",
+  "again",
+  "further",
+  "then",
+  "once",
+  "here",
+  "there",
+  "when",
+  "where",
+  "why",
+  "how",
+  "all",
+  "both",
+  "each",
+  "few",
+  "more",
+  "most",
+  "other",
+  "some",
+  "such",
+  "than",
+  "too",
+  "very",
+  "just",
+  "now",
+  "also",
+  "get",
+  "let",
+  "what",
+  "which",
+  "who",
+  "whom",
+  "whose",
+  "any",
+  "much",
+  "many",
+  "sounds",
+  "good",
+  "great",
+  "sure",
+  "right",
+  "well",
+  "done",
+  "nice",
+  "cool",
+  "perfect",
+  "exactly",
+  "proceed",
+  "continue",
+  "go",
+  "ahead",
+  "next",
+  "help"
+]);
+var MIN_CONTENT_WORDS = 2;
+var MIN_WORD_LEN = 3;
+var SYSTEM_MESSAGE_PREFIX = /^<(task-notification|command-name|command-message|command-args|local-command-stdout|local-command-caveat|output-file|system-reminder)\b/;
+function extractRecallQuery(prompt) {
+  if (SYSTEM_MESSAGE_PREFIX.test(prompt.trim())) return null;
+  const tokens = prompt.trim().split(/\s+/).map((t) => t.replace(/^[^\w-]+|[^\w-]+$/g, "")).filter((t) => t.length >= MIN_WORD_LEN);
+  const contentWords = tokens.filter((t) => !STOPWORDS.has(t.toLowerCase()));
+  if (contentWords.length < MIN_CONTENT_WORDS) return null;
+  return contentWords.join(" ");
+}
+
+// src/hook/hook-helpers.ts
+function readStdin() {
+  return new Promise((resolve2) => {
+    let data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => data += chunk);
+    process.stdin.on("end", () => resolve2(data));
+    process.stdin.on("error", () => resolve2(data));
+  });
+}
+async function fetchWithTimeout(url, init, ms) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function hookModeFromEnv() {
+  return process.env["NLM_HOOK_MODE"] === "live" ? "live" : "shadow";
+}
+
+// src/hook/recall-over-http.ts
+var RECALL_LIMIT = 5;
+var RECALL_TIMEOUT_MS = 2e3;
+async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword") {
+  const query = extractRecallQuery(prompt);
+  if (query === null) return { hits: [], facts: [], exemplars: [] };
+  const portValue = process.env["NLM_PORT"] ?? "3940";
+  const url = (
+    // 127.0.0.1, not localhost: each hook is a fresh process with no connection
+    // reuse, and Node resolves localhost to IPv6 ::1 first — a measured ~50-300ms
+    // per-fire connect penalty vs ~3ms on the explicit IPv4 loopback.
+    `http://127.0.0.1:${portValue}/api/recall?q=${encodeURIComponent(query)}&mode=${mode}&limit=${RECALL_LIMIT}&withFacts=true&withExemplars=true` + (conversationId ? `&conversation_id=${encodeURIComponent(conversationId)}` : "")
+  );
+  try {
+    const extra = { "x-recall-source": "hook" };
+    if (runtime) extra["x-recall-runtime"] = runtime;
+    const res = await fetchWithTimeout(url, { headers: hookAuthHeaders(extra) }, RECALL_TIMEOUT_MS);
+    if (!res.ok) return { hits: [], facts: [], exemplars: [] };
+    let body;
+    try {
+      body = await res.json();
+    } catch {
+      return { hits: [], facts: [], exemplars: [] };
+    }
+    const hits = (body.results ?? []).map((r) => ({
+      id: r.id,
+      label: r.label,
+      startedAt: r.startedAt,
+      matchScore: r.matchScore,
+      ...r.summary !== void 0 ? { summary: r.summary } : {}
+    }));
+    const facts = (body.relatedFacts ?? []).map((f) => ({
+      subject: f.subject,
+      predicate: f.predicate,
+      value: f.value,
+      corroborationCount: f.corroborationCount
+    }));
+    const exemplars = (body.relatedExemplars ?? []).map((e) => ({
+      outcome: e.outcome,
+      lang: e.lang,
+      repo: e.repo,
+      taskContext: e.taskContext
+    }));
+    return { hits, facts, exemplars };
+  } catch {
+    return { hits: [], facts: [], exemplars: [] };
+  }
+}
+
 // src/hook/session-start-hook.ts
 var SCORE_THRESHOLD = parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR"]);
 var RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 var PER_FIRE_CAP = 3;
 var PER_CONVERSATION_CAP = 10;
-var RECALL_LIMIT = 5;
-var RECALL_TIMEOUT_MS = 2e3;
+var RECALL_TIMEOUT_MS2 = 2e3;
 async function runHook(input, deps) {
   let hits = [];
   try {
@@ -224,67 +437,22 @@ function composeSessionStartOutput(failureModeBlock, recallBlock) {
 async function fetchFailureModeBlock(repo) {
   if (!repo) return "";
   const portValue = process.env["NLM_PORT"] ?? "3940";
-  const url = `http://localhost:${portValue}/api/signals/failure-modes?repo=${encodeURIComponent(repo)}`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), RECALL_TIMEOUT_MS);
+  const url = `http://127.0.0.1:${portValue}/api/signals/failure-modes?repo=${encodeURIComponent(repo)}`;
   try {
-    const res = await fetch(url, {
-      headers: hookAuthHeaders({ "x-recall-source": "session-start-hook" }),
-      signal: controller.signal
-    });
+    const res = await fetchWithTimeout(url, {
+      headers: hookAuthHeaders({ "x-recall-source": "session-start-hook" })
+    }, RECALL_TIMEOUT_MS2);
     if (!res.ok) return "";
     const body = await res.json();
     return typeof body.block === "string" ? body.block : "";
   } catch {
     return "";
-  } finally {
-    clearTimeout(timer);
   }
 }
 function buildQuery(workingDirectory, projectName) {
   const dirTail = workingDirectory.split("/").filter(Boolean).at(-1) ?? "";
   const parts = [dirTail, projectName].filter(Boolean);
   return parts.join(" ").trim() || "session start";
-}
-function readStdin() {
-  return new Promise((resolve2) => {
-    let data = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => data += chunk);
-    process.stdin.on("end", () => resolve2(data));
-    process.stdin.on("error", () => resolve2(data));
-  });
-}
-async function recallOverHttp(query, conversationId) {
-  const portValue = process.env["NLM_PORT"] ?? "3940";
-  const url = `http://localhost:${portValue}/api/recall?q=${encodeURIComponent(query)}&mode=hybrid&limit=${RECALL_LIMIT}` + (conversationId ? `&conversation_id=${encodeURIComponent(conversationId)}` : "");
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), RECALL_TIMEOUT_MS);
-  try {
-    const res = await fetch(url, {
-      headers: hookAuthHeaders({
-        "x-recall-source": "session-start-hook",
-        "x-recall-runtime": "claude-code"
-      }),
-      signal: controller.signal
-    });
-    if (!res.ok) return [];
-    let body;
-    try {
-      body = await res.json();
-    } catch {
-      return [];
-    }
-    return (body.results ?? []).map((r) => ({
-      id: r.id,
-      label: r.label,
-      startedAt: r.startedAt,
-      matchScore: r.matchScore,
-      ...r.summary !== void 0 ? { summary: r.summary } : {}
-    }));
-  } finally {
-    clearTimeout(timer);
-  }
 }
 async function main() {
   try {
@@ -295,9 +463,17 @@ async function main() {
     const workingDirectory = typeof payload.cwd === "string" ? payload.cwd : typeof payload.working_directory === "string" ? payload.working_directory : "";
     const projectName = typeof payload.project_name === "string" ? payload.project_name : "";
     const query = buildQuery(workingDirectory, projectName);
-    const mode = process.env["NLM_HOOK_MODE"] === "live" ? "live" : "shadow";
-    const out = await runHook({ conversationId, query }, { mode, recall: (q, cid) => recallOverHttp(q, cid === "unknown" ? void 0 : cid) });
-    const failureModes = mode === "live" ? await fetchFailureModeBlock(workingDirectory) : "";
+    const mode = hookModeFromEnv();
+    const [out, failureModes] = await Promise.all([
+      runHook(
+        { conversationId, query },
+        {
+          mode,
+          recall: async (q, cid) => (await recallOverHttp(q, "claude-code", cid === "unknown" ? void 0 : cid, "hybrid")).hits
+        }
+      ),
+      mode === "live" ? fetchFailureModeBlock(workingDirectory) : Promise.resolve("")
+    ]);
     const combined = composeSessionStartOutput(failureModes, out);
     if (combined) process.stdout.write(combined);
   } catch {
