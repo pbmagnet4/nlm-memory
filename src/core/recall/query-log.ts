@@ -13,6 +13,7 @@ import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { RecallKindFilter, RecallMode } from "@shared/types.js";
+import { classifyQueryIntent, type QueryIntent } from "./query-intent.js";
 
 export interface LogEntry {
   readonly source: string;
@@ -27,6 +28,9 @@ export interface LogEntry {
   readonly nResults: number;
   readonly returnedIds: ReadonlyArray<string>;
   readonly conversationId?: string;
+  /** Heuristic intent label for Phase 4 relational-recall telemetry.
+   *  Absent on log entries written before this field was added. */
+  readonly intent?: QueryIntent;
 }
 
 export interface StatsResult {
@@ -61,6 +65,7 @@ export async function logQuery(
       limit: entry.limit,
       n_results: entry.nResults,
       returned_ids: entry.returnedIds,
+      intent: classifyQueryIntent(entry.query ?? ""),
     };
     await appendFile(logPath, JSON.stringify(payload) + "\n", "utf8");
   } catch {
@@ -87,6 +92,7 @@ export async function readQueryLog(
       if (typeof obj["ts"] !== "string") continue;
       if (Date.parse(obj["ts"]) < cutoff) continue;
       const convId = typeof obj["conversation_id"] === "string" ? obj["conversation_id"] : "unknown";
+      const intentRaw = obj["intent"];
       const entry: LogEntry = {
         source: typeof obj["source"] === "string" ? obj["source"] : "",
         runtime: typeof obj["runtime"] === "string" ? obj["runtime"] : null,
@@ -97,6 +103,7 @@ export async function readQueryLog(
         limit: Number(obj["limit"] ?? 5),
         nResults: Number(obj["n_results"] ?? 0),
         returnedIds: (obj["returned_ids"] as unknown[]).filter((x): x is string => typeof x === "string"),
+        ...(typeof intentRaw === "string" ? { intent: intentRaw as QueryIntent } : {}),
       };
       results.push({ conversationId: convId, entry });
     } catch {
