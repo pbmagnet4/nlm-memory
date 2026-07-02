@@ -26,6 +26,6 @@ export function resolveEmbedderInfo(
   const model =
     provider === "openai"
       ? (env["NLM_EMBED_MODEL"] ?? DEFAULT_OPENAI_EMBED_MODEL)
-      : DEFAULT_OLLAMA_EMBED_MODEL;
+      : (env["NLM_EMBED_MODEL"] ?? DEFAULT_OLLAMA_EMBED_MODEL);
   return { provider, model, dims: dim ?? 768 };
 }

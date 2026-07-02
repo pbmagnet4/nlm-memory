@@ -98,9 +98,10 @@ export async function reembedCorpusPg(opts: PgBackfillOptions): Promise<Backfill
 
     const stateData = loadStateData(statePath);
 
+    let configMatch = false;
     let needsRebuild = false;
     if (storedConfig !== null) {
-      const configMatch =
+      configMatch =
         storedConfig.provider === provider &&
         storedConfig.model === model &&
         storedConfig.dim === dim;
@@ -267,8 +268,14 @@ export async function reembedCorpusPg(opts: PgBackfillOptions): Promise<Backfill
       if (succeeded % SAVE_EVERY === 0) saveState(statePath, done, { provider, model, dim });
     }
 
+    // Reembed facts whenever the stored config does not match the runtime config
+    // (storedConfig exists but configMatch is false). This covers both fresh
+    // rebuilds and interrupted rebuilds that resume: the embedding_config row
+    // is only updated on successful completion, so storedConfig still holds
+    // the old values during a partial run. Gating on needsRebuild alone skips
+    // facts in that resume path.
     let factsReembedded = 0;
-    if (needsRebuild) {
+    if (storedConfig !== null && !configMatch) {
       const factResult = await pool.query<{
         id: string;
         subject: string;

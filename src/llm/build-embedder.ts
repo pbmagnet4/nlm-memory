@@ -30,5 +30,8 @@ export function buildEmbedder(): LLMClient {
       ...(process.env["NLM_EMBED_API_KEY"] ? { apiKey: process.env["NLM_EMBED_API_KEY"] } : {}),
     });
   }
-  return new OllamaClient({ baseUrl: process.env["NLM_OLLAMA_URL"] ?? "http://localhost:11434" });
+  return new OllamaClient({
+    baseUrl: process.env["NLM_OLLAMA_URL"] ?? "http://localhost:11434",
+    ...(process.env["NLM_EMBED_MODEL"] ? { embedModel: process.env["NLM_EMBED_MODEL"] } : {}),
+  });
 }

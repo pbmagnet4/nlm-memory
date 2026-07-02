@@ -5,8 +5,12 @@
  * Requires a running PostgreSQL instance. Set NLM_PG_TEST_URL, e.g.:
  *   export NLM_PG_TEST_URL=postgres://postgres:nlm@127.0.0.1:5544/nlm_test
  *
- * Skips when the env var is absent. Tests run serially (--no-file-parallelism
- * via the test:pg script) and truncate all relevant tables between runs.
+ * Each top-level describe creates its own isolated database (unique suffix) in
+ * beforeAll and drops it in afterAll. This prevents afterEach schema mutations
+ * (ALTER TABLE for dim changes) from leaking the degenerate-centroid ivfflat
+ * state to other test files that run against the shared server DB.
+ *
+ * Skips when the env var is absent.
  */
 
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
@@ -35,6 +39,49 @@ const TRUNCATE_SQL = `
     embedding_config
   RESTART IDENTITY CASCADE
 `;
+
+/** Return a new connection string pointing to a different database on the same server. */
+function withDatabase(baseUrl: string, dbName: string): string {
+  const u = new URL(baseUrl);
+  u.pathname = `/${dbName}`;
+  return u.toString();
+}
+
+/**
+ * Create a fresh isolated database by connecting to the base test DB and issuing
+ * CREATE DATABASE. Runs migrations on the new DB using PgStorage.init().
+ * Returns the dbName and a connection string for the new DB.
+ */
+async function createIsolatedDb(
+  baseUrl: string,
+  suffix: string,
+): Promise<{ dbName: string; dbUrl: string }> {
+  const dbName = `nlm_embed_test_${suffix}`;
+  const adminPool = new Pool({ connectionString: baseUrl });
+  try {
+    await adminPool.query(`DROP DATABASE IF EXISTS "${dbName}"`);
+    await adminPool.query(`CREATE DATABASE "${dbName}"`);
+  } finally {
+    await adminPool.end();
+  }
+  const dbUrl = withDatabase(baseUrl, dbName);
+  const storage = PgStorage.create({ connectionString: dbUrl, migrationsDir: MIGRATIONS_DIR });
+  try {
+    await storage.init();
+  } finally {
+    await storage.close();
+  }
+  return { dbName, dbUrl };
+}
+
+async function dropIsolatedDb(baseUrl: string, dbName: string): Promise<void> {
+  const adminPool = new Pool({ connectionString: baseUrl });
+  try {
+    await adminPool.query(`DROP DATABASE IF EXISTS "${dbName}"`);
+  } finally {
+    await adminPool.end();
+  }
+}
 
 class DeterministicEmbedder implements LLMClient {
   calls = 0;
@@ -75,17 +122,23 @@ const seedSessions = [
 describe.skipIf(!PG_TEST_URL)("reembedCorpusPg", () => {
   let storage: PgStorage;
   let pool: Pool;
+  let dbName: string;
+  let dbUrl: string;
   let tmp: string;
   let statePath: string;
 
   beforeAll(async () => {
-    storage = PgStorage.create({ connectionString: PG_TEST_URL!, migrationsDir: MIGRATIONS_DIR });
+    const result = await createIsolatedDb(PG_TEST_URL!, `basic_${Date.now()}`);
+    dbName = result.dbName;
+    dbUrl = result.dbUrl;
+    storage = PgStorage.create({ connectionString: dbUrl, migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     pool = storage.pgPool();
   });
 
   afterAll(async () => {
     await storage.close();
+    await dropIsolatedDb(PG_TEST_URL!, dbName);
   });
 
   beforeEach(async () => {
@@ -103,7 +156,7 @@ describe.skipIf(!PG_TEST_URL)("reembedCorpusPg", () => {
 
   it("embeds all sessions and writes a state file", async () => {
     const embedder = new DeterministicEmbedder();
-    const report = await reembedCorpusPg({ pgUrl: PG_TEST_URL!, embedder, statePath });
+    const report = await reembedCorpusPg({ pgUrl: dbUrl, embedder, statePath });
 
     expect(report.dbMissing).toBe(false);
     expect(report.total).toBe(3);
@@ -122,10 +175,10 @@ describe.skipIf(!PG_TEST_URL)("reembedCorpusPg", () => {
 
   it("is resumable: second run skips ids already in state", async () => {
     const embedder1 = new DeterministicEmbedder();
-    await reembedCorpusPg({ pgUrl: PG_TEST_URL!, embedder: embedder1, statePath });
+    await reembedCorpusPg({ pgUrl: dbUrl, embedder: embedder1, statePath });
 
     const embedder2 = new DeterministicEmbedder();
-    const report = await reembedCorpusPg({ pgUrl: PG_TEST_URL!, embedder: embedder2, statePath });
+    const report = await reembedCorpusPg({ pgUrl: dbUrl, embedder: embedder2, statePath });
 
     expect(report.skippedAlreadyDone).toBe(3);
     expect(report.succeeded).toBe(0);
@@ -135,7 +188,7 @@ describe.skipIf(!PG_TEST_URL)("reembedCorpusPg", () => {
 
   it("respects --limit", async () => {
     const embedder = new DeterministicEmbedder();
-    const report = await reembedCorpusPg({ pgUrl: PG_TEST_URL!, embedder, statePath, limit: 2 });
+    const report = await reembedCorpusPg({ pgUrl: dbUrl, embedder, statePath, limit: 2 });
     expect(report.total).toBe(2);
     expect(report.succeeded).toBe(2);
   });
@@ -144,17 +197,23 @@ describe.skipIf(!PG_TEST_URL)("reembedCorpusPg", () => {
 describe.skipIf(!PG_TEST_URL)("reembedCorpusPg rebuild on dim mismatch", () => {
   let storage: PgStorage;
   let pool: Pool;
+  let dbName: string;
+  let dbUrl: string;
   let tmp: string;
   let statePath: string;
 
   beforeAll(async () => {
-    storage = PgStorage.create({ connectionString: PG_TEST_URL!, migrationsDir: MIGRATIONS_DIR });
+    const result = await createIsolatedDb(PG_TEST_URL!, `rebuild_${Date.now()}`);
+    dbName = result.dbName;
+    dbUrl = result.dbUrl;
+    storage = PgStorage.create({ connectionString: dbUrl, migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     pool = storage.pgPool();
   });
 
   afterAll(async () => {
     await storage.close();
+    await dropIsolatedDb(PG_TEST_URL!, dbName);
   });
 
   beforeEach(async () => {
@@ -183,10 +242,8 @@ describe.skipIf(!PG_TEST_URL)("reembedCorpusPg rebuild on dim mismatch", () => {
 
   afterEach(async () => {
     rmSync(tmp, { recursive: true, force: true });
-    // Restore the vector columns to 768-dim so subsequent pg test files see a
-    // consistent schema. The ALTER in the rebuild path changes the column type
-    // permanently within the shared DB connection; data-only TRUNCATE in other
-    // test files does not undo it.
+    // Restore vector columns to 768-dim so the next beforeEach can seed 768-dim vectors.
+    // This is safe: the isolated DB is not shared with other test files.
     await pool.query("DELETE FROM fact_embeddings");
     await pool.query("DROP INDEX IF EXISTS fact_embeddings_idx");
     await pool.query("ALTER TABLE fact_embeddings ALTER COLUMN embedding TYPE vector(768)");
@@ -208,7 +265,7 @@ describe.skipIf(!PG_TEST_URL)("reembedCorpusPg rebuild on dim mismatch", () => {
   it("alters column to new dim and reembeds sessions and facts", async () => {
     const embedder = new Dim8Embedder();
     const report = await reembedCorpusPg({
-      pgUrl: PG_TEST_URL!,
+      pgUrl: dbUrl,
       embedder,
       statePath,
       embedderProvider: "test",
@@ -251,7 +308,7 @@ describe.skipIf(!PG_TEST_URL)("reembedCorpusPg rebuild on dim mismatch", () => {
   it("preserves chunks on same-config rerun, no rebuild", async () => {
     const embedder1 = new Dim8Embedder();
     await reembedCorpusPg({
-      pgUrl: PG_TEST_URL!,
+      pgUrl: dbUrl,
       embedder: embedder1,
       statePath,
       embedderProvider: "test",
@@ -264,7 +321,7 @@ describe.skipIf(!PG_TEST_URL)("reembedCorpusPg rebuild on dim mismatch", () => {
 
     const embedder2 = new Dim8Embedder();
     const report = await reembedCorpusPg({
-      pgUrl: PG_TEST_URL!,
+      pgUrl: dbUrl,
       embedder: embedder2,
       statePath,
       embedderProvider: "test",
@@ -272,6 +329,7 @@ describe.skipIf(!PG_TEST_URL)("reembedCorpusPg rebuild on dim mismatch", () => {
 
     expect(report.rebuilt).toBe(false);
     expect(report.skippedAlreadyDone).toBe(3);
+    expect(report.factsReembedded).toBe(0);
 
     const { rows: afterSecond } = await pool.query<{ cnt: string }>(
       "SELECT COUNT(*) AS cnt FROM session_chunk_map",

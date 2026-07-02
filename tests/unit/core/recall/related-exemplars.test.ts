@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { pickRelatedExemplars } from "../../../../src/core/recall/related-exemplars.js";
+import {
+  resetLaneHealthForTests,
+  setLaneHealth,
+} from "../../../../src/core/health/embedding-lane-state.js";
 import type { CodeExemplarStore } from "../../../../src/ports/code-exemplar-store.js";
 import type { CodeEmbedder } from "../../../../src/ports/code-embedder.js";
 import type { CodeExemplarHit } from "../../../../src/shared/types.js";
@@ -26,6 +30,25 @@ function storeReturning(hits: CodeExemplarHit[]): CodeExemplarStore {
 }
 const embedder: CodeEmbedder = { async embed() { return { vector: new Float32Array(768), dim: 768 }; } };
 const throwingEmbedder: CodeEmbedder = { async embed() { throw new Error("ollama down"); } };
+
+describe("pickRelatedExemplars stale code lane", () => {
+  afterEach(resetLaneHealthForTests);
+
+  it("returns [] immediately when code lane is stale, without calling the embedder", async () => {
+    setLaneHealth("code", "stale");
+    let embedCalls = 0;
+    const countingEmbedder: CodeEmbedder = {
+      async embed() {
+        embedCalls++;
+        return { vector: new Float32Array(768), dim: 768 };
+      },
+    };
+    const store = storeReturning([hit({ id: "a", distance: 0.1 })]);
+    const out = await pickRelatedExemplars("q", store, countingEmbedder, "scope");
+    expect(out).toEqual([]);
+    expect(embedCalls).toBe(0);
+  });
+});
 
 describe("pickRelatedExemplars", () => {
   it("embeds the query and maps hits to lean RelatedExemplars", async () => {

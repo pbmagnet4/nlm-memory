@@ -3,7 +3,7 @@
  * Mirrors the recall-service.test.ts pattern.
  */
 
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { FactRecallService } from "../../../../src/core/recall-facts/fact-recall-service.js";
 import type {
   FactListFilter,
@@ -13,6 +13,10 @@ import type {
 import { StubEmbedder } from "../../../fixtures/llm-stubs.js";
 import type { Fact, FactHistoryChain } from "../../../../src/shared/types.js";
 import { makeFact } from "../../../fixtures/facts.js";
+import {
+  resetLaneHealthForTests,
+  setLaneHealth,
+} from "../../../../src/core/health/embedding-lane-state.js";
 
 class InMemoryFactStore implements FactStore {
   constructor(
@@ -274,6 +278,62 @@ describe("FactRecallService.search (semantic)", () => {
     const svc = new FactRecallService({ factStore: store, llm: new StubEmbedder() });
     const result = await svc.search({ query: "legacy cache choice", mode: "semantic" });
     expect(result.results.map((r) => r.id)).not.toContain("f_old_lowconf");
+  });
+});
+
+describe("FactRecallService.search stale prose lane", () => {
+  beforeEach(resetLaneHealthForTests);
+
+  it("stale lane: semantic mode yields keyword-only degrade (modeUnavailable, no embed call)", async () => {
+    setLaneHealth("prose", "stale");
+    const embedder = new StubEmbedder();
+    const svc = new FactRecallService({
+      factStore: new InMemoryFactStore(corpus),
+      llm: embedder,
+    });
+    const result = await svc.search({ query: "Hono", mode: "semantic" });
+    expect(result.modeUnavailable).toBe("ollama_unreachable");
+    expect(result.total).toBe(0);
+    expect(embedder.calls).toBe(0);
+  });
+
+  it("stale lane: hybrid mode degrades to keyword-only without throwing", async () => {
+    setLaneHealth("prose", "stale");
+    const embedder = new StubEmbedder();
+    const svc = new FactRecallService({
+      factStore: new InMemoryFactStore(corpus),
+      llm: embedder,
+    });
+    const result = await svc.search({ query: "Hono", mode: "hybrid" });
+    expect(result.modeUnavailable).toBe("ollama_unreachable");
+    expect(embedder.calls).toBe(0);
+    expect(result.results.map((r) => r.id)).toContain("f_hono");
+  });
+
+  it("ok lane: semantic path calls the embedder normally", async () => {
+    setLaneHealth("prose", "ok");
+    const neighbors = [{ factId: "f_endpoint", distance: 0.2 }];
+    const embedder = new StubEmbedder();
+    const svc = new FactRecallService({
+      factStore: new InMemoryFactStore(corpus, neighbors),
+      llm: embedder,
+    });
+    const result = await svc.search({ query: "LLM host", mode: "semantic" });
+    expect(embedder.calls).toBe(1);
+    expect(result.modeUnavailable).toBeUndefined();
+  });
+
+  it("unknown lane: semantic path calls the embedder normally", async () => {
+    // default is "unknown" after reset
+    const neighbors = [{ factId: "f_model", distance: 0.3 }];
+    const embedder = new StubEmbedder();
+    const svc = new FactRecallService({
+      factStore: new InMemoryFactStore(corpus, neighbors),
+      llm: embedder,
+    });
+    const result = await svc.search({ query: "model name", mode: "semantic" });
+    expect(embedder.calls).toBe(1);
+    expect(result.modeUnavailable).toBeUndefined();
   });
 });
 

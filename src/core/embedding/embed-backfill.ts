@@ -138,9 +138,10 @@ export async function reembedCorpus(opts: BackfillOptions): Promise<BackfillRepo
 
     const stateData = loadStateData(statePath);
 
+    let configMatch = false;
     let needsRebuild = false;
     if (storedConfig !== null) {
-      const configMatch =
+      configMatch =
         storedConfig.provider === runtimeConfig.provider &&
         storedConfig.model === runtimeConfig.model &&
         storedConfig.dim === runtimeConfig.dim;
@@ -321,11 +322,14 @@ export async function reembedCorpus(opts: BackfillOptions): Promise<BackfillRepo
       if (succeeded % SAVE_EVERY === 0) saveState(statePath, done, { provider, model, dim });
     }
 
-    // Reembed facts only when a rebuild happened. A same-config rerun stays
-    // sessions-only, matching the live embedFacts population predicate
-    // (superseded_by IS NULL AND retired_at IS NULL from sqlite-session-store.ts).
+    // Reembed facts whenever the stored config does not match the runtime config
+    // (storedConfig exists but configMatch is false). This covers both fresh
+    // rebuilds and interrupted rebuilds that resume: after a rebuild the tables
+    // are empty and the state file carries the new config, but the embedding_config
+    // row is only updated on successful completion, so storedConfig still holds
+    // the old values. Gating on needsRebuild alone skips facts in that resume path.
     let factsReembedded = 0;
-    if (needsRebuild) {
+    if (storedConfig !== null && !configMatch) {
       const factRows = db
         .prepare<[], FactRow>(
           "SELECT id, subject, predicate, value FROM facts" +
@@ -333,7 +337,7 @@ export async function reembedCorpus(opts: BackfillOptions): Promise<BackfillRepo
         )
         .all();
       const insFactEmb = db.prepare(
-        "INSERT INTO fact_embeddings (fact_id, embedding) VALUES (?, ?)",
+        "INSERT OR REPLACE INTO fact_embeddings (fact_id, embedding) VALUES (?, ?)",
       );
       for (const fact of factRows) {
         const factText = `${fact.subject} ${fact.predicate} ${fact.value}`.trim();

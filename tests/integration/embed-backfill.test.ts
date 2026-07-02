@@ -205,13 +205,14 @@ describe("rebuild on dim mismatch", () => {
     db.close();
     expect(countAfterRebuild).toBe(3);
 
-    // Second run: same embedder config (8-dim, "stub-8d", "test") — no rebuild.
+    // Second run: same embedder config (8-dim, "stub-8d", "test") - no rebuild.
     // Reuse the same state file so all sessions are already done.
     const embedder2 = new Dim8Embedder();
     const report = await reembedCorpus({ dbPath, embedder: embedder2, statePath, embedderProvider: "test" });
 
     expect(report.rebuilt).toBe(false);
     expect(report.skippedAlreadyDone).toBe(3);
+    expect(report.factsReembedded).toBe(0);
 
     // All chunks from the first run must still be present.
     const db2 = new Database(dbPath);
@@ -226,5 +227,49 @@ describe("rebuild on dim mismatch", () => {
 
     expect(countAfterSecond).toBe(3);
     expect(feCount).toBe(1);
+  });
+
+  it("resume after interrupted rebuild: facts are reembedded even when state file has new config", async () => {
+    // Simulate an interrupted rebuild:
+    // - The state file already carries the new (8-dim) config (the rebuild saved it mid-run)
+    // - The embedding_config row still holds the old (768-dim) config (final upsert never ran)
+    // - fact_embeddings is empty (the DROP TABLE ran but the fact loop did not complete)
+    // This state means storedConfig != runtimeConfig but stateConfigMatches=true,
+    // so needsRebuild=false. The fix: gate fact reembed on storedConfig && !configMatch,
+    // not on needsRebuild.
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(statePath, JSON.stringify({
+      done: ["s_a", "s_b", "s_c"],
+      config: { provider: "test", model: "stub-8d", dim: 8 },
+    }));
+
+    // embedding_config is already at 768-dim from beforeEach, fact_embeddings has f_1 cleared.
+    // Clear fact_embeddings to simulate the rebuild having dropped and recreated the table.
+    const rawDb = new Database(dbPath);
+    sqliteVec.load(rawDb);
+    rawDb.exec("DROP TABLE IF EXISTS fact_embeddings");
+    rawDb.exec(
+      "CREATE VIRTUAL TABLE fact_embeddings USING vec0(fact_id TEXT PRIMARY KEY, embedding float[8])",
+    );
+    rawDb.close();
+
+    const embedder = new Dim8Embedder();
+    const report = await reembedCorpus({ dbPath, embedder, statePath, embedderProvider: "test" });
+
+    expect(report.rebuilt).toBe(false);
+    expect(report.factsReembedded).toBe(1);
+
+    const db2 = new Database(dbPath);
+    sqliteVec.load(db2);
+    const feCount = (
+      db2.prepare<[], { c: number }>("SELECT COUNT(*) as c FROM fact_embeddings").get()!
+    ).c;
+    const cfgRow = db2
+      .prepare<[], { dim: number }>("SELECT dim FROM embedding_config WHERE lane='prose'")
+      .get()!;
+    db2.close();
+
+    expect(feCount).toBe(1);
+    expect(cfgRow.dim).toBe(8);
   });
 });

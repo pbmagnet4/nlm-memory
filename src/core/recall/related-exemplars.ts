@@ -8,6 +8,7 @@
 import type { CodeExemplarStore } from "@ports/code-exemplar-store.js";
 import type { CodeEmbedder } from "@ports/code-embedder.js";
 import type { RelatedExemplar } from "@shared/types.js";
+import { laneHealth } from "@core/health/embedding-lane-state.js";
 
 const DEFAULT_K = 2;
 const DEFAULT_MAX_DISTANCE = Number(process.env["NLM_EXEMPLAR_RECALL_MAX_DISTANCE"] ?? "1.0");
@@ -21,6 +22,7 @@ export async function pickRelatedExemplars(
 ): Promise<RelatedExemplar[]> {
   const k = opts.k ?? DEFAULT_K;
   const maxDistance = opts.maxDistance ?? DEFAULT_MAX_DISTANCE;
+  if (laneHealth("code") === "stale") return [];
   try {
     const { vector } = await codeEmbedder.embed(query, "query", opts.signal);
     const hits = await store.searchByVector(vector, { installScope, k });
