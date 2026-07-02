@@ -33,6 +33,27 @@ export interface PointerExemplar {
   readonly taskContext: string;
 }
 
+export function truncateSummary(s: string, max = 200): string {
+  if (s.length <= max) return s;
+  const window = s.slice(0, max);
+  const last = window[window.length - 1];
+  if ((last === "." || last === "!" || last === "?") && window.length - 1 >= 60) {
+    return window;
+  }
+  for (let i = window.length - 2; i >= 60; i--) {
+    const c = window[i];
+    if ((c === "." || c === "!" || c === "?") && window[i + 1] === " ") {
+      return s.slice(0, i + 1);
+    }
+  }
+  for (let i = window.length - 1; i >= 60; i--) {
+    if (window[i] === " ") {
+      return s.slice(0, i) + " ...";
+    }
+  }
+  return window + " ...";
+}
+
 export function formatPointerBlock(
   hits: ReadonlyArray<PointerHit>,
   facts: ReadonlyArray<PointerFact> = [],
@@ -45,7 +66,7 @@ export function formatPointerBlock(
     for (const h of hits) {
       const datePart = h.startedAt.slice(0, 10);
       if (h.summary) {
-        out.push(`- ${h.id} · ${h.label} (${datePart}) — ${h.summary.slice(0, 120)}`);
+        out.push(`- ${h.id} · ${h.label} (${datePart}) — ${truncateSummary(h.summary)}`);
       } else {
         out.push(`- ${h.id} · ${h.label} (${datePart})`);
       }
@@ -64,7 +85,7 @@ export function formatPointerBlock(
     out.push("## Related code exemplars (nlm-memory)");
     for (const e of exemplars) {
       const langPart = e.lang ? `${e.lang} · ` : "";
-      out.push(`- [${e.outcome}] ${langPart}${e.repo} - ${e.taskContext.slice(0, 120)}`);
+      out.push(`- [${e.outcome}] ${langPart}${e.repo} - ${truncateSummary(e.taskContext)}`);
     }
   }
   const tools = exemplars.length > 0

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatPointerBlock } from "../../../../src/core/hook/pointer-block.js";
+import { formatPointerBlock, truncateSummary } from "../../../../src/core/hook/pointer-block.js";
 
 describe("formatPointerBlock", () => {
   it("returns an empty string for no hits", () => {
@@ -77,13 +77,59 @@ describe("formatPointerBlock", () => {
     expect(block).not.toContain(" — ");
   });
 
-  it("truncates summary at 120 characters", () => {
-    const longSummary = "A".repeat(150);
+  it("truncates long summary in pointer line via sentence-aware helper", () => {
+    const prefix = "A".repeat(65) + ". ";
+    const suffix = "B".repeat(200);
     const block = formatPointerBlock([
-      { id: "sess_c", label: "Long summary", startedAt: "2026-06-09T10:00:00.000Z", summary: longSummary },
+      { id: "sess_c", label: "Long summary", startedAt: "2026-06-09T10:00:00.000Z", summary: prefix + suffix },
     ]);
-    expect(block).toContain(`— ${"A".repeat(120)}`);
-    expect(block).not.toContain("A".repeat(121));
+    expect(block).toContain(`— ${"A".repeat(65)}.`);
+    expect(block).not.toContain("B");
+  });
+});
+
+describe("truncateSummary", () => {
+  it("returns short string unchanged", () => {
+    const s = "A short sentence.";
+    expect(truncateSummary(s)).toBe(s);
+  });
+
+  it("returns string exactly at max unchanged", () => {
+    const s = "x".repeat(200);
+    expect(truncateSummary(s)).toBe(s);
+  });
+
+  it("cuts at last sentence boundary in window, keeps punctuation, no ellipsis", () => {
+    const prefix = "A".repeat(65) + ". ";
+    const suffix = "B".repeat(200);
+    const result = truncateSummary(prefix + suffix);
+    expect(result).toBe("A".repeat(65) + ".");
+    expect(result).not.toContain("...");
+  });
+
+  it("cuts at last space in window and appends ' ...' when no sentence boundary exists", () => {
+    const s = "word ".repeat(50);
+    const result = truncateSummary(s);
+    expect(result.endsWith(" ...")).toBe(true);
+    expect(result.length).toBeLessThanOrEqual(204);
+  });
+
+  it("result never exceeds max+4 characters in the degenerate no-space case", () => {
+    const s = "x".repeat(300);
+    const result = truncateSummary(s);
+    expect(result.length).toBeLessThanOrEqual(204);
+  });
+
+  it("truncates long exemplar taskContext with sentence-aware helper", () => {
+    const prefix = "A".repeat(65) + ". ";
+    const suffix = "B".repeat(200);
+    const out = formatPointerBlock(
+      [],
+      [],
+      [{ outcome: "pass", lang: "ts", repo: "/r", taskContext: prefix + suffix }],
+    );
+    expect(out).toContain("A".repeat(65) + ".");
+    expect(out).not.toContain("B");
   });
 });
 

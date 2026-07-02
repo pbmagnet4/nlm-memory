@@ -250,6 +250,26 @@ function recordSurfaced(conversationId, ids) {
 }
 
 // src/core/hook/pointer-block.ts
+function truncateSummary(s, max = 200) {
+  if (s.length <= max) return s;
+  const window = s.slice(0, max);
+  const last = window[window.length - 1];
+  if ((last === "." || last === "!" || last === "?") && window.length - 1 >= 60) {
+    return window;
+  }
+  for (let i = window.length - 2; i >= 60; i--) {
+    const c = window[i];
+    if ((c === "." || c === "!" || c === "?") && window[i + 1] === " ") {
+      return s.slice(0, i + 1);
+    }
+  }
+  for (let i = window.length - 1; i >= 60; i--) {
+    if (window[i] === " ") {
+      return s.slice(0, i) + " ...";
+    }
+  }
+  return window + " ...";
+}
 function formatPointerBlock(hits, facts = [], exemplars = []) {
   if (hits.length === 0 && facts.length === 0 && exemplars.length === 0) return "";
   const out = [];
@@ -258,7 +278,7 @@ function formatPointerBlock(hits, facts = [], exemplars = []) {
     for (const h of hits) {
       const datePart = h.startedAt.slice(0, 10);
       if (h.summary) {
-        out.push(`- ${h.id} \xB7 ${h.label} (${datePart}) \u2014 ${h.summary.slice(0, 120)}`);
+        out.push(`- ${h.id} \xB7 ${h.label} (${datePart}) \u2014 ${truncateSummary(h.summary)}`);
       } else {
         out.push(`- ${h.id} \xB7 ${h.label} (${datePart})`);
       }
@@ -277,7 +297,7 @@ function formatPointerBlock(hits, facts = [], exemplars = []) {
     out.push("## Related code exemplars (nlm-memory)");
     for (const e of exemplars) {
       const langPart = e.lang ? `${e.lang} \xB7 ` : "";
-      out.push(`- [${e.outcome}] ${langPart}${e.repo} - ${e.taskContext.slice(0, 120)}`);
+      out.push(`- [${e.outcome}] ${langPart}${e.repo} - ${truncateSummary(e.taskContext)}`);
     }
   }
   const tools = exemplars.length > 0 ? "NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved), recall_code (pull the full code for a related exemplar)." : "NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved).";
