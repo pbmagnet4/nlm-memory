@@ -197,7 +197,12 @@ async function recallOverHttp(prompt, runtime, conversationId) {
   const query = extractRecallQuery(prompt);
   if (query === null) return { hits: [], facts: [], exemplars: [] };
   const portValue = process.env["NLM_PORT"] ?? "3940";
-  const url = `http://localhost:${portValue}/api/recall?q=${encodeURIComponent(query)}&mode=keyword&limit=${RECALL_LIMIT}&withFacts=true&withExemplars=true` + (conversationId ? `&conversation_id=${encodeURIComponent(conversationId)}` : "");
+  const url = (
+    // 127.0.0.1, not localhost: each hook is a fresh process with no connection
+    // reuse, and Node resolves localhost to IPv6 ::1 first — a measured ~50-300ms
+    // per-fire connect penalty vs ~3ms on the explicit IPv4 loopback.
+    `http://127.0.0.1:${portValue}/api/recall?q=${encodeURIComponent(query)}&mode=keyword&limit=${RECALL_LIMIT}&withFacts=true&withExemplars=true` + (conversationId ? `&conversation_id=${encodeURIComponent(conversationId)}` : "")
+  );
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), RECALL_TIMEOUT_MS);
   try {
@@ -245,12 +250,190 @@ import { pathToFileURL } from "node:url";
 // src/core/hook/gate.ts
 var LEADING_FILLER = /^(please|can you|could you|would you|will you|i need you to|i'd like you to|i want you to|i would like you to|help me|let's|lets|hey|ok|okay)\b[\s,]*/i;
 var GENERATIVE_OPENER = /^(write|draft|create|compose|generate|brainstorm|design|outline|sketch|invent|rename|come up with)\b/i;
+var HARNESS_TAGS = [
+  "ide_selection",
+  "ide_opened_file",
+  "ide_closed_file",
+  "ide_diagnostics",
+  "ide_recently_modified_file",
+  "task-notification",
+  "system-reminder",
+  "command-name",
+  "command-message",
+  "command-args",
+  "local-command-stdout",
+  "local-command-stderr"
+];
+var HARNESS_BLOCK = new RegExp(
+  `<(${HARNESS_TAGS.join("|")})\\b[^>]*>[\\s\\S]*?(?:</\\1>|$)`,
+  "gi"
+);
+var ACK_ONLY = /^(yes|yep|yeah|sure|ok|okay|k|thanks|thank you|ty|done|nice|cool|great|perfect|continue|next|go|go ahead|do it|yes please|sounds good|good|got it|right|correct)\W*$/i;
+function contentWordCount(s) {
+  const m = s.match(/[A-Za-z0-9]{2,}/g);
+  return m ? m.length : 0;
+}
 function classifyPrompt(prompt) {
-  let p = prompt.trim();
+  let p = prompt.replace(HARNESS_BLOCK, " ").replace(/\s+/g, " ").trim();
+  if (contentWordCount(p) === 0) return "skip";
+  if (ACK_ONLY.test(p)) return "skip";
   for (let i = 0; i < 3 && LEADING_FILLER.test(p); i++) {
     p = p.replace(LEADING_FILLER, "");
   }
+  p = p.trim();
+  if (contentWordCount(p) === 0) return "skip";
   return GENERATIVE_OPENER.test(p) ? "generative" : "evaluate";
+}
+
+// src/hook/recent-context.ts
+import { closeSync, existsSync as existsSync2, fstatSync, openSync, readSync } from "node:fs";
+var DEFAULT_MAX_TURNS = 3;
+var DEFAULT_MAX_BYTES = 64 * 1024;
+var DEFAULT_PER_TURN_CHARS = 400;
+var STOPWORDS2 = /* @__PURE__ */ new Set([
+  "the",
+  "a",
+  "an",
+  "and",
+  "or",
+  "but",
+  "is",
+  "are",
+  "was",
+  "were",
+  "be",
+  "been",
+  "being",
+  "do",
+  "does",
+  "did",
+  "doing",
+  "you",
+  "your",
+  "i",
+  "we",
+  "our",
+  "it",
+  "its",
+  "this",
+  "that",
+  "these",
+  "those",
+  "what",
+  "which",
+  "how",
+  "why",
+  "when",
+  "where",
+  "who",
+  "can",
+  "could",
+  "would",
+  "should",
+  "will",
+  "shall",
+  "may",
+  "might",
+  "must",
+  "please",
+  "to",
+  "of",
+  "in",
+  "on",
+  "for",
+  "with",
+  "so",
+  "now",
+  "then",
+  "here",
+  "there",
+  "just",
+  "also",
+  "as",
+  "at",
+  "by",
+  "if",
+  "my",
+  "me",
+  "us",
+  "ok",
+  "okay",
+  "yes",
+  "no",
+  "not",
+  "up",
+  "out",
+  "go",
+  "get",
+  "got",
+  "make",
+  "made",
+  "give",
+  "tell",
+  "want",
+  "need",
+  "think",
+  "know",
+  "let",
+  "lets",
+  "about",
+  "from",
+  "into"
+]);
+function topicalWordCount(s) {
+  const tokens = s.toLowerCase().match(/[a-z0-9]{2,}/g) ?? [];
+  return tokens.filter((t) => !STOPWORDS2.has(t)).length;
+}
+function textOf(message) {
+  if (typeof message !== "object" || message === null) return "";
+  const content = message.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.filter(
+      (b) => typeof b === "object" && b !== null && b.type === "text"
+    ).map((b) => b.text).join(" ");
+  }
+  return "";
+}
+function tailRead(path, maxBytes) {
+  const fd = openSync(path, "r");
+  try {
+    const size = fstatSync(fd).size;
+    const start = size > maxBytes ? size - maxBytes : 0;
+    const len = size - start;
+    if (len <= 0) return "";
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, start);
+    return buf.toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
+function recentConversationContext(transcriptPath, opts = {}) {
+  try {
+    if (!transcriptPath || !existsSync2(transcriptPath)) return "";
+    const maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS;
+    const perTurnChars = opts.perTurnChars ?? DEFAULT_PER_TURN_CHARS;
+    const lines = tailRead(transcriptPath, opts.maxBytes ?? DEFAULT_MAX_BYTES).split("\n");
+    const turns = [];
+    for (let i = lines.length - 1; i >= 0 && turns.length < maxTurns; i--) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      let evt;
+      try {
+        evt = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (evt.type !== "user" && evt.type !== "assistant") continue;
+      const text = textOf(evt.message).trim();
+      if (!text) continue;
+      turns.unshift(text.slice(0, perTurnChars));
+    }
+    return turns.join(" ").trim();
+  } catch {
+    return "";
+  }
 }
 
 // src/core/hook/hook-log.ts
@@ -271,7 +454,15 @@ function appendHookLog(entry) {
 }
 
 // src/core/hook/memo.ts
-import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync as existsSync3,
+  mkdirSync as mkdirSync2,
+  readdirSync,
+  readFileSync as readFileSync2,
+  rmSync,
+  statSync,
+  writeFileSync
+} from "node:fs";
 import { homedir as homedir3 } from "node:os";
 import { join as join2 } from "node:path";
 function stateDir() {
@@ -284,7 +475,7 @@ function memoPath(conversationId) {
 function loadSurfaced(conversationId) {
   try {
     const path = memoPath(conversationId);
-    if (!existsSync2(path)) return /* @__PURE__ */ new Set();
+    if (!existsSync3(path)) return /* @__PURE__ */ new Set();
     const parsed = JSON.parse(readFileSync2(path, "utf8"));
     if (!Array.isArray(parsed)) return /* @__PURE__ */ new Set();
     return new Set(parsed.filter((x) => typeof x === "string"));
@@ -369,6 +560,55 @@ function parseRelativeFloor(raw, fallback) {
   return parsed;
 }
 
+// src/hook/recall-gate.ts
+var RECALL_GATE_MODEL = "qwen3.5:4b";
+var RECALL_GATE_SYSTEM = `You are a recall GATE protecting against off-topic memory injection. Given a USER PROMPT and a CANDIDATE prior-session context, answer irrelevant ONLY when the candidate is CLEARLY about a completely different topic, project, or task than the prompt (e.g. the prompt is about debugging a website and the candidate is about a trading pipeline). If there is ANY plausible topical connection, or you are at all unsure, answer relevant. Dropping a useful memory is worse than keeping a marginal one. You do NOT see the assistant's answer. Output {"gate":"relevant"|"irrelevant"}.`;
+var GATE_FORMAT = { type: "object", properties: { gate: { type: "string", enum: ["relevant", "irrelevant"] } }, required: ["gate"] };
+var GATE_OPTS = { temperature: 0, top_p: 1, top_k: 0, presence_penalty: 0, frequency_penalty: 0 };
+function parseRecallGateMode(env = process.env) {
+  const v = env["NLM_HOOK_RECALL_GATE"]?.trim();
+  return v === "shadow" || v === "live" ? v : void 0;
+}
+var GATE_TIMEOUT_MS = 4e3;
+function makeOllamaGate(url, model = RECALL_GATE_MODEL, timeoutMs = GATE_TIMEOUT_MS) {
+  return async (prompt, candidate) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const r = await fetch(`${url}/api/chat`, {
+        method: "POST",
+        signal: controller.signal,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          stream: false,
+          think: false,
+          // Keep the gate model resident between fires so only the first fire
+          // pays the cold-load; subsequent gates are ~1 judge call.
+          keep_alive: "15m",
+          format: GATE_FORMAT,
+          options: GATE_OPTS,
+          messages: [
+            { role: "system", content: RECALL_GATE_SYSTEM },
+            { role: "user", content: `USER PROMPT:
+${prompt}
+
+CANDIDATE CONTEXT:
+${candidate}` }
+          ]
+        })
+      });
+      const d = await r.json();
+      const v = JSON.parse(d.message?.content ?? "{}").gate;
+      return v === "irrelevant" ? "irrelevant" : "relevant";
+    } catch {
+      return "relevant";
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
+
 // src/hook/prompt-recall-hook.ts
 var SCORE_THRESHOLD = parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR"]);
 var RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
@@ -379,6 +619,17 @@ function hookRuntimeFromEnv(env = process.env) {
   const raw = env["NLM_HOOK_RUNTIME"]?.trim();
   return raw ? raw : "claude-code";
 }
+function promptRecallEnabled(env = process.env) {
+  return env["NLM_HOOK_PROMPT_RECALL"]?.trim().toLowerCase() !== "off";
+}
+function buildRecallQuery(input, env = process.env) {
+  if (env["NLM_HOOK_CONTEXT_RECALL"] !== "1") return input.prompt;
+  if (!input.transcriptPath) return input.prompt;
+  const minWords = Number.parseInt(env["NLM_HOOK_CONTEXT_MIN_WORDS"] ?? "3", 10);
+  if (topicalWordCount(input.prompt) >= minWords) return input.prompt;
+  const context = recentConversationContext(input.transcriptPath);
+  return context ? `${context} ${input.prompt}` : input.prompt;
+}
 function normalizeRecall(raw) {
   if (Array.isArray(raw)) return { hits: raw, facts: [] };
   return raw;
@@ -386,7 +637,7 @@ function normalizeRecall(raw) {
 async function runHook(input, deps) {
   const gate = classifyPrompt(input.prompt);
   const preview = input.prompt.slice(0, PROMPT_PREVIEW_CHARS);
-  if (gate === "generative") {
+  if (gate === "generative" || gate === "skip") {
     appendHookLog({
       ts: (/* @__PURE__ */ new Date()).toISOString(),
       conversationId: input.conversationId,
@@ -401,7 +652,7 @@ async function runHook(input, deps) {
   }
   let fetched = { hits: [], facts: [] };
   try {
-    fetched = normalizeRecall(await deps.recall(input.prompt));
+    fetched = normalizeRecall(await deps.recall(buildRecallQuery(input)));
   } catch {
     fetched = { hits: [], facts: [] };
   }
@@ -415,7 +666,21 @@ async function runHook(input, deps) {
     perFireCap: PER_FIRE_CAP,
     perConversationCap: PER_CONVERSATION_CAP
   });
-  const block = formatPointerBlock(selected, fetched.facts, fetched.exemplars);
+  let gateDecisions;
+  let injected = selected;
+  if (deps.recallGate && selected.length > 0) {
+    const g = deps.recallGate;
+    const toGate = g.maxCandidates ? selected.slice(0, g.maxCandidates) : selected;
+    gateDecisions = await Promise.all(
+      toGate.map(async (h) => ({ id: h.id, gate: await g.judge(input.prompt, `${h.label}
+${h.summary ?? ""}`) }))
+    );
+    if (g.mode === "live") {
+      const drop = new Set(gateDecisions.filter((d) => d.gate === "irrelevant").map((d) => d.id));
+      injected = selected.filter((h) => !drop.has(h.id));
+    }
+  }
+  const block = formatPointerBlock(injected, fetched.facts, fetched.exemplars);
   const estTokens = Math.ceil(block.length / 4);
   appendHookLog({
     ts: (/* @__PURE__ */ new Date()).toISOString(),
@@ -423,12 +688,13 @@ async function runHook(input, deps) {
     promptPreview: preview,
     gate,
     hits: hits.map((h) => ({ id: h.id, score: h.matchScore })),
-    wouldInject: selected.map((h) => h.id),
+    wouldInject: injected.map((h) => h.id),
     estTokens,
-    mode: deps.mode
+    mode: deps.mode,
+    ...gateDecisions ? { gateDecisions } : {}
   });
-  if (deps.mode === "live" && selected.length > 0) {
-    recordSurfaced(input.conversationId, selected.map((h) => h.id));
+  if (deps.mode === "live" && injected.length > 0) {
+    recordSurfaced(input.conversationId, injected.map((h) => h.id));
     return block;
   }
   return "";
@@ -449,12 +715,21 @@ async function main() {
     const payload = JSON.parse(raw);
     const prompt = typeof payload.prompt === "string" ? payload.prompt : "";
     const conversationId = typeof payload.session_id === "string" ? payload.session_id : "unknown";
+    const transcriptPath = typeof payload.transcript_path === "string" ? payload.transcript_path : void 0;
     if (!prompt) return;
+    if (!promptRecallEnabled()) return;
     const mode = process.env["NLM_HOOK_MODE"] === "live" ? "live" : "shadow";
     const runtime = hookRuntimeFromEnv();
+    const gateMode = parseRecallGateMode();
+    const gateUrl = process.env["OLLAMA_URL"] ?? "http://127.0.0.1:11434";
+    const gateTopN = Math.max(1, Number.parseInt(process.env["NLM_HOOK_RECALL_GATE_TOPN"] ?? "1", 10) || 1);
     const out = await runHook(
-      { prompt, conversationId },
-      { mode, recall: (q) => recallOverHttp(q, runtime, conversationId === "unknown" ? void 0 : conversationId) }
+      { prompt, conversationId, ...transcriptPath ? { transcriptPath } : {} },
+      {
+        mode,
+        recall: (q) => recallOverHttp(q, runtime, conversationId === "unknown" ? void 0 : conversationId),
+        ...gateMode ? { recallGate: { mode: gateMode, judge: makeOllamaGate(gateUrl), maxCandidates: gateTopN } } : {}
+      }
     );
     if (out) process.stdout.write(out);
   } catch {

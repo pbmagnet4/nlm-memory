@@ -96,7 +96,15 @@ function extractId(input) {
 }
 
 // src/core/hook/memo.ts
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 function stateDir() {

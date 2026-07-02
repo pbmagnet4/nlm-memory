@@ -21,7 +21,15 @@ function appendHookLog(entry) {
 }
 
 // src/core/hook/memo.ts
-import { existsSync, mkdirSync as mkdirSync2, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync as mkdirSync2,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { join as join2 } from "node:path";
 function stateDir() {
