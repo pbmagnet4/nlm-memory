@@ -47,6 +47,8 @@ describe.skipIf(!PG_TEST_URL)("PgSourceRegistry (PG)", () => {
     storage = PgStorage.create({ connectionString: PG_TEST_URL!, migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     pool = storage.pgPool();
+    const dbName = new URL(PG_TEST_URL!).pathname.slice(1);
+    await pool.query(`ALTER DATABASE "${dbName}" SET ivfflat.probes = 100`);
   });
 
   afterAll(async () => {

@@ -9,9 +9,10 @@
  * isolation; schema is applied on first setup() call.
  */
 
-import { describe } from "vitest";
+import { beforeAll, describe } from "vitest";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Pool } from "pg";
 import { runFactStoreContract } from "../../tests/contract/fact-store.contract.js";
 import type { FactStoreContractHarness } from "../../tests/contract/fact-store.contract.js";
 import { PgStorage } from "../../src/core/storage/pg-storage.js";
@@ -59,6 +60,15 @@ const harness: FactStoreContractHarness = {
 describe.skipIf(!PG_TEST_URL)(
   "PgStorage: fact-store contract",
   () => {
+    beforeAll(async () => {
+      const dbName = new URL(PG_TEST_URL!).pathname.slice(1);
+      const pool = new Pool({ connectionString: PG_TEST_URL! });
+      try {
+        await pool.query(`ALTER DATABASE "${dbName}" SET ivfflat.probes = 100`);
+      } finally {
+        await pool.end();
+      }
+    });
     runFactStoreContract(harness);
   },
 );
