@@ -24,10 +24,10 @@
  *   nlm digest   — print a daily-activity digest (or --telegram to post)
  */
 
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { homedir } from "node:os";
-import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, copyFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, copyFileSync, realpathSync } from "node:fs";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { Command } from "commander";
 import pkg from "../../package.json" with { type: "json" };
@@ -2330,7 +2330,14 @@ program
     console.log("Run `nlm restart` to apply — the current DB is archived aside, not deleted.");
   });
 
-program.parseAsync().catch((e) => {
-  console.error("nlm: fatal", e);
-  process.exit(1);
-});
+// Entrypoint guard: only parse argv when this file IS the executed script.
+// realpathSync resolves the npm bin symlink so the global `nlm` shim still
+// matches; without the guard, importing any helper from this module inside
+// vitest ran the CLI against the test runner's argv and exited the worker.
+const entryPath = process.argv[1];
+if (entryPath && import.meta.url === pathToFileURL(realpathSync(entryPath)).href) {
+  program.parseAsync().catch((e) => {
+    console.error("nlm: fatal", e);
+    process.exit(1);
+  });
+}
