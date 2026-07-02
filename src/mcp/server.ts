@@ -449,7 +449,7 @@ export async function getFactHistoryHandler(
   }
 }
 
-const CITE_SESSION_DESCRIPTION = `Log that you used a previously-surfaced session in your response. Pass the session ID. This lets NLM learn which surfaced sessions are actually useful, training a per-operator reranker over time. Call after writing your response, with one cite per surfaced session you actually drew from.`;
+const CITE_SESSION_DESCRIPTION = `Log that you used a previously-surfaced session in your response. Pass the session ID. This feeds the recall precision metric, which measures what fraction of surfaced sessions were actually useful. Call after writing your response, with one cite per surfaced session you actually drew from.`;
 
 const RECALL_DESCRIPTION = `Search prior AI sessions across every runtime the user has connected (Claude Code,
 Hermes, pi, Codex, Gemini, Aider). Local-first, fast (~200-400ms warm), idempotent,
