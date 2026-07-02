@@ -4,6 +4,7 @@
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -20,6 +21,17 @@ import { makeSession } from "../fixtures/sessions.js";
 import { FixedEmbedder } from "../fixtures/llm-stubs.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
+
+async function waitForLines(path: string, minLines: number, maxMs = 2000): Promise<void> {
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    try {
+      const content = await readFile(path, "utf8");
+      if (content.split("\n").filter((l) => l.trim()).length >= minLines) return;
+    } catch { /* file not yet created */ }
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
 
 function unit(values: number[]): Float32Array {
   const padded = new Float32Array(768);
@@ -314,8 +326,7 @@ describe("HTTP adapter", () => {
       headers: { "x-recall-source": "test-source" },
     });
     await app.request("/api/recall?q=hono&mode=keyword");
-    // logQuery is fire-and-forget; small await so the appendFile lands
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForLines(queryLogPath, 2);
 
     const res = await app.request("/api/recall/stats?days=7");
     expect(res.status).toBe(200);
@@ -356,7 +367,7 @@ describe("HTTP adapter", () => {
 
   it("GET /api/recall/recent returns tailed log entries", async () => {
     await app.request("/api/recall?q=pgvector&mode=keyword");
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForLines(queryLogPath, 1);
     const res = await app.request("/api/recall/recent?limit=5");
     expect(res.status).toBe(200);
     const body = (await res.json()) as { entries: { source: string; query: string }[] };
@@ -529,8 +540,7 @@ describe("HTTP adapter — fact recall", () => {
 
   it("GET /api/recall/facts records a fact query-log entry", async () => {
     await app.request("/api/recall/facts?subject=nlm-memory-ts&predicate=framework");
-    // logFactQuery is fire-and-forget; give the microtask a tick.
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForLines(factQueryLogPath, 1);
     const stats = await app.request("/api/recall/facts/stats?days=7");
     const body = (await stats.json()) as {
       total: number;
