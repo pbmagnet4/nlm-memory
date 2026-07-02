@@ -295,4 +295,80 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore search with supersedence", () => {
       expect(map.has("i_rs_new")).toBe(false);
     });
   });
+
+  describe("workstream SQL push (O-7 pg parity)", () => {
+    it("keywordSearch returns empty for empty workstreamIds", async () => {
+      const store = storage.sessions;
+      await store.insertSessionForTest(makeSession({ id: "ws_kw_a", label: "kafka pipeline", body: "kafka active" }));
+      const results = await store.keywordSearch("kafka", 10, { workstreamIds: [] });
+      expect(results).toHaveLength(0);
+    });
+
+    it("keywordSearch filters by workstreamIds when provided", async () => {
+      const store = storage.sessions;
+      const pool = storage.pgPool();
+
+      await pool.query("INSERT INTO workstreams (id, label) VALUES ('ws_p1', 'Project Alpha')");
+      await pool.query("INSERT INTO workstreams (id, label) VALUES ('ws_p2', 'Project Beta')");
+
+      await store.insertSessionForTest(makeSession({ id: "ws_kw_in", label: "kafka stream", body: "kafka active" }));
+      await store.insertSessionForTest(makeSession({ id: "ws_kw_out", label: "kafka bus", body: "kafka other" }));
+
+      await pool.query("UPDATE sessions SET workstream_id = 'ws_p1' WHERE id = 'ws_kw_in'");
+      await pool.query("UPDATE sessions SET workstream_id = 'ws_p2' WHERE id = 'ws_kw_out'");
+
+      const results = await store.keywordSearch("kafka", 10, { workstreamIds: ["ws_p1"] });
+      const ids = results.map((r) => r.sessionId);
+      expect(ids).toContain("ws_kw_in");
+      expect(ids).not.toContain("ws_kw_out");
+    });
+
+    it("semanticSearch returns empty for empty workstreamIds", async () => {
+      const store = storage.sessions;
+      const pool = storage.pgPool();
+      const vecStr = `[${Array(768).fill(0).map((_, i) => (i === 0 ? 1 : 0)).join(",")}]`;
+      await store.insertSessionForTest(makeSession({ id: "ws_sem_a", label: "semantic session" }));
+      await pool.query(
+        "INSERT INTO session_embedding_chunks (session_id, chunk_idx, embedding) VALUES ($1, 0, $2::vector)",
+        ["ws_sem_a", vecStr],
+      );
+      const q = new Float32Array(768);
+      q[0] = 1;
+      const results = await store.semanticSearch(q, 10, { workstreamIds: [] });
+      expect(results).toHaveLength(0);
+    });
+
+    it("semanticSearch filters by workstreamIds when provided", async () => {
+      const store = storage.sessions;
+      const pool = storage.pgPool();
+
+      await pool.query("INSERT INTO workstreams (id, label) VALUES ('ws_q1', 'Quantum Alpha')");
+      await pool.query("INSERT INTO workstreams (id, label) VALUES ('ws_q2', 'Quantum Beta')");
+
+      const vec = (a: number) =>
+        `[${Array(768).fill(0).map((_, i) => (i === 0 ? a : 0)).join(",")}]`;
+
+      await store.insertSessionForTest(makeSession({ id: "ws_sem_in", label: "quantum in" }));
+      await store.insertSessionForTest(makeSession({ id: "ws_sem_out", label: "quantum out" }));
+
+      await pool.query(
+        "INSERT INTO session_embedding_chunks (session_id, chunk_idx, embedding) VALUES ($1, 0, $2::vector)",
+        ["ws_sem_in", vec(1)],
+      );
+      await pool.query(
+        "INSERT INTO session_embedding_chunks (session_id, chunk_idx, embedding) VALUES ($1, 0, $2::vector)",
+        ["ws_sem_out", vec(1)],
+      );
+
+      await pool.query("UPDATE sessions SET workstream_id = 'ws_q1' WHERE id = 'ws_sem_in'");
+      await pool.query("UPDATE sessions SET workstream_id = 'ws_q2' WHERE id = 'ws_sem_out'");
+
+      const q = new Float32Array(768);
+      q[0] = 1;
+      const results = await store.semanticSearch(q, 10, { workstreamIds: ["ws_q1"] });
+      const ids = results.map((r) => r.sessionId);
+      expect(ids).toContain("ws_sem_in");
+      expect(ids).not.toContain("ws_sem_out");
+    });
+  });
 });

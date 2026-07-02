@@ -267,15 +267,14 @@ async function buildStack() {
     exemplarStore: storage.exemplars,
     codeEmbedder: buildCodeEmbedder(),
     installScope: scope,
-    resolveWorkstreamSessions: async (idOrLabel: string): Promise<Set<string>> => {
+    resolveWorkstreamMembers: async (idOrLabel: string): Promise<ReadonlyArray<string>> => {
       const all = await wsStore.listAll();
       const byId = new Map(all.map((w) => [w.id, { id: w.id, mergedInto: w.mergedInto }]));
       const target = all.find((w) => w.id === idOrLabel)
         ?? all.find((w) => normalizeLabel(w.label) === normalizeLabel(idOrLabel));
-      if (!target) return new Set();
+      if (!target) return [];
       const survivor = resolveWorkstreamId(target.id, byId);
-      const members = all.filter((w) => resolveWorkstreamId(w.id, byId) === survivor).map((w) => w.id);
-      return new Set(await store.listSessionIdsByWorkstreams(members));
+      return all.filter((w) => resolveWorkstreamId(w.id, byId) === survivor).map((w) => w.id);
     },
   });
   const factRecall = new FactRecallService({ factStore: facts, llm: embedder });

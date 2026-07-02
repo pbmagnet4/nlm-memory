@@ -683,21 +683,24 @@ export class SqliteSessionStore implements SessionStore {
       .all(blob, chunkK);
 
     // Max-pool: keep the smallest distance (highest cosine) per session,
-    // filtering out superseded and replaced sessions.
+    // filtering out superseded, replaced, and out-of-workstream sessions.
     const best = new Map<string, number>();
     const excludedSessionIds = new Set<string>();
-    // First pass: collect all unique session IDs to check their status
+    const wsIds = opts?.workstreamIds;
+    // First pass: collect all unique session IDs to check their status + workstream
     const uniqueSessionIds = [...new Set(rows.map((r) => r.session_id))];
     if (uniqueSessionIds.length > 0) {
       const placeholders = uniqueSessionIds.map(() => "?").join(",");
       const statusRows = this.db
-        .prepare<string[], { id: string; status: string }>(
-          `SELECT id, status FROM sessions WHERE id IN (${placeholders})`,
+        .prepare<string[], { id: string; status: string; workstream_id: string | null }>(
+          `SELECT id, status, workstream_id FROM sessions WHERE id IN (${placeholders})`,
         )
         .all(...uniqueSessionIds);
       const excludeSuperseded = opts?.includeSuperseded !== true;
       for (const sr of statusRows) {
-        if (sr.status === "replaced" || (excludeSuperseded && sr.status === "superseded")) {
+        const statusExcluded = sr.status === "replaced" || (excludeSuperseded && sr.status === "superseded");
+        const wsExcluded = wsIds?.length ? (sr.workstream_id === null || !wsIds.includes(sr.workstream_id)) : false;
+        if (statusExcluded || wsExcluded) {
           excludedSessionIds.add(sr.id);
         }
       }
@@ -728,6 +731,8 @@ export class SqliteSessionStore implements SessionStore {
     limit: number,
     opts?: SearchOptions,
   ): Promise<ReadonlyArray<KeywordNeighbor>> {
+    const wsIds = opts?.workstreamIds;
+    if (wsIds !== undefined && wsIds.length === 0) return [];
     const matchExpr = toMatchExpression(query);
     if (!matchExpr) return [];
     const k = Math.max(1, Math.trunc(limit));
@@ -735,18 +740,27 @@ export class SqliteSessionStore implements SessionStore {
       opts?.includeSuperseded === true
         ? "AND s.status != 'replaced'"
         : "AND s.status NOT IN ('superseded', 'replaced')";
+    let wsFilter = "";
+    const params: unknown[] = [matchExpr];
+    if (wsIds?.length) {
+      const ph = wsIds.map(() => "?").join(",");
+      wsFilter = `AND s.workstream_id IN (${ph})`;
+      params.push(...wsIds);
+    }
+    params.push(k);
     const rows = this.db
-      .prepare<[string, number], KeywordRow>(`
+      .prepare<unknown[], KeywordRow>(`
         SELECT s.id AS session_id,
                -bm25(sessions_fts, 10.0, 4.0, 1.0) AS score
         FROM sessions_fts
         JOIN sessions s ON s.rowid = sessions_fts.rowid
         WHERE sessions_fts MATCH ?
           ${statusFilter}
+          ${wsFilter}
         ORDER BY score DESC
         LIMIT ?
       `)
-      .all(matchExpr, k);
+      .all(...params);
     return rows.map((r) => ({ sessionId: r.session_id, score: r.score }));
   }
 

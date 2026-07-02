@@ -33,6 +33,7 @@ export interface KeywordNeighbor {
  */
 export interface SearchOptions {
   readonly includeSuperseded?: boolean;
+  readonly workstreamIds?: ReadonlyArray<string>;
 }
 
 export interface SessionStore {
