@@ -22,6 +22,7 @@ import type {
 } from "@ports/llm-client.js";
 import { ClassifierSchemaError, LLMUnreachableError } from "@ports/llm-client.js";
 import { classifierNeedsThinkDisabled } from "./classifier-box.js";
+import { buildNamingSystemPrompt, parseLongestLabel } from "./naming.js";
 import {
   CLASSIFIER_SYSTEM_PROMPT,
   CLASSIFIER_JSON_SCHEMA,
@@ -268,10 +269,7 @@ export class OllamaClient implements LLMClient {
     candidates: ReadonlyArray<WorkstreamCandidateHint>,
   ): Promise<string | null> {
     if (candidates.length === 0) return null;
-    const list = candidates.map((c) => `- ${c.label}`).join("\n");
-    const sys =
-      `You label a work session by which project it belongs to. Known projects:\n${list}\n` +
-      `If it belongs to NONE of these, answer "none". Reply with ONLY the exact project name from the list, or "none".`;
+    const sys = buildNamingSystemPrompt(candidates);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.classifyTimeoutMs);
     const needsThinkOff = classifierNeedsThinkDisabled(this.classifyModel);
@@ -292,16 +290,8 @@ export class OllamaClient implements LLMClient {
       });
       if (!res.ok) return null;
       const data = (await res.json()) as ChatResponse;
-      const out = (data.message?.content ?? "").toLowerCase();
-      let best: string | null = null;
-      let bestLen = 0;
-      for (const c of candidates) {
-        if (out.includes(c.label.toLowerCase()) && c.label.length > bestLen) {
-          best = c.label;
-          bestLen = c.label.length;
-        }
-      }
-      return best;
+      const out = data.message?.content ?? "";
+      return parseLongestLabel(out, candidates);
     } catch {
       return null;
     } finally {
