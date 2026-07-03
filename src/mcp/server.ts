@@ -1184,7 +1184,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
           query: args.query,
           entity: null,
           kind: null,
-          mode: "keyword",
+          mode: "semantic",
           limit: args.k ?? 5,
           nResults: allIds.length,
           returnedIds: allIds,

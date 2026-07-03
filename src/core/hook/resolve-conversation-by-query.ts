@@ -19,7 +19,7 @@ import { closeSync, fstatSync, openSync, readdirSync, readSync, statSync } from 
 import { join } from "node:path";
 import { homedir } from "node:os";
 
-const MIN_QUERY_LEN = 8;
+const MIN_QUERY_LEN = 12;
 const TAIL_BYTES = 64 * 1024;
 const MAX_CANDIDATES = 5;
 
