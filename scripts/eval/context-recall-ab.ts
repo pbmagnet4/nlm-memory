@@ -132,7 +132,11 @@ const JUDGE_TIMEOUT_MS = 90_000;
 
 async function topHit(args: Args, query: string): Promise<string | null> {
   try {
-    const url = `http://localhost:${args.port}/api/recall?q=${encodeURIComponent(query)}&limit=1`;
+    // mode=keyword matches the production hook path this flag changes
+    // (recall-over-http.ts recalls keyword-only; hybrid is too slow for the
+    // hot path). Measuring the default hybrid mode would grade a code path
+    // the flag never touches.
+    const url = `http://localhost:${args.port}/api/recall?q=${encodeURIComponent(query)}&mode=keyword&limit=1`;
     const res = await fetch(url, { signal: AbortSignal.timeout(RECALL_TIMEOUT_MS) });
     const data = (await res.json()) as { results?: Array<{ id?: string }> };
     return data.results?.[0]?.id ?? null;
