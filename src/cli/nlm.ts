@@ -201,6 +201,9 @@ function buildCodeEmbedder(): CodeEmbedder {
       ...(process.env["NLM_EMBED_API_KEY"] ? { apiKey: process.env["NLM_EMBED_API_KEY"] } : {}),
     });
   }
+  // The bundled provider has no code-embedding engine (CodeRankEmbed has no ONNX equivalent
+  // in slice 1). Fall through to the Ollama default: the startup probe will fail soft and
+  // the code-exemplar lane stays unknown, which is the intended degradation.
   return new OllamaCodeEmbedder({ baseUrl: ollamaUrl() });
 }
 

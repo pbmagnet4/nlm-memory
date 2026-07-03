@@ -9,6 +9,7 @@
  */
 
 import { DEFAULT_OPENAI_EMBED_MODEL } from "./openai-embedder-client.js";
+import { DEFAULT_MODEL_REPO } from "./bundled-embedder-client.js";
 
 const DEFAULT_OLLAMA_EMBED_MODEL = "nomic-embed-text";
 
@@ -23,9 +24,13 @@ export function resolveEmbedderInfo(
   dim?: number,
 ): EmbedderDescriptor {
   const provider = (env["NLM_EMBED_PROVIDER"] ?? "ollama").toLowerCase();
-  const model =
-    provider === "openai"
-      ? (env["NLM_EMBED_MODEL"] ?? DEFAULT_OPENAI_EMBED_MODEL)
-      : (env["NLM_EMBED_MODEL"] ?? DEFAULT_OLLAMA_EMBED_MODEL);
+  let model: string;
+  if (provider === "openai") {
+    model = env["NLM_EMBED_MODEL"] ?? DEFAULT_OPENAI_EMBED_MODEL;
+  } else if (provider === "bundled") {
+    model = env["NLM_EMBED_MODEL"] ?? DEFAULT_MODEL_REPO;
+  } else {
+    model = env["NLM_EMBED_MODEL"] ?? DEFAULT_OLLAMA_EMBED_MODEL;
+  }
   return { provider, model, dims: dim ?? 768 };
 }
