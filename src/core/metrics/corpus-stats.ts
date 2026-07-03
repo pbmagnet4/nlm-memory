@@ -17,7 +17,9 @@ export interface CorpusStats {
 export interface CorpusStatsDeps {
   getDbBytes(): number;
   getSessions(): number;
-  getBodyStats(): { bodyBytes: number; cappedBodies: number };
+  getBodyStats():
+    | { bodyBytes: number; cappedBodies: number }
+    | Promise<{ bodyBytes: number; cappedBodies: number }>;
   getEntityStats(): { entities: number; hapaxEntities: number };
   getFactStats(): { factsActive: number; factsSuperseded: number; factsRetired: number };
   getMarkers(): number;
@@ -27,7 +29,7 @@ export interface CorpusStatsDeps {
 export async function computeCorpusStats(deps: CorpusStatsDeps): Promise<CorpusStats> {
   const dbBytes = deps.getDbBytes();
   const sessions = deps.getSessions();
-  const { bodyBytes, cappedBodies } = deps.getBodyStats();
+  const { bodyBytes, cappedBodies } = await deps.getBodyStats();
   const { entities, hapaxEntities } = deps.getEntityStats();
   const { factsActive, factsSuperseded, factsRetired } = deps.getFactStats();
   const markers = deps.getMarkers();
@@ -60,17 +62,32 @@ export function sqliteCorpusStatsDeps(db: SqliteLike, dbPath: string): CorpusSta
       const row = db.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number };
       return row.n;
     },
-    getBodyStats() {
-      const row = db
-        .prepare(
-          `SELECT
-             COALESCE(SUM(LENGTH(body)), 0) AS bodyBytes,
-             COUNT(CASE WHEN LENGTH(body) >= 200000 THEN 1 END) AS cappedBodies
-           FROM sessions
-           WHERE body IS NOT NULL`,
-        )
-        .get() as { bodyBytes: number; cappedBodies: number };
-      return { bodyBytes: row.bodyBytes, cappedBodies: row.cappedBodies };
+    async getBodyStats() {
+      // better-sqlite3 is synchronous, and one SUM(LENGTH(body)) over the whole
+      // table scans every overflow page (~600ms at 463MB, seconds at the alert
+      // threshold) on the serving event loop. Chunk by rowid windows and yield
+      // between chunks so each stall stays ~tens of ms.
+      const CHUNK_ROWS = 500;
+      const maxRow = db.prepare("SELECT COALESCE(MAX(rowid), 0) AS m FROM sessions").get() as {
+        m: number;
+      };
+      let bodyBytes = 0;
+      let cappedBodies = 0;
+      for (let lo = 0; lo < maxRow.m; lo += CHUNK_ROWS) {
+        const row = db
+          .prepare(
+            `SELECT
+               COALESCE(SUM(LENGTH(body)), 0) AS bodyBytes,
+               COUNT(CASE WHEN LENGTH(body) >= 200000 THEN 1 END) AS cappedBodies
+             FROM sessions
+             WHERE rowid > ? AND rowid <= ? AND body IS NOT NULL`,
+          )
+          .get(lo, lo + CHUNK_ROWS) as { bodyBytes: number; cappedBodies: number };
+        bodyBytes += row.bodyBytes;
+        cappedBodies += row.cappedBodies;
+        await new Promise<void>((resolveYield) => setImmediate(resolveYield));
+      }
+      return { bodyBytes, cappedBodies };
     },
     getEntityStats() {
       const row = db

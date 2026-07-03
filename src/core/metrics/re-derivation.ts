@@ -36,6 +36,8 @@ export interface ReDerivationPair {
 export interface ReDerivationReport {
   readonly rate: number;
   readonly pairs: ReadonlyArray<ReDerivationPair>;
+  /** Denominator: entity-sharing session pairs eligible for the rate. */
+  readonly eligible: number;
 }
 
 const JACCARD_FLOOR = 0.5;
@@ -129,5 +131,5 @@ export async function computeReDerivationRate(
       }
     }
   }
-  return { rate: eligible ? pairs.length / eligible : 0, pairs };
+  return { rate: eligible ? pairs.length / eligible : 0, pairs, eligible };
 }

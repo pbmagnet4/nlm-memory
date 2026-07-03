@@ -590,7 +590,7 @@ program
             const report = await computeReDerivationRate(rdDeps, 42);
             appendFileSync(
               rederivTrendPath,
-              JSON.stringify({ ts, windowDays: 42, rate: report.rate, pairs: report.pairs.length }) + "\n",
+              JSON.stringify({ ts, windowDays: 42, rate: report.rate, pairCount: report.pairs.length, eligible: report.eligible }) + "\n",
               "utf8",
             );
           }
