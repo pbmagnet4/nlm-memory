@@ -66,7 +66,7 @@ export class PgEntityStore implements EntityStore {
            SELECT first_seen_session FROM entities WHERE canonical = ANY($1)
            UNION
            SELECT last_seen_session  FROM entities WHERE canonical = ANY($1)
-         ) AND id IS NOT NULL`,
+         )`,
         [[source, target]],
       );
 

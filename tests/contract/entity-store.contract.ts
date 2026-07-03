@@ -160,6 +160,20 @@ export function runEntityStoreContract(h: EntityStoreContractHarness): void {
         expect(row?.firstSeenSession).toBe("sess_early");
         expect(row?.lastSeenSession).toBe("sess_late");
       });
+
+      it("leaves target first/last_seen unchanged when the source was never seen (NULL columns)", async () => {
+        // A NULL first/last_seen rides through the widening subquery's IN list;
+        // SQL three-valued logic must skip it rather than clobber the target.
+        await h.seedSession(storage, "sess_a", "2026-03-01T00:00:00Z");
+        await h.seedEntity(storage, "source-ent", {});
+        await h.seedEntity(storage, "target-ent", { firstSeen: "sess_a", lastSeen: "sess_a" });
+
+        await storage.entities.merge("source-ent", "target-ent");
+
+        const row = await h.getEntityRow(storage, "target-ent");
+        expect(row?.firstSeenSession).toBe("sess_a");
+        expect(row?.lastSeenSession).toBe("sess_a");
+      });
     });
 
     describe("error cases", () => {

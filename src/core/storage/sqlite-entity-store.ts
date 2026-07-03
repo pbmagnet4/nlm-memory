@@ -65,7 +65,7 @@ export class SqliteEntityStore implements EntityStore {
              SELECT first_seen_session FROM entities WHERE canonical IN (?, ?)
              UNION
              SELECT last_seen_session  FROM entities WHERE canonical IN (?, ?)
-           ) AND id IS NOT NULL`,
+           )`,
         )
         .all(source, target, source, target);
 
