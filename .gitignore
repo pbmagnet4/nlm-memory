@@ -29,3 +29,8 @@ CLAUDE.md
 # throwaway eval scratch, never publish
 scripts/eval/_r3e-*.ts
 scripts/eval/judge-calibration.ts
+
+# Payload build artifacts (release assets built by scripts/build-payload.sh)
+.payload-cache/
+nlm-payload-*.tar.gz
+latest.json
