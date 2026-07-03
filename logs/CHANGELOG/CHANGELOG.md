@@ -9,6 +9,8 @@ Session-level log per session protocol. Cap: 10 entries — archive older to `CH
 
 **State:** Suite 1789 green. +14d re-measure task filed on the board (pulls/day up, usefulness@pull >= 60%, scripts/eval/pull-usefulness.ts now joins by conversation id).
 
+**Wave 2 addendum (same session): #354 executed as FIX, scoped to model provenance** (2 commits, suite 1793). Decision rationale on the fix-or-fence grant: the corpus was incomplete, not broken. 340/348 exemplars came from session ingest where the adapter never surfaced the JSONL model field; the fix threads message.model (last assistant turn per chunk, chunk-level granularity documented) through SessionChunk -> scheduler -> capture into code_exemplars.model. outcome needed no fix (pass is definitional for commit-capture; the code-signal path already records real failures). survived stays deferred WITH trigger (no writer anywhere; pruneReverted consumer live and idle; trigger = measured exemplar recall usage or observed reverted-code pollution). Legacy rows stay unknown, no truthful backfill exists. Controller gate caught the first commit's plumbing dead at the scheduler construction site; the fix commit carries a mutation-verified integration readback. #337/#346 stay parked (lane NOT fenced), trigger now concrete: model-known corpus n>=100 or a survived writer.
+
 **Next:** #354 exemplar model provenance wave (decision executed: FIX scoped to model; outcome already truthful by definition; survived deferred with trigger, pruneReverted stays wired), U3 benchmark assembly, #348 scoping design (design-only, Edward sign-off gate).
 
 ## 2026-07-03 - Session B: board triage, context-recall verdict (no-ship), bundled embedder shipped (#363 slice 1)
