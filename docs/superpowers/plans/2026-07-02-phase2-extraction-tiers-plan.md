@@ -184,7 +184,7 @@ export async function runClassifierFixtureEval(
 - How to measure YOUR lane: `nlm eval --classifier` (minutes, shipped gold) and `npm run bench:classifier` (LongMemEval public dataset, hours, retrieval-level attribution).
 - A baselines table with columns (tier, example model, schema validity, label accuracy, entity F1, decision F1, calibration, p50 latency) and a `TBD pending baseline runs` marker for rows not yet measured: DO NOT invent numbers. The operator (not this wave) fills rows from real runs.
 - The upgrade path: measure, swap lane env vars, `nlm reprocess --dry-run`, reprocess, and what improves (labels, entities, facts) vs what does not (workstream bindings, old citations).
-- Honest limitations: provenance starts NULL for pre-tracking corpora; reprocess costs one classify call per session; the 97.2 R@5 baseline is corpus-specific per methodology doc.
+- Honest limitations: provenance starts NULL for pre-tracking corpora; reprocess costs one classify call per session; the corpus-specific R@5 baseline (90.0% personal corpus; the 97.2% figure is the public LongMemEval-S run, corrected 2026-07-03) per methodology doc.
 
 - [ ] **Step 1: Write docs, run a docs-only gate (typecheck+test untouched but run anyway), commit:** `docs: classifier tier expectations and upgrade runbook`
 

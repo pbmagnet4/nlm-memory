@@ -29,7 +29,7 @@ Eight tightly-scoped improvements to NLM's recall stack, grouped into three comm
 | semantic | 68.5% | 87.0% | 91.0% |
 | hybrid | 83.5% | 93.5% | 96.5% |
 
-(Keyword R@5 = 96.0% body-only at n=200; the README's headline 97.2% is on the personal 14-month corpus with classifier-in-the-loop, not directly comparable.)
+(Keyword R@5 = 96.0% body-only at n=200. Correction 2026-07-03: the README's 97.2% headline is the public LongMemEval-S n=500 hybrid body-only run, not a personal-corpus number; the personal-corpus figure is 90.0%. See docs/benchmarks.md.)
 
 ## After merge
 
