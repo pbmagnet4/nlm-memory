@@ -83,6 +83,10 @@ export function suggestMerges(
     safeGroups.get(key)!.push(e);
   }
 
+  // Emission-order invariant the CLI applier depends on: every pair that uses
+  // an entity as TARGET is emitted before the (single) pair that consumes it as
+  // SOURCE, so sequential application never merges into an already-retired row.
+  // Reordering emissions (or applying suggestions out of list order) breaks this.
   const suggestions: MergeSuggestion[] = [];
   const consumedAsSource = new Set<string>();
 
