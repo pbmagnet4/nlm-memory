@@ -28,7 +28,7 @@
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { homedir } from "node:os";
-import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, copyFileSync, realpathSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, copyFileSync, realpathSync, appendFileSync } from "node:fs";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { Command } from "commander";
 import pkg from "../../package.json" with { type: "json" };
@@ -92,6 +92,9 @@ import { backfillExemplarEmbeddings } from "../core/exemplars/embed-backfill.js"
 import { warmCodeEmbedder } from "../core/exemplars/warm-embedder.js";
 import { markWarm } from "../core/health/warmup-state.js";
 import { setLaneHealth } from "../core/health/embedding-lane-state.js";
+import { setCorpusSnapshot, corpusSnapshot } from "../core/health/corpus-state.js";
+import { computeCorpusStats, sqliteCorpusStatsDeps, parseCorpusThresholds, thresholdState } from "../core/metrics/corpus-stats.js";
+import { computeReDerivationRate, sqliteReDerivationDeps } from "../core/metrics/re-derivation.js";
 import { reconcileLane } from "../core/embedding/embedding-config.js";
 import type { EmbeddingConfigStore, EmbeddingLaneConfig } from "../core/embedding/embedding-config.js";
 import { backfillFacts } from "../core/facts/backfill-facts.js";
@@ -161,6 +164,15 @@ function workDigestEnv(): { idleThresholdMin: number; deepBlockMin: number } {
     idleThresholdMin: Number.isFinite(idle) && idle > 0 ? idle : 5,
     deepBlockMin: Number.isFinite(deep) && deep > 0 ? deep : 25,
   };
+}
+
+const TREND_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+
+export function shouldAppendTrend(lastLineTs: string | null, now: number): boolean {
+  if (lastLineTs === null) return true;
+  const parsed = Date.parse(lastLineTs);
+  if (!Number.isFinite(parsed)) return true;
+  return now - parsed >= TREND_INTERVAL_MS;
 }
 
 function loadTopicProvider(): TopicProvider {
@@ -530,6 +542,67 @@ program
       void signals.pruneOlderThan(cutoff).catch(() => { /* prune is best-effort */ });
     }, SIGNAL_PRUNE_INTERVAL_MS);
     signalPruneTimer.unref();
+
+    // Corpus monitor: 24h stats job + weekly re-derivation trend. SQLite only.
+    // First run is delayed ~60s so warmup finishes first; then repeats every 24h.
+    if (!(storage instanceof PgStorage)) {
+      const CORPUS_MONITOR_INTERVAL_MS = 24 * 60 * 60 * 1000;
+      const CORPUS_MONITOR_INITIAL_DELAY_MS = 60 * 1000;
+      const nlmDataDir = join(homedir(), ".nlm");
+      const corpusStatsPath = join(nlmDataDir, "corpus-stats.jsonl");
+      const rederivTrendPath = join(nlmDataDir, "re-derivation-trend.jsonl");
+
+      const runCorpusMonitor = async () => {
+        try {
+          const sqliteStorage = storage as SqliteStorage;
+          const rawDb = sqliteStorage.rawDb();
+          const deps = sqliteCorpusStatsDeps(rawDb, dbPath());
+          const stats = await computeCorpusStats(deps);
+          const thresholds = parseCorpusThresholds(process.env);
+          const state = thresholdState(stats.dbBytes, thresholds);
+          const ts = new Date().toISOString();
+          // hapaxEntities derives from the denormalized entities.session_count column,
+          // which drifts (~6% today) until the entity-merge primitive recomputes counts
+          // exactly. This is a monitoring approximation, not ground truth.
+          const snap = { ...stats, state, lastComputedAt: ts };
+          setCorpusSnapshot(snap);
+          mkdirSync(nlmDataDir, { recursive: true });
+          appendFileSync(corpusStatsPath, JSON.stringify({ ts, ...stats, state }) + "\n", "utf8");
+          if (state === "warn" || state === "alert") {
+            console.error(`[corpus-monitor] ${state}: db is ${stats.dbBytes} bytes`);
+          }
+
+          const now = Date.now();
+          let lastTrendTs: string | null = null;
+          try {
+            const trendContent = readFileSync(rederivTrendPath, "utf8");
+            const lines = trendContent.split("\n").filter(Boolean);
+            const lastLine = lines[lines.length - 1];
+            if (lastLine) {
+              const parsed = JSON.parse(lastLine) as { ts?: string };
+              lastTrendTs = typeof parsed.ts === "string" ? parsed.ts : null;
+            }
+          } catch {
+            // file absent or unreadable; treat as no prior entry
+          }
+          if (shouldAppendTrend(lastTrendTs, now)) {
+            const rdDeps = sqliteReDerivationDeps(rawDb);
+            const report = await computeReDerivationRate(rdDeps, 42);
+            appendFileSync(
+              rederivTrendPath,
+              JSON.stringify({ ts, windowDays: 42, rate: report.rate, pairs: report.pairs.length }) + "\n",
+              "utf8",
+            );
+          }
+        } catch (e) {
+          console.error(`[corpus-monitor] error: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      };
+
+      const corpusMonitorTimer = setInterval(() => { void runCorpusMonitor(); }, CORPUS_MONITOR_INTERVAL_MS);
+      corpusMonitorTimer.unref();
+      setTimeout(() => { void runCorpusMonitor(); }, CORPUS_MONITOR_INITIAL_DELAY_MS).unref();
+    }
 
     // Memo sweep runs independently of the transcript scheduler — it's the
     // backstop for SessionEnd hook unreliability (crashes, kill -9, IDE
@@ -2446,6 +2519,35 @@ program
     const warns = checks.filter((c) => c.status === "warn").length;
     console.log(anyFail ? "\nVERIFY: FAIL" : warns > 0 ? `\nVERIFY: PASS (${warns} warning(s))` : "\nVERIFY: PASS");
     if (anyFail) process.exit(1);
+  });
+
+program
+  .command("health")
+  .description("Print corpus monitoring snapshot from the running daemon (null before first 24h run)")
+  .action(async () => {
+    type CorpusField = { state: string; dbBytes: number; sessions: number; entities: number; lastComputedAt: string };
+    let corpus: CorpusField | null = null;
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 1_500);
+      const res = await fetch(`http://localhost:${port()}/api/health`, { signal: ctrl.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        const body = (await res.json()) as { corpus?: CorpusField | null };
+        corpus = body.corpus ?? null;
+      }
+    } catch {
+      // daemon not reachable
+    }
+    if (corpus) {
+      console.log(`corpus.state:          ${corpus.state}`);
+      console.log(`corpus.dbBytes:        ${corpus.dbBytes}`);
+      console.log(`corpus.sessions:       ${corpus.sessions}`);
+      console.log(`corpus.entities:       ${corpus.entities}`);
+      console.log(`corpus.lastComputedAt: ${corpus.lastComputedAt}`);
+    } else {
+      console.log("corpus: (not yet available; daemon runs the first check ~60s after start)");
+    }
   });
 
 program

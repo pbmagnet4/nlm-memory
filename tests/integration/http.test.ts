@@ -8,6 +8,7 @@ import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { resetForTests, setCorpusSnapshot } from "../../src/core/health/corpus-state.js";
 import type { Hono } from "hono";
 import { RecallService } from "../../src/core/recall/recall-service.js";
 import { FactRecallService } from "../../src/core/recall-facts/fact-recall-service.js";
@@ -107,6 +108,43 @@ describe("HTTP adapter", () => {
     expect(typeof body.warmup.fts5).toBe("boolean");
     expect(typeof body.warmup.textEmbedder).toBe("boolean");
     expect(typeof body.warmup.ready).toBe("boolean");
+  });
+
+  describe("corpus field in /api/health", () => {
+    afterEach(() => resetForTests());
+
+    it("corpus is null before any snapshot is set", async () => {
+      resetForTests();
+      const res = await app.request("/api/health");
+      const body = (await res.json()) as { corpus: unknown };
+      expect(body.corpus).toBeNull();
+    });
+
+    it("corpus reflects the snapshot when set", async () => {
+      setCorpusSnapshot({
+        state: "warn",
+        dbBytes: 1_200_000_000,
+        sessions: 100,
+        bodyBytes: 50_000_000,
+        cappedBodies: 3,
+        entities: 500,
+        hapaxEntities: 280,
+        factsActive: 40,
+        factsSuperseded: 5,
+        factsRetired: 2,
+        markers: 120,
+        exemplars: 10,
+        lastComputedAt: "2026-07-03T00:00:00.000Z",
+      });
+      const res = await app.request("/api/health");
+      const body = (await res.json()) as { corpus: { state: string; dbBytes: number; sessions: number; entities: number; lastComputedAt: string } };
+      expect(body.corpus).not.toBeNull();
+      expect(body.corpus.state).toBe("warn");
+      expect(body.corpus.dbBytes).toBe(1_200_000_000);
+      expect(body.corpus.sessions).toBe(100);
+      expect(body.corpus.entities).toBe(500);
+      expect(body.corpus.lastComputedAt).toBe("2026-07-03T00:00:00.000Z");
+    });
   });
 
   it("GET /api/recall?q=pgvector returns the matching session", async () => {
