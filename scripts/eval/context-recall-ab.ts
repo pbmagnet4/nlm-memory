@@ -123,14 +123,40 @@ function reconstruct(transcript: string, prompt: string): { context: string; res
   return { context: ctx.join(" ").trim(), response: resp.join(" ").slice(0, 1200) };
 }
 
+// The daemon embeds recall queries through a shared LM Studio lane that can be
+// saturated by concurrent bulk jobs; without a timeout one stuck request hangs
+// the whole run (observed live: 20+ min silent stall). Timed-out fires are
+// skipped, never tallied.
+const RECALL_TIMEOUT_MS = 15_000;
+const JUDGE_TIMEOUT_MS = 90_000;
+
 async function topHit(args: Args, query: string): Promise<string | null> {
   try {
     const url = `http://localhost:${args.port}/api/recall?q=${encodeURIComponent(query)}&limit=1`;
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(RECALL_TIMEOUT_MS) });
     const data = (await res.json()) as { results?: Array<{ id?: string }> };
     return data.results?.[0]?.id ?? null;
   } catch {
     return null;
+  }
+}
+
+/** Judge with a deadline; null means timed out (skip the fire, do not tally). */
+async function judgeWithDeadline(
+  args: Args,
+  triple: { prompt: string; context: string; response: string },
+): Promise<Verdict | null> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), JUDGE_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([
+      judgeUsefulness(args.ollamaUrl, args.model, triple).catch((): Verdict => "unused"),
+      timeout,
+    ]);
+  } finally {
+    clearTimeout(timer!);
   }
 }
 
@@ -186,8 +212,9 @@ async function main(): Promise<void> {
     if (!bareHit && !augHit) continue;
     if (bareHit !== augHit) augChanged += 1;
 
-    const bareV = await judgeUsefulness(args.ollamaUrl, args.model, { prompt: f.prompt, context: ctxOf(bareHit), response: rec.response }).catch((): Verdict => "unused");
-    const augV = await judgeUsefulness(args.ollamaUrl, args.model, { prompt: f.prompt, context: ctxOf(augHit), response: rec.response }).catch((): Verdict => "unused");
+    const bareV = await judgeWithDeadline(args, { prompt: f.prompt, context: ctxOf(bareHit), response: rec.response });
+    const augV = await judgeWithDeadline(args, { prompt: f.prompt, context: ctxOf(augHit), response: rec.response });
+    if (bareV === null || augV === null) continue;
     tally.bare[bareV] += 1;
     tally.aug[augV] += 1;
     scored += 1;
