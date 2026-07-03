@@ -5,7 +5,7 @@
  * page — which is the path that actually matters for adoption telemetry.
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -124,5 +124,116 @@ describe("MCP recall handlers write telemetry", () => {
     const entry = JSON.parse(await waitForLine(process.env["NLM_FACT_QUERY_LOG"] as string));
     expect(entry.source).toBe("mcp");
     expect(entry.runtime).toBe("claude-code");
+  });
+});
+
+describe("MCP recall handlers log resolved conversation_id", () => {
+  let tmp: string;
+  let projectsDir: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "nlm-convid-"));
+    projectsDir = join(tmp, "projects");
+    mkdirSync(projectsDir, { recursive: true });
+    process.env["NLM_QUERY_LOG"] = join(tmp, "query_log.jsonl");
+    process.env["NLM_FACT_QUERY_LOG"] = join(tmp, "fact_query_log.jsonl");
+    process.env["NLM_CLAUDE_PROJECTS_ROOT"] = projectsDir;
+  });
+
+  afterEach(() => {
+    delete process.env["NLM_QUERY_LOG"];
+    delete process.env["NLM_FACT_QUERY_LOG"];
+    delete process.env["NLM_CLAUDE_PROJECTS_ROOT"];
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("recall_sessions logs conversation_id when query resolves to a transcript", async () => {
+    const query = "pgvector FTS5 performance index";
+    const projDir = join(projectsDir, "proj-a");
+    mkdirSync(projDir);
+    writeFileSync(
+      join(projDir, "conv-target.jsonl"),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "recall_sessions", input: { query } }] } }) + "\n",
+    );
+
+    const deps = {
+      recall: {
+        search: async () => ({ query, entity: null, kind: null, mode: "keyword", limit: 10, total: 1, results: [{ id: "s1" }] }),
+      },
+    } as unknown as McpDeps;
+
+    await recallSessionsHandler(deps, { query, mode: "keyword", limit: 10 });
+
+    const entry = JSON.parse(await waitForLine(process.env["NLM_QUERY_LOG"] as string));
+    expect(entry.conversation_id).toBe("conv-target");
+  });
+
+  it("recall_sessions omits conversation_id when query does not match any transcript", async () => {
+    const deps = {
+      recall: {
+        search: async () => ({ query: "hono middleware routing", entity: null, kind: null, mode: "keyword", limit: 10, total: 0, results: [] }),
+      },
+    } as unknown as McpDeps;
+
+    await recallSessionsHandler(deps, { query: "hono middleware routing", mode: "keyword", limit: 10 });
+
+    const entry = JSON.parse(await waitForLine(process.env["NLM_QUERY_LOG"] as string));
+    expect(entry.conversation_id).toBeUndefined();
+  });
+
+  it("recall_facts logs conversation_id when query resolves to a transcript", async () => {
+    const query = "qdrant collection embedding dimension";
+    const projDir = join(projectsDir, "proj-b");
+    mkdirSync(projDir);
+    writeFileSync(
+      join(projDir, "conv-facts.jsonl"),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "recall_facts", input: { query } }] } }) + "\n",
+    );
+
+    const deps = {
+      factRecall: {
+        search: async () => ({ query, total: 1, results: [{ id: "fact_1" }] }),
+      },
+    } as unknown as McpDeps;
+
+    await recallFactsHandler(deps, { query, mode: "keyword", limit: 10 });
+
+    const entry = JSON.parse(await waitForLine(process.env["NLM_FACT_QUERY_LOG"] as string));
+    expect(entry.conversation_id).toBe("conv-facts");
+  });
+
+  it("recall_facts omits conversation_id when query does not match any transcript", async () => {
+    const deps = {
+      factRecall: {
+        search: async () => ({ query: "duckdb schema table", total: 0, results: [] }),
+      },
+    } as unknown as McpDeps;
+
+    await recallFactsHandler(deps, { query: "duckdb schema table", mode: "keyword", limit: 10 });
+
+    const entry = JSON.parse(await waitForLine(process.env["NLM_FACT_QUERY_LOG"] as string));
+    expect(entry.conversation_id).toBeUndefined();
+  });
+
+  it("fact log line includes conversation_id field when resolved", async () => {
+    const query = "lm studio inference endpoint port number";
+    const projDir = join(projectsDir, "proj-c");
+    mkdirSync(projDir);
+    writeFileSync(join(projDir, "conv-lm.jsonl"), `{"query":"${query}"}\n`);
+
+    const deps = {
+      factRecall: {
+        search: async () => ({ query, total: 1, results: [{ id: "fact_2" }] }),
+      },
+    } as unknown as McpDeps;
+
+    await recallFactsHandler(deps, { query, mode: "hybrid", limit: 5 });
+
+    const raw = await waitForLine(process.env["NLM_FACT_QUERY_LOG"] as string);
+    const entry = JSON.parse(raw) as Record<string, unknown>;
+    expect(typeof entry["conversation_id"]).toBe("string");
+    expect(entry["source"]).toBe("mcp");
+    expect(entry["n_results"]).toBe(1);
+    expect(entry["returned_ids"]).toEqual(["fact_2"]);
   });
 });

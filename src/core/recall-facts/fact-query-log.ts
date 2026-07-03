@@ -30,6 +30,9 @@ export interface FactLogEntry {
   readonly limit: number;
   readonly nResults: number;
   readonly returnedIds: ReadonlyArray<string>;
+  /** Resolved Claude Code conversation that triggered this pull. Absent when
+   *  the runtime cannot be attributed (non-Claude-Code callers, short queries). */
+  readonly conversationId?: string;
 }
 
 export interface FactStatsResult {
@@ -55,6 +58,7 @@ export async function logFactQuery(
     await mkdir(dirname(logPath), { recursive: true });
     const payload = {
       ts: new Date().toISOString(),
+      ...(entry.conversationId !== undefined ? { conversation_id: entry.conversationId } : {}),
       source: entry.source,
       runtime: entry.runtime,
       query: entry.query,
