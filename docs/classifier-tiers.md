@@ -92,6 +92,7 @@ comparison tooling, and the LongMemEval-S dataset setup.
 |---|---|---|---|---|---|---|---|
 | Floor | `qwen3.5-4b` (local, OpenAI-compatible endpoint) | 100% | 80% | 48% | 44% | 85% | 24.0s |
 | Mid | `qwen3.6-35b-a3b` (MoE, OpenAI-compatible endpoint) | 100% | 80% | 54% | 57% | 95% | 42.2s |
+| Mid | `gemma-4-26b-a4b-qat` (MoE, OpenAI-compatible endpoint) | 100% | 75% | 69% | 59% | 80% | 38.4s |
 | Cloud | `deepseek-v4-flash` | 100% | 95% | 66% | 55% | 95% | 9.0s |
 
 Columns are the aggregate fields from `nlm eval --classifier --json`:
