@@ -61,4 +61,4 @@ Cursor/Windsurf hook research (#287), Hermes session-start recall (#288), gemini
 
 ## Out of scope (unchanged)
 
-Multi-user/hosted deployment; vendor-specific integrations beyond the OpenAI-compatible contract; storage-engine replacement; knowledge-graph build ahead of the Phase 4 intent data (decision point: ~2 weeks of intent telemetry, mid-July).
+Multi-user/hosted deployment; vendor-specific integrations beyond the OpenAI-compatible contract; storage-engine replacement; the temporal knowledge graph, DECIDED 2026-07-03 on the Phase 4 gate data (14 days of intent telemetry, n=640: 99.1% lookup, 0.9% relational, 0% temporal): not built; telemetry stays on and the decision reopens only if relational share becomes non-trivial. Also decided 2026-07-03: fresh installs ship the pull-first posture (see #392), grounded in the U1 measurement (pulls 72.4% useful vs ambient 18.2%/7.9%).
