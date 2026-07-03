@@ -358,6 +358,7 @@ export class ScanScheduler {
                 summary: classification.summary,
                 decisions: classification.decisions,
                 installScope: this.opts.installScope,
+                ...(chunk.model ? { model: chunk.model } : {}),
               },
               { exemplarStore: this.opts.exemplarStore, codeEmbedder: this.opts.codeEmbedder, logger: this.opts.logger },
             );

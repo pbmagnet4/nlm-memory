@@ -44,7 +44,7 @@ describe("scheduler captures exemplars from committed sessions", () => {
     const projDir = join(projects, "proj"); mkdirSync(projDir, { recursive: true });
     const jsonl =
       JSON.stringify({ type: "user", cwd: repo, timestamp: "2026-06-19T12:00:00.000Z", message: { role: "user", content: "add a throttle" } }) + "\n" +
-      JSON.stringify({ type: "assistant", cwd: repo, timestamp: "2026-06-19T12:01:00.000Z", message: { role: "assistant", content: `committed: [main ${sha}] add t` } }) + "\n";
+      JSON.stringify({ type: "assistant", cwd: repo, timestamp: "2026-06-19T12:01:00.000Z", message: { role: "assistant", content: `committed: [main ${sha}] add t`, model: "claude-test-model-1" } }) + "\n";
     const file = join(projDir, "session.jsonl");
     writeFileSync(file, jsonl);
     const old = (Date.now() - 60 * 60 * 1000) / 1000; // older than idleMinutes
@@ -75,9 +75,12 @@ describe("scheduler captures exemplars from committed sessions", () => {
     // Assert directly on the table — deterministic, independent of the
     // fire-and-forget embed. A second readonly connection is safe.
     const db = new Database(join(dbDir, "canonical.sqlite"), { readonly: true });
-    const row = db.prepare("SELECT COUNT(*) AS n, MIN(code) AS code FROM code_exemplars").get() as { n: number; code: string | null };
+    const row = db.prepare("SELECT COUNT(*) AS n, MIN(code) AS code, MIN(model) AS model FROM code_exemplars").get() as { n: number; code: string | null; model: string | null };
     db.close();
     expect(row.n).toBe(1);
     expect(row.code).toContain("2 + 2");
+    // Guards the scheduler -> drainSessionExemplars model spread: if the
+    // scheduler drops chunk.model this reads back "unknown".
+    expect(row.model).toBe("claude-test-model-1");
   });
 });
