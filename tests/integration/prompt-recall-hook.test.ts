@@ -200,25 +200,27 @@ describe("runHook", () => {
 });
 
 describe("promptRecallEnabled", () => {
-  // Option B (push -> pull): a dedicated flag disables the per-prompt ambient
-  // recall firehose independently of NLM_HOOK_MODE (which still drives the
-  // once-per-session passive layer). Default preserves current behavior so
-  // existing installs are unaffected; an operator opts into pull-only.
-  it("defaults to enabled when the flag is unset (backwards compatible)", () => {
-    expect(promptRecallEnabled({})).toBe(true);
+  it("defaults OFF when the var is unset (pull-first posture)", () => {
+    expect(promptRecallEnabled({})).toBe(false);
   });
 
-  it("is disabled when NLM_HOOK_PROMPT_RECALL=off", () => {
+  it("treats empty and whitespace-only values as unset", () => {
+    expect(promptRecallEnabled({ NLM_HOOK_PROMPT_RECALL: "" })).toBe(false);
+    expect(promptRecallEnabled({ NLM_HOOK_PROMPT_RECALL: "  " })).toBe(false);
+  });
+
+  it("opts in with on", () => {
+    expect(promptRecallEnabled({ NLM_HOOK_PROMPT_RECALL: "on" })).toBe(true);
+  });
+
+  it("stays off when explicitly off, any case", () => {
     expect(promptRecallEnabled({ NLM_HOOK_PROMPT_RECALL: "off" })).toBe(false);
-  });
-
-  it("is case-insensitive for off", () => {
     expect(promptRecallEnabled({ NLM_HOOK_PROMPT_RECALL: "OFF" })).toBe(false);
   });
 
-  it("stays enabled for any non-off value (fail toward current behavior)", () => {
+  it("keeps legacy set values enabled (existing installs untouched)", () => {
     expect(promptRecallEnabled({ NLM_HOOK_PROMPT_RECALL: "live" })).toBe(true);
-    expect(promptRecallEnabled({ NLM_HOOK_PROMPT_RECALL: "garbage" })).toBe(true);
+    expect(promptRecallEnabled({ NLM_HOOK_PROMPT_RECALL: "1" })).toBe(true);
   });
 });
 

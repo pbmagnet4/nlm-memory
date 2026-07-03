@@ -72,16 +72,19 @@ export function hookRuntimeFromEnv(
 /**
  * Whether the per-prompt ambient recall hook should run at all.
  *
- * Option B (push -> pull): NLM_HOOK_PROMPT_RECALL=off disables the per-prompt
- * recall firehose so memory is pulled on demand (recall_sessions et al.)
- * instead of injected on every prompt. This is independent of NLM_HOOK_MODE,
- * which still governs the cheaper once-per-session passive layer (session-start
- * hook). Default-enabled so existing installs keep today's behavior; an
- * operator opts into pull-only. Any non-"off" value stays enabled (fail toward
- * current behavior).
+ * Pull-first posture (default since #392, 2026-07-03): fresh installs run
+ * per-prompt ambient recall OFF and agents pull memory on demand via the
+ * recall MCP tools. Measured basis (U1, locked judge): pulls 72.4% useful
+ * vs ambient injection 18.2%/7.9%. NLM_HOOK_PROMPT_RECALL=on opts back in;
+ * any other already-set value keeps its pre-flip meaning (non-"off" = on)
+ * so existing installs are untouched. Independent of NLM_HOOK_MODE, which
+ * governs the once-per-session passive layer (session-start hook), which
+ * stays on.
  */
 export function promptRecallEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env["NLM_HOOK_PROMPT_RECALL"]?.trim().toLowerCase() !== "off";
+  const raw = env["NLM_HOOK_PROMPT_RECALL"]?.trim();
+  if (raw === undefined || raw === "") return false;
+  return raw.toLowerCase() !== "off";
 }
 
 export interface HookInput {

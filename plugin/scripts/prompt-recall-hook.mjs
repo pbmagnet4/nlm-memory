@@ -677,7 +677,9 @@ function hookRuntimeFromEnv(env = process.env) {
   return raw ? raw : "claude-code";
 }
 function promptRecallEnabled(env = process.env) {
-  return env["NLM_HOOK_PROMPT_RECALL"]?.trim().toLowerCase() !== "off";
+  const raw = env["NLM_HOOK_PROMPT_RECALL"]?.trim();
+  if (raw === void 0 || raw === "") return false;
+  return raw.toLowerCase() !== "off";
 }
 function buildRecallQuery(input, env = process.env) {
   if (env["NLM_HOOK_CONTEXT_RECALL"] !== "1") return input.prompt;
