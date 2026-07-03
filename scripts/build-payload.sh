@@ -76,11 +76,29 @@ chmod +x "$STAGING/run.sh"
 # every Mach-O binary in the payload with hardened runtime + secure timestamp.
 if [ -n "${NLM_PAYLOAD_SIGN_IDENTITY:-}" ]; then
   echo "Signing payload binaries ..."
-  find "$STAGING" -type f \( -name node -o -name "*.node" -o -name "*.dylib" \) | while read -r bin; do
+  # The node executable is a JIT runtime: re-signing it strips the entitlements
+  # its V8 engine needs under the hardened runtime (SIGTRAP on startup without
+  # them), so sign it with an explicit entitlements plist.
+  ENTITLEMENTS="$STAGING/.node-entitlements.plist"
+  cat > "$ENTITLEMENTS" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key><true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+  <key>com.apple.security.cs.disable-library-validation</key><true/>
+</dict>
+</plist>
+PLIST
+  find "$STAGING" -type f \( -name "*.node" -o -name "*.dylib" \) | while read -r bin; do
     if file "$bin" | grep -q "Mach-O"; then
       codesign --force --options runtime --timestamp -s "$NLM_PAYLOAD_SIGN_IDENTITY" "$bin"
     fi
   done
+  codesign --force --options runtime --timestamp --entitlements "$ENTITLEMENTS" \
+    -s "$NLM_PAYLOAD_SIGN_IDENTITY" "$STAGING/node/bin/node"
+  rm "$ENTITLEMENTS"
 fi
 
 # --- Create tarball ---
