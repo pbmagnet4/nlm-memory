@@ -12,14 +12,23 @@
  * the delta isolates the augmentation effect. Judge is the artifact-not-self
  * call (default qwen3.5:4b; --model to drive a bigger run through DS4 Flash).
  *
+ * Recall runs IN-PROCESS through the production keyword pipeline
+ * (extractRecallQuery -> RecallService mode=keyword), the exact path the flag
+ * changes. No daemon required; point --db at a VACUUM INTO snapshot of
+ * canonical.sqlite to keep the live DB untouched while other jobs write to it.
+ *
  * Run: npx tsx scripts/eval/context-recall-ab.ts [--limit=16] [--days=45]
- *        [--model=qwen3.5:4b] [--port=3940] [--verbose] [--json=<out>]
+ *        [--model=qwen3.5:4b] [--db=<sqlite path>] [--verbose] [--json=<out>]
  */
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { topicalWordCount } from "../../src/hook/recent-context.js";
+import { extractRecallQuery } from "../../src/core/hook/query-extract.js";
+import { RecallService } from "../../src/core/recall/recall-service.js";
+import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
+import type { LLMClient } from "../../src/ports/llm-client.js";
 import { judgeUsefulness, USEFULNESS_MODEL, type Verdict } from "./lib/usefulness-judge.js";
 
 interface Args {
@@ -27,7 +36,7 @@ interface Args {
   days: number;
   model: string;
   ollamaUrl: string;
-  port: number;
+  db: string;
   verbose: boolean;
   json: string | null;
 }
@@ -41,7 +50,7 @@ function parseArgs(argv: string[]): Args {
     days: Number.parseInt(get("days") ?? "45", 10),
     model: get("model") ?? USEFULNESS_MODEL,
     ollamaUrl: get("ollama") ?? process.env["OLLAMA_URL"] ?? "http://localhost:11434",
-    port: Number.parseInt(get("port") ?? "3940", 10),
+    db: get("db") ?? join(homedir(), ".nlm", "canonical.sqlite"),
     verbose: argv.includes("--verbose"),
     json: get("json") ?? null,
   };
@@ -123,27 +132,35 @@ function reconstruct(transcript: string, prompt: string): { context: string; res
   return { context: ctx.join(" ").trim(), response: resp.join(" ").slice(0, 1200) };
 }
 
-// The daemon embeds recall queries through a shared LM Studio lane that can be
-// saturated by concurrent bulk jobs; without a timeout one stuck request hangs
-// the whole run (observed live: 20+ min silent stall). Timed-out fires are
-// skipped, never tallied.
-const RECALL_TIMEOUT_MS = 15_000;
+// A local judge call has no business taking minutes; a hung one previously
+// stalled the whole run (observed live). Timed-out fires are skipped, never
+// tallied.
 const JUDGE_TIMEOUT_MS = 90_000;
 
-async function topHit(args: Args, query: string): Promise<string | null> {
-  try {
-    // mode=keyword matches the production hook path this flag changes
-    // (recall-over-http.ts recalls keyword-only; hybrid is too slow for the
-    // hot path). Measuring the default hybrid mode would grade a code path
-    // the flag never touches.
-    const url = `http://localhost:${args.port}/api/recall?q=${encodeURIComponent(query)}&mode=keyword&limit=1`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(RECALL_TIMEOUT_MS) });
-    const data = (await res.json()) as { results?: Array<{ id?: string }> };
-    return data.results?.[0]?.id ?? null;
-  } catch {
-    return null;
-  }
+// mode=keyword through the real RecallService matches the production hook path
+// this flag changes (recall-over-http.ts recalls keyword-only; hybrid is too
+// slow for the hot path). Measuring hybrid would grade a code path the flag
+// never touches. extractRecallQuery mirrors recallOverHttp's preprocessing.
+function makeTopHit(recall: RecallService): (query: string) => Promise<string | null> {
+  return async (query: string): Promise<string | null> => {
+    const extracted = extractRecallQuery(query);
+    if (extracted === null) return null;
+    try {
+      const res = await recall.search({ query: extracted, mode: "keyword", limit: 5 });
+      return res.results[0]?.id ?? null;
+    } catch {
+      return null;
+    }
+  };
 }
+
+// Keyword-only recall never touches the LLM (rewrite defaults off); satisfy
+// the deps contract with a client that fails loud if that ever changes.
+const NO_LLM: LLMClient = new Proxy({} as LLMClient, {
+  get(_t, prop): never {
+    throw new Error(`context-recall-ab: unexpected LLM call ${String(prop)} in keyword mode`);
+  },
+});
 
 /** Judge with a deadline; null means timed out (skip the fire, do not tally). */
 async function judgeWithDeadline(
@@ -166,7 +183,12 @@ async function judgeWithDeadline(
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const db = new Database(join(homedir(), ".nlm", "canonical.sqlite"), { readonly: true });
+  const storage = SqliteStorage.create({
+    dbPath: args.db,
+    migrationsDir: join(import.meta.dirname, "..", "..", "migrations"),
+  });
+  const topHit = makeTopHit(new RecallService({ store: storage.sessions, llm: NO_LLM }));
+  const db = new Database(args.db, { readonly: true });
   const summ = db.prepare<[string], { label: string; summary: string; body: string }>(
     "SELECT label, COALESCE(summary,'') AS summary, COALESCE(substr(body,1,500),'') AS body FROM sessions WHERE id = ?",
   );
@@ -211,8 +233,8 @@ async function main(): Promise<void> {
     if (!rec || !rec.response) continue;
     if (!rec.context) continue; // no prior turns to augment with — augmentation is a no-op here
 
-    const bareHit = await topHit(args, f.prompt);
-    const augHit = await topHit(args, `${rec.context} ${f.prompt}`);
+    const bareHit = await topHit(f.prompt);
+    const augHit = await topHit(`${rec.context} ${f.prompt}`);
     if (!bareHit && !augHit) continue;
     if (bareHit !== augHit) augChanged += 1;
 
@@ -230,6 +252,7 @@ async function main(): Promise<void> {
     }
   }
   db.close();
+  await storage.close();
 
   const score = (t: { used: number; partial: number; unused: number }) =>
     scored > 0 ? (t.used + 0.5 * t.partial) / scored : 0;
