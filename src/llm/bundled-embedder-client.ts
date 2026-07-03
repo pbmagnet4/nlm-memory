@@ -25,12 +25,9 @@ import type {
 import { LLMUnreachableError } from "@ports/llm-client.js";
 import { EMBED_PREFIXES, MAX_EMBED_CHARS, l2Normalize } from "./ollama-client.js";
 
-/** Friendly default model name for the embedder-info descriptor (provider
- *  wiring). embed() itself reports the resolved HF repo id for provenance. */
-export const DEFAULT_BUNDLED_EMBED_MODEL = "nomic-embed-text-v1.5";
-
-// The HuggingFace Hub repo that hosts the ONNX q8 export of nomic-embed-text-v1.5.
-const DEFAULT_MODEL_REPO = "onnx-community/nomic-embed-text-v1.5";
+/** HuggingFace Hub repo that hosts the ONNX q8 export of nomic-embed-text-v1.5.
+ *  Exported so embedder-info can report provenance-consistent model ids. */
+export const DEFAULT_MODEL_REPO = "onnx-community/nomic-embed-text-v1.5";
 
 const EXPECTED_DIMS = 768;
 
