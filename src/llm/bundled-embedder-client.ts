@@ -27,12 +27,12 @@ import { EMBED_PREFIXES, MAX_EMBED_CHARS, l2Normalize } from "./ollama-client.js
 
 /** HuggingFace Hub repo that hosts the ONNX q8 export of nomic-embed-text-v1.5.
  *  Exported so embedder-info can report provenance-consistent model ids. */
-export const DEFAULT_MODEL_REPO = "onnx-community/nomic-embed-text-v1.5";
+export const DEFAULT_MODEL_REPO = "nomic-ai/nomic-embed-text-v1.5";
 
 const EXPECTED_DIMS = 768;
 
 export interface BundledEmbedderOptions {
-  /** HF Hub repo id override. Defaults to the onnx-community nomic-embed q8 repo. */
+  /** HF Hub repo id override. Defaults to the nomic-ai repo's onnx export (q8). */
   readonly model?: string;
   /** Cache directory for downloaded model files. Defaults to ~/.nlm/models. */
   readonly modelDir?: string;
@@ -106,7 +106,7 @@ export class BundledEmbedderClient implements LLMClient {
     }
     // Report the repo actually in use so embedding_config provenance records
     // a custom opts.model override truthfully. The default construction
-    // reports "onnx-community/nomic-embed-text-v1.5".
+    // reports "nomic-ai/nomic-embed-text-v1.5".
     return { vector: l2Normalize(vec), model: this.modelRepo };
   }
 

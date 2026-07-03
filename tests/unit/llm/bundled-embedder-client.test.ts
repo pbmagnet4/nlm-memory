@@ -69,7 +69,7 @@ describe("BundledEmbedderClient", () => {
     it("reports the resolved default model repo in EmbedResult", async () => {
       const client = new BundledEmbedderClient();
       const result = await client.embed("test", "query");
-      expect(result.model).toBe("onnx-community/nomic-embed-text-v1.5");
+      expect(result.model).toBe("nomic-ai/nomic-embed-text-v1.5");
     });
 
     it("reports a custom model override in EmbedResult (truthful provenance)", async () => {
