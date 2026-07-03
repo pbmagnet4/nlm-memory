@@ -57,10 +57,14 @@ export class OpenAIEmbedderClient implements LLMClient {
     this.fetchImpl = opts.fetchImpl ?? fetch;
   }
 
-  async embed(text: string, kind: EmbeddingKind): Promise<EmbedResult> {
+  async embed(text: string, kind: EmbeddingKind, opts?: { signal?: AbortSignal }): Promise<EmbedResult> {
     const input = `${EMBED_PREFIXES[kind]}${text.slice(0, MAX_EMBED_CHARS)}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const onExternal = opts?.signal != null ? (): void => { controller.abort(); } : null;
+    if (onExternal != null && opts?.signal != null) {
+      opts.signal.addEventListener("abort", onExternal, { once: true });
+    }
     try {
       const res = await this.fetchImpl(`${this.baseUrl}/embeddings`, {
         method: "POST",
@@ -85,6 +89,9 @@ export class OpenAIEmbedderClient implements LLMClient {
       throw new LLMUnreachableError("openai-embedder", e);
     } finally {
       clearTimeout(timer);
+      if (onExternal != null && opts?.signal != null) {
+        opts.signal.removeEventListener("abort", onExternal);
+      }
     }
   }
 

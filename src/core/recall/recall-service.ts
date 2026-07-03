@@ -26,6 +26,7 @@ import type {
   Session,
 } from "@shared/types.js";
 import { laneHealth } from "@core/health/embedding-lane-state.js";
+import { tryAcquire, release } from "@core/health/embed-inflight.js";
 import { applyFilter } from "./filter.js";
 import { keywordMatchFields } from "./match-fields.js";
 import { detectQueryShape } from "./query-shape.js";
@@ -39,6 +40,13 @@ import { tiebreakFactor } from "./metadata-tiebreaker.js";
 const DEFAULT_LIMIT = 20;
 const EXEMPLAR_RECALL_TIMEOUT_MS = 800;
 const MAX_LIMIT = 100;
+
+function parseEmbedDeadline(raw: string | undefined): number {
+  if (raw === undefined) return 2000;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 2000;
+}
+const EMBED_DEADLINE_MS = parseEmbedDeadline(process.env["NLM_RECALL_EMBED_DEADLINE_MS"]);
 
 function isFactInjectionEnabled(): boolean {
   const raw = process.env["NLM_HOOK_INJECT_FACTS"];
@@ -148,9 +156,22 @@ export class RecallService {
     if ((mode === "semantic" || mode === "hybrid") && semanticQuery) {
       if (laneHealth("prose") === "stale") {
         semError = "ollama_unreachable";
+      } else if (!tryAcquire()) {
+        semError = "ollama_unreachable";
       } else {
+        const abort = new AbortController();
+        let deadlineTimer: ReturnType<typeof setTimeout>;
+        const deadline = new Promise<never>((_, rej) => {
+          deadlineTimer = setTimeout(() => {
+            abort.abort();
+            rej(new LLMUnreachableError("embed-deadline"));
+          }, EMBED_DEADLINE_MS);
+        });
         try {
-          const embedding = await this.deps.llm.embed(semanticQuery, "query");
+          const embedding = await Promise.race([
+            this.deps.llm.embed(semanticQuery, "query", { signal: abort.signal }),
+            deadline,
+          ]);
           semNeighbors = await this.deps.store.semanticSearch(
             embedding.vector,
             limit * SEMANTIC_OVERFETCH,
@@ -162,6 +183,9 @@ export class RecallService {
           } else {
             throw err;
           }
+        } finally {
+          clearTimeout(deadlineTimer!);
+          release();
         }
       }
     }

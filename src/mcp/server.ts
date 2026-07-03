@@ -17,6 +17,7 @@ import { logQuery } from "@core/recall/query-log.js";
 import { logFactQuery } from "@core/recall-facts/fact-query-log.js";
 import { appendCitation } from "@core/recall/citation-log.js";
 import { resolveConversationForSession } from "@core/hook/memo.js";
+import { resolveConversationByQuery } from "@core/hook/resolve-conversation-by-query.js";
 import { appendFactSupersedence, appendSupersedence, readSupersedenceLog } from "@core/storage/supersedence-log.js";
 import type { FactRecallService } from "@core/recall-facts/fact-recall-service.js";
 import type { RecallService } from "@core/recall/recall-service.js";
@@ -169,6 +170,7 @@ export async function recallSessionsHandler(
       ...(input.workstream !== undefined ? { workstream: input.workstream } : {}),
     };
     const result = await deps.recall.search(query);
+    const conversationId = resolveConversationByQuery(input.query ?? "") ?? undefined;
     // Telemetry — the MCP path is the real agent-usage path; without this it
     // is invisible to query_log.jsonl and the Recall page. Fire-and-forget,
     // mirrors the HTTP /api/recall handler.
@@ -182,6 +184,7 @@ export async function recallSessionsHandler(
       limit: input.limit ?? DEFAULT_LIMIT,
       nResults: result.total,
       returnedIds: result.results.map((r) => r.id),
+      ...(conversationId !== undefined ? { conversationId } : {}),
     });
     return ok(result);
   } catch (e) {
@@ -208,11 +211,13 @@ export async function workSummaryHandler(
 export async function recallWorkstreamHandler(
   deps: McpDeps,
   input: { idOrLabel?: string },
+  runtime: string | null = null,
 ): Promise<ToolResult> {
   if (!deps.workstreams) return okText("recall_workstream is not available in this deployment.");
   try {
     const idOrLabel = (input.idOrLabel ?? "").trim();
     if (!idOrLabel) return okText("Provide a workstream id or label.");
+    const conversationId = resolveConversationByQuery(idOrLabel) ?? undefined;
     const ws = deps.workstreams.store;
     const found =
       (await ws.getById(idOrLabel)) ?? (await ws.findByNormalizedLabel(normalizeLabel(idOrLabel)));
@@ -222,6 +227,18 @@ export async function recallWorkstreamHandler(
       found.id,
     );
     if (!view) return okText(`No workstream matches "${idOrLabel}".`);
+    void logQuery({
+      source: "mcp",
+      runtime,
+      query: idOrLabel,
+      entity: null,
+      kind: null,
+      mode: "keyword",
+      limit: 1,
+      nResults: 1,
+      returnedIds: [found.id],
+      ...(conversationId !== undefined ? { conversationId } : {}),
+    });
     return okText(composeWorkstreamRecall(view));
   } catch (e) {
     return err(e);
@@ -415,6 +432,7 @@ export async function recallFactsHandler(
         : {}),
     };
     const result = await deps.factRecall.search(query);
+    const conversationId = resolveConversationByQuery(input.query ?? "") ?? undefined;
     // Telemetry — see recallSessionsHandler. Fire-and-forget.
     void logFactQuery({
       source: "mcp",
@@ -427,6 +445,7 @@ export async function recallFactsHandler(
       limit: input.limit ?? DEFAULT_LIMIT,
       nResults: result.total,
       returnedIds: result.results.map((r) => r.id),
+      ...(conversationId !== undefined ? { conversationId } : {}),
     });
     return ok(result);
   } catch (e) {
@@ -1022,7 +1041,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (args) => recallWorkstreamHandler(deps, args) as never,
+    async (args) => recallWorkstreamHandler(deps, args, mcpRuntimeFromClient(server.server.getClientVersion())) as never,
   );
 
   server.registerTool(
@@ -1154,6 +1173,23 @@ export function createMcpServer(deps: McpDeps): McpServer {
           codeEmbedder,
           null,
         );
+        const conversationId = resolveConversationByQuery(args.query) ?? undefined;
+        const allIds = [
+          ...result.positives.map((e) => e.id),
+          ...result.negatives.map((e) => e.id),
+        ];
+        void logQuery({
+          source: "mcp",
+          runtime: mcpRuntimeFromClient(server.server.getClientVersion()),
+          query: args.query,
+          entity: null,
+          kind: null,
+          mode: "semantic",
+          limit: args.k ?? 5,
+          nResults: allIds.length,
+          returnedIds: allIds,
+          ...(conversationId !== undefined ? { conversationId } : {}),
+        });
         return { content: [{ type: "text" as const, text: format(result) }] };
       },
     );

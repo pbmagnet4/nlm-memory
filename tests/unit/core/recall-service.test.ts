@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RecallService } from "../../../src/core/recall/recall-service.js";
 import { StubEmbedder } from "../../fixtures/llm-stubs.js";
 import type {
@@ -13,6 +13,12 @@ import {
   resetLaneHealthForTests,
   setLaneHealth,
 } from "../../../src/core/health/embedding-lane-state.js";
+import {
+  inflightSnapshot,
+  release,
+  resetForTests,
+  tryAcquire,
+} from "../../../src/core/health/embed-inflight.js";
 
 // Fake store: keyword and semantic hits are pre-baked. Unit tests here cover
 // RecallService orchestration (filter, merge, limit, error handling) — not
@@ -425,6 +431,89 @@ describe("RecallService.search", () => {
       const result = await svc.search({ query: "anything", mode: "semantic" });
       expect(result.modeUnavailable).toBeUndefined();
       expect(result.results).toHaveLength(1);
+    });
+  });
+
+  describe("embed deadline and in-flight cap", () => {
+    beforeEach(() => resetForTests());
+    afterEach(() => {
+      vi.useRealTimers();
+      resetForTests();
+    });
+
+    it("embed deadline timeout degrades hybrid to keyword", async () => {
+      vi.useFakeTimers();
+      const stub = new StubEmbedder({ hang: true });
+      const store = new InMemoryStore(corpus, [], [{ sessionId: "b", score: 7 }]);
+      const svc = new RecallService({ store, llm: stub });
+
+      const searchPromise = svc.search({ query: "pgvector", mode: "hybrid" });
+      await vi.advanceTimersByTimeAsync(2001);
+      const result = await searchPromise;
+
+      expect(result.modeUnavailable).toBe("ollama_unreachable");
+      expect(result.results).toHaveLength(1);
+      expect(result.results[0]?.id).toBe("b");
+    });
+
+    it("embed deadline fires and the abort signal reaches the client", async () => {
+      vi.useFakeTimers();
+      let capturedSignal: AbortSignal | undefined;
+      const hangingClient = {
+        async embed(_t: string, _k: string, opts?: { signal?: AbortSignal }): Promise<never> {
+          capturedSignal = opts?.signal;
+          await new Promise<never>(() => {});
+          throw new Error("unreachable");
+        },
+        async classify(): Promise<never> { throw new Error("stub"); },
+        async rewriteForRecall(): Promise<never> { throw new Error("stub"); },
+        nameWorkstream(): never { throw new Error("stub"); },
+      };
+
+      const store = new InMemoryStore(corpus, [], [{ sessionId: "b", score: 7 }]);
+      const svc = new RecallService({ store, llm: hangingClient });
+
+      const searchPromise = svc.search({ query: "test", mode: "hybrid" });
+      await vi.advanceTimersByTimeAsync(2001);
+      await searchPromise;
+
+      expect(capturedSignal?.aborted).toBe(true);
+    });
+
+    it("N+1 embed sheds to keyword without calling the embedder when cap is full", async () => {
+      const { cap } = inflightSnapshot();
+      for (let i = 0; i < cap; i++) expect(tryAcquire()).toBe(true);
+
+      const stub = new StubEmbedder();
+      const store = new InMemoryStore(corpus, [], [{ sessionId: "b", score: 7 }]);
+      const svc = new RecallService({ store, llm: stub });
+      const result = await svc.search({ query: "pgvector", mode: "hybrid" });
+
+      expect(result.modeUnavailable).toBe("ollama_unreachable");
+      expect(stub.calls).toBe(0);
+      expect(inflightSnapshot().shedTotal).toBe(1);
+
+      for (let i = 0; i < cap; i++) release();
+    });
+
+    it("release restores embed capacity so the next request goes through", async () => {
+      const { cap } = inflightSnapshot();
+      for (let i = 0; i < cap; i++) tryAcquire();
+
+      const stub = new StubEmbedder();
+      const store1 = new InMemoryStore(corpus, [], [{ sessionId: "b", score: 7 }]);
+      const shed = await new RecallService({ store: store1, llm: stub }).search({ query: "x", mode: "semantic" });
+      expect(shed.modeUnavailable).toBe("ollama_unreachable");
+      expect(stub.calls).toBe(0);
+
+      release();
+
+      const store2 = new InMemoryStore(corpus, [{ sessionId: "a", distance: 0 }]);
+      const ok = await new RecallService({ store: store2, llm: new StubEmbedder() }).search({ query: "x", mode: "semantic" });
+      expect(ok.modeUnavailable).toBeUndefined();
+      expect(ok.results).toHaveLength(1);
+
+      for (let i = 0; i < cap - 1; i++) release();
     });
   });
 });

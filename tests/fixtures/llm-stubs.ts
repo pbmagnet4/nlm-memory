@@ -1,4 +1,4 @@
-import type { ClassifyResult, EmbedResult, LLMClient } from "../../src/ports/llm-client.js";
+import type { ClassifyResult, EmbedResult, EmbeddingKind, LLMClient } from "../../src/ports/llm-client.js";
 import { LLMUnreachableError } from "../../src/ports/llm-client.js";
 
 export class FixedEmbedder implements LLMClient {
@@ -9,12 +9,37 @@ export class FixedEmbedder implements LLMClient {
   async classify(): Promise<never> { throw new Error("not used in this test"); }
 }
 
+export interface StubEmbedderOpts {
+  fail?: boolean;
+  /** Hang until the provided AbortSignal fires (or forever if no signal is passed). */
+  hang?: boolean;
+}
+
 export class StubEmbedder implements LLMClient {
   calls = 0;
-  constructor(private readonly fail: boolean = false) {}
-  async embed(): Promise<EmbedResult> {
+  private readonly _fail: boolean;
+  private readonly _hang: boolean;
+
+  constructor(optsOrFail: boolean | StubEmbedderOpts = false) {
+    if (typeof optsOrFail === "boolean") {
+      this._fail = optsOrFail;
+      this._hang = false;
+    } else {
+      this._fail = optsOrFail.fail ?? false;
+      this._hang = optsOrFail.hang ?? false;
+    }
+  }
+
+  async embed(_text: string, _kind: EmbeddingKind, opts?: { signal?: AbortSignal }): Promise<EmbedResult> {
     this.calls++;
-    if (this.fail) throw new LLMUnreachableError("ollama");
+    if (this._hang) {
+      await new Promise<void>((_res, rej) => {
+        const sig = opts?.signal;
+        if (sig?.aborted) { rej(new LLMUnreachableError("stub-embedder", "aborted")); return; }
+        sig?.addEventListener("abort", () => rej(new LLMUnreachableError("stub-embedder", "aborted")), { once: true });
+      });
+    }
+    if (this._fail) throw new LLMUnreachableError("ollama");
     const v = new Float32Array(768);
     v[0] = 1;
     return { vector: v, model: "stub" };
