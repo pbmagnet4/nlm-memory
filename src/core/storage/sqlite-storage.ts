@@ -14,6 +14,7 @@ import type Database from "better-sqlite3";
 import type { Storage } from "@ports/storage.js";
 import { SqliteCodeExemplarStore } from "./sqlite-code-exemplar-store.js";
 import { SqliteEmbeddingConfigStore } from "./sqlite-embedding-config.js";
+import { SqliteEntityStore } from "./sqlite-entity-store.js";
 import { SqliteFactStore } from "./sqlite-fact-store.js";
 import { SqliteSessionStore } from "./sqlite-session-store.js";
 import { SqliteSignalStore } from "./sqlite-signal-store.js";
@@ -32,6 +33,7 @@ export class SqliteStorage implements Storage {
   readonly signals: SqliteSignalStore;
   readonly exemplars: SqliteCodeExemplarStore;
   readonly workstreams: SqliteWorkstreamStore;
+  readonly entities: SqliteEntityStore;
   readonly embeddingConfig: SqliteEmbeddingConfigStore;
   readonly sources: SourceRegistry;
   readonly providers: ProviderRegistry;
@@ -42,6 +44,7 @@ export class SqliteStorage implements Storage {
     signals: SqliteSignalStore,
     exemplars: SqliteCodeExemplarStore,
     workstreams: SqliteWorkstreamStore,
+    entities: SqliteEntityStore,
     embeddingConfig: SqliteEmbeddingConfigStore,
     sources: SourceRegistry,
     providers: ProviderRegistry,
@@ -51,6 +54,7 @@ export class SqliteStorage implements Storage {
     this.signals = signals;
     this.exemplars = exemplars;
     this.workstreams = workstreams;
+    this.entities = entities;
     this.embeddingConfig = embeddingConfig;
     this.sources = sources;
     this.providers = providers;
@@ -58,14 +62,16 @@ export class SqliteStorage implements Storage {
 
   static create(opts: SqliteStorageOptions): SqliteStorage {
     const sessions = new SqliteSessionStore(opts);
-    const facts = new SqliteFactStore(sessions.rawDb());
-    const signals = new SqliteSignalStore(sessions.rawDb());
-    const exemplars = new SqliteCodeExemplarStore(sessions.rawDb());
-    const workstreams = new SqliteWorkstreamStore(sessions.rawDb());
-    const embeddingConfig = new SqliteEmbeddingConfigStore(sessions.rawDb());
-    const sources = new SourceRegistry(sessions.rawDb());
-    const providers = new ProviderRegistry(sessions.rawDb());
-    return new SqliteStorage(sessions, facts, signals, exemplars, workstreams, embeddingConfig, sources, providers);
+    const db = sessions.rawDb();
+    const facts = new SqliteFactStore(db);
+    const signals = new SqliteSignalStore(db);
+    const exemplars = new SqliteCodeExemplarStore(db);
+    const workstreams = new SqliteWorkstreamStore(db);
+    const entities = new SqliteEntityStore(db);
+    const embeddingConfig = new SqliteEmbeddingConfigStore(db);
+    const sources = new SourceRegistry(db);
+    const providers = new ProviderRegistry(db);
+    return new SqliteStorage(sessions, facts, signals, exemplars, workstreams, entities, embeddingConfig, sources, providers);
   }
 
   async init(): Promise<void> {

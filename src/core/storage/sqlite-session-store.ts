@@ -352,7 +352,13 @@ export class SqliteSessionStore implements SessionStore {
       // re-insert for the new entity list. Without this, nlm reprocess amplifies
       // stale links (INSERT OR IGNORE keeps dropped entities forever) and
       // double-counts session_count on every re-ingest pass.
-      const newEntities = [...new Set(record.entities.map((e) => e.trim()).filter(Boolean))];
+      const rawNewEntities = [...new Set(record.entities.map((e) => e.trim()).filter(Boolean))];
+      // Resolve each extracted entity through entity_variants so merged surface
+      // forms bind to the canonical instead of resurrecting the retired source.
+      const resolveVariant = db.prepare<[string], { canonical: string }>(
+        "SELECT canonical FROM entity_variants WHERE variant = ?",
+      );
+      const newEntities = rawNewEntities.map((name) => resolveVariant.get(name)?.canonical ?? name);
       const oldEntityRows = db
         .prepare<[string], { entity_canonical: string }>(
           "SELECT entity_canonical FROM session_entities WHERE session_id = ?",

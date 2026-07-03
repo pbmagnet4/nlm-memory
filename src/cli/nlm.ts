@@ -28,7 +28,7 @@
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { homedir } from "node:os";
-import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, copyFileSync, realpathSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, copyFileSync, realpathSync, appendFileSync } from "node:fs";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { Command } from "commander";
 import pkg from "../../package.json" with { type: "json" };
@@ -92,6 +92,9 @@ import { backfillExemplarEmbeddings } from "../core/exemplars/embed-backfill.js"
 import { warmCodeEmbedder } from "../core/exemplars/warm-embedder.js";
 import { markWarm } from "../core/health/warmup-state.js";
 import { setLaneHealth } from "../core/health/embedding-lane-state.js";
+import { setCorpusSnapshot, corpusSnapshot } from "../core/health/corpus-state.js";
+import { computeCorpusStats, sqliteCorpusStatsDeps, parseCorpusThresholds, thresholdState } from "../core/metrics/corpus-stats.js";
+import { computeReDerivationRate, sqliteReDerivationDeps } from "../core/metrics/re-derivation.js";
 import { reconcileLane } from "../core/embedding/embedding-config.js";
 import type { EmbeddingConfigStore, EmbeddingLaneConfig } from "../core/embedding/embedding-config.js";
 import { backfillFacts } from "../core/facts/backfill-facts.js";
@@ -112,6 +115,7 @@ import { defaultTopicProvider, aliasTopicProvider, type TopicProvider } from "..
 import { runChecksOnSqlite, runChecksOnPg, applyFixOnSqlite, applyFixOnPg } from "../core/integrity/check-invariants.js";
 import { normalizeLabel } from "../core/workstream/model.js";
 import { resolveWorkstreamId } from "../core/workstream/resolve.js";
+import { suggestMerges } from "../core/entities/dedup-suggest.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -161,6 +165,15 @@ function workDigestEnv(): { idleThresholdMin: number; deepBlockMin: number } {
     idleThresholdMin: Number.isFinite(idle) && idle > 0 ? idle : 5,
     deepBlockMin: Number.isFinite(deep) && deep > 0 ? deep : 25,
   };
+}
+
+const TREND_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+
+export function shouldAppendTrend(lastLineTs: string | null, now: number): boolean {
+  if (lastLineTs === null) return true;
+  const parsed = Date.parse(lastLineTs);
+  if (!Number.isFinite(parsed)) return true;
+  return now - parsed >= TREND_INTERVAL_MS;
 }
 
 function loadTopicProvider(): TopicProvider {
@@ -530,6 +543,67 @@ program
       void signals.pruneOlderThan(cutoff).catch(() => { /* prune is best-effort */ });
     }, SIGNAL_PRUNE_INTERVAL_MS);
     signalPruneTimer.unref();
+
+    // Corpus monitor: 24h stats job + weekly re-derivation trend. SQLite only.
+    // First run is delayed ~60s so warmup finishes first; then repeats every 24h.
+    if (!(storage instanceof PgStorage)) {
+      const CORPUS_MONITOR_INTERVAL_MS = 24 * 60 * 60 * 1000;
+      const CORPUS_MONITOR_INITIAL_DELAY_MS = 60 * 1000;
+      const nlmDataDir = join(homedir(), ".nlm");
+      const corpusStatsPath = join(nlmDataDir, "corpus-stats.jsonl");
+      const rederivTrendPath = join(nlmDataDir, "re-derivation-trend.jsonl");
+
+      const runCorpusMonitor = async () => {
+        try {
+          const sqliteStorage = storage as SqliteStorage;
+          const rawDb = sqliteStorage.rawDb();
+          const deps = sqliteCorpusStatsDeps(rawDb, dbPath());
+          const stats = await computeCorpusStats(deps);
+          const thresholds = parseCorpusThresholds(process.env);
+          const state = thresholdState(stats.dbBytes, thresholds);
+          const ts = new Date().toISOString();
+          // hapaxEntities derives from the denormalized entities.session_count column,
+          // which drifts (~6% today) until the entity-merge primitive recomputes counts
+          // exactly. This is a monitoring approximation, not ground truth.
+          const snap = { ...stats, state, lastComputedAt: ts };
+          setCorpusSnapshot(snap);
+          mkdirSync(nlmDataDir, { recursive: true });
+          appendFileSync(corpusStatsPath, JSON.stringify({ ts, ...stats, state }) + "\n", "utf8");
+          if (state === "warn" || state === "alert") {
+            console.error(`[corpus-monitor] ${state}: db is ${stats.dbBytes} bytes`);
+          }
+
+          const now = Date.now();
+          let lastTrendTs: string | null = null;
+          try {
+            const trendContent = readFileSync(rederivTrendPath, "utf8");
+            const lines = trendContent.split("\n").filter(Boolean);
+            const lastLine = lines[lines.length - 1];
+            if (lastLine) {
+              const parsed = JSON.parse(lastLine) as { ts?: string };
+              lastTrendTs = typeof parsed.ts === "string" ? parsed.ts : null;
+            }
+          } catch {
+            // file absent or unreadable; treat as no prior entry
+          }
+          if (shouldAppendTrend(lastTrendTs, now)) {
+            const rdDeps = sqliteReDerivationDeps(rawDb);
+            const report = await computeReDerivationRate(rdDeps, 42);
+            appendFileSync(
+              rederivTrendPath,
+              JSON.stringify({ ts, windowDays: 42, rate: report.rate, pairCount: report.pairs.length, eligible: report.eligible }) + "\n",
+              "utf8",
+            );
+          }
+        } catch (e) {
+          console.error(`[corpus-monitor] error: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      };
+
+      const corpusMonitorTimer = setInterval(() => { void runCorpusMonitor(); }, CORPUS_MONITOR_INTERVAL_MS);
+      corpusMonitorTimer.unref();
+      setTimeout(() => { void runCorpusMonitor(); }, CORPUS_MONITOR_INITIAL_DELAY_MS).unref();
+    }
 
     // Memo sweep runs independently of the transcript scheduler — it's the
     // backstop for SessionEnd hook unreliability (crashes, kill -9, IDE
@@ -2449,6 +2523,35 @@ program
   });
 
 program
+  .command("health")
+  .description("Print corpus monitoring snapshot from the running daemon (null before first 24h run)")
+  .action(async () => {
+    type CorpusField = { state: string; dbBytes: number; sessions: number; entities: number; lastComputedAt: string };
+    let corpus: CorpusField | null = null;
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 1_500);
+      const res = await fetch(`http://localhost:${port()}/api/health`, { signal: ctrl.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        const body = (await res.json()) as { corpus?: CorpusField | null };
+        corpus = body.corpus ?? null;
+      }
+    } catch {
+      // daemon not reachable
+    }
+    if (corpus) {
+      console.log(`corpus.state:          ${corpus.state}`);
+      console.log(`corpus.dbBytes:        ${corpus.dbBytes}`);
+      console.log(`corpus.sessions:       ${corpus.sessions}`);
+      console.log(`corpus.entities:       ${corpus.entities}`);
+      console.log(`corpus.lastComputedAt: ${corpus.lastComputedAt}`);
+    } else {
+      console.log("corpus: (not yet available; daemon runs the first check ~60s after start)");
+    }
+  });
+
+program
   .command("backup")
   .description("Write a dated snapshot to ~/.nlm/backups/ and prune ones past the retention window")
   .option("--retention <days>", "keep snapshots from the last N days", "7")
@@ -2524,6 +2627,117 @@ program
       stdout: (s) => { process.stdout.write(s); },
       stderr: (s) => { process.stderr.write(s); },
     });
+  });
+
+const entitiesCmd = program.command("entities").description("Entity table operations");
+
+entitiesCmd
+  .command("dedup")
+  .description(
+    "Suggest (or apply) conservative entity merge pairs. Default: dry run.",
+  )
+  .option("--apply-safe", "execute safe-class merges via the merge primitive", false)
+  .option("--interactive", "step through likely-class pairs with y/n on stdin", false)
+  .action(async (opts: { applySafe?: boolean; interactive?: boolean }) => {
+    const storage = await buildStorage(dbPath());
+
+    type EntityQueryRow = { canonical: string; session_count: number; status: string };
+    let rows: EntityQueryRow[];
+    try {
+      if (storage instanceof SqliteStorage) {
+        rows = storage
+          .rawDb()
+          .prepare<[], EntityQueryRow>(
+            "SELECT canonical, session_count, status FROM entities ORDER BY canonical",
+          )
+          .all();
+      } else {
+        const res = await (storage as PgStorage)
+          .pgPool()
+          .query<EntityQueryRow>(
+            "SELECT canonical, session_count, status FROM entities ORDER BY canonical",
+          );
+        rows = res.rows;
+      }
+    } catch (err) {
+      await storage.close();
+      console.error("nlm entities dedup: failed to enumerate entities:", err);
+      process.exit(1);
+    }
+
+    const inputs = rows.map((r) => ({
+      canonical: r.canonical,
+      sessionCount: r.session_count,
+      status: r.status,
+    }));
+    const suggestions = suggestMerges(inputs);
+
+    const safe = suggestions.filter((s) => s.cls === "safe");
+    const likely = suggestions.filter((s) => s.cls === "likely");
+
+    let merged = 0;
+    let failed = 0;
+    let skipped = 0;
+
+    if (!opts.applySafe && !opts.interactive) {
+      console.log(`safe (${safe.length}):`);
+      for (const s of safe) console.log(`  ${s.source}  ->  ${s.target}`);
+      console.log(`likely (${likely.length}):`);
+      for (const s of likely) console.log(`  ${s.source}  ->  ${s.target}`);
+      console.log(`\ntotal: safe=${safe.length} likely=${likely.length} (dry run)`);
+      await storage.close();
+      return;
+    }
+
+    if (opts.applySafe) {
+      for (const s of safe) {
+        try {
+          await storage.entities.merge(s.source, s.target);
+          console.log(`merged: ${s.source} -> ${s.target}`);
+          merged++;
+        } catch (err) {
+          console.error(`failed: ${s.source} -> ${s.target}: ${err}`);
+          failed++;
+        }
+      }
+    } else {
+      for (const s of safe) {
+        console.log(`safe (skipped): ${s.source}  ->  ${s.target}`);
+        skipped++;
+      }
+    }
+
+    if (opts.interactive && likely.length > 0) {
+      const { createInterface } = await import("node:readline");
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const ask = (prompt: string): Promise<string> =>
+        new Promise((resolve) => rl.question(prompt, resolve));
+
+      for (const s of likely) {
+        const answer = await ask(`merge ${s.source} -> ${s.target}? [y/N] `);
+        if (answer.trim().toLowerCase() === "y") {
+          try {
+            await storage.entities.merge(s.source, s.target);
+            console.log(`merged: ${s.source} -> ${s.target}`);
+            merged++;
+          } catch (err) {
+            console.error(`failed: ${s.source} -> ${s.target}: ${err}`);
+            failed++;
+          }
+        } else {
+          skipped++;
+        }
+      }
+      rl.close();
+    } else {
+      skipped += likely.length;
+    }
+
+    await storage.close();
+
+    const remaining = suggestions.length - merged - failed;
+    console.log(`\nsummary: merged=${merged} failed=${failed} suggested-remaining=${remaining}`);
+    if (failed > 0) process.exit(1);
   });
 
 // Entrypoint guard: only parse argv when this file IS the executed script.

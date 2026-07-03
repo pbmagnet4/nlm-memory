@@ -382,6 +382,16 @@ export class ScanScheduler {
       this.opts.installScope
     ) {
       try {
+        const pruned = await this.opts.exemplarStore.pruneReverted(this.opts.installScope);
+        if (pruned > 0) {
+          this.opts.logger(`[scheduler] exemplar pruneReverted: deleted ${pruned}`);
+        }
+      } catch (e) {
+        this.opts.logger(
+          `[scheduler] exemplar pruneReverted failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+      try {
         await this.opts.exemplarStore.applyBucketCap(this.opts.installScope, exemplarMaxPerBucket());
       } catch (e) {
         this.opts.logger(
