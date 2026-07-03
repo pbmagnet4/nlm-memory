@@ -8,12 +8,25 @@ is affected while the lane is stale.
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `NLM_EMBED_PROVIDER` | `ollama` or `openai` | `ollama` |
-| `NLM_EMBED_BASE_URL` | Base URL for the embedding endpoint | `http://localhost:11434` |
-| `NLM_EMBED_MODEL` | Model tag or name passed to the provider | `nomic-embed-text` |
+| `NLM_EMBED_PROVIDER` | `ollama`, `openai`, or `bundled` | `ollama` |
+| `NLM_EMBED_BASE_URL` | Base URL for the embedding endpoint (`openai` provider) | `http://localhost:11434` |
+| `NLM_EMBED_MODEL` | Model tag, name, or HF repo id passed to the provider | `nomic-embed-text` |
 | `NLM_EMBED_API_KEY` | API key (required for `openai` provider) | unset |
+| `NLM_BUNDLED_MODEL_DIR` | Model cache directory for the `bundled` provider | `~/.nlm/models` |
 
 > **Note:** On the `ollama` provider, a leftover `NLM_EMBED_MODEL` value is used as the embed model tag (it is no longer ignored); unset it if you intend to rely on the default.
+
+### The `bundled` provider
+
+`NLM_EMBED_PROVIDER=bundled` runs nomic-embed-text-v1.5 ONNX in-process via
+transformers.js; no Ollama or external endpoint is required. Model weights
+(about 146MB, from `nomic-ai/nomic-embed-text-v1.5`) download on first use into
+`NLM_BUNDLED_MODEL_DIR`, so the very first embed needs network access; every
+later run is offline. Output is 768-dim, matching the other providers'
+defaults. Switching an existing install to or from `bundled` is a lane change
+like any other model swap: the startup reconcile marks the lane stale and the
+steps below apply unchanged. The code-exemplar lane has no bundled engine; if
+enabled it keeps using its configured endpoint.
 
 ## Steps
 
