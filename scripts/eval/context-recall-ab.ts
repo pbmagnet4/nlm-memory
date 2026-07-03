@@ -12,21 +12,33 @@
  * the delta isolates the augmentation effect. Judge is the artifact-not-self
  * call (default qwen3.5:4b; --model to drive a bigger run through DS4 Flash).
  *
+ * Recall runs IN-PROCESS through the production keyword pipeline
+ * (extractRecallQuery -> RecallService mode=keyword), the exact path the flag
+ * changes. No daemon required; point --db at a VACUUM INTO snapshot of
+ * canonical.sqlite to keep the live DB untouched while other jobs write to it.
+ * The snapshot itself is opened read-write (the storage adapter runs its
+ * idempotent migrations on open), so treat it as disposable.
+ *
  * Run: npx tsx scripts/eval/context-recall-ab.ts [--limit=16] [--days=45]
- *        [--model=qwen3.5:4b] [--port=3940] [--verbose] [--json=<out>]
+ *        [--model=qwen3.5:4b] [--db=<sqlite path>] [--verbose] [--json=<out>]
  */
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { topicalWordCount } from "../../src/hook/recent-context.js";
+import { extractRecallQuery } from "../../src/core/hook/query-extract.js";
+import { RecallService } from "../../src/core/recall/recall-service.js";
+import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
+import type { LLMClient } from "../../src/ports/llm-client.js";
+import { judgeUsefulness, USEFULNESS_MODEL, type Verdict } from "./lib/usefulness-judge.js";
 
 interface Args {
   limit: number;
   days: number;
   model: string;
   ollamaUrl: string;
-  port: number;
+  db: string;
   verbose: boolean;
   json: string | null;
 }
@@ -38,9 +50,9 @@ function parseArgs(argv: string[]): Args {
   return {
     limit: Number.parseInt(get("limit") ?? "16", 10),
     days: Number.parseInt(get("days") ?? "45", 10),
-    model: get("model") ?? "qwen3.5:4b",
+    model: get("model") ?? USEFULNESS_MODEL,
     ollamaUrl: get("ollama") ?? process.env["OLLAMA_URL"] ?? "http://localhost:11434",
-    port: Number.parseInt(get("port") ?? "3940", 10),
+    db: get("db") ?? join(homedir(), ".nlm", "canonical.sqlite"),
     verbose: argv.includes("--verbose"),
     json: get("json") ?? null,
   };
@@ -122,52 +134,65 @@ function reconstruct(transcript: string, prompt: string): { context: string; res
   return { context: ctx.join(" ").trim(), response: resp.join(" ").slice(0, 1200) };
 }
 
-async function topHit(args: Args, query: string): Promise<string | null> {
-  try {
-    const url = `http://localhost:${args.port}/api/recall?q=${encodeURIComponent(query)}&limit=1`;
-    const res = await fetch(url);
-    const data = (await res.json()) as { results?: Array<{ id?: string }> };
-    return data.results?.[0]?.id ?? null;
-  } catch {
-    return null;
-  }
+// A local judge call has no business taking minutes; a hung one previously
+// stalled the whole run (observed live). Timed-out fires are skipped, never
+// tallied.
+const JUDGE_TIMEOUT_MS = 90_000;
+
+// mode=keyword through the real RecallService matches the production hook path
+// this flag changes (recall-over-http.ts recalls keyword-only; hybrid is too
+// slow for the hot path). Measuring hybrid would grade a code path the flag
+// never touches. extractRecallQuery mirrors recallOverHttp's preprocessing.
+function makeTopHit(recall: RecallService): (query: string) => Promise<string | null> {
+  return async (query: string): Promise<string | null> => {
+    const extracted = extractRecallQuery(query);
+    if (extracted === null) return null;
+    try {
+      const res = await recall.search({ query: extracted, mode: "keyword", limit: 5 });
+      return res.results[0]?.id ?? null;
+    } catch (e) {
+      // The NO_LLM invariant must fail the run, not silently drop the sample.
+      if (e instanceof Error && e.message.startsWith("context-recall-ab:")) throw e;
+      return null;
+    }
+  };
 }
 
-type Verdict = "used" | "partial" | "unused";
-async function judge(args: Args, prompt: string, context: string, response: string): Promise<Verdict> {
+// Keyword-only recall never touches the LLM (rewrite defaults off); satisfy
+// the deps contract with a client that fails loud if that ever changes.
+const NO_LLM: LLMClient = new Proxy({} as LLMClient, {
+  get(_t, prop): never {
+    throw new Error(`context-recall-ab: unexpected LLM call ${String(prop)} in keyword mode`);
+  },
+});
+
+/** Judge with a deadline; null means timed out (skip the fire, do not tally). */
+async function judgeWithDeadline(
+  args: Args,
+  triple: { prompt: string; context: string; response: string },
+): Promise<Verdict | null> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), JUDGE_TIMEOUT_MS);
+  });
   try {
-    const res = await fetch(`${args.ollamaUrl}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: args.model,
-        stream: false,
-        think: false,
-        format: { type: "object", properties: { verdict: { type: "string", enum: ["used", "partial", "unused"] } }, required: ["verdict"] },
-        options: { temperature: 0 },
-        messages: [
-          {
-            role: "system",
-            content:
-              "Judge whether the assistant RESPONSE used information from the INJECTED prior-session context. " +
-              "used = clearly drew on specific info from it not in the prompt and not generic; partial = on-topic, " +
-              "plausibly informed, no specific borrowed detail; unused = off-topic or absent. Judge the response " +
-              'against the context only, never the assistant\'s quality. Output {"verdict":"..."}.',
-          },
-          { role: "user", content: `USER PROMPT:\n${prompt}\n\nINJECTED CONTEXT:\n${context}\n\nASSISTANT RESPONSE:\n${response}` },
-        ],
-      }),
-    });
-    const data = (await res.json()) as { message?: { content?: string } };
-    return (JSON.parse(data.message?.content ?? "{}") as { verdict?: Verdict }).verdict ?? "unused";
-  } catch {
-    return "unused";
+    return await Promise.race([
+      judgeUsefulness(args.ollamaUrl, args.model, triple).catch((): Verdict => "unused"),
+      timeout,
+    ]);
+  } finally {
+    clearTimeout(timer!);
   }
 }
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const db = new Database(join(homedir(), ".nlm", "canonical.sqlite"), { readonly: true });
+  const storage = SqliteStorage.create({
+    dbPath: args.db,
+    migrationsDir: join(import.meta.dirname, "..", "..", "migrations"),
+  });
+  const topHit = makeTopHit(new RecallService({ store: storage.sessions, llm: NO_LLM }));
+  const db = new Database(args.db, { readonly: true });
   const summ = db.prepare<[string], { label: string; summary: string; body: string }>(
     "SELECT label, COALESCE(summary,'') AS summary, COALESCE(substr(body,1,500),'') AS body FROM sessions WHERE id = ?",
   );
@@ -212,13 +237,14 @@ async function main(): Promise<void> {
     if (!rec || !rec.response) continue;
     if (!rec.context) continue; // no prior turns to augment with — augmentation is a no-op here
 
-    const bareHit = await topHit(args, f.prompt);
-    const augHit = await topHit(args, `${rec.context} ${f.prompt}`);
+    const bareHit = await topHit(f.prompt);
+    const augHit = await topHit(`${rec.context} ${f.prompt}`);
     if (!bareHit && !augHit) continue;
     if (bareHit !== augHit) augChanged += 1;
 
-    const bareV = await judge(args, f.prompt, ctxOf(bareHit), rec.response);
-    const augV = await judge(args, f.prompt, ctxOf(augHit), rec.response);
+    const bareV = await judgeWithDeadline(args, { prompt: f.prompt, context: ctxOf(bareHit), response: rec.response });
+    const augV = await judgeWithDeadline(args, { prompt: f.prompt, context: ctxOf(augHit), response: rec.response });
+    if (bareV === null || augV === null) continue;
     tally.bare[bareV] += 1;
     tally.aug[augV] += 1;
     scored += 1;
@@ -230,6 +256,7 @@ async function main(): Promise<void> {
     }
   }
   db.close();
+  await storage.close();
 
   const score = (t: { used: number; partial: number; unused: number }) =>
     scored > 0 ? (t.used + 0.5 * t.partial) / scored : 0;
