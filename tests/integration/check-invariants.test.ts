@@ -368,6 +368,65 @@ describe("check-invariants (SQLite)", () => {
     });
   });
 
+  describe("I5a multi-valued predicate exemption (#358)", () => {
+    it("two active facts on subject|stack do NOT count as an I5a violation", () => {
+      store.insertSessionForTest(makeSession({ id: "s_mv1" }));
+      const db = store.rawDb();
+      db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+        VALUES (?, 'attribute', 'nlm-memory', 'stack', 'TypeScript', 's_mv1', 1.0)`).run("f_mv1");
+      db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+        VALUES (?, 'attribute', 'nlm-memory', 'stack', 'SQLite', 's_mv1', 1.0)`).run("f_mv2");
+      const violations = runChecksOnSqlite(db);
+      expect(violations.find((v) => v.id === "I5a")).toBeUndefined();
+    });
+
+    it("two active facts on subject|dependency do NOT count as an I5a violation and count into I5a-mv", () => {
+      store.insertSessionForTest(makeSession({ id: "s_mvdep" }));
+      const db = store.rawDb();
+      db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+        VALUES (?, 'attribute', 'nlm-memory', 'dependency', 'better-sqlite3', 's_mvdep', 1.0)`).run("f_dep1");
+      db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+        VALUES (?, 'attribute', 'nlm-memory', 'dependency', 'hono', 's_mvdep', 1.0)`).run("f_dep2");
+      const violations = runChecksOnSqlite(db);
+      expect(violations.find((v) => v.id === "I5a")).toBeUndefined();
+      const mv = violations.find((v) => v.id === "I5a-mv");
+      expect(mv).toBeDefined();
+      expect(mv!.count).toBe(1);
+    });
+
+    it("two active facts on a non-whitelisted predicate still trigger I5a", () => {
+      store.insertSessionForTest(makeSession({ id: "s_mv2" }));
+      const db = store.rawDb();
+      db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+        VALUES (?, 'attribute', 'nlm-memory', 'color', 'red', 's_mv2', 1.0)`).run("f_nonmv1");
+      db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+        VALUES (?, 'attribute', 'nlm-memory', 'color', 'blue', 's_mv2', 1.0)`).run("f_nonmv2");
+      const violations = runChecksOnSqlite(db);
+      expect(violations.find((v) => v.id === "I5a")).toBeDefined();
+    });
+
+    it("exempted multi-valued groups are reported as I5a-mv with correct count", () => {
+      store.insertSessionForTest(makeSession({ id: "s_mv3" }));
+      const db = store.rawDb();
+      // One stack group with 2 active facts (1 exempted group)
+      db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+        VALUES (?, 'attribute', 'proj', 'stack', 'TypeScript', 's_mv3', 1.0)`).run("f_mv3a");
+      db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+        VALUES (?, 'attribute', 'proj', 'stack', 'SQLite', 's_mv3', 1.0)`).run("f_mv3b");
+      // A second subject|stack group (2nd exempted group)
+      db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+        VALUES (?, 'attribute', 'other-proj', 'stack', 'Python', 's_mv3', 1.0)`).run("f_mv3c");
+      db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+        VALUES (?, 'attribute', 'other-proj', 'stack', 'Postgres', 's_mv3', 1.0)`).run("f_mv3d");
+      const violations = runChecksOnSqlite(db);
+      const mv = violations.find((v) => v.id === "I5a-mv");
+      expect(mv).toBeDefined();
+      expect(mv!.count).toBe(2);
+      // Must not be counted as a true violation
+      expect(violations.find((v) => v.id === "I5a")).toBeUndefined();
+    });
+  });
+
   describe("I7: ghost fact embeddings", () => {
     function seedEmbedding(factId: string): void {
       const blob = Buffer.alloc(768 * 4);

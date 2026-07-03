@@ -31,6 +31,24 @@ export interface Violation {
   readonly sampleIds: ReadonlyArray<string>;
 }
 
+// Multi-valued predicates legitimately hold parallel active facts (e.g.
+// nlm-memory|stack = TypeScript AND SQLite, both simultaneously true).
+// Force-superseding one copy would destroy a true fact, which is the
+// #351-bug-3 trap. I5a skips subject|predicate groups whose predicate is
+// in this set and instead reports them as an informational count under
+// the id "I5a-mv". Entries MUST be members of PREDICATE_VOCABULARY
+// (src/core/classifier/prompt.ts): predicates are coerced to that closed
+// vocab before facts are written, so any other token here is inert. Add
+// predicates only when parallelism is a domain invariant, not when the
+// classifier merely failed to supersede (#358).
+const MULTI_VALUED_PREDICATES: ReadonlySet<string> = new Set([
+  "stack",
+  "integration",
+  "dependency",
+]);
+
+const MV_IN = [...MULTI_VALUED_PREDICATES].map((p) => `'${p}'`).join(", ");
+
 // ─── SQL strings (portable) ──────────────────────────────────────────────────
 
 const SQL_I1 = `
@@ -79,10 +97,24 @@ const SQL_I4_MISSING_TO = `
 // One row per conflicting (subject, predicate) group — the count is the number
 // of conflicts to resolve, not the number of facts involved. MIN(id) keeps the
 // projection aggregate-only so PostgreSQL's GROUP BY strictness accepts it.
+// Multi-valued predicates are excluded here; they are counted by SQL_I5A_MULTI_VALUED.
 const SQL_I5_DUPLICATE_FACTS = `
   SELECT MIN(id) AS bad_id
   FROM facts
   WHERE superseded_by IS NULL AND retired_at IS NULL
+    AND predicate NOT IN (${MV_IN})
+  GROUP BY subject, predicate
+  HAVING COUNT(*) > 1
+  LIMIT 6
+`;
+
+// One row per (subject, predicate) group in the multi-valued exemption set that
+// holds more than one active fact. Count drives the informational I5a-mv report.
+const SQL_I5A_MULTI_VALUED = `
+  SELECT MIN(id) AS bad_id
+  FROM facts
+  WHERE superseded_by IS NULL AND retired_at IS NULL
+    AND predicate IN (${MV_IN})
   GROUP BY subject, predicate
   HAVING COUNT(*) > 1
   LIMIT 6
@@ -284,6 +316,16 @@ export function runChecksOnSqlite(db: Database.Database): ReadonlyArray<Violatio
     const count = sqliteCount(db, SQL_I5_DUPLICATE_FACTS);
     violations.push(buildViolation("I5a", "multiple active facts for same (subject, predicate)", i5DupSamples, count));
   }
+  // I5a-mv: informational count of multi-valued predicate groups (not violations).
+  const i5aMvCount = sqliteCount(db, SQL_I5A_MULTI_VALUED);
+  if (i5aMvCount > 0) {
+    violations.push(buildViolation(
+      "I5a-mv",
+      `multi-valued predicate groups exempted from I5a (${[...MULTI_VALUED_PREDICATES].join(", ")})`,
+      [],
+      i5aMvCount,
+    ));
+  }
   const i5DangleSamples = sqliteRows(db, SQL_I5_DANGLING_SUPERSEDED_BY);
   if (i5DangleSamples.length > 0) {
     const count = sqliteCount(db, SQL_I5_DANGLING_SUPERSEDED_BY);
@@ -399,6 +441,16 @@ export async function runChecksOnPg(pool: Pool): Promise<ReadonlyArray<Violation
   if (i5DupSamples.length > 0) {
     const count = await pgCount(pool, SQL_I5_DUPLICATE_FACTS);
     violations.push(buildViolation("I5a", "multiple active facts for same (subject, predicate)", i5DupSamples, count));
+  }
+  // I5a-mv: informational count of multi-valued predicate groups (not violations).
+  const i5aMvCount = await pgCount(pool, SQL_I5A_MULTI_VALUED);
+  if (i5aMvCount > 0) {
+    violations.push(buildViolation(
+      "I5a-mv",
+      `multi-valued predicate groups exempted from I5a (${[...MULTI_VALUED_PREDICATES].join(", ")})`,
+      [],
+      i5aMvCount,
+    ));
   }
   if (i5DangleSamples.length > 0) {
     const count = await pgCount(pool, SQL_I5_DANGLING_SUPERSEDED_BY);

@@ -2444,6 +2444,12 @@ program
         console.log(`PASS ${id}`);
       }
     }
+    // I5a-mv is informational: multi-valued predicate groups legitimately exempt
+    // from I5a. Not a violation; printed separately so the count is visible.
+    const i5aMv = byId.get("I5a-mv");
+    if (i5aMv) {
+      console.log(`INFO I5a-mv  count=${i5aMv.count}  ${i5aMv.description}`);
+    }
 
     console.log("\nInstall & runtime health:");
     if (printHealthChecks(evaluateInstallHealth(await gatherInstallProbe()))) anyFail = true;
@@ -2465,10 +2471,12 @@ function printHealthChecks(checks: ReadonlyArray<HealthCheck>): boolean {
 async function dbIntegrityCheck(): Promise<HealthCheck> {
   const storage = await buildStorage(dbPath());
   try {
-    const violations =
+    const all =
       storage instanceof PgStorage
         ? await runChecksOnPg(storage.pgPool())
         : runChecksOnSqlite((storage as SqliteStorage).rawDb());
+    // I5a-mv is informational (exempted multi-valued groups), not a true violation.
+    const violations = all.filter((v) => v.id !== "I5a-mv");
     if (violations.length === 0) return { id: "db-integrity", status: "ok", detail: "all invariants hold" };
     return {
       id: "db-integrity",

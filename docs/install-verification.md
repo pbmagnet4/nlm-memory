@@ -17,7 +17,7 @@ Each line is `PASS` / `WARN` / `FAIL`, and every non-pass prints the exact fix.
 | `codex-stale` | no pre-rename `nlm-memory-ts` entry in Codex config | `nlm connect codex --repair` |
 | `codex` | Codex config (if present) is wired | `nlm connect codex` |
 | `models` | embedding + classifier models present (Ollama backend) | `nlm setup` |
-| `db-integrity` | all DB invariants (I1–I6) hold | `nlm doctor --fix` |
+| `db-integrity` | all DB invariants (I1–I6) hold; `I5a-mv` reports multi-valued predicate exemptions informationally and does not fail the gate | `nlm doctor --fix` |
 | `recall-smoke` | `GET /api/recall` returns a well-formed result set | `nlm restart; check nlm logs` |
 
 `WARN` (e.g. an optional runtime not wired) does not fail the gate; `FAIL` does.
