@@ -33,6 +33,8 @@ export interface SessionChunk {
   readonly gitBranch: string;
   readonly text: string;
   readonly label: string;
+  /** Last assistant-turn model string seen in this chunk. Omitted when the transcript carries no model field. */
+  readonly model?: string;
   /**
    * Raw `nlm.signal` payloads found in the transcript (Pi custom_message
    * entries). Normalized + persisted by the scheduler, decoupled from session

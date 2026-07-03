@@ -29,12 +29,12 @@ describe("ClaudeCodeAdapter.discover", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("finds all 4 jsonl fixtures under a project dir", async () => {
+  it("finds all jsonl fixtures under a project dir", async () => {
     const adapter = new ClaudeCodeAdapter({ projectsPath: tmp });
     const found = await adapter.discover();
     const stems = new Set(found.map((p) => p.split("/").pop()!.replace(".jsonl", "")));
     expect(stems).toEqual(
-      new Set(["standard_iso", "short_session", "tool_heavy", "with_subagent"]),
+      new Set(["standard_iso", "short_session", "tool_heavy", "with_subagent", "with_model"]),
     );
   });
 
@@ -114,5 +114,23 @@ describe("ClaudeCodeAdapter.detect", () => {
     // We just verify the shape is sane.
     expect(result.adapterName).toBe("claude-code");
     expect(typeof result.enabled).toBe("boolean");
+  });
+});
+
+describe("ClaudeCodeAdapter chunk.model", () => {
+  const adapter = new ClaudeCodeAdapter({ projectsPath: FIXTURES });
+
+  it("with_model: last assistant message.model wins", async () => {
+    const chunk = await adapter.parseSession(join(FIXTURES, "with_model.jsonl"));
+    expect(chunk).not.toBeNull();
+    if (!chunk) return;
+    expect(chunk.model).toBe("claude-opus-4-8");
+  });
+
+  it("standard_iso: chunk.model is undefined when no assistant turns carry model", async () => {
+    const chunk = await adapter.parseSession(join(FIXTURES, "standard_iso.jsonl"));
+    expect(chunk).not.toBeNull();
+    if (!chunk) return;
+    expect(chunk.model).toBeUndefined();
   });
 });

@@ -56,3 +56,7 @@ nlm code-signal --repo-path . --sha HEAD --test-exit $? --task "<spec>" --model 
 
 The `--task` text becomes the exemplar's task context (what `recall_code`
 matches against); omit it to fall back to the changed funcname/file.
+
+## Provenance
+
+Session-ingest exemplars (captured automatically from transcripts via the scheduler) carry chunk-level model provenance from the transcript: the last assistant-turn `message.model` field seen in the chunk, as of #354. Exemplars captured before this carry `model=unknown` and cannot be truthfully backfilled. `outcome=pass` is definitional for commit-capture; real failures enter via `nlm code-signal`. The `survived` field remains unwritten by design: `pruneReverted` is wired and idle until a revert-detection writer exists.

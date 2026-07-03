@@ -30,6 +30,7 @@ export interface SessionExemplarContext {
   readonly summary: string;
   readonly decisions: ReadonlyArray<string>;
   readonly installScope: string;
+  readonly model?: string;
 }
 
 export function composeTaskContext(summary: string, decisions: ReadonlyArray<string>): string {
@@ -50,6 +51,7 @@ export function captureExemplarsFromSession(ctx: SessionExemplarContext): CodeEx
       sha,
       installScope: ctx.installScope,
       outcome: "pass",
+      ...(ctx.model ? { model: ctx.model } : {}),
       sessionId: ctx.sessionId,
       ts: ctx.startedAt,
       taskContext,

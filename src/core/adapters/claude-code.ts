@@ -111,6 +111,7 @@ export class ClaudeCodeAdapter implements TranscriptAdapter {
     let parentSessionId = "";
     let totalBytes = 0;
 
+    let lastModel: string | undefined;
     let raw: string;
     try {
       raw = await fs.readFile(path, "utf8");
@@ -147,6 +148,11 @@ export class ClaudeCodeAdapter implements TranscriptAdapter {
       if (evtType !== "user" && evtType !== "assistant") continue;
 
       const msg = (evt["message"] as Record<string, unknown> | undefined) ?? {};
+
+      if (evtType === "assistant" && typeof msg["model"] === "string" && msg["model"]) {
+        lastModel = msg["model"] as string;
+      }
+
       const text = extractText(msg["content"]);
       if (!text.trim()) continue;
 
@@ -184,6 +190,7 @@ export class ClaudeCodeAdapter implements TranscriptAdapter {
         gitBranch,
         text: transcript,
         label,
+        ...(lastModel ? { model: lastModel } : {}),
       };
     }
 
@@ -203,6 +210,7 @@ export class ClaudeCodeAdapter implements TranscriptAdapter {
       gitBranch,
       text: transcript,
       label,
+      ...(lastModel ? { model: lastModel } : {}),
     };
   }
 
