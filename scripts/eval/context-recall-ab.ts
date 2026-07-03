@@ -20,6 +20,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { topicalWordCount } from "../../src/hook/recent-context.js";
+import { judgeUsefulness, USEFULNESS_MODEL, type Verdict } from "./lib/usefulness-judge.js";
 
 interface Args {
   limit: number;
@@ -38,7 +39,7 @@ function parseArgs(argv: string[]): Args {
   return {
     limit: Number.parseInt(get("limit") ?? "16", 10),
     days: Number.parseInt(get("days") ?? "45", 10),
-    model: get("model") ?? "qwen3.5:4b",
+    model: get("model") ?? USEFULNESS_MODEL,
     ollamaUrl: get("ollama") ?? process.env["OLLAMA_URL"] ?? "http://localhost:11434",
     port: Number.parseInt(get("port") ?? "3940", 10),
     verbose: argv.includes("--verbose"),
@@ -133,38 +134,6 @@ async function topHit(args: Args, query: string): Promise<string | null> {
   }
 }
 
-type Verdict = "used" | "partial" | "unused";
-async function judge(args: Args, prompt: string, context: string, response: string): Promise<Verdict> {
-  try {
-    const res = await fetch(`${args.ollamaUrl}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: args.model,
-        stream: false,
-        think: false,
-        format: { type: "object", properties: { verdict: { type: "string", enum: ["used", "partial", "unused"] } }, required: ["verdict"] },
-        options: { temperature: 0 },
-        messages: [
-          {
-            role: "system",
-            content:
-              "Judge whether the assistant RESPONSE used information from the INJECTED prior-session context. " +
-              "used = clearly drew on specific info from it not in the prompt and not generic; partial = on-topic, " +
-              "plausibly informed, no specific borrowed detail; unused = off-topic or absent. Judge the response " +
-              'against the context only, never the assistant\'s quality. Output {"verdict":"..."}.',
-          },
-          { role: "user", content: `USER PROMPT:\n${prompt}\n\nINJECTED CONTEXT:\n${context}\n\nASSISTANT RESPONSE:\n${response}` },
-        ],
-      }),
-    });
-    const data = (await res.json()) as { message?: { content?: string } };
-    return (JSON.parse(data.message?.content ?? "{}") as { verdict?: Verdict }).verdict ?? "unused";
-  } catch {
-    return "unused";
-  }
-}
-
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const db = new Database(join(homedir(), ".nlm", "canonical.sqlite"), { readonly: true });
@@ -217,8 +186,8 @@ async function main(): Promise<void> {
     if (!bareHit && !augHit) continue;
     if (bareHit !== augHit) augChanged += 1;
 
-    const bareV = await judge(args, f.prompt, ctxOf(bareHit), rec.response);
-    const augV = await judge(args, f.prompt, ctxOf(augHit), rec.response);
+    const bareV = await judgeUsefulness(args.ollamaUrl, args.model, { prompt: f.prompt, context: ctxOf(bareHit), response: rec.response }).catch((): Verdict => "unused");
+    const augV = await judgeUsefulness(args.ollamaUrl, args.model, { prompt: f.prompt, context: ctxOf(augHit), response: rec.response }).catch((): Verdict => "unused");
     tally.bare[bareV] += 1;
     tally.aug[augV] += 1;
     scored += 1;
