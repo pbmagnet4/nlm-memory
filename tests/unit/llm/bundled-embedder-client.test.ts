@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { BundledEmbedderClient, DEFAULT_BUNDLED_EMBED_MODEL } from "../../../src/llm/bundled-embedder-client.js";
+import { BundledEmbedderClient } from "../../../src/llm/bundled-embedder-client.js";
 import { LLMUnreachableError } from "../../../src/ports/llm-client.js";
 import { MAX_EMBED_CHARS } from "../../../src/llm/ollama-client.js";
 
@@ -66,10 +66,16 @@ describe("BundledEmbedderClient", () => {
       expect(result.vector[1]).toBeCloseTo(0.8, 5);
     });
 
-    it("reports the model name in EmbedResult", async () => {
+    it("reports the resolved default model repo in EmbedResult", async () => {
       const client = new BundledEmbedderClient();
       const result = await client.embed("test", "query");
-      expect(result.model).toBe(DEFAULT_BUNDLED_EMBED_MODEL);
+      expect(result.model).toBe("onnx-community/nomic-embed-text-v1.5");
+    });
+
+    it("reports a custom model override in EmbedResult (truthful provenance)", async () => {
+      const client = new BundledEmbedderClient({ model: "custom/repo" });
+      const result = await client.embed("test", "query");
+      expect(result.model).toBe("custom/repo");
     });
   });
 
@@ -90,11 +96,22 @@ describe("BundledEmbedderClient", () => {
     });
   });
 
-  describe("import failure", () => {
+  describe("pipeline factory failure", () => {
     it("rejects with LLMUnreachableError when pipeline initialization fails", async () => {
       mockPipelineFactory.mockRejectedValue(new Error("module unavailable"));
       const client = new BundledEmbedderClient();
       await expect(client.embed("test", "document")).rejects.toBeInstanceOf(LLMUnreachableError);
+    });
+
+    it("retries init on the next embed after a transient failure (offline first run)", async () => {
+      mockPipelineFactory
+        .mockRejectedValueOnce(new Error("network down"))
+        .mockResolvedValueOnce(mockEmbedFn);
+      const client = new BundledEmbedderClient();
+      await expect(client.embed("test", "document")).rejects.toBeInstanceOf(LLMUnreachableError);
+      const result = await client.embed("test", "document");
+      expect(result.vector).toBeInstanceOf(Float32Array);
+      expect(mockPipelineFactory).toHaveBeenCalledTimes(2);
     });
   });
 

@@ -25,6 +25,8 @@ import type {
 import { LLMUnreachableError } from "@ports/llm-client.js";
 import { EMBED_PREFIXES, MAX_EMBED_CHARS, l2Normalize } from "./ollama-client.js";
 
+/** Friendly default model name for the embedder-info descriptor (provider
+ *  wiring). embed() itself reports the resolved HF repo id for provenance. */
 export const DEFAULT_BUNDLED_EMBED_MODEL = "nomic-embed-text-v1.5";
 
 // The HuggingFace Hub repo that hosts the ONNX q8 export of nomic-embed-text-v1.5.
@@ -73,7 +75,13 @@ export class BundledEmbedderClient implements LLMClient {
         cache_dir: this.modelDir,
       }));
       return pipe;
-    })();
+    })().catch((e: unknown) => {
+      // A memoized rejection would poison every later embed. The dominant
+      // failure mode is a transient one (offline during the first-run model
+      // download), so clear the memo and let the next call retry.
+      this.pipelinePromise = null;
+      throw e;
+    });
     return this.pipelinePromise;
   }
 
@@ -99,7 +107,10 @@ export class BundledEmbedderClient implements LLMClient {
         `expected ${EXPECTED_DIMS} dimensions, got ${vec.length}`,
       );
     }
-    return { vector: l2Normalize(vec), model: DEFAULT_BUNDLED_EMBED_MODEL };
+    // Report the repo actually in use so embedding_config provenance records
+    // a custom opts.model override truthfully. The default construction
+    // reports "onnx-community/nomic-embed-text-v1.5".
+    return { vector: l2Normalize(vec), model: this.modelRepo };
   }
 
   async classify(_transcript: string): Promise<ClassifyResult> {
