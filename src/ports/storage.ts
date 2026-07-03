@@ -8,6 +8,7 @@
  */
 
 import type { CodeExemplarStore } from "./code-exemplar-store.js";
+import type { EntityStore } from "./entity-store.js";
 import type { FactStore } from "./fact-store.js";
 import type { SessionStore } from "./session-store.js";
 import type { SignalStore } from "./signal-store.js";
@@ -23,6 +24,7 @@ export interface Storage {
   readonly signals: SignalStore;
   readonly exemplars: CodeExemplarStore;
   readonly workstreams: WorkstreamStore;
+  readonly entities: EntityStore;
   /** Transcript-source registry (claude-code/hermes/webhook/…). */
   readonly sources: SourceRegistryPort;
   /** LLM-provider registry (ollama/deepseek/openai/…). */

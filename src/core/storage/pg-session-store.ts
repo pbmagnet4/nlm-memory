@@ -500,7 +500,15 @@ export class PgSessionStore implements SessionStore {
       // re-insert for the new entity list. Without this, nlm reprocess amplifies
       // stale links (ON CONFLICT DO NOTHING keeps dropped entities forever) and
       // double-counts session_count on every re-ingest pass.
-      const newEntities = [...new Set(record.entities.map((e) => e.trim()).filter(Boolean))];
+      const rawNewEntities = [...new Set(record.entities.map((e) => e.trim()).filter(Boolean))];
+      // Resolve each extracted entity through entity_variants so merged surface
+      // forms bind to the canonical instead of resurrecting the retired source.
+      const variantRes = await client.query<{ variant: string; canonical: string }>(
+        `SELECT variant, canonical FROM entity_variants WHERE variant = ANY($1)`,
+        [rawNewEntities],
+      );
+      const variantMap = new Map(variantRes.rows.map((r) => [r.variant, r.canonical]));
+      const newEntities = rawNewEntities.map((name) => variantMap.get(name) ?? name);
       const oldRes = await client.query<{ entity_canonical: string }>(
         "SELECT entity_canonical FROM session_entities WHERE session_id = $1",
         [record.id],
