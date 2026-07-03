@@ -23,7 +23,7 @@ Join by `conversationId`: a surfaced id that also appears in the cited set is a 
 
 ## Why blended precision is low and that is fine
 
-The hook lane surfaces "possibly relevant" sessions on nearly every prompt; most are never cited, which is correct behaviour, so blended precision is structurally low. The signal worth tracking is **per-source** precision and its trend — the deliberate lanes (mcp, session-start) are where precision is meaningful — not the blended figure in isolation.
+The hook lane, where per-prompt recall is enabled (opt-in since the pull-first flip; on by default in Hermes Agent and pi.dev), surfaces "possibly relevant" sessions on nearly every prompt; most are never cited, which is correct behaviour, so blended precision is structurally low. The signal worth tracking is **per-source** precision and its trend — the deliberate lanes (mcp, session-start) are where precision is meaningful — not the blended figure in isolation.
 
 ## Output
 
