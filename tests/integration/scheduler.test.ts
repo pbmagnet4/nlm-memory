@@ -659,6 +659,92 @@ describe("ScanScheduler.tick", () => {
     expect(sess[0]?.label).toBe("Oversized label");
   });
 
+  describe("pruneReverted in exemplar sweep", () => {
+    const SCOPE = "test-scope";
+
+    async function insertExemplar(storage: SqliteStorage, survived: 0 | 1 | null, code: string): Promise<string> {
+      const { codeHash } = await import("../../src/core/exemplars/ingest-exemplar.js");
+      const { id } = await storage.exemplars.insert({
+        installScope: SCOPE,
+        signalId: null,
+        sessionId: null,
+        repo: "/repo/test",
+        model: "test-model",
+        lang: "ts",
+        taskContext: "ctx",
+        code,
+        codeHash: codeHash(code),
+        outcome: "pass",
+        gitSha: null,
+        survived,
+        ts: "2026-06-15T12:00:00.000Z",
+      });
+      return id;
+    }
+
+    it("prunes survived=0 exemplars and leaves survived=null and survived=1 untouched", async () => {
+      const adapter = new ClaudeCodeAdapter({ projectsPath: projects, idleMinutes: 15 });
+      const classifier = new StubClassifier();
+      const messages: string[] = [];
+      const scheduler = new ScanScheduler({
+        store,
+        adapters: [adapter],
+        classifier,
+        embedder: null,
+        exemplarStore: storage.exemplars,
+        installScope: SCOPE,
+        logger: (m) => messages.push(m),
+      });
+
+      const revertedId = await insertExemplar(storage, 0, "const reverted = 0;");
+      const nullId = await insertExemplar(storage, null, "const nulled = 1;");
+      const survivedId = await insertExemplar(storage, 1, "const survived = 2;");
+
+      const origEnv = process.env["NLM_CODE_EXEMPLARS_ENABLED"];
+      process.env["NLM_CODE_EXEMPLARS_ENABLED"] = "1";
+      try {
+        await scheduler.tick();
+      } finally {
+        if (origEnv === undefined) delete process.env["NLM_CODE_EXEMPLARS_ENABLED"];
+        else process.env["NLM_CODE_EXEMPLARS_ENABLED"] = origEnv;
+      }
+
+      expect(await storage.exemplars.getById(revertedId)).toBeNull();
+      expect(await storage.exemplars.getById(nullId)).not.toBeNull();
+      expect(await storage.exemplars.getById(survivedId)).not.toBeNull();
+      expect(messages.some((m) => m.includes("pruneReverted") && m.includes("deleted 1"))).toBe(true);
+    });
+
+    it("does not log when no reverted exemplars exist", async () => {
+      const adapter = new ClaudeCodeAdapter({ projectsPath: projects, idleMinutes: 15 });
+      const classifier = new StubClassifier();
+      const messages: string[] = [];
+      const scheduler = new ScanScheduler({
+        store,
+        adapters: [adapter],
+        classifier,
+        embedder: null,
+        exemplarStore: storage.exemplars,
+        installScope: SCOPE,
+        logger: (m) => messages.push(m),
+      });
+
+      await insertExemplar(storage, null, "const x = 1;");
+      await insertExemplar(storage, 1, "const y = 2;");
+
+      const origEnv = process.env["NLM_CODE_EXEMPLARS_ENABLED"];
+      process.env["NLM_CODE_EXEMPLARS_ENABLED"] = "1";
+      try {
+        await scheduler.tick();
+      } finally {
+        if (origEnv === undefined) delete process.env["NLM_CODE_EXEMPLARS_ENABLED"];
+        else process.env["NLM_CODE_EXEMPLARS_ENABLED"] = origEnv;
+      }
+
+      expect(messages.some((m) => m.includes("pruneReverted"))).toBe(false);
+    });
+  });
+
   it("writes classifier provenance when classifierDescriptor is provided", async () => {
     const adapter = new ClaudeCodeAdapter({ projectsPath: projects, idleMinutes: 15 });
     const classifier = new StubClassifier();
