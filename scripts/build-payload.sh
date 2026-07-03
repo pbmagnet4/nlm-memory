@@ -71,6 +71,18 @@ exec "$DIR/node/bin/node" "$DIR/app/dist/cli/nlm.js" start "$@"
 RUNSH
 chmod +x "$STAGING/run.sh"
 
+# --- Optional codesigning (required for payloads bundled inside notarized apps) ---
+# Set NLM_PAYLOAD_SIGN_IDENTITY to a Developer ID Application identity to sign
+# every Mach-O binary in the payload with hardened runtime + secure timestamp.
+if [ -n "${NLM_PAYLOAD_SIGN_IDENTITY:-}" ]; then
+  echo "Signing payload binaries ..."
+  find "$STAGING" -type f \( -name node -o -name "*.node" -o -name "*.dylib" \) | while read -r bin; do
+    if file "$bin" | grep -q "Mach-O"; then
+      codesign --force --options runtime --timestamp -s "$NLM_PAYLOAD_SIGN_IDENTITY" "$bin"
+    fi
+  done
+fi
+
 # --- Create tarball ---
 echo "Creating ${PAYLOAD_NAME} ..."
 tar -czf "$REPO_DIR/$PAYLOAD_NAME" -C "$STAGING" .
