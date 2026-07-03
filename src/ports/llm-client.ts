@@ -74,7 +74,7 @@ export interface WorkstreamCandidateHint {
 }
 
 export interface LLMClient {
-  embed(text: string, kind: EmbeddingKind): Promise<EmbedResult>;
+  embed(text: string, kind: EmbeddingKind, opts?: { signal?: AbortSignal }): Promise<EmbedResult>;
   classify(transcript: string): Promise<ClassifyResult>;
   /** Name which candidate workstream this session belongs to, or null for "none".
    *  Returns the chosen candidate.label verbatim. Content is label+summary or a transcript. */

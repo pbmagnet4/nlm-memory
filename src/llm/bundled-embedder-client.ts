@@ -82,7 +82,7 @@ export class BundledEmbedderClient implements LLMClient {
     return this.pipelinePromise;
   }
 
-  async embed(text: string, kind: EmbeddingKind): Promise<EmbedResult> {
+  async embed(text: string, kind: EmbeddingKind, _opts?: { signal?: AbortSignal }): Promise<EmbedResult> {
     const input = `${EMBED_PREFIXES[kind]}${text.slice(0, MAX_EMBED_CHARS)}`;
     let pipe: EmbedPipelineFn;
     try {

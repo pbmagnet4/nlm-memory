@@ -122,7 +122,7 @@ export class OllamaClient implements LLMClient {
     this.classifyAttempts = opts.classifyAttempts ?? 3;
   }
 
-  async embed(text: string, kind: EmbeddingKind): Promise<EmbedResult> {
+  async embed(text: string, kind: EmbeddingKind, opts?: { signal?: AbortSignal }): Promise<EmbedResult> {
     // nomic-embed-text v1.5 is an asymmetric retrieval model. The
     // search_query:/search_document: prefix is part of the training
     // contract; omitting it or using the wrong one degrades retrieval
@@ -132,6 +132,10 @@ export class OllamaClient implements LLMClient {
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const onExternal = opts?.signal != null ? (): void => { controller.abort(); } : null;
+    if (onExternal != null && opts?.signal != null) {
+      opts.signal.addEventListener("abort", onExternal, { once: true });
+    }
     try {
       const res = await this.fetchImpl(`${this.baseUrl}/api/embeddings`, {
         method: "POST",
@@ -153,6 +157,9 @@ export class OllamaClient implements LLMClient {
       throw new LLMUnreachableError("ollama", e);
     } finally {
       clearTimeout(timer);
+      if (onExternal != null && opts?.signal != null) {
+        opts.signal.removeEventListener("abort", onExternal);
+      }
     }
   }
 
