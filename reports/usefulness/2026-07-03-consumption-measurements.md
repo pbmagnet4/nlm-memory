@@ -144,7 +144,7 @@ transcript, capped at 1,500 chars.
 `src/mcp/server.ts` and `src/core/recall-facts/fact-query-log.ts` lacked the
 field). Legacy pulls are joined by scanning transcripts for the exact query
 string inside an nlm recall `tool_use` block. Ambiguous multi-transcript matches
-are discarded (fail-open). Pulls with queries shorter than 12 characters cannot
+are discarded (fail-safe: a wrong join is worse than a dropped one). Pulls with queries shorter than 12 characters cannot
 be searched reliably and are also dropped. The combination of these factors
 produces the observed join rate.
 
