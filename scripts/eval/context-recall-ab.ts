@@ -16,6 +16,8 @@
  * (extractRecallQuery -> RecallService mode=keyword), the exact path the flag
  * changes. No daemon required; point --db at a VACUUM INTO snapshot of
  * canonical.sqlite to keep the live DB untouched while other jobs write to it.
+ * The snapshot itself is opened read-write (the storage adapter runs its
+ * idempotent migrations on open), so treat it as disposable.
  *
  * Run: npx tsx scripts/eval/context-recall-ab.ts [--limit=16] [--days=45]
  *        [--model=qwen3.5:4b] [--db=<sqlite path>] [--verbose] [--json=<out>]
@@ -148,7 +150,9 @@ function makeTopHit(recall: RecallService): (query: string) => Promise<string | 
     try {
       const res = await recall.search({ query: extracted, mode: "keyword", limit: 5 });
       return res.results[0]?.id ?? null;
-    } catch {
+    } catch (e) {
+      // The NO_LLM invariant must fail the run, not silently drop the sample.
+      if (e instanceof Error && e.message.startsWith("context-recall-ab:")) throw e;
       return null;
     }
   };
