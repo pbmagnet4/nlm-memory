@@ -8,6 +8,7 @@ import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import pkg from "../../package.json" with { type: "json" };
 import { resetForTests, setCorpusSnapshot } from "../../src/core/health/corpus-state.js";
 import type { Hono } from "hono";
 import { RecallService } from "../../src/core/recall/recall-service.js";
@@ -108,6 +109,13 @@ describe("HTTP adapter", () => {
     expect(typeof body.warmup.fts5).toBe("boolean");
     expect(typeof body.warmup.textEmbedder).toBe("boolean");
     expect(typeof body.warmup.ready).toBe("boolean");
+  });
+
+  it("GET /api/health includes version matching package.json", async () => {
+    const res = await app.request("/api/health");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { version: string };
+    expect(body.version).toBe(pkg.version);
   });
 
   describe("corpus field in /api/health", () => {
