@@ -89,7 +89,7 @@ node dist/scripts/longmemeval/run-harness.js \
 npm run bench:longmemeval
 
 # With classifier (attributes classifier contribution to keyword recall)
-npm run bench:classifier -- ollama:qwen3:4b-instruct-2507-q4_K_M
+npm run bench:classifier -- ollama:qwen3.5:4b
 npm run bench:classifier -- deepseek:deepseek-v4-flash
 ```
 
@@ -252,7 +252,7 @@ node dist/scripts/longmemeval/run-harness.js \
   --report-dir reports/longmemeval
 
 # Classifier-in-the-loop (floor tier, local)
-npm run bench:classifier -- ollama:qwen3:4b-instruct-2507-q4_K_M
+npm run bench:classifier -- ollama:qwen3.5:4b
 
 # Classifier-in-the-loop (cloud ceiling, requires DEEPSEEK_API_KEY)
 npm run bench:classifier -- deepseek:deepseek-v4-flash

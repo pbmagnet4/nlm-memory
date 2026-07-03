@@ -208,10 +208,13 @@ corpus will show nearly all sessions in the NULL cohort.
 eligible session. On a large corpus with a slow local model this takes time. Use
 `--limit` and the resume state file to spread the work across multiple runs.
 
-**The 97.2% R@5 figure is corpus-specific.** The README headline was measured on
-a 14-month personal corpus with `deepseek-v4-flash` as the classifier. Your
-corpus and your classifier tier will produce a different number. See
-`docs/methodology-recall-baseline.md` for the methodology behind that figure
+**The personal-corpus R@5 figure is corpus-specific.** The README's 90.0% R@5
+figure was measured on a 14-month personal corpus with `deepseek-v4-flash` as
+the classifier (`reports/recall-experiments/2026-06-11-ranking-phase2.md`).
+Your corpus and your classifier tier will produce a different number. The
+97.2% figure is the separate public LongMemEval-S body-only result (n=500,
+hybrid mode) and does not depend on classifier choice. See
+`docs/methodology-recall-baseline.md` for the methodology behind both figures
 and how to derive an equivalent number on your own data.
 
 **Ollama model detection requires `NLM_CLASSIFIER_MODEL`.** When
