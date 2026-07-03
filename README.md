@@ -100,13 +100,15 @@ Two delivery paths. They share the same index.
 
 ### 1. Hooks — automatic context injection
 
-Hooks fire on user input and prepend a pointer block of likely-relevant prior sessions to the model's context. Four runtimes ship hooks today: Claude Code (six-hook lifecycle), Codex CLI (UserPromptSubmit + Stop via the marketplace plugin), Hermes Agent (six parallel hooks), and pi.dev (one `input` hook via [nlm/](nlm/README.md)). Cursor, Windsurf, and OpenCode don't expose a pre-prompt hook today, so the `--with-rules` install path drops a static rules snippet that asks the agent to call `recall_sessions` itself on history-flavored prompts (see [docs/hooks.md](docs/hooks.md) for the snippet). Full lifecycle, modes, logging surface, and the daily liveness canary documented in [docs/hooks.md](docs/hooks.md).
+Hooks deliver memory into agent context. Four runtimes ship hooks today: Claude Code (six-hook lifecycle), Codex CLI (UserPromptSubmit + Stop via the marketplace plugin), Hermes Agent (six parallel hooks), and pi.dev (one `input` hook via [nlm/](nlm/README.md)). Cursor, Windsurf, and OpenCode don't expose a pre-prompt hook today, so the `--with-rules` install path drops a static rules snippet that asks the agent to call `recall_sessions` itself on history-flavored prompts (see [docs/hooks.md](docs/hooks.md) for the snippet). Full lifecycle, modes, logging surface, and the daily liveness canary documented in [docs/hooks.md](docs/hooks.md).
+
+On fresh installs, the **SessionStart** hook injects the pointer block at conversation open. The **UserPromptSubmit** (per-prompt) lane is off by default: measured pulls are 72.4% useful vs 18.2% ambient on the same judge, so pull-first via the recall MCP tools is the recommended posture. Set `NLM_HOOK_PROMPT_RECALL=on` to re-enable per-prompt injection.
 
 **Claude Code** — six hooks written to `~/.claude/settings.json` via `nlm connect claude-code`:
 
 | Event | What NLM does | Mode |
 |---|---|---|
-| **UserPromptSubmit** | Score the prompt, silently prepend pointer block listing 0–3 most likely-relevant prior sessions | live by default |
+| **UserPromptSubmit** | Score the prompt, silently prepend pointer block listing 0–3 most likely-relevant prior sessions | off by default (pull-first); set `NLM_HOOK_PROMPT_RECALL=on` to enable |
 | **SessionStart** | Cold-start agents (cron, background) hit this; same pointer-block delivery without a user prompt, plus a "Known failure modes for this repo" block when signals data exists (see Signals below) | live by default |
 | **SessionEnd** | Delete the per-conversation memo on session close so state files don't accumulate | always on |
 | **Stop** | Scan the model's response for citations of surfaced session IDs → updates `useful_hit_rate` and builds the reranker training substrate | always on |
@@ -335,6 +337,7 @@ recall: prompt / query
 | `NLM_PORT` | `3940` | Daemon bind port (loopback only) |
 | `NLM_DB_PATH` | `~/.nlm/canonical.sqlite` | SQLite canonical store location |
 | `NLM_HOOK_MODE` | `live` | `live` injects pointer block; `shadow` logs without injecting |
+| `NLM_HOOK_PROMPT_RECALL` | `(unset = off)` | Per-prompt ambient recall. Off by default (pull-first); set `on` to inject a pointer block on every prompt. `off` disables explicitly. |
 | `NLM_HOOK_LOG` | `~/.nlm/hook-log.jsonl` | Hook fire log; powers digest's liveness alert |
 | `NLM_USEFUL_HIT_LOG` | `~/.nlm/useful-hit-log.jsonl` | Citation/useful-hit ledger |
 | `NLM_QUERY_LOG` | `~/.nlm/query-log.jsonl` | Recall query telemetry |

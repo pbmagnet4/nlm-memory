@@ -469,6 +469,8 @@ export async function runSetup(opts: SetupOptions): Promise<void> {
         });
         if (hookResult.ok) {
           hs.stop(`${hookResult.count} hooks installed → ${opts.claudeSettingsPath}`);
+          log.info("Recall posture: pull-first. Agents pull memory via the recall MCP tools; the session-start pointer block stays on.");
+          log.info("  Ambient per-prompt injection is off by default. Set NLM_HOOK_PROMPT_RECALL=on to re-enable it.");
         } else {
           hs.stop(`Hook install failed (${hookResult.failedLabel ?? "unknown"})`);
           if (hookResult.errorMessage) log.error(hookResult.errorMessage);

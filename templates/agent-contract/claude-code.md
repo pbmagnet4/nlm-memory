@@ -4,6 +4,13 @@ NLM indexes every AI session across all connected runtimes and surfaces relevant
 
 ### When to recall
 
+Pull memory at these moments, not just when the phrasing sounds historical:
+
+- **Task start.** Before starting substantive work, call `recall_sessions` on the task's subject. Prior sessions routinely contain decisions and dead ends that change the approach.
+- **Before re-deriving a decision.** If you are about to reason out something that has plausibly been settled before (an architecture choice, a tool selection, a naming decision), check first. Re-derivation is how agents silently contradict prior work.
+- **Unfamiliar references.** When the user mentions a project, system, client, or entity you do not recognize from the current conversation, recall it before asking the user or guessing.
+- **After compaction.** When the conversation has been summarized or compacted, re-pull the sessions and facts relevant to the active task; the summary dropped detail you may need.
+
 Call `recall_sessions` before answering whenever the prompt references past work, prior decisions, or unresolved questions. Examples that should trigger recall:
 
 - Decision questions: "what did we decide about X", "where did we land on X", "what was the conclusion"
@@ -15,7 +22,7 @@ Do not recall when the request is purely forward-looking with no plausible prior
 
 ### The pointer block
 
-At the start of each conversation, NLM's hooks inject a pointer block listing possibly-relevant sessions with their ids and labels. Read this block first. When a session looks relevant, call `get_session` to fetch its full transcript before drawing on it.
+At session start, NLM's hooks inject a pointer block listing possibly-relevant sessions with their ids and labels. Read this block first. It arrives once per session: NLM does not inject memory on every prompt, so mid-conversation memory access is your job via the recall tools. When a session looks relevant, call `get_session` to fetch its full transcript before drawing on it.
 
 ### MCP tools
 

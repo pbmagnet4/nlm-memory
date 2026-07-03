@@ -24,7 +24,7 @@ Claude Code is the most complete surface. Other runtimes implement a subset:
 
 | Hook | When it fires | What NLM does | Output |
 |---|---|---|---|
-| **UserPromptSubmit** | Before each user prompt is sent to the model | Score the prompt against the corpus; select top-N most-relevant prior sessions; format a pointer block | Pointer block prepended to model context (live mode) |
+| **UserPromptSubmit** | Before each user prompt is sent to the model | Score the prompt against the corpus; select top-N most-relevant prior sessions; format a pointer block | Pointer block prepended to model context (live mode); gated by `NLM_HOOK_PROMPT_RECALL`, off by default (pull-first posture, #392) |
 | **SessionStart** | When a new conversation begins (including cron-fired and background agents that never trigger UserPromptSubmit) | Same logic as UserPromptSubmit, but query derived from `working_directory + project_name` since no prompt exists yet; also fetches a "Known failure modes for this repo" block from the signals lane when data exists | Pointer block + failure-mode block (live mode) |
 | **SessionEnd** | When a Claude Code session closes | Delete the per-conversation surfaced-IDs memo so memo files don't accumulate under `~/.nlm/hook-state/`; log a `session-end` entry so the daily liveness canary can correlate closes against fires | No stdout output; cleans up state |
 | **Stop** | After the model's response completes | Scan the response for citations of surfaced session IDs; POST each fresh citation to `/api/recall/cite-event` | No stdout output; updates `useful_hit_rate` and citation log |
@@ -37,7 +37,7 @@ Code: [`src/hook/`](../src/hook/).
 
 Each hook reads `NLM_HOOK_MODE` from its command env. Two values:
 
-- **`live`** (default since v0.5.0) — UserPromptSubmit and SessionStart emit the pointer block on stdout, which Claude Code prepends to the model context. The model actually sees the recall.
+- **`live`** (default since v0.5.0) — SessionStart emits the pointer block on stdout, which Claude Code prepends to the model context. The model actually sees the recall. The UserPromptSubmit lane is separately gated: it requires `NLM_HOOK_PROMPT_RECALL=on` and is off by default (pull-first posture; agents pull mid-conversation via the recall MCP tools).
 - **`shadow`** — Same logic, same selection, same log entries — but stdout is empty. Nothing is injected into the model's context. Useful for measuring what *would* be surfaced without affecting model behavior.
 
 Both modes write to `~/.nlm/hook-log.jsonl`. The `mode` field on each entry tells you which.
