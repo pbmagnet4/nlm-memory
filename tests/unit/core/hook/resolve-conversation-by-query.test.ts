@@ -27,7 +27,7 @@ describe("resolveConversationByQuery", () => {
     expect(result).toBeNull();
   });
 
-  it("returns null for a short query (< 8 chars)", () => {
+  it("returns null for a query below the minimum length floor", () => {
     const projDir = join(tmp, "proj-a");
     mkdirSync(projDir, { recursive: true });
     writeFileSync(join(projDir, "conv-abc.jsonl"), JSON.stringify({ query: "pgvect" }) + "\n");

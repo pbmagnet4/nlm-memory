@@ -2,7 +2,7 @@
  * The MCP recall handlers must write to the recall telemetry, the same way
  * the HTTP /api/recall path does. Without this, every agent recall via MCP
  * is invisible to query_log.jsonl / fact_query_log.jsonl and the Recall
- * page — which is the path that actually matters for adoption telemetry.
+ * page, which is the path that actually matters for adoption telemetry.
  */
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -15,7 +15,7 @@ import {
   type McpDeps,
 } from "../../src/mcp/server.js";
 
-// logQuery is fire-and-forget (void) in the handler — poll for the line.
+// logQuery is fire-and-forget (void) in the handler; poll for the line.
 async function waitForLine(path: string): Promise<string> {
   for (let i = 0; i < 60; i++) {
     if (existsSync(path)) {
