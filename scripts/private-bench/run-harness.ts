@@ -203,9 +203,8 @@ async function main(): Promise<void> {
   const migrationsDir = resolve(__dirname, "../../migrations");
   const storage = SqliteStorage.create({ dbPath: args.db, migrationsDir });
 
-  // OllamaClient handles query embedding for semantic and hybrid modes.
-  // Keyword mode never calls llm.embed(), so this is safe even for
-  // keyword-only runs.
+  // Keyword mode never calls llm.embed(), so instantiating unconditionally
+  // is safe even for keyword-only runs.
   const llm: LLMClient = new OllamaClient({ embedModel: "nomic-embed-text" });
   const recall = new RecallService({ store: storage.sessions, llm });
 
@@ -256,11 +255,18 @@ async function main(): Promise<void> {
     elapsed_seconds: (Date.now() - t0) / 1000,
     aggregate: agg,
     by_category: byCategory,
-    // per_query contains id + category + scores. Question text is excluded.
+    // per_query carries id + category + mode scores ONLY. Question text and
+    // returnedIds (corpus session ids, potentially label-bearing on a real
+    // corpus) must never reach report files.
     per_query: results.map((r) => ({
       id: r.id,
       category: r.category,
-      by_mode: r.by_mode,
+      by_mode: Object.fromEntries(
+        Object.entries(r.by_mode).map(([mode, { returnedIds: _rids, ...scores }]) => [
+          mode,
+          scores,
+        ]),
+      ),
     })),
   };
 

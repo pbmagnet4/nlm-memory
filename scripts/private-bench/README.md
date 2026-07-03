@@ -28,6 +28,7 @@ The harness refuses (exit 1) when:
 
 - `NLM_PRIVATE_BENCH_QUERIES` is not set
 - The file does not exist
+- The file is not valid JSON
 - `locked` is not exactly `true` (boolean)
 - `queries` is missing or empty
 
