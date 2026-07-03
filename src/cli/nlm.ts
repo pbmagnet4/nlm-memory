@@ -115,6 +115,7 @@ import { defaultTopicProvider, aliasTopicProvider, type TopicProvider } from "..
 import { runChecksOnSqlite, runChecksOnPg, applyFixOnSqlite, applyFixOnPg } from "../core/integrity/check-invariants.js";
 import { normalizeLabel } from "../core/workstream/model.js";
 import { resolveWorkstreamId } from "../core/workstream/resolve.js";
+import { suggestMerges } from "../core/entities/dedup-suggest.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -2626,6 +2627,117 @@ program
       stdout: (s) => { process.stdout.write(s); },
       stderr: (s) => { process.stderr.write(s); },
     });
+  });
+
+const entitiesCmd = program.command("entities").description("Entity table operations");
+
+entitiesCmd
+  .command("dedup")
+  .description(
+    "Suggest (or apply) conservative entity merge pairs. Default: dry run.",
+  )
+  .option("--apply-safe", "execute safe-class merges via the merge primitive", false)
+  .option("--interactive", "step through likely-class pairs with y/n on stdin", false)
+  .action(async (opts: { applySafe?: boolean; interactive?: boolean }) => {
+    const storage = await buildStorage(dbPath());
+
+    type EntityQueryRow = { canonical: string; session_count: number; status: string };
+    let rows: EntityQueryRow[];
+    try {
+      if (storage instanceof SqliteStorage) {
+        rows = storage
+          .rawDb()
+          .prepare<[], EntityQueryRow>(
+            "SELECT canonical, session_count, status FROM entities ORDER BY canonical",
+          )
+          .all();
+      } else {
+        const res = await (storage as PgStorage)
+          .pgPool()
+          .query<EntityQueryRow>(
+            "SELECT canonical, session_count, status FROM entities ORDER BY canonical",
+          );
+        rows = res.rows;
+      }
+    } catch (err) {
+      await storage.close();
+      console.error("nlm entities dedup: failed to enumerate entities:", err);
+      process.exit(1);
+    }
+
+    const inputs = rows.map((r) => ({
+      canonical: r.canonical,
+      sessionCount: r.session_count,
+      status: r.status,
+    }));
+    const suggestions = suggestMerges(inputs);
+
+    const safe = suggestions.filter((s) => s.cls === "safe");
+    const likely = suggestions.filter((s) => s.cls === "likely");
+
+    let merged = 0;
+    let failed = 0;
+    let skipped = 0;
+
+    if (!opts.applySafe && !opts.interactive) {
+      console.log(`safe (${safe.length}):`);
+      for (const s of safe) console.log(`  ${s.source}  ->  ${s.target}`);
+      console.log(`likely (${likely.length}):`);
+      for (const s of likely) console.log(`  ${s.source}  ->  ${s.target}`);
+      console.log(`\ntotal: safe=${safe.length} likely=${likely.length} (dry run)`);
+      await storage.close();
+      return;
+    }
+
+    if (opts.applySafe) {
+      for (const s of safe) {
+        try {
+          await storage.entities.merge(s.source, s.target);
+          console.log(`merged: ${s.source} -> ${s.target}`);
+          merged++;
+        } catch (err) {
+          console.error(`failed: ${s.source} -> ${s.target}: ${err}`);
+          failed++;
+        }
+      }
+    } else {
+      for (const s of safe) {
+        console.log(`safe (skipped): ${s.source}  ->  ${s.target}`);
+        skipped++;
+      }
+    }
+
+    if (opts.interactive && likely.length > 0) {
+      const { createInterface } = await import("node:readline");
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const ask = (prompt: string): Promise<string> =>
+        new Promise((resolve) => rl.question(prompt, resolve));
+
+      for (const s of likely) {
+        const answer = await ask(`merge ${s.source} -> ${s.target}? [y/N] `);
+        if (answer.trim().toLowerCase() === "y") {
+          try {
+            await storage.entities.merge(s.source, s.target);
+            console.log(`merged: ${s.source} -> ${s.target}`);
+            merged++;
+          } catch (err) {
+            console.error(`failed: ${s.source} -> ${s.target}: ${err}`);
+            failed++;
+          }
+        } else {
+          skipped++;
+        }
+      }
+      rl.close();
+    } else {
+      skipped += likely.length;
+    }
+
+    await storage.close();
+
+    const remaining = suggestions.length - merged - failed;
+    console.log(`\nsummary: merged=${merged} failed=${failed} suggested-remaining=${remaining}`);
+    if (failed > 0) process.exit(1);
   });
 
 // Entrypoint guard: only parse argv when this file IS the executed script.
