@@ -108,6 +108,7 @@
 - Workstream store: row reads filter `workstreams.scope`; merge-suggestion candidate pairing is same-scope only; member listing routes through the scoped session store (defense in depth).
 - Signal store: failure-mode/aggregation reads take `activeScope` with the no-global variant.
 - One `scopeClause` call per read method; NO post-fetch scope filtering as the primary control anywhere.
+- **Producer-supplied exemplar scope (decision deferred to this task, recorded Stage A review 2026-07-06):** the `/api/exemplar` route stores a producer-supplied `scope` verbatim under `NLM_SCOPE_STAMP` (trusted-producer pattern, consistent with the signal `repo_path` anchor). Whether that value must be validated (re-derived or checked against the alias map) before scoped reads turn on is an explicit decision this task must make, not an oversight.
 
 **Tests (the leak suite, design section 7 cases 1-7, 12-16):** seedScopedCorpus fixture (sessions, facts with embeddings, exemplars, signals, workstreams in A/B/legacy/global). Scope A never returns B in keyword/semantic/hybrid; **hybrid-fact vector leak: a scope-B nearest-neighbor fact outside the keyword window is not returned in scope A**; entity/kind-filtered A never returns B; NULL invisible except all-scopes; by-id mismatch = not-found shape; failure-mode block never crosses scopes and an underivable scope yields empty; workstream rollup/suggestions never pair A with B; `listByDateRange` scoped; the guard test that every recall SQL routes through `scopeClause`. pg parity for all.
 
