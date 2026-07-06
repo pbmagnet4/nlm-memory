@@ -79,6 +79,8 @@ import {
 } from "../install/rules-install.js";
 import { runSupersedeCommand } from "./supersede.js";
 import { runInitCommand } from "./init.js";
+import { runScopeBackfill, formatBackfillResult } from "./scope-backfill.js";
+import { loadAliasMap } from "../core/scope/alias-map.js";
 import { getUpdateStatus } from "../core/update-check/check.js";
 import { connectHermes, disconnectHermes, hermesConfigPath } from "../install/hermes.js";
 import { connectHermesAgent, disconnectHermesAgent, hermesAgentPluginDir } from "../install/hermes-agent.js";
@@ -2749,6 +2751,47 @@ entitiesCmd
     const remaining = suggestions.length - merged - failed;
     console.log(`\nsummary: merged=${merged} failed=${failed} suggested-remaining=${remaining}`);
     if (failed > 0) process.exit(1);
+  });
+
+const scopeCmd = program
+  .command("scope")
+  .description("Scope management commands");
+
+scopeCmd
+  .command("backfill")
+  .description(
+    "Derive and stamp scope on legacy sessions/facts/exemplars/signals/workstreams from stored transcript evidence",
+  )
+  .option("--apply", "write changes (default: dry run, no writes)")
+  .option("--db <path>", "SQLite DB file to backfill (default: canonical NLM DB)")
+  .option("--json", "emit machine-readable JSON summary instead of human-readable output")
+  .action(async (opts) => {
+    const targetPath = (opts.db as string | undefined) ?? dbPath();
+    const storage = SqliteStorage.create({ dbPath: targetPath, migrationsDir: MIGRATIONS_DIR });
+    const aliasMap = loadAliasMap();
+    try {
+      const result = await runScopeBackfill({
+        db: storage.rawDb(),
+        apply: Boolean(opts.apply),
+        aliasMap,
+      });
+      if (opts.json) {
+        const out = {
+          dryRun: result.dryRun,
+          sessions: { total: result.sessions.total, byScope: result.sessions.byScope },
+          facts: { total: result.facts.total, byScope: result.facts.byScope },
+          exemplars: { total: result.exemplars.total, byScope: result.exemplars.byScope },
+          signals: { total: result.signals.total, byScope: result.signals.byScope },
+          workstreams: { total: result.workstreams.total, byScope: result.workstreams.byScope },
+          skipped: result.skipped,
+        };
+        process.stdout.write(JSON.stringify(out, null, 2) + "\n");
+      } else {
+        formatBackfillResult(result, (s) => process.stdout.write(s));
+      }
+    } finally {
+      await storage.close();
+    }
   });
 
 // Entrypoint guard: only parse argv when this file IS the executed script.
