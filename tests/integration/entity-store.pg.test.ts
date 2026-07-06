@@ -187,6 +187,7 @@ describe.skipIf(!PG_TEST_URL)("ingest-side variant lookup (PgStorage)", () => {
       entities: ["old-spelling"],
       decisions: [],
       openQuestions: [],
+      scope: null,
     });
 
     const linksRes = await pool.query<{ session_id: string }>(

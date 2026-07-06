@@ -105,6 +105,9 @@ export async function ingestSession(input: IngestInput, deps: IngestDeps): Promi
     entities: classification.entities,
     decisions: classification.decisions,
     openQuestions: classification.open,
+    // Push ingest carries no project directory; the scope backfill command
+    // derives it later from the transcript when evidence exists.
+    scope: null,
     ...(deps.classifierDescriptor !== undefined
       ? { classifier: { ...deps.classifierDescriptor, confidence: classification.confidence } }
       : {}),

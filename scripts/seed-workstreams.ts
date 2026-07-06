@@ -46,7 +46,7 @@ async function main(): Promise<void> {
     for (const t of topics) {
       const existing = await storage.workstreams.findByNormalizedLabel(normalizeLabel(t.label));
       const ws =
-        existing ?? (await storage.workstreams.create({ id: makeWorkstreamId(), label: t.label }));
+        existing ?? (await storage.workstreams.create({ id: makeWorkstreamId(), label: t.label, scope: null }));
       if (!existing) {
         created++;
       } else {

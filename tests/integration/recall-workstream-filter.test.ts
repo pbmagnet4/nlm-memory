@@ -68,7 +68,7 @@ describe("RecallService workstream filter (integration)", () => {
 
     // Bind s1 to workstream "NLM"
     const wsId = makeWorkstreamId();
-    await wsStore.create({ id: wsId, label: "NLM" });
+    await wsStore.create({ id: wsId, label: "NLM", scope: null });
     await store.setWorkstreamBinding(s1.id, wsId, "operator", 1.0);
 
     const svc = new RecallService({
@@ -95,8 +95,8 @@ describe("RecallService workstream filter (integration)", () => {
     // Seed two workstreams: ancestor and survivor.
     const ancestorId = makeWorkstreamId();
     const survivorId = makeWorkstreamId();
-    await wsStore.create({ id: ancestorId, label: "NLM Alpha" });
-    await wsStore.create({ id: survivorId, label: "NLM Core" });
+    await wsStore.create({ id: ancestorId, label: "NLM Alpha", scope: null });
+    await wsStore.create({ id: survivorId, label: "NLM Core", scope: null });
 
     // Merge ancestor INTO survivor: sets ancestor.mergedInto = survivorId.
     await wsStore.merge(ancestorId, survivorId);

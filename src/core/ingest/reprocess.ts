@@ -347,6 +347,10 @@ export async function reprocess(
       entities: classification.entities,
       decisions: classification.decisions,
       openQuestions: classification.open,
+      // Reprocess rebuilds from the stored row, which carries no project
+      // directory evidence; the scope backfill command re-derives from the
+      // transcript, so a NULL here is recoverable.
+      scope: null,
       classifier: { ...classifierDescriptor, confidence: classification.confidence },
     };
 

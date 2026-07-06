@@ -18,6 +18,8 @@ import { exemplarId } from "./sqlite-code-exemplar-store.js";
 
 const VEC_DIM = 768;
 
+// Read column list stays scope-free while stamping is write-only (#348
+// Stage A); reads gain scope in the enforcement task.
 const COLUMNS =
   "id, install_scope, signal_id, session_id, repo, model, lang, " +
   "task_context, code, code_hash, outcome, git_sha, survived, ts, created_at, " +
@@ -37,6 +39,7 @@ interface ExemplarRow {
   outcome: CodeExemplarOutcome;
   git_sha: string | null;
   survived: number | null;
+  scope?: string | null;
   ts: string;
   created_at: string;
   retired_at: string | null;
@@ -64,6 +67,7 @@ function insertParams(input: CodeExemplarInput): unknown[] {
     input.outcome,
     input.gitSha,
     input.survived,
+    input.scope,
     input.ts,
   ];
 }
@@ -71,8 +75,8 @@ function insertParams(input: CodeExemplarInput): unknown[] {
 const INSERT_SQL = `
   INSERT INTO code_exemplars
     (id, install_scope, signal_id, session_id, repo, model, lang,
-     task_context, code, code_hash, outcome, git_sha, survived, ts)
-  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+     task_context, code, code_hash, outcome, git_sha, survived, scope, ts)
+  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
   ON CONFLICT (id) DO NOTHING
 `;
 
@@ -270,6 +274,7 @@ export class PgCodeExemplarStore implements CodeExemplarStore {
       outcome: row.outcome,
       gitSha: row.git_sha,
       survived: row.survived as 0 | 1 | null,
+      scope: row.scope ?? null,
       ts: row.ts,
       createdAt: row.created_at,
       retiredAt: row.retired_at,

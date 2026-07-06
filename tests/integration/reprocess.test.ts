@@ -55,6 +55,7 @@ function baseRecord(over: Partial<IngestRecord> & { id: string }): IngestRecord 
     entities: [],
     decisions: [],
     openQuestions: [],
+    scope: null,
     ...over,
   };
 }
@@ -202,6 +203,7 @@ describe("reprocess", () => {
           entities: ["OldEntity"],
           decisions: ["Old decision"],
           openQuestions: ["Old question"],
+          scope: null,
         }),
       );
 

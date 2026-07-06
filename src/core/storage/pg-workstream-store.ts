@@ -5,18 +5,20 @@ import { type Workstream, normalizeLabel } from "@core/workstream/model.js";
 type WsRow = {
   id: string; label: string; status: Workstream["status"];
   merged_into: string | null; created_at: string; updated_at: string; last_session_at: string | null;
+  scope: string | null;
 };
 
 const rowToWorkstream = (r: WsRow): Workstream => ({
   id: r.id, label: r.label, status: r.status, mergedInto: r.merged_into,
   createdAt: r.created_at, updatedAt: r.updated_at, lastSessionAt: r.last_session_at,
+  scope: r.scope,
 });
 
 export class PgWorkstreamStore implements WorkstreamStore {
   constructor(private readonly pool: Pool) {}
 
-  async create(input: { id: string; label: string }): Promise<Workstream> {
-    await this.pool.query("INSERT INTO workstreams (id, label) VALUES ($1, $2)", [input.id, input.label]);
+  async create(input: { id: string; label: string; scope: string | null }): Promise<Workstream> {
+    await this.pool.query("INSERT INTO workstreams (id, label, scope) VALUES ($1, $2, $3)", [input.id, input.label, input.scope]);
     return (await this.getById(input.id))!;
   }
 

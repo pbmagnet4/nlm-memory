@@ -78,6 +78,7 @@ export function normalizeSignal(
     step,
     detail,
     sessionId,
+    scope: null,
     ts,
     createdAt: now(),
   };

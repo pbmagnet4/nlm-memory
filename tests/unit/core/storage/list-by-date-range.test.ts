@@ -13,7 +13,7 @@ async function insert(storage: SqliteStorage, id: string, startedAt: string, end
     durationMin: null, label: id, summary: "", body: "", status: "closed",
     transcriptKind: "claude-code-jsonl", transcriptPath: `/tmp/${id}.jsonl`,
     transcriptOffset: null, transcriptLength: null,
-    entities: [], decisions: [], openQuestions: [],
+    entities: [], decisions: [], openQuestions: [], scope: null,
   });
 }
 

@@ -40,6 +40,7 @@ describe("captureExemplarsFromSession model passthrough", () => {
       summary: "implement double util",
       decisions: [],
       installScope: "user",
+      scope: null,
       model: "m-test",
     });
     expect(exemplars.length).toBeGreaterThan(0);
@@ -55,6 +56,7 @@ describe("captureExemplarsFromSession model passthrough", () => {
       summary: "implement double util",
       decisions: [],
       installScope: "user",
+      scope: null,
     });
     expect(exemplars.length).toBeGreaterThan(0);
     expect(exemplars[0]!.model).toBe("unknown");

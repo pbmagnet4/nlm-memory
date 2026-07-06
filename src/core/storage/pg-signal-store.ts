@@ -19,6 +19,9 @@ type SignalRow = {
   step: string | null;
   detail: string | null;
   session_id: string | null;
+  // Optional because read SELECTs stay scope-free while stamping is
+  // write-only (#348 Stage A); the insert path always provides it.
+  scope?: string | null;
   ts: string;
   created_at: string;
 };
@@ -27,14 +30,14 @@ const SCAN_CAP = 5000;
 const INSERT_SQL = `
   INSERT INTO signals (
     id, v, install_scope, kind, producer, outcome, model, repo,
-    step, detail, session_id, ts, created_at
-  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+    step, detail, session_id, scope, ts, created_at
+  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
   ON CONFLICT (id) DO NOTHING`;
 
 function insertParams(s: Signal): unknown[] {
   return [
     s.id, s.v, s.installScope, s.kind, s.producer, s.outcome, s.model, s.repo,
-    s.step, s.detail === null ? null : JSON.stringify(s.detail), s.sessionId, s.ts, s.createdAt,
+    s.step, s.detail === null ? null : JSON.stringify(s.detail), s.sessionId, s.scope, s.ts, s.createdAt,
   ];
 }
 
@@ -109,6 +112,7 @@ function rowToSignal(row: SignalRow): Signal {
     step: row.step,
     detail: row.detail === null ? null : (JSON.parse(row.detail) as Record<string, unknown>),
     sessionId: row.session_id,
+    scope: row.scope ?? null,
     ts: row.ts,
     createdAt: row.created_at,
   };

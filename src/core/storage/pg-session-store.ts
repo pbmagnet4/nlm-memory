@@ -377,6 +377,11 @@ export class PgSessionStore implements SessionStore {
     }
   }
 
+  async getSessionScopeById(id: string): Promise<string | null> {
+    const r = await this.pool.query<{ scope: string | null }>("SELECT scope FROM sessions WHERE id = $1", [id]);
+    return r.rows[0]?.scope ?? null;
+  }
+
   async setWorkstreamBinding(sessionId: string, workstreamId: string | null, source: import("@core/workstream/model.js").BindingSource | null, confidence: number | null): Promise<void> {
     await this.pool.query(
       "UPDATE sessions SET workstream_id = $1, binding_source = $2, binding_confidence = $3, updated_at = NOW() WHERE id = $4",
@@ -458,8 +463,9 @@ export class PgSessionStore implements SessionStore {
            id, runtime, runtime_session_id, started_at, ended_at, duration_min,
            label, summary, body, status, transcript_kind, transcript_path,
            transcript_offset, transcript_length,
-           classifier_provider, classifier_model, classifier_confidence
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+           classifier_provider, classifier_model, classifier_confidence,
+           scope
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
          ON CONFLICT (id) DO UPDATE SET
            ended_at = EXCLUDED.ended_at,
            duration_min = EXCLUDED.duration_min,
@@ -470,6 +476,7 @@ export class PgSessionStore implements SessionStore {
            classifier_provider = EXCLUDED.classifier_provider,
            classifier_model = EXCLUDED.classifier_model,
            classifier_confidence = EXCLUDED.classifier_confidence,
+           scope = COALESCE(EXCLUDED.scope, sessions.scope),
            updated_at = NOW()`,
         [
           record.id, record.runtime, record.runtimeSessionId,
@@ -481,6 +488,7 @@ export class PgSessionStore implements SessionStore {
           record.classifier?.provider ?? null,
           record.classifier?.model ?? null,
           record.classifier?.confidence ?? null,
+          record.scope,
         ],
       );
       await client.query("DELETE FROM markers WHERE session_id = $1", [record.id]);
@@ -570,7 +578,7 @@ export class PgSessionStore implements SessionStore {
 
       // Atomic session+facts ingest on the session's own client. Single source of truth: pg-fact-ingest.ts.
       if (factSink !== null) {
-        await ingestSessionFactsOnClient(client, record.id, factSink.facts);
+        await ingestSessionFactsOnClient(client, record.id, factSink.facts, record.scope);
       }
 
       await client.query("COMMIT");
@@ -686,10 +694,11 @@ export class PgSessionStore implements SessionStore {
     facts: ReadonlyArray<Fact>,
     embedder: import("@ports/llm-client.js").LLMClient | null = null,
   ): Promise<void> {
+    const sessionScope = await this.getSessionScopeById(sessionId);
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      await ingestSessionFactsOnClient(client, sessionId, facts);
+      await ingestSessionFactsOnClient(client, sessionId, facts, sessionScope);
       await client.query("COMMIT");
     } catch (err) {
       await client.query("ROLLBACK");

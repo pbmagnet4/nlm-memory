@@ -42,6 +42,7 @@ function makeRecord(id: string, startedAt: string): IngestRecord {
     entities: [],
     decisions: [],
     openQuestions: [],
+    scope: null,
   };
 }
 

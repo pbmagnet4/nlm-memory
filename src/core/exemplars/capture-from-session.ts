@@ -31,6 +31,7 @@ export interface SessionExemplarContext {
   readonly decisions: ReadonlyArray<string>;
   readonly installScope: string;
   readonly model?: string;
+  readonly scope: string | null;
 }
 
 export function composeTaskContext(summary: string, decisions: ReadonlyArray<string>): string {
@@ -56,7 +57,7 @@ export function captureExemplarsFromSession(ctx: SessionExemplarContext): CodeEx
       ts: ctx.startedAt,
       taskContext,
     });
-    if (exemplar) out.push(exemplar);
+    if (exemplar) out.push({ ...exemplar, scope: ctx.scope });
   }
   return out;
 }

@@ -301,6 +301,7 @@ export interface Signal {
   readonly step: string | null;
   readonly detail: Record<string, unknown> | null;
   readonly sessionId: string | null;
+  readonly scope: string | null;
   readonly ts: string;
   readonly createdAt: string;
 }
@@ -326,6 +327,7 @@ export interface CodeExemplarInput {
   readonly outcome: CodeExemplarOutcome;
   readonly gitSha: string | null;
   readonly survived: 0 | 1 | null;
+  readonly scope: string | null;
   readonly ts: string;
 }
 

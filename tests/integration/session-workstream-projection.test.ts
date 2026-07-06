@@ -24,7 +24,7 @@ describe("listByDateRange surfaces workstream_id", () => {
   it("returns workstreamId when the session is bound, null otherwise", async () => {
     storage.sessions.insertSessionForTest(makeSession({ id: "s1", startedAt: "2026-06-24T10:00:00.000Z" }));
     storage.sessions.insertSessionForTest(makeSession({ id: "s2", startedAt: "2026-06-24T11:00:00.000Z" }));
-    await storage.workstreams.create({ id: "ws_1", label: "NLM" });
+    await storage.workstreams.create({ id: "ws_1", label: "NLM", scope: null });
     await storage.sessions.setWorkstreamBinding("s1", "ws_1", "classifier", 0.9);
 
     const rows = await storage.sessions.listByDateRange("2026-06-24T00:00:00.000Z", "2026-06-25T00:00:00.000Z");

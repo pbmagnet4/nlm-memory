@@ -50,6 +50,7 @@ export interface RawExemplarPayload {
   readonly outcome: string;
   readonly gitSha?: string | null;
   readonly survived?: 0 | 1 | null;
+  readonly scope?: string | null;
   readonly ts?: string;
 }
 
@@ -96,6 +97,7 @@ export function normalizeExemplar(
     outcome: outcome as CodeExemplarOutcome,
     gitSha: raw.gitSha ?? null,
     survived: raw.survived ?? null,
+    scope: raw.scope ?? null,
     ts: raw.ts ?? now(),
   };
 }

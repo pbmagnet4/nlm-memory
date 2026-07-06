@@ -117,6 +117,7 @@ describe.skipIf(!PG_TEST_URL)("pg fact ingest correctness (#351 parity)", () => 
       entities: [],
       decisions: [],
       openQuestions: [],
+      scope: null,
     };
     const fLoser = makeFact({ id: "pg_dup_loser", subject: "db", predicate: "engine", value: "pg", sourceSessionId: "sess_dup_pg" });
     const fWinner = makeFact({ id: "pg_dup_winner", subject: "db", predicate: "engine", value: "sqlite", sourceSessionId: "sess_dup_pg" });

@@ -43,6 +43,9 @@ import { classifyAdaptive } from "@core/classifier/hierarchical-classify.js";
 import { TimeoutError } from "@core/util/with-timeout.js";
 import { bindSessionToWorkstream } from "@core/workstream/bind.js";
 import { parseWorkTopics, aliasToLabelMap } from "@core/workstream/work-topics.js";
+import { deriveScope } from "@core/scope/derive-scope.js";
+import { loadAliasMap } from "@core/scope/alias-map.js";
+import { scopeStampEnabled } from "@core/scope/stamp-flag.js";
 
 function bindWorkstreamsEnabled(): boolean {
   return process.env["NLM_WORKSTREAM_BIND"] === "true";
@@ -245,7 +248,10 @@ export class ScanScheduler {
 
       for (const { chunk, supersedes, fileSize } of results) {
         chunksSeen += 1;
-        await this.drainSignals(chunk);
+        const chunkScope: string | null = scopeStampEnabled()
+          ? (deriveScope(chunk.projectDir ?? "", loadAliasMap()) ?? null)
+          : null;
+        await this.drainSignals(chunk, chunkScope);
 
         let classification;
         try {
@@ -302,6 +308,7 @@ export class ScanScheduler {
           entities: classification.entities,
           decisions: classification.decisions,
           openQuestions: classification.open,
+          scope: chunkScope,
           ...(this.opts.classifierDescriptor !== undefined
             ? { classifier: { ...this.opts.classifierDescriptor, confidence: classification.confidence } }
             : {}),
@@ -345,6 +352,7 @@ export class ScanScheduler {
                 ...(record.body != null ? { body: record.body } : {}),
                 entities: classification.entities,
                 startedAt: chunk.startedAt,
+                scope: chunkScope,
               },
             );
           }
@@ -359,6 +367,7 @@ export class ScanScheduler {
                 decisions: classification.decisions,
                 installScope: this.opts.installScope,
                 ...(chunk.model ? { model: chunk.model } : {}),
+                scope: chunkScope,
               },
               { exemplarStore: this.opts.exemplarStore, codeEmbedder: this.opts.codeEmbedder, logger: this.opts.logger },
             );
@@ -404,14 +413,16 @@ export class ScanScheduler {
     return { inserted, skippedLowConfidence, classifyFailures, storageFailures, chunksSeen };
   }
 
-  private async drainSignals(chunk: { id: string; signals?: ReadonlyArray<unknown> }): Promise<void> {
+  private async drainSignals(chunk: { id: string; signals?: ReadonlyArray<unknown> }, scope: string | null): Promise<void> {
     if (process.env["NLM_SIGNALS_ENABLED"] === "0") return;
     if (!this.opts.signalStore || !chunk.signals?.length) return;
+    const inheritedScope = scope === "global" ? null : scope;
     try {
       const normalized: Signal[] = [];
       for (const raw of chunk.signals) {
         try {
-          normalized.push(normalizeSignal(raw, this.opts.installScope));
+          const sig = normalizeSignal(raw, this.opts.installScope);
+          normalized.push({ ...sig, scope: inheritedScope });
         } catch {
           // skip a malformed embedded signal; one bad entry must not lose the rest
         }

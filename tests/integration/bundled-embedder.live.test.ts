@@ -50,6 +50,7 @@ function makeRecord(overrides: Partial<IngestRecord> & { id: string; label: stri
     entities: [],
     decisions: [],
     openQuestions: [],
+    scope: null,
     ...overrides,
   };
 }

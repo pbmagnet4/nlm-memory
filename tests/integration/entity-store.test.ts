@@ -172,6 +172,7 @@ describe("ingest-side variant lookup (SQLite)", () => {
       entities: ["old-spelling"],
       decisions: [],
       openQuestions: [],
+      scope: null,
     });
 
     const links = db

@@ -52,6 +52,7 @@ export interface CodeSignalPayload {
   readonly producer: "code-commit";
   readonly model: string;
   readonly repo: string;
+  readonly repo_path: string;
   readonly step: null;
   readonly detail: CodeSignalDetail;
   readonly session: null;
@@ -97,6 +98,7 @@ export function buildCodeSignalPayload(args: BuildCodeSignalArgs): CodeSignalPay
     producer: "code-commit",
     model: args.model ?? "unknown",
     repo: args.repo ?? basename(args.repoPath),
+    repo_path: args.repoPath,
     step: null,
     detail: { code, lang, task, commit: args.sha, test_exit: args.testExit },
     session: null,

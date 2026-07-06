@@ -24,7 +24,7 @@ function deps() {
 
 describe("recall_workstream handler", () => {
   it("resolves by label and returns the rolled-up view", async () => {
-    await storage.workstreams.create({ id: "ws_1", label: "NLM" });
+    await storage.workstreams.create({ id: "ws_1", label: "NLM", scope: null });
     const r = await recallWorkstreamHandler(deps(), { idOrLabel: "NLM" });
     expect(r.isError).not.toBe(true);
     expect(r.content[0]!.text).toContain("NLM");

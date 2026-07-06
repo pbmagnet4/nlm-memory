@@ -677,6 +677,7 @@ describe("ScanScheduler.tick", () => {
         outcome: "pass",
         gitSha: null,
         survived,
+        scope: null,
         ts: "2026-06-15T12:00:00.000Z",
       });
       return id;

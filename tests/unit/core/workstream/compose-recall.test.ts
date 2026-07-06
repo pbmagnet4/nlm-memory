@@ -12,7 +12,7 @@ const fact = (kind: Fact["kind"], subject: string, value: string): Fact => ({
 describe("composeWorkstreamRecall", () => {
   it("renders the workstream label, session count, decisions, open loops, and exemplars", () => {
     const out = composeWorkstreamRecall({
-      workstream: { id: "ws_1", label: "NLM", status: "active", mergedInto: null, createdAt: "t", updatedAt: "t", lastSessionAt: "2026-06-24T00:00:00Z" },
+      workstream: { id: "ws_1", label: "NLM", status: "active", mergedInto: null, createdAt: "t", updatedAt: "t", lastSessionAt: "2026-06-24T00:00:00Z", scope: null },
       sessionIds: ["s1", "s2"],
       facts: [fact("decision", "store", "use sqlite-vec"), fact("open", "thresholds", "tune HIGH/LOW")],
       exemplars: [{ id: "e1", installScope: "x", signalId: null, sessionId: "s1", repo: "nlm-memory", model: "m", lang: "ts", taskContext: "matcher", code: "x", codeHash: "h", outcome: "pass", gitSha: null, survived: 1, ts: "t", createdAt: "t", retiredAt: null, labelSource: "llm" } as CodeExemplar],
@@ -27,7 +27,7 @@ describe("composeWorkstreamRecall", () => {
 
   it("handles an empty workstream gracefully", () => {
     const out = composeWorkstreamRecall({
-      workstream: { id: "ws_1", label: "Empty", status: "active", mergedInto: null, createdAt: "t", updatedAt: "t", lastSessionAt: null },
+      workstream: { id: "ws_1", label: "Empty", status: "active", mergedInto: null, createdAt: "t", updatedAt: "t", lastSessionAt: null, scope: null },
       sessionIds: [], facts: [], exemplars: [],
     });
     expect(out).toContain("Empty");

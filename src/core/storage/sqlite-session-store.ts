@@ -64,6 +64,7 @@ export interface IngestRecord {
   readonly decisions: ReadonlyArray<string>;
   readonly openQuestions: ReadonlyArray<string>;
   readonly classifier?: { readonly provider: string; readonly model: string; readonly confidence: number };
+  readonly scope: string | null;
 }
 
 /**
@@ -96,6 +97,7 @@ type SessionRow = {
   classifier_provider?: string | null;
   classifier_model?: string | null;
   classifier_confidence?: number | null;
+  scope: string | null;
 };
 
 type EntityRow = { session_id: string; entity_canonical: string };
@@ -305,11 +307,13 @@ export class SqliteSessionStore implements SessionStore {
           id, runtime, runtime_session_id, started_at, ended_at, duration_min,
           label, summary, body, status,
           transcript_kind, transcript_path, transcript_offset, transcript_length,
-          classifier_provider, classifier_model, classifier_confidence
+          classifier_provider, classifier_model, classifier_confidence,
+          scope
         ) VALUES (@id, @runtime, @runtimeSessionId, @startedAt, @endedAt, @durationMin,
           @label, @summary, @body, @status,
           @transcriptKind, @transcriptPath, @transcriptOffset, @transcriptLength,
-          @classifierProvider, @classifierModel, @classifierConfidence)
+          @classifierProvider, @classifierModel, @classifierConfidence,
+          @scope)
         ON CONFLICT(id) DO UPDATE SET
           ended_at = excluded.ended_at,
           duration_min = excluded.duration_min,
@@ -320,6 +324,7 @@ export class SqliteSessionStore implements SessionStore {
           classifier_provider = excluded.classifier_provider,
           classifier_model = excluded.classifier_model,
           classifier_confidence = excluded.classifier_confidence,
+          scope = COALESCE(excluded.scope, scope),
           updated_at = datetime('now')
       `).run({
         id: record.id,
@@ -339,6 +344,7 @@ export class SqliteSessionStore implements SessionStore {
         classifierProvider: record.classifier?.provider ?? null,
         classifierModel: record.classifier?.model ?? null,
         classifierConfidence: record.classifier?.confidence ?? null,
+        scope: record.scope,
       });
 
       db.prepare("DELETE FROM markers WHERE session_id = ?").run(record.id);
@@ -444,7 +450,7 @@ export class SqliteSessionStore implements SessionStore {
         // copy drifted from the port method and missed NLM #351 bug 1 (orphan
         // embeddings on replace) and bug 2 (per-fact collapse -> supersedence
         // cycles). Runs inside this session txn.
-        factSink.factStore.ingestSessionFactsInTxn(record.id, factSink.facts);
+        factSink.factStore.ingestSessionFactsInTxn(record.id, factSink.facts, record.scope);
       }
     });
     txn();
@@ -565,8 +571,9 @@ export class SqliteSessionStore implements SessionStore {
     // Delegate to the canonical sync ingest (single source of truth for
     // replace + collapse + embedding cleanup). Sync because better-sqlite3 txn
     // callbacks must be sync; ingestSessionFactsInTxn is the sync core.
+    const sessionScope = await this.getSessionScopeById(sessionId);
     const txn = this.db.transaction(() => {
-      factStore.ingestSessionFactsInTxn(sessionId, facts);
+      factStore.ingestSessionFactsInTxn(sessionId, facts, sessionScope);
     });
     txn();
     if (embedder) {
@@ -931,6 +938,11 @@ export class SqliteSessionStore implements SessionStore {
       }
     });
     txn();
+  }
+
+  async getSessionScopeById(id: string): Promise<string | null> {
+    const row = this.db.prepare<[string], { scope: string | null }>("SELECT scope FROM sessions WHERE id = ?").get(id);
+    return row?.scope ?? null;
   }
 
   async setWorkstreamBinding(sessionId: string, workstreamId: string | null, source: import("@core/workstream/model.js").BindingSource | null, confidence: number | null): Promise<void> {

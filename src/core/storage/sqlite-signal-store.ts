@@ -20,6 +20,9 @@ type SignalRow = {
   step: string | null;
   detail: string | null;
   session_id: string | null;
+  // Optional because read SELECTs stay scope-free while stamping is
+  // write-only (#348 Stage A); the insert path always provides it.
+  scope?: string | null;
   ts: string;
   created_at: string;
 };
@@ -84,10 +87,10 @@ export class SqliteSignalStore implements SignalStore {
     return this.db.prepare<SignalRow>(`
       INSERT OR IGNORE INTO signals (
         id, v, install_scope, kind, producer, outcome, model, repo,
-        step, detail, session_id, ts, created_at
+        step, detail, session_id, scope, ts, created_at
       ) VALUES (
         @id, @v, @install_scope, @kind, @producer, @outcome, @model, @repo,
-        @step, @detail, @session_id, @ts, @created_at
+        @step, @detail, @session_id, @scope, @ts, @created_at
       )
     `);
   }
@@ -105,6 +108,7 @@ export class SqliteSignalStore implements SignalStore {
       step: s.step,
       detail: s.detail === null ? null : JSON.stringify(s.detail),
       session_id: s.sessionId,
+      scope: s.scope,
       ts: s.ts,
       created_at: s.createdAt,
     };
@@ -123,6 +127,7 @@ export class SqliteSignalStore implements SignalStore {
       step: row.step,
       detail: row.detail === null ? null : (JSON.parse(row.detail) as Record<string, unknown>),
       sessionId: row.session_id,
+      scope: row.scope ?? null,
       ts: row.ts,
       createdAt: row.created_at,
     };

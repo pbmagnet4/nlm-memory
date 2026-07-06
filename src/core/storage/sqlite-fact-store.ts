@@ -40,6 +40,7 @@ type FactRow = {
   superseded_by: string | null;
   confidence: number;
   retired_at?: string | null;
+  scope: string | null;
 };
 
 export class SqliteFactStore implements FactStore {
@@ -368,7 +369,7 @@ export class SqliteFactStore implements FactStore {
    * originally landed only here and silently skipped the inlined copies — the
    * path production actually uses — leaving both bugs live in production.
    */
-  ingestSessionFactsInTxn(sessionId: string, facts: ReadonlyArray<Fact>): void {
+  ingestSessionFactsInTxn(sessionId: string, facts: ReadonlyArray<Fact>, scope: string | null = null): void {
     // Re-ingesting a session replaces its facts; drop the old facts' embeddings
     // too, or they orphan in the ANN index as ghosts (NLM #351).
     const stale = this.db
@@ -380,7 +381,7 @@ export class SqliteFactStore implements FactStore {
     if (facts.length === 0) return;
 
     const insertStmt = this.insertStmt();
-    for (const f of facts) insertStmt.run(this.toRow(f));
+    for (const f of facts) insertStmt.run(this.toRow(f, scope));
 
     // Collapse EVERY other active fact for this (subject, predicate) under the
     // new fact, not just the single most-recent prior. A single-prior loop
@@ -415,17 +416,19 @@ export class SqliteFactStore implements FactStore {
       this.cachedInsertStmt = this.db.prepare<FactRow>(`
         INSERT INTO facts (
           id, kind, subject, predicate, value, source_session_id,
-          source_quote, created_at, superseded_by, confidence, retired_at
+          source_quote, created_at, superseded_by, confidence, retired_at,
+          scope
         ) VALUES (
           @id, @kind, @subject, @predicate, @value, @source_session_id,
-          @source_quote, @created_at, @superseded_by, @confidence, @retired_at
+          @source_quote, @created_at, @superseded_by, @confidence, @retired_at,
+          @scope
         )
       `);
     }
     return this.cachedInsertStmt;
   }
 
-  private toRow(fact: Fact): FactRow {
+  private toRow(fact: Fact, scope: string | null = null): FactRow {
     return {
       id: fact.id,
       kind: fact.kind,
@@ -438,6 +441,7 @@ export class SqliteFactStore implements FactStore {
       superseded_by: fact.supersededBy,
       confidence: fact.confidence,
       retired_at: fact.retiredAt ?? null,
+      scope,
     };
   }
 

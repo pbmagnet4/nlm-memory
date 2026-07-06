@@ -21,6 +21,7 @@ import type { Signal } from "@shared/types.js";
 export interface ExtractOptions {
   readonly installScope: string;
   readonly repoPath?: string;
+  readonly scope?: string | null;
 }
 
 export interface GitShaExtractParams {
@@ -34,6 +35,7 @@ export interface GitShaExtractParams {
   readonly ts?: string;
   readonly repoPath?: string;
   readonly taskContext?: string;
+  readonly scope?: string | null;
 }
 
 /**
@@ -77,6 +79,7 @@ export function extractFromGitSha(params: GitShaExtractParams): CodeExemplarInpu
       outcome: params.outcome,
       gitSha: params.sha,
       survived: null,
+      scope: params.scope ?? null,
       ...(params.ts ? { ts: params.ts } : {}),
     });
   } catch {
@@ -116,6 +119,7 @@ export function extractFromDetail(signal: Signal, opts: ExtractOptions): CodeExe
       outcome: signal.outcome,
       gitSha: typeof detail["git_sha"] === "string" ? (detail["git_sha"] as string) : null,
       survived: null,
+      scope: opts.scope ?? null,
       ts: signal.ts,
     });
   } catch {
@@ -148,10 +152,11 @@ export function extractExemplar(
       sessionId: signal.sessionId,
       ts: signal.ts,
       repoPath,
+      scope: signal.scope,
     });
     if (fromGit) return fromGit;
   }
 
   // Path (b): producer-supplied code in detail.
-  return extractFromDetail(signal, opts);
+  return extractFromDetail(signal, { ...opts, scope: signal.scope });
 }

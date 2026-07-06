@@ -40,6 +40,7 @@ describe("captureExemplarsFromSession", () => {
       summary: "Added a throttle utility",
       decisions: ["chose throttle over debounce for the scroll handler"],
       installScope: "install-test",
+      scope: null,
     });
     expect(out).toHaveLength(1);
     expect(out[0]!.code).toContain("now - last > ms");
@@ -58,6 +59,7 @@ describe("captureExemplarsFromSession", () => {
       summary: "Added a throttle utility",
       decisions: [],
       installScope: "install-test",
+      scope: null,
     });
     expect(out).toHaveLength(1);
     expect(out[0]!.repo).toBe(basename(repo));
@@ -67,7 +69,7 @@ describe("captureExemplarsFromSession", () => {
   it("returns nothing when the session shows no commit", () => {
     const out = captureExemplarsFromSession({
       sessionId: "sess2", projectDir: repo, text: "no commit here",
-      startedAt: "2026-06-19T12:00:00.000Z", summary: "chat", decisions: [], installScope: "install-test",
+      startedAt: "2026-06-19T12:00:00.000Z", summary: "chat", decisions: [], installScope: "install-test", scope: null,
     });
     expect(out).toEqual([]);
   });
@@ -77,7 +79,7 @@ describe("captureExemplarsFromSession", () => {
     try {
       const out = captureExemplarsFromSession({
         sessionId: "sess3", projectDir: notRepo, text: "[main 1a2b3c4] x",
-        startedAt: "2026-06-19T12:00:00.000Z", summary: "s", decisions: [], installScope: "install-test",
+        startedAt: "2026-06-19T12:00:00.000Z", summary: "s", decisions: [], installScope: "install-test", scope: null,
       });
       expect(out).toEqual([]);
     } finally {
@@ -134,7 +136,7 @@ describe("drainSessionExemplars", () => {
     const sha = git(repo, "rev-parse", "--short", "HEAD");
     return {
       sessionId: "s", projectDir: repo, text: `[main ${sha}] add x`,
-      startedAt: "2026-06-19T12:00:00.000Z", summary: "add x", decisions: [], installScope: "install-test",
+      startedAt: "2026-06-19T12:00:00.000Z", summary: "add x", decisions: [], installScope: "install-test", scope: null,
     };
   }
 

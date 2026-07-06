@@ -63,7 +63,7 @@ describe("SqliteWorkstreamStore: sqlite-specific assertions", () => {
   });
 
   it("touchLastSession stores the exact ISO string verbatim", async () => {
-    await storage.workstreams.create({ id: "ws_1", label: "NLM" });
+    await storage.workstreams.create({ id: "ws_1", label: "NLM", scope: null });
     await storage.workstreams.touchLastSession("ws_1", "2026-06-24T00:00:00Z");
     expect((await storage.workstreams.getById("ws_1"))!.lastSessionAt).toBe("2026-06-24T00:00:00Z");
   });
@@ -81,7 +81,7 @@ describe("SqliteWorkstreamStore: sqlite-specific assertions", () => {
         "INSERT OR IGNORE INTO entities (canonical, type, status, source) VALUES (?, 'candidate', 'candidate', 'test')",
       )
       .run("Daemon");
-    await storage.workstreams.create({ id: "ws_1", label: "NLM" });
+    await storage.workstreams.create({ id: "ws_1", label: "NLM", scope: null });
     await storage.workstreams.upsertEntities("ws_1", ["NLM", "Daemon"]);
     await storage.workstreams.upsertEntities("ws_1", ["NLM"]);
     const counts = storage

@@ -64,7 +64,7 @@ describe("ScanScheduler workstream bind (flag-gated)", () => {
     });
     await storage.init();
     // Pre-seed "NLM" workstream so the stub classifier can match it.
-    await storage.workstreams.create({ id: "ws_nlm_test", label: "NLM" });
+    await storage.workstreams.create({ id: "ws_nlm_test", label: "NLM", scope: null });
     projects = mkdtempSync(join(tmpdir(), "nlm-ws-projects-"));
     buildFixture(projects);
   });

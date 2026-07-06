@@ -12,6 +12,7 @@ export interface Workstream {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly lastSessionAt: string | null;
+  readonly scope: string | null;
 }
 
 export type BindingSource = "classifier" | "operator" | "backfill";

@@ -1,7 +1,7 @@
 import type { Workstream } from "@core/workstream/model.js";
 
 export interface WorkstreamStore {
-  create(input: { id: string; label: string }): Promise<Workstream>;
+  create(input: { id: string; label: string; scope: string | null }): Promise<Workstream>;
   getById(id: string): Promise<Workstream | null>;
   findByNormalizedLabel(normalizedLabel: string): Promise<Workstream | null>;
   listAll(): Promise<ReadonlyArray<Workstream>>;

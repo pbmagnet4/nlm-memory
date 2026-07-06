@@ -41,6 +41,7 @@ function makeRecord(overrides: Partial<IngestRecord> = {}): IngestRecord {
     entities: [],
     decisions: [],
     openQuestions: [],
+    scope: null,
     ...overrides,
   };
 }

@@ -1,5 +1,5 @@
 // tests/unit/core/workstream/bind.test.ts
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { bindSessionToWorkstream, NAMING_CONTENT_CHARS, type BindDeps, type BindInput } from "../../../../src/core/workstream/bind.js";
 
 const baseInput: BindInput = {
@@ -8,6 +8,7 @@ const baseInput: BindInput = {
   summary: "built the scheduler",
   entities: ["NLM", "Daemon"],
   startedAt: "2026-01-01T00:00:00Z",
+  scope: null,
 };
 
 describe("bindSessionToWorkstream", () => {
@@ -224,5 +225,67 @@ describe("bindSessionToWorkstream", () => {
     } as unknown as BindDeps;
     expect(await bindSessionToWorkstream(deps, baseInput)).toBeNull();
     expect(called).toEqual([]);
+  });
+
+  describe("namer hint filtering (Fix C)", () => {
+    const prevStamp = process.env["NLM_SCOPE_STAMP"];
+    beforeEach(() => { process.env["NLM_SCOPE_STAMP"] = "1"; });
+    afterEach(() => {
+      if (prevStamp === undefined) delete process.env["NLM_SCOPE_STAMP"];
+      else process.env["NLM_SCOPE_STAMP"] = prevStamp;
+    });
+
+    it("with flag on, passes only in-scope labels as hints to the namer", async () => {
+      let capturedHints: ReadonlyArray<{ label: string }> = [];
+      const all = [
+        { id: "ws_a", label: "scope-a-work", scope: "scope-a", status: "active" as const, mergedInto: null, createdAt: "t", updatedAt: "t", lastSessionAt: null },
+        { id: "ws_b", label: "scope-b-work", scope: "scope-b", status: "active" as const, mergedInto: null, createdAt: "t", updatedAt: "t", lastSessionAt: null },
+      ];
+      const deps: BindDeps = {
+        namer: {
+          nameWorkstream: async (_content: string, hints: ReadonlyArray<{ label: string }>) => {
+            capturedHints = hints;
+            return "scope-a-work";
+          },
+        },
+        workstreams: {
+          listAll: async () => all,
+          upsertEntities: async () => {},
+          touchLastSession: async () => {},
+        },
+        sessions: { setWorkstreamBinding: async () => {} },
+        aliasToLabel: new Map<string, string>(),
+      } as unknown as BindDeps;
+      await bindSessionToWorkstream(deps, { ...baseInput, scope: "scope-a" });
+      expect(capturedHints).toHaveLength(1);
+      expect(capturedHints[0]).toEqual({ label: "scope-a-work" });
+    });
+
+    it("with flag off, passes all labels as hints to the namer", async () => {
+      delete process.env["NLM_SCOPE_STAMP"];
+      let capturedHints: ReadonlyArray<{ label: string }> = [];
+      const all = [
+        { id: "ws_a", label: "scope-a-work", scope: "scope-a", status: "active" as const, mergedInto: null, createdAt: "t", updatedAt: "t", lastSessionAt: null },
+        { id: "ws_b", label: "scope-b-work", scope: "scope-b", status: "active" as const, mergedInto: null, createdAt: "t", updatedAt: "t", lastSessionAt: null },
+      ];
+      const deps: BindDeps = {
+        namer: {
+          nameWorkstream: async (_content: string, hints: ReadonlyArray<{ label: string }>) => {
+            capturedHints = hints;
+            return "scope-a-work";
+          },
+        },
+        workstreams: {
+          listAll: async () => all,
+          upsertEntities: async () => {},
+          touchLastSession: async () => {},
+        },
+        sessions: { setWorkstreamBinding: async () => {} },
+        aliasToLabel: new Map<string, string>(),
+      } as unknown as BindDeps;
+      await bindSessionToWorkstream(deps, { ...baseInput, scope: "scope-a" });
+      expect(capturedHints).toHaveLength(2);
+      expect(capturedHints.map((h) => h.label).sort()).toEqual(["scope-a-work", "scope-b-work"]);
+    });
   });
 });

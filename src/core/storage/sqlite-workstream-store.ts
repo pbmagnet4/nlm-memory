@@ -5,20 +5,22 @@ import { type Workstream, normalizeLabel } from "@core/workstream/model.js";
 type WsRow = {
   id: string; label: string; status: Workstream["status"];
   merged_into: string | null; created_at: string; updated_at: string; last_session_at: string | null;
+  scope: string | null;
 };
 
 function rowToWorkstream(r: WsRow): Workstream {
   return {
     id: r.id, label: r.label, status: r.status, mergedInto: r.merged_into,
     createdAt: r.created_at, updatedAt: r.updated_at, lastSessionAt: r.last_session_at,
+    scope: r.scope,
   };
 }
 
 export class SqliteWorkstreamStore implements WorkstreamStore {
   constructor(private readonly db: Database.Database) {}
 
-  async create(input: { id: string; label: string }): Promise<Workstream> {
-    this.db.prepare("INSERT INTO workstreams (id, label) VALUES (?, ?)").run(input.id, input.label);
+  async create(input: { id: string; label: string; scope: string | null }): Promise<Workstream> {
+    this.db.prepare("INSERT INTO workstreams (id, label, scope) VALUES (?, ?, ?)").run(input.id, input.label, input.scope);
     return (await this.getById(input.id))!;
   }
 

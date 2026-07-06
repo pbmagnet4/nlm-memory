@@ -15,6 +15,7 @@ describe("signal types", () => {
       step: "types",
       detail: { files: ["a.ts"], attempt: 2 },
       sessionId: "pi_123",
+      scope: null,
       ts: "2026-06-09T18:00:00.000Z",
       createdAt: "2026-06-09T18:00:01.000Z",
     };

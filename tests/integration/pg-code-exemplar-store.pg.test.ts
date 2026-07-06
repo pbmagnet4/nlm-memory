@@ -71,6 +71,7 @@ function exemplar(over: Partial<CodeExemplarInput> & { code: string }): CodeExem
     outcome: "pass",
     gitSha: null,
     survived: null,
+    scope: null,
     ts: "2026-06-15T12:00:00.000Z",
     ...over,
     codeHash: codeHash(over.code),

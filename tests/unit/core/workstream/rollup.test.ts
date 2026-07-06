@@ -5,7 +5,7 @@ import type { Workstream } from "../../../../src/core/workstream/model.js";
 
 const ws = (id: string, mergedInto: string | null): Workstream => ({
   id, label: id, status: mergedInto ? "merged" : "active", mergedInto,
-  createdAt: "t", updatedAt: "t", lastSessionAt: null,
+  createdAt: "t", updatedAt: "t", lastSessionAt: null, scope: null,
 });
 
 function deps(all: Workstream[], sessionsByWs: Record<string, string[]>): RollupDeps {

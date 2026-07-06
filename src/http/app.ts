@@ -100,6 +100,9 @@ import type { SignalStore } from "@ports/signal-store.js";
 import type { CodeExemplarStore } from "@ports/code-exemplar-store.js";
 import type { CodeEmbedder } from "@ports/code-embedder.js";
 import { normalizeSignal } from "@core/signals/ingest-signal.js";
+import { deriveScope } from "@core/scope/derive-scope.js";
+import { loadAliasMap } from "@core/scope/alias-map.js";
+import { scopeStampEnabled } from "@core/scope/stamp-flag.js";
 import { normalizeExemplar } from "@core/exemplars/ingest-exemplar.js";
 import { extractExemplar } from "@core/exemplars/extract-exemplar.js";
 import { recallCode } from "@core/exemplars/recall-code.js";
@@ -151,6 +154,8 @@ export interface HttpDeps {
   readonly signalStore?: SignalStore;
   /** Per-install scope stamped on every ingested signal. */
   readonly installScope?: string;
+  /** Used to inherit scope from a session when the signal carries a session_id. */
+  readonly sessionScopeReader?: { getSessionScopeById(id: string): Promise<string | null> };
   /** Code exemplar store — wire to enable POST /api/exemplar + GET /api/recall-code. */
   readonly exemplarStore?: CodeExemplarStore;
   /** Optional code embedder for semantic recall-code queries. */
@@ -1664,6 +1669,19 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : "invalid signal" }, 400);
     }
+    if (scopeStampEnabled()) {
+      const rawBody = body as Record<string, unknown>;
+      const repoPath = typeof rawBody["repo_path"] === "string" ? rawBody["repo_path"] : null;
+      let signalScope: string | null = null;
+      if (repoPath) {
+        const derived = deriveScope(repoPath, loadAliasMap());
+        signalScope = derived === "global" ? null : derived;
+      } else if (signal.sessionId && deps.sessionScopeReader) {
+        const inherited = await deps.sessionScopeReader.getSessionScopeById(signal.sessionId);
+        signalScope = inherited === "global" ? null : inherited;
+      }
+      signal = { ...signal, scope: signalScope };
+    }
     try {
       await deps.signalStore.insert(signal);
     } catch {
@@ -1748,6 +1766,7 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : "invalid exemplar" }, 400);
     }
+    inp = { ...inp, scope: scopeStampEnabled() ? inp.scope : null };
     const { id, skipped } = await deps.exemplarStore.insert(inp);
     if (!skipped && deps.codeEmbedder) {
       // Best-effort embedding: fire-and-forget, never blocks the response.

@@ -13,6 +13,7 @@ export function makeSignal(overrides: Partial<Signal> = {}): Signal {
     step: "types",
     detail: { files: ["a.ts"], attempt: 1 },
     sessionId: "pi_test_1",
+    scope: null,
     ts: "2026-06-09T18:00:00.000Z",
     createdAt: "2026-06-09T18:00:01.000Z",
   };

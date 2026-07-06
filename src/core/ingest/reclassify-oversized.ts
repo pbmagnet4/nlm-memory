@@ -7,6 +7,9 @@
 import type { Database } from "better-sqlite3";
 import { classifyAdaptive } from "@core/classifier/hierarchical-classify.js";
 import { extractFacts } from "@core/facts/extract-facts.js";
+import { deriveScope } from "@core/scope/derive-scope.js";
+import { loadAliasMap } from "@core/scope/alias-map.js";
+import { scopeStampEnabled } from "@core/scope/stamp-flag.js";
 import type { SqliteFactStore } from "@core/storage/sqlite-fact-store.js";
 import type { IngestRecord, SqliteSessionStore } from "@core/storage/sqlite-session-store.js";
 import type { LLMClient } from "@ports/llm-client.js";
@@ -132,6 +135,9 @@ export async function reclassifyOversized(
       entities: classification.entities,
       decisions: classification.decisions,
       openQuestions: classification.open,
+      scope: scopeStampEnabled() && chunk.projectDir
+        ? deriveScope(chunk.projectDir, loadAliasMap())
+        : null,
       ...(deps.classifierDescriptor !== undefined
         ? { classifier: { ...deps.classifierDescriptor, confidence: classification.confidence } }
         : {}),

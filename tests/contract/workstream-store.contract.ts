@@ -38,7 +38,7 @@ export function runWorkstreamStoreContract(h: WorkstreamStoreContractHarness): v
     });
 
     it("creates and reads back a workstream", async () => {
-      const ws = await storage.workstreams.create({ id: "ws_1", label: "NLM" });
+      const ws = await storage.workstreams.create({ id: "ws_1", label: "NLM", scope: null });
       expect(ws).toMatchObject({ id: "ws_1", label: "NLM", status: "active", mergedInto: null });
       expect(await storage.workstreams.getById("ws_1")).toMatchObject({ id: "ws_1" });
     });
@@ -48,20 +48,20 @@ export function runWorkstreamStoreContract(h: WorkstreamStoreContractHarness): v
     });
 
     it("findByNormalizedLabel matches after collapsing whitespace", async () => {
-      await storage.workstreams.create({ id: "ws_1", label: "NLM  Memory" });
+      await storage.workstreams.create({ id: "ws_1", label: "NLM  Memory", scope: null });
       expect(await storage.workstreams.findByNormalizedLabel("nlm memory")).toMatchObject({ id: "ws_1" });
       expect(await storage.workstreams.findByNormalizedLabel("other")).toBeNull();
     });
 
     it("listAll returns every workstream", async () => {
-      await storage.workstreams.create({ id: "ws_1", label: "Alpha" });
-      await storage.workstreams.create({ id: "ws_2", label: "Beta" });
+      await storage.workstreams.create({ id: "ws_1", label: "Alpha", scope: null });
+      await storage.workstreams.create({ id: "ws_2", label: "Beta", scope: null });
       const all = await storage.workstreams.listAll();
       expect(all.map((w) => w.id).sort()).toEqual(["ws_1", "ws_2"]);
     });
 
     it("touchLastSession updates lastSessionAt to a string matching the input instant", async () => {
-      await storage.workstreams.create({ id: "ws_1", label: "NLM" });
+      await storage.workstreams.create({ id: "ws_1", label: "NLM", scope: null });
       const atIso = "2026-06-24T00:00:00.000Z";
       await storage.workstreams.touchLastSession("ws_1", atIso);
       const ws = await storage.workstreams.getById("ws_1");
@@ -70,13 +70,13 @@ export function runWorkstreamStoreContract(h: WorkstreamStoreContractHarness): v
     });
 
     it("setLabel updates the label", async () => {
-      await storage.workstreams.create({ id: "ws_1", label: "Old" });
+      await storage.workstreams.create({ id: "ws_1", label: "Old", scope: null });
       await storage.workstreams.setLabel("ws_1", "New");
       expect((await storage.workstreams.getById("ws_1"))!.label).toBe("New");
     });
 
     it("setStatus updates the status", async () => {
-      await storage.workstreams.create({ id: "ws_1", label: "NLM" });
+      await storage.workstreams.create({ id: "ws_1", label: "NLM", scope: null });
       await storage.workstreams.setStatus("ws_1", "retired");
       expect((await storage.workstreams.getById("ws_1"))!.status).toBe("retired");
     });
@@ -85,7 +85,7 @@ export function runWorkstreamStoreContract(h: WorkstreamStoreContractHarness): v
       it("upsertEntities adds entities; entitiesFor returns them", async () => {
         await h.seedEntity(storage, "NLM");
         await h.seedEntity(storage, "Daemon");
-        await storage.workstreams.create({ id: "ws_1", label: "NLM" });
+        await storage.workstreams.create({ id: "ws_1", label: "NLM", scope: null });
         await storage.workstreams.upsertEntities("ws_1", ["NLM", "Daemon"]);
         const map = await storage.workstreams.entitiesFor(["ws_1"]);
         expect(new Set(map.get("ws_1"))).toEqual(new Set(["NLM", "Daemon"]));
@@ -99,8 +99,8 @@ export function runWorkstreamStoreContract(h: WorkstreamStoreContractHarness): v
       it("entitiesFor batches multiple workstream ids", async () => {
         await h.seedEntity(storage, "Alpha");
         await h.seedEntity(storage, "Beta");
-        await storage.workstreams.create({ id: "ws_1", label: "A" });
-        await storage.workstreams.create({ id: "ws_2", label: "B" });
+        await storage.workstreams.create({ id: "ws_1", label: "A", scope: null });
+        await storage.workstreams.create({ id: "ws_2", label: "B", scope: null });
         await storage.workstreams.upsertEntities("ws_1", ["Alpha"]);
         await storage.workstreams.upsertEntities("ws_2", ["Beta"]);
         const map = await storage.workstreams.entitiesFor(["ws_1", "ws_2"]);
@@ -114,8 +114,8 @@ export function runWorkstreamStoreContract(h: WorkstreamStoreContractHarness): v
         await h.seedEntity(storage, "NLM");
         await h.seedEntity(storage, "Daemon");
         await h.seedEntity(storage, "Beacon");
-        await storage.workstreams.create({ id: "ws_1", label: "NLM" });
-        await storage.workstreams.create({ id: "ws_2", label: "Beacon" });
+        await storage.workstreams.create({ id: "ws_1", label: "NLM", scope: null });
+        await storage.workstreams.create({ id: "ws_2", label: "Beacon", scope: null });
         await storage.workstreams.upsertEntities("ws_1", ["NLM", "Daemon"]);
         await storage.workstreams.upsertEntities("ws_2", ["Beacon"]);
         const cands = await storage.workstreams.candidatesByEntityOverlap(["NLM"], 10);
@@ -133,8 +133,8 @@ export function runWorkstreamStoreContract(h: WorkstreamStoreContractHarness): v
         await h.seedEntity(storage, "Alpha");
         await h.seedEntity(storage, "Beta");
         await h.seedEntity(storage, "Gamma");
-        await storage.workstreams.create({ id: "ws_from", label: "From" });
-        await storage.workstreams.create({ id: "ws_into", label: "Into" });
+        await storage.workstreams.create({ id: "ws_from", label: "From", scope: null });
+        await storage.workstreams.create({ id: "ws_into", label: "Into", scope: null });
         await storage.workstreams.upsertEntities("ws_from", ["Alpha", "Beta"]);
         await storage.workstreams.upsertEntities("ws_into", ["Gamma"]);
 

@@ -89,7 +89,7 @@ describe.skipIf(!PG_TEST_URL)("ScanScheduler workstream bind pg (flag-gated)", (
     storage = PgStorage.create({ connectionString: PG_TEST_URL, migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     await storage.pgPool().query(TRUNCATE_SQL);
-    await storage.workstreams.create({ id: "ws_nlm_test", label: "NLM" });
+    await storage.workstreams.create({ id: "ws_nlm_test", label: "NLM", scope: null });
     projects = mkdtempSync(join(tmpdir(), "nlm-ws-pg-bind-"));
     buildFixture(projects);
   });

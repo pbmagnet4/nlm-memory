@@ -29,6 +29,9 @@ type ExemplarRow = {
   outcome: CodeExemplarOutcome;
   git_sha: string | null;
   survived: number | null;
+  // Absent on reads while stamping is write-only (#348 Stage A): read SELECTs
+  // stay scope-free until the enforcement task.
+  scope?: string | null;
   ts: string;
   created_at: string;
   retired_at: string | null;
@@ -305,10 +308,10 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
     return this.db.prepare<ExemplarRow>(`
       INSERT OR IGNORE INTO code_exemplars (
         id, install_scope, signal_id, session_id, repo, model, lang,
-        task_context, code, code_hash, outcome, git_sha, survived, ts, created_at
+        task_context, code, code_hash, outcome, git_sha, survived, scope, ts, created_at
       ) VALUES (
         @id, @install_scope, @signal_id, @session_id, @repo, @model, @lang,
-        @task_context, @code, @code_hash, @outcome, @git_sha, @survived, @ts, @created_at
+        @task_context, @code, @code_hash, @outcome, @git_sha, @survived, @scope, @ts, @created_at
       )
     `);
   }
@@ -328,6 +331,7 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
       outcome: inp.outcome,
       git_sha: inp.gitSha,
       survived: inp.survived,
+      scope: inp.scope,
       ts: inp.ts,
       created_at: new Date().toISOString(),
       retired_at: null,
@@ -350,6 +354,7 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
       outcome: row.outcome,
       gitSha: row.git_sha,
       survived: row.survived as 0 | 1 | null,
+      scope: row.scope ?? null,
       ts: row.ts,
       createdAt: row.created_at,
       retiredAt: row.retired_at,

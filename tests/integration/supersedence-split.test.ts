@@ -37,6 +37,7 @@ function makeRecord(id: string, overrides: Partial<IngestRecord> = {}): IngestRe
     entities: [],
     decisions: [],
     openQuestions: [],
+    scope: null,
     ...overrides,
   };
 }

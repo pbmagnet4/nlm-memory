@@ -436,6 +436,9 @@ program
       },
       signalStore: signals,
       installScope: scope,
+      // Signal scope inheritance (NLM_SCOPE_STAMP): a signal with only a
+      // session_id inherits that session's stamped scope at ingest.
+      sessionScopeReader: store,
       // Code-exemplar lane. The store + code embedder are always wired; the
       // NLM_CODE_EXEMPLARS_ENABLED flag gates capture (POST /api/signal) and
       // the /api/exemplar + /api/recall-code routes at request time.

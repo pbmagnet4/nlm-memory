@@ -19,6 +19,7 @@ export async function ingestSessionFactsOnClient(
   client: PoolClient,
   sessionId: string,
   facts: ReadonlyArray<Fact>,
+  scope: string | null = null,
 ): Promise<void> {
   await client.query("DELETE FROM facts WHERE source_session_id = $1", [sessionId]);
   if (facts.length === 0) return;
@@ -26,10 +27,10 @@ export async function ingestSessionFactsOnClient(
   for (const f of facts) {
     await client.query(
       `INSERT INTO facts (id, kind, subject, predicate, value, source_session_id,
-         source_quote, created_at, superseded_by, confidence, retired_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+         source_quote, created_at, superseded_by, confidence, retired_at, scope)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [f.id, f.kind, f.subject, f.predicate, f.value, f.sourceSessionId,
-       f.sourceQuote, f.createdAt, f.supersededBy, f.confidence, f.retiredAt],
+       f.sourceQuote, f.createdAt, f.supersededBy, f.confidence, f.retiredAt, scope],
     );
   }
 
