@@ -16,9 +16,13 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { judgeUsefulness, USEFULNESS_MODEL, type Verdict } from "./lib/usefulness-judge.js";
+import { PROBE_EXACT_QUERIES } from "../../src/core/telemetry/probe-filter.js";
 
 // Pre-registered strip set (2026-07-03 baseline, locked before results).
-const STRIP_SESSION_QUERIES = new Set(["pgvector", "hono", "x", ""]);
+// Exact match only -- do NOT switch to isProbe (substring) here. This file was
+// baseline-calibrated with exact-match stripping; adding substring matching
+// would silently change the genuine-pull denominator and invalidate historical
+// comparisons. Re-establish the baseline before expanding the match strategy.
 const STRIP_FACT_SUBJECTS = new Set(["nlm-memory-ts", "nle-memory-ts", ""]);
 
 const JUDGE_TIMEOUT_MS = 90_000;
@@ -101,7 +105,7 @@ function readSessionPulls(logPath: string, cutoff: number): { seen: number; pull
     if (!Number.isFinite(ts)) continue;
     if (cutoff > 0 && ts < cutoff) continue;
     const query = typeof obj["query"] === "string" ? obj["query"] : "";
-    if (STRIP_SESSION_QUERIES.has(query)) continue;
+    if (PROBE_EXACT_QUERIES.has(query)) continue;
     const day = new Date(ts).toISOString().slice(0, 10);
     const dedupeKey = `${query}:${day}`;
     if (seen.has(dedupeKey)) continue;

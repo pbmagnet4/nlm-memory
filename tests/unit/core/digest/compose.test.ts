@@ -1,18 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { composeDigest, isProbe } from "@core/digest/compose.js";
+import { composeDigest } from "@core/digest/compose.js";
 
 const FIXED_NOW = new Date("2026-05-30T07:00:00-05:00");
 
-describe("isProbe", () => {
-  it("matches the probe substrings case-insensitively", () => {
-    expect(isProbe("Concurrency Probe baseline")).toBe(true);
-    expect(isProbe("running smoke")).toBe(true);
-    expect(isProbe("real user query about deployment")).toBe(false);
-    expect(isProbe(null)).toBe(false);
-    expect(isProbe(undefined)).toBe(false);
-    expect(isProbe("")).toBe(false);
-  });
-});
+// isProbe is tested in tests/unit/core/telemetry/probe-filter.test.ts
 
 describe("composeDigest", () => {
   const baseStats = {

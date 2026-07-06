@@ -11,21 +11,7 @@
  * push. Probe/test queries are filtered out of both windows.
  */
 
-/** Substrings that mark a recall as test traffic, not real agent usage. */
-export const PROBE_PATTERNS: ReadonlyArray<string> = [
-  "concurrency probe",
-  "test probe",
-  "path test",
-  "recall test",
-  "smoke",
-  "cutover-test",
-];
-
-export function isProbe(query: string | null | undefined): boolean {
-  if (!query) return false;
-  const q = query.toLowerCase();
-  return PROBE_PATTERNS.some((p) => q.includes(p));
-}
+import { isProbe } from "../telemetry/probe-filter.js";
 
 export interface RecallStats {
   readonly total: number;
