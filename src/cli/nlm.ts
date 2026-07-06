@@ -80,6 +80,7 @@ import {
 import { runSupersedeCommand } from "./supersede.js";
 import { runInitCommand } from "./init.js";
 import { runScopeBackfill, formatBackfillResult } from "./scope-backfill.js";
+import { runScopeCoverage, formatCoverageResult } from "./scope-coverage.js";
 import { loadAliasMap } from "../core/scope/alias-map.js";
 import { getUpdateStatus } from "../core/update-check/check.js";
 import { connectHermes, disconnectHermes, hermesConfigPath } from "../install/hermes.js";
@@ -2791,6 +2792,32 @@ scopeCmd
       }
     } finally {
       await storage.close();
+    }
+  });
+
+scopeCmd
+  .command("coverage")
+  .description("Report per-table and recall-weighted scope coverage fractions")
+  .option("--db <path>", "SQLite DB file (default: canonical NLM DB)")
+  .option("--query-log <path>", "query log path for recall-weighted coverage")
+  .option(
+    "--window <n>",
+    "last N log entries for recall-weighted coverage (default 200)",
+    (v) => Number.parseInt(v, 10),
+    200,
+  )
+  .option("--json", "emit machine-readable JSON instead of human-readable output")
+  .action(async (opts) => {
+    const targetPath = (opts.db as string | undefined) ?? dbPath();
+    const result = await runScopeCoverage({
+      dbPath: targetPath,
+      ...(opts.queryLog ? { queryLogPath: opts.queryLog as string } : {}),
+      window: opts.window as number,
+    });
+    if (opts.json) {
+      process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+    } else {
+      formatCoverageResult(result, (s) => process.stdout.write(s));
     }
   });
 
