@@ -21,6 +21,7 @@ import { computePrecision } from "@core/recall/precision.js";
 import { readHookRecallLog } from "@core/recall/hook-recall-log.js";
 import { readCitationLog } from "@core/recall/citation-log.js";
 import { checkHookLiveness, type SessionRow, type HookLogEntry } from "@core/digest/hook-liveness.js";
+import { checkHookInjection } from "@core/digest/hook-injection.js";
 import { hookAuthHeaders } from "../hook/hook-auth.js";
 
 export interface DigestOptions {
@@ -72,12 +73,15 @@ export async function runDigest(opts: DigestOptions): Promise<DigestResult> {
   const hookLogPath = process.env["NLM_HOOK_LOG"] ?? join(homedir(), ".nlm", "hook-log.jsonl");
   const hookLogExists = existsSync(hookLogPath);
   const hookLog: HookLogEntry[] = hookLogExists ? readHookLog(hookLogPath) : [];
-  const hookAlert = checkHookLiveness({
+  const livenessAlert = checkHookLiveness({
     sessions,
     hookLog,
     hookLogPath,
     hookLogExists,
   });
+  const injectionResult = checkHookInjection(hookLog);
+  const hookAlert =
+    [livenessAlert, injectionResult.message].filter(Boolean).join("\n") || null;
 
   // True cited-precision over the 7-day window (the honest "was recall useful"
   // metric). Best-effort: a log-read failure must not break the digest.

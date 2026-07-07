@@ -108,6 +108,8 @@ The `nlm digest` command runs a daily liveness check that catches exactly this: 
 
 Wire `nlm digest --telegram` to cron and you get morning notification of any drift within ~24 hours of it happening.
 
+A second canary (`src/core/digest/hook-injection.ts`) covers a subtler failure class: the hook fires but every fire returns an empty `wouldInject` array, meaning nothing is injected into model context even though the hook is running. When 10 or more live, recall-bearing, non-probe fires accumulate over 48 hours with zero injections, it emits one of two alarms: a dead recall lane (no candidates at all, pointing at recall timeout or an empty corpus) or selection filtering every candidate (hits present but none pass, pointing at `NLM_RECALL_SCORE_FLOOR` / `NLM_RECALL_REL_FLOOR`).
+
 ## Cross-runtime hooks
 
 Beyond Claude Code, NLM ships hook adapters for:
