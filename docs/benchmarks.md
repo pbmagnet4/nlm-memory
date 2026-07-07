@@ -215,8 +215,12 @@ the same scoring code.
 
 ## Private-corpus benchmark
 
-A 50-question benchmark on the operator's real 14-month corpus is being
-locked, broadening the n=40 decision-query gold set described above.
+A 50-question benchmark on the operator's real corpus is locked (2026-07-06)
+and produced its first run the same day: keyword R@5 88.0% on a 5,502-session
+snapshot, corroborating the n=40 measurement above from an independent gold
+set. Full aggregates, per-category results, and the honest reading (including
+why hybrid trails keyword at corpus scale) are in
+[`reports/private-bench/2026-07-06-first-run.md`](../reports/private-bench/2026-07-06-first-run.md).
 Categories span six generic classes: decision-recall, status-check,
 bug-resolution, config-lookup, temporal, and multi-session. Results will
 publish as aggregate scores only; no query content from the private corpus
