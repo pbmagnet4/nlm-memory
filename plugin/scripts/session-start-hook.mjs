@@ -364,7 +364,12 @@ function hookModeFromEnv() {
 
 // src/hook/recall-over-http.ts
 var RECALL_LIMIT = 5;
-var RECALL_TIMEOUT_MS = 2e3;
+function parseRecallTimeout(raw) {
+  if (raw === void 0) return 4e3;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 4e3;
+}
+var RECALL_TIMEOUT_MS = parseRecallTimeout(process.env["NLM_HOOK_RECALL_TIMEOUT_MS"]);
 async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword") {
   const query = extractRecallQuery(prompt);
   if (query === null) return { hits: [], facts: [], exemplars: [] };

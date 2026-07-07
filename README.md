@@ -339,6 +339,8 @@ recall: prompt / query
 | `NLM_PORT` | `3940` | Daemon bind port (loopback only) |
 | `NLM_DB_PATH` | `~/.nlm/canonical.sqlite` | SQLite canonical store location |
 | `NLM_HOOK_MODE` | `live` | `live` injects pointer block; `shadow` logs without injecting |
+| `NLM_HOOK_RECALL_TIMEOUT_MS` | `4000` | Hook-side budget for the daemon recall call. Must stay below `NLM_HOOK_DEADLINE_MS` and above the daemon's embed deadline or the pointer block silently empties (#396). |
+| `NLM_HOOK_DEADLINE_MS` | `6000` | Outer wall-clock deadline for the recall + gate stages of a hook fire. Fail-open on expiry. |
 | `NLM_HOOK_PROMPT_RECALL` | `(unset = off)` | Per-prompt ambient recall. Off by default (pull-first); set `on` to inject a pointer block on every prompt. `off` disables explicitly. |
 | `NLM_HOOK_LOG` | `~/.nlm/hook-log.jsonl` | Hook fire log; powers digest's liveness alert |
 | `NLM_USEFUL_HIT_LOG` | `~/.nlm/useful-hit-log.jsonl` | Citation/useful-hit ledger |

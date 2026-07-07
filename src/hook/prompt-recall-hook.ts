@@ -41,13 +41,17 @@ const PER_FIRE_CAP = 3;
 const PER_CONVERSATION_CAP = 10;
 const PROMPT_PREVIEW_CHARS = 200;
 
-export function parseHookDeadline(raw: string | undefined): number {
-  if (raw === undefined) return 4000;
+export function parseHookDeadline(raw: string | undefined, defaultMs = 4000): number {
+  if (raw === undefined) return defaultMs;
   const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : 4000;
+  return Number.isFinite(n) && n > 0 ? n : defaultMs;
 }
 
-const HOOK_DEADLINE_MS = parseHookDeadline(process.env["NLM_HOOK_DEADLINE_MS"]);
+// #396: the outer deadline wraps recall + gate + formatting and must exceed
+// RECALL_TIMEOUT_MS (default 4000ms in recall-over-http.ts) with headroom.
+// Invariant: HOOK_DEADLINE_MS > RECALL_TIMEOUT_MS at defaults. If the outer
+// equals the inner, the deadline fires before post-recall work can complete.
+export const HOOK_DEADLINE_MS = parseHookDeadline(process.env["NLM_HOOK_DEADLINE_MS"], 6000);
 
 async function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
   if (ms <= 0) return fallback;
@@ -138,7 +142,7 @@ export interface RunHookDeps {
   ) => Promise<ReadonlyArray<RecallHitInput> | RecallFetchResult>;
   /** Optional pre-injection relevance gate. Absent => no gating (today's behavior). */
   readonly recallGate?: RecallGate;
-  /** Wall-clock deadline for the combined recall + gate stages. Defaults to NLM_HOOK_DEADLINE_MS (4000ms). */
+  /** Wall-clock deadline for the combined recall + gate stages. Defaults to NLM_HOOK_DEADLINE_MS (6000ms; must exceed the recall HTTP timeout, see #396). */
   readonly deadlineMs?: number;
 }
 

@@ -215,7 +215,12 @@ function hookModeFromEnv() {
 
 // src/hook/recall-over-http.ts
 var RECALL_LIMIT = 5;
-var RECALL_TIMEOUT_MS = 2e3;
+function parseRecallTimeout(raw) {
+  if (raw === void 0) return 4e3;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 4e3;
+}
+var RECALL_TIMEOUT_MS = parseRecallTimeout(process.env["NLM_HOOK_RECALL_TIMEOUT_MS"]);
 async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword") {
   const query = extractRecallQuery(prompt);
   if (query === null) return { hits: [], facts: [], exemplars: [] };
@@ -652,12 +657,12 @@ var RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9
 var PER_FIRE_CAP = 3;
 var PER_CONVERSATION_CAP = 10;
 var PROMPT_PREVIEW_CHARS = 200;
-function parseHookDeadline(raw) {
-  if (raw === void 0) return 4e3;
+function parseHookDeadline(raw, defaultMs = 4e3) {
+  if (raw === void 0) return defaultMs;
   const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : 4e3;
+  return Number.isFinite(n) && n > 0 ? n : defaultMs;
 }
-var HOOK_DEADLINE_MS = parseHookDeadline(process.env["NLM_HOOK_DEADLINE_MS"]);
+var HOOK_DEADLINE_MS = parseHookDeadline(process.env["NLM_HOOK_DEADLINE_MS"], 6e3);
 async function withDeadline(p, ms, fallback) {
   if (ms <= 0) return fallback;
   let timer;

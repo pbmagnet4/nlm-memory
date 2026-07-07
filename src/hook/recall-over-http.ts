@@ -20,7 +20,20 @@ import { extractRecallQuery } from "@core/hook/query-extract.js";
 import { fetchWithTimeout } from "./hook-helpers.js";
 
 export const RECALL_LIMIT = 5;
-export const RECALL_TIMEOUT_MS = 2000;
+
+// #396: the budget must exceed the daemon's worst-case sequential hybrid path
+// (keyword ~839ms + embed capped at NLM_RECALL_EMBED_DEADLINE_MS default 2000ms
+// + semantic ~50ms + response overhead ~100ms = ~2990ms floor). A budget at or
+// below the daemon's embed cap re-creates the dead passive layer even after the
+// daemon-side embed fix in 73406260: the hook gives up before the embed deadline
+// fires and the daemon finishes building the response.
+export function parseRecallTimeout(raw: string | undefined): number {
+  if (raw === undefined) return 4000;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 4000;
+}
+
+export const RECALL_TIMEOUT_MS = parseRecallTimeout(process.env["NLM_HOOK_RECALL_TIMEOUT_MS"]);
 
 export interface RecallOverHttpResult {
   readonly hits: ReadonlyArray<RecallHitInput>;
