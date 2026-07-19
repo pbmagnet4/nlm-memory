@@ -1,6 +1,13 @@
 # nlm-memory CHANGELOG
 
-Session-level log per session protocol. Cap: 10 entries — archive older to `CHANGELOG-YYYY.md` when exceeded.## 2026-07-06 - Session C (cont.): private-bench first run, instrument honesty (#395), passive-layer discovery (#396)
+Session-level log per session protocol. Cap: 10 entries — archive older to `CHANGELOG-YYYY.md` when exceeded.
+
+## 2026-07-19 - Digest query truncation fix (word-boundary + ellipsis, 60→80)
+
+**Changes:** `truncate()` in `src/core/digest/compose.ts` no longer hard-chops mid-word with no marker (the digest's Top-queries lines ended in fragments like "profile Wr"): budget raised 60→80 chars, cut falls back to the last word boundary past 60% of budget, and an ellipsis is appended. Tests updated + word-boundary case added (6/6 green). Rebuilt; the Mini's npm-linked `nlm` picks it up immediately — no publish.
+
+**Context:** Surfaced while migrating the daily digest to Matrix/Element (#digests room, designed HTML layout in the Whtnxt Agent wrapper `scripts/nlm-digest-notify.sh`). Unpublished to npm — fold into the next release.
+## 2026-07-06 - Session C (cont.): private-bench first run, instrument honesty (#395), passive-layer discovery (#396)
 
 **Changes:** (1) #222 LOCKED + #223 FIRST RUN: Edward delegated the lock to the triage recommendations (50 queries, 11 edits applied, all gold ids re-validated against a fresh snapshot). First private-corpus benchmark (n=50, k=5, 5,502-session snapshot): keyword R@5 88.0 / R@3 72.0 / R@1 24.0; hybrid R@5 74.0. Numbers stay OFF the public page pending #394 (hybrid drags keyword by 14pts on the real corpus, opposite of LongMemEval-S, and keyword R@1 24 vs the June n=40 set's 70 needs an instrument-fidelity check first). (2) #395 MERGED: one shared probe filter (src/core/telemetry/probe-filter.ts); the digest stops counting beacon/probe/pgvector synthetic traffic as real usage (the reported 82% hit-rate was inflated by 2,100+ canary queries); eval-integrity pinned (pull-usefulness keeps its byte-identical pre-registered strip set so the 72.4% baseline denominator is untouched); dead auto-citation path documented in docs/hooks.md instead of fixed (the stop-hook code path is intact and tested; the writer was intentionally removed 05-31).
 

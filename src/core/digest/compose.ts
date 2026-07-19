@@ -84,7 +84,7 @@ export function composeDigest(input: ComposeInput): string {
 
   const topLines = topQ.length === 0
     ? "  (none)"
-    : topQ.map(([q, _], i) => `  ${i + 1}. ${truncate(q, 60)}`).join("\n");
+    : topQ.map(([q, _], i) => `  ${i + 1}. ${truncate(q, 80)}`).join("\n");
 
   const todayStr = formatDay(now);
   const alertBlock = input.hookAlert ? `${input.hookAlert}\n\n` : "";
@@ -114,7 +114,10 @@ function formatPrecision(p: DigestPrecision | null | undefined): string {
 }
 
 function truncate(s: string, max: number): string {
-  return s.length <= max ? s : s.slice(0, max);
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max);
+  const lastSpace = cut.lastIndexOf(" ");
+  return (lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut) + "…";
 }
 
 function formatDay(d: Date): string {

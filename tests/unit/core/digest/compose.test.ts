@@ -85,7 +85,7 @@ describe("composeDigest", () => {
     expect(alertIdx).toBeLessThan(trafficIdx);
   });
 
-  it("truncates top queries longer than 60 chars", () => {
+  it("truncates top queries longer than 80 chars with an ellipsis", () => {
     const longQuery = "a".repeat(120);
     const text = composeDigest({
       stats: baseStats,
@@ -96,7 +96,23 @@ describe("composeDigest", () => {
       hookAlert: null,
       now: FIXED_NOW,
     });
-    expect(text).toContain(`1. ${"a".repeat(60)}\n`);
-    expect(text).not.toContain("a".repeat(61));
+    expect(text).toContain(`1. ${"a".repeat(80)}…\n`);
+    expect(text).not.toContain("a".repeat(81));
+  });
+
+  it("truncates at a word boundary when one falls late in the budget", () => {
+    const longQuery = `${"word ".repeat(14)}straggler-that-would-be-chopped-midway`;
+    const text = composeDigest({
+      stats: baseStats,
+      recent: [
+        { ts: "2026-05-30T05:00:00Z", source: "x", query: longQuery },
+      ],
+      port: 3940,
+      hookAlert: null,
+      now: FIXED_NOW,
+    });
+    const line = text.split("\n").find((l) => l.includes("1. "));
+    expect(line).toMatch(/…$/);
+    expect(line).not.toMatch(/\bstraggler-[a-z-]*…$/);
   });
 });
