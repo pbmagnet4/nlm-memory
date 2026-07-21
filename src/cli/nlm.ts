@@ -1392,6 +1392,9 @@ program
       sessionScopeReader: store,
       workDigest: { store, topicProvider: loadTopicProvider(), workstreams: storage.workstreams, ...workDigestEnv() },
       workstreams: { store: storage.workstreams, sessions: store, facts: facts, exemplars: storage.exemplars },
+      // Tier-B outcome rollup (#352 phase 2) only has a SQLite adapter today;
+      // PgStorage deployments skip get_session's `outcome` field until parity lands.
+      ...(storage instanceof SqliteStorage ? { outcomeDb: storage.rawDb() } : {}),
     });
     const transport = new StdioServerTransport();
     await server.connect(transport);

@@ -35,6 +35,8 @@ import { suggestMerges } from "@core/workstream/merge-suggest.js";
 import { normalizeSignal } from "@core/signals/ingest-signal.js";
 import { stampSignalScope, type SessionScopeReader } from "@core/signals/stamp-scope.js";
 import type { SignalStore } from "@ports/signal-store.js";
+import { deriveOutcome } from "@core/outcome/rollup.js";
+import { buildSqliteOutcomeDeps } from "@core/storage/sqlite-outcome-store.js";
 import type {
   FactKind,
   FactRecallQuery,
@@ -43,6 +45,7 @@ import type {
   RecallQuery,
 } from "@shared/types.js";
 import { SIGNAL_OUTCOMES } from "@shared/types.js";
+import type Database from "better-sqlite3";
 
 const CHARACTER_LIMIT = 25_000;
 const DEFAULT_LIMIT = 10;
@@ -78,6 +81,12 @@ export interface McpDeps {
     readonly facts: Pick<FactStore, "listBySessions">;
     readonly exemplars: Pick<import("@ports/code-exemplar-store.js").CodeExemplarStore, "listBySessions">;
   };
+  /**
+   * Raw SQLite handle for the Tier-B outcome rollup (#352 phase 2). Wire to
+   * attach `outcome` to get_session's response; omit to skip it (e.g. under
+   * PgStorage, which has no adapter yet).
+   */
+  readonly outcomeDb?: Database.Database;
 }
 
 export interface ToolResult {
@@ -400,7 +409,11 @@ export async function getSessionHandler(
         })()
       : null;
 
-    return ok({ ...session, supersedes, supersededBy });
+    const outcome = deps.outcomeDb
+      ? await deriveOutcome(session.id, await buildSqliteOutcomeDeps(deps.outcomeDb))
+      : undefined;
+
+    return ok({ ...session, supersedes, supersededBy, ...(outcome ? { outcome } : {}) });
   } catch (e) {
     return err(e);
   }
@@ -540,6 +553,10 @@ run, or any quote you intend to reference verbatim.
 
 The recall_sessions digest is optimized for ranking and scanning; the full body
 contains the actual conversation transcript that produced the decision.
+
+When wired, the response includes an \`outcome\` object: whether the session's
+decision held, was overturned, was built upon, was re-derived later, or
+remains unobserved, plus the evidence tier/confidence behind that verdict.
 
 Args:
   - id: Canonical session ID returned by recall_sessions (e.g. "cc_abc123",

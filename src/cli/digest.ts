@@ -11,6 +11,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import {
   composeDigest,
   type DigestPrecision,
@@ -23,6 +24,35 @@ import { readCitationLog } from "@core/recall/citation-log.js";
 import { checkHookLiveness, type SessionRow, type HookLogEntry } from "@core/digest/hook-liveness.js";
 import { checkHookInjection } from "@core/digest/hook-injection.js";
 import { hookAuthHeaders } from "../hook/hook-auth.js";
+import { computeOutcomeCoverage, type OutcomeCoverage } from "@core/outcome/coverage.js";
+import { loadOutcomeCoverageInput } from "@core/storage/sqlite-outcome-store.js";
+
+/** Sessions ended in the last N days count toward the Tier-B coverage block. */
+const OUTCOME_COVERAGE_WINDOW_DAYS = 30;
+
+function defaultDbPath(): string {
+  return process.env["NLM_DB_PATH"] ?? join(homedir(), ".nlm", "canonical.sqlite");
+}
+
+/**
+ * Best-effort, read-only: opens its own SQLite connection directly rather
+ * than round-tripping the daemon (same pattern as the hook-log/citation-log
+ * reads below). A failure here must not break the rest of the digest.
+ */
+async function loadOutcomeCoverage(): Promise<OutcomeCoverage | null> {
+  const dbPath = defaultDbPath();
+  if (!existsSync(dbPath)) return null;
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    const sinceIso = new Date(
+      Date.now() - OUTCOME_COVERAGE_WINDOW_DAYS * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    const input = await loadOutcomeCoverageInput(db, { sinceIso });
+    return await computeOutcomeCoverage(input);
+  } finally {
+    db.close();
+  }
+}
 
 export interface DigestOptions {
   readonly port: number;
@@ -100,12 +130,20 @@ export async function runDigest(opts: DigestOptions): Promise<DigestResult> {
     precision = null;
   }
 
+  let outcomeCoverage: OutcomeCoverage | null = null;
+  try {
+    outcomeCoverage = await loadOutcomeCoverage();
+  } catch {
+    outcomeCoverage = null;
+  }
+
   const text = composeDigest({
     stats,
     recent,
     port: opts.port,
     hookAlert,
     precision,
+    outcomeCoverage,
   });
 
   if (opts.telegram) {
