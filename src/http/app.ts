@@ -820,41 +820,6 @@ function registerHookRoutes(app: Hono): void {
     }
     return c.json({ ok: true, flushed, compacted_at: compactedAt });
   });
-
-  // SubagentStart hook: logging-only stub. Records the parent→subagent link
-  // so future corpus-linking logic can correlate subagent sessions back to
-  // their dispatching conversation.
-  // Payload: { parent_conversation_id, subagent_session_id, subagent_description?, ts? }
-  app.post("/api/hook/subagent-start", async (c) => {
-    let body: Record<string, unknown>;
-    try {
-      body = (await c.req.json()) as Record<string, unknown>;
-    } catch {
-      return c.json({ error: "body must be JSON" }, 400);
-    }
-    const parentConversationId = body["parent_conversation_id"];
-    const subagentSessionId = body["subagent_session_id"];
-    if (typeof parentConversationId !== "string" || !parentConversationId) {
-      return c.json({ error: "parent_conversation_id required" }, 400);
-    }
-    if (typeof subagentSessionId !== "string" || !subagentSessionId) {
-      return c.json({ error: "subagent_session_id required" }, 400);
-    }
-    const subagentDescription = typeof body["subagent_description"] === "string" ? body["subagent_description"] : "";
-    const ts = typeof body["ts"] === "string" ? body["ts"] : new Date().toISOString();
-    const logPath = process.env["NLM_SUBAGENT_LOG"] ?? join(homedir(), ".nlm", "subagent-log.jsonl");
-    try {
-      mkdirSync(dirname(logPath), { recursive: true });
-      appendFileSync(
-        logPath,
-        `${JSON.stringify({ ts, parent_conversation_id: parentConversationId, subagent_session_id: subagentSessionId, subagent_description: subagentDescription })}\n`,
-        "utf8",
-      );
-    } catch {
-      // Log failure must not fail the endpoint.
-    }
-    return c.json({ ok: true, recorded: true });
-  });
 }
 
 // ── NousResearch Hermes Agent lifecycle hooks ─────────────────────────────

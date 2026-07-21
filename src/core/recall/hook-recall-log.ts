@@ -5,8 +5,8 @@
  * injected ids — making it the correct join substrate for recall precision.
  *
  * Only `recall` entries (those with a wouldInject array) are surfaced events.
- * The file also holds stop / session-end / pre-compact / subagent-start
- * entries, which this reader ignores.
+ * The file also holds stop / session-end / pre-compact entries, which this
+ * reader ignores.
  *
  * Read-only telemetry path — never raises.
  */

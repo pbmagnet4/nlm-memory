@@ -18,7 +18,6 @@ const HOOK_SCRIPT_MARKERS = [
   "stop-hook.js",
   "session-start-hook.js",
   "pre-compact-hook.js",
-  "subagent-start-hook.js",
 ] as const;
 
 /**
@@ -60,7 +59,6 @@ export type ClaudeHookEvent =
   | "SessionEnd"
   | "Stop"
   | "PreCompact"
-  | "SubagentStart"
   | "PostToolUse"
   | "PreToolUse";
 

@@ -1785,10 +1785,9 @@ const SESSION_START_HOOK_JS = resolve(__dirname, "../hook/session-start-hook.js"
 const SESSION_END_HOOK_JS = resolve(__dirname, "../hook/session-end-hook.js");
 const STOP_HOOK_JS = resolve(__dirname, "../hook/stop-hook.js");
 const PRE_COMPACT_HOOK_JS = resolve(__dirname, "../hook/pre-compact-hook.js");
-const SUBAGENT_START_HOOK_JS = resolve(__dirname, "../hook/subagent-start-hook.js");
 
 interface HookSpec {
-  readonly event: "UserPromptSubmit" | "SessionStart" | "SessionEnd" | "Stop" | "PreCompact" | "SubagentStart";
+  readonly event: "UserPromptSubmit" | "SessionStart" | "SessionEnd" | "Stop" | "PreCompact";
   readonly script: string;
   readonly label: string;
 }
@@ -1799,7 +1798,6 @@ const ALL_HOOKS: ReadonlyArray<HookSpec> = [
   { event: "SessionEnd", script: SESSION_END_HOOK_JS, label: "session-end" },
   { event: "Stop", script: STOP_HOOK_JS, label: "stop" },
   { event: "PreCompact", script: PRE_COMPACT_HOOK_JS, label: "pre-compact" },
-  { event: "SubagentStart", script: SUBAGENT_START_HOOK_JS, label: "subagent-start" },
 ];
 
 function claudeSettingsPath(): string {
@@ -1812,7 +1810,7 @@ const hook = program
 
 hook
   .command("install")
-  .description("Add the NLM hooks (recall + session-end + stop) to ~/.claude/settings.json (live mode)")
+  .description("Add the NLM hooks (recall + session-start + session-end + stop + pre-compact) to ~/.claude/settings.json (live mode)")
   .action(() => {
     const path = claudeSettingsPath();
     const installed: HookSpec[] = [];
