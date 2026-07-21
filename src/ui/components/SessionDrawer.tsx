@@ -28,7 +28,7 @@ interface SessionDetail {
 interface SessionDrawerProps {
   sessionId: string;
   onClose: () => void;
-  entityColor?: string;
+  entityColor?: string | undefined;
   onNavigate?: (id: string) => void;
   prevSessionId?: string | null;
   nextSessionId?: string | null;

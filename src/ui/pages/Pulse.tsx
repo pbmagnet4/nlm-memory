@@ -601,7 +601,12 @@ function MergePicker({
           type="button"
           className="chip active"
           disabled={!candidates[activeIndex]}
-          onClick={() => { setSelected(candidates[activeIndex].canonical); setConfirming(true); }}
+          onClick={() => {
+            const candidate = candidates[activeIndex];
+            if (!candidate) return;
+            setSelected(candidate.canonical);
+            setConfirming(true);
+          }}
         >
           Merge into selected →
         </button>

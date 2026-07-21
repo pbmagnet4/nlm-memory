@@ -15,7 +15,10 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "allowImportingTsExtensions": false,
-    "noEmit": true
+    "noEmit": true,
+    "paths": {
+      "@shared/*": ["../shared/*"]
+    }
   },
   "include": ["**/*.ts", "**/*.tsx"]
 }
