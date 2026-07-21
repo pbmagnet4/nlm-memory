@@ -26,9 +26,13 @@
  * `label` column this backfill reads is the classifier's generated title —
  * that prefix is already gone by the time a row lands in `sessions`. In
  * practice this means most historical subagent rows get parent_session_id
- * populated correctly but agent_persona stays NULL (still selectable by a
- * future run; harmless no-op, not a bug). Only genuinely new ingests (which
+ * populated but agent_persona stays NULL. Only genuinely new ingests (which
  * derive from the live chunk before classification overwrites it) get both.
+ * Such rows stay selectable (agent_persona IS NULL) forever, so the run
+ * compares derived values against stored ones and counts a row `updated`
+ * only when the write would change something; a re-run over a fully
+ * backfilled corpus reports updated=0 with the unrecoverable rows under
+ * `skippedNoop`.
  */
 
 import type { Database } from "better-sqlite3";
@@ -41,6 +45,7 @@ interface CandidateRow {
   readonly runtime: string;
   readonly runtime_session_id: string | null;
   readonly label: string;
+  readonly parent_session_id: string | null;
 }
 
 export interface BackfillOptions {
@@ -50,20 +55,26 @@ export interface BackfillOptions {
 export interface BackfillReport {
   /** All rows in the sessions table, stamped or not. */
   readonly total: number;
-  /** Rows updated this run (or that would be, under --dry-run). */
+  /** Rows whose write would change something (or did, when not --dry-run). */
   readonly updated: number;
   /** Rows already stamped (agent_persona NOT NULL) before this run. */
   readonly skippedAlreadyStamped: number;
-  /** Of `updated`, how many derived a real parent link (subagent-shaped runtimeSessionId). */
+  /**
+   * Selected rows whose derived values match what's already stored — persona
+   * unrecoverable (NULL derives NULL) and parent either already stamped by a
+   * prior run or also underivable. Attempted, nothing to write.
+   */
+  readonly skippedNoop: number;
+  /** Of the selected rows, how many derived a real parent link (subagent-shaped runtimeSessionId). */
   readonly subagentCandidates: number;
-  /** Of `updated`, how many derived a literal "unknown" parent placeholder. */
+  /** Of the selected rows, how many derived a literal "unknown" parent placeholder. */
   readonly unknownParent: number;
 }
 
 function selectCandidates(db: Database): CandidateRow[] {
   return db
     .prepare<[], CandidateRow>(
-      "SELECT id, runtime, runtime_session_id, label FROM sessions WHERE agent_persona IS NULL",
+      "SELECT id, runtime, runtime_session_id, label, parent_session_id FROM sessions WHERE agent_persona IS NULL",
     )
     .all();
 }
@@ -93,23 +104,32 @@ export function backfillDerivables(db: Database, opts: BackfillOptions = {}): Ba
 
   let subagentCandidates = 0;
   let unknownParent = 0;
-  const derived = candidates.map((row) => {
+  let skippedNoop = 0;
+  const toWrite: { id: string; meta: { persona: string | null; parentSessionId: string | null } }[] = [];
+  for (const row of candidates) {
     const meta = deriveMeta(row);
     if (meta.parentSessionId !== null) subagentCandidates++;
     if (meta.parentSessionId === "unknown") unknownParent++;
-    return { id: row.id, meta };
-  });
+    // Stored persona is NULL by selection, so the write is a no-op exactly
+    // when the derived persona is also NULL and the derived parent matches
+    // what a prior run already stamped (or is equally NULL).
+    if (meta.persona === null && meta.parentSessionId === row.parent_session_id) {
+      skippedNoop++;
+      continue;
+    }
+    toWrite.push({ id: row.id, meta });
+  }
 
   if (opts.dryRun) {
-    return { total, updated: derived.length, skippedAlreadyStamped, subagentCandidates, unknownParent };
+    return { total, updated: toWrite.length, skippedAlreadyStamped, skippedNoop, subagentCandidates, unknownParent };
   }
 
   const updateStmt = db.prepare<[string | null, string | null, string], void>(
     "UPDATE sessions SET agent_persona = ?, parent_session_id = ? WHERE id = ? AND agent_persona IS NULL",
   );
 
-  for (let i = 0; i < derived.length; i += BATCH_SIZE) {
-    const batch = derived.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < toWrite.length; i += BATCH_SIZE) {
+    const batch = toWrite.slice(i, i + BATCH_SIZE);
     const runBatch = db.transaction((rows: typeof batch) => {
       for (const row of rows) {
         updateStmt.run(row.meta.persona, row.meta.parentSessionId, row.id);
@@ -118,5 +138,5 @@ export function backfillDerivables(db: Database, opts: BackfillOptions = {}): Ba
     runBatch(batch);
   }
 
-  return { total, updated: derived.length, skippedAlreadyStamped, subagentCandidates, unknownParent };
+  return { total, updated: toWrite.length, skippedAlreadyStamped, skippedNoop, subagentCandidates, unknownParent };
 }

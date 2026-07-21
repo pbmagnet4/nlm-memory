@@ -209,7 +209,7 @@ describe("backfillDerivables", () => {
     expect(byId.get("herm_versioned")).toMatchObject({ agent_persona: "hermes", parent_session_id: null });
   });
 
-  it("a malformed subagent-shaped id (slash but no /agent- suffix) derives nulls and is left re-selectable", async () => {
+  it("a malformed subagent-shaped id (slash but no /agent- suffix) derives nulls and is counted as no-op, not updated", async () => {
     await store.insertSession(
       baseRecord({ id: "sub_malformed", runtimeSessionId: "orch-1/weird-shape", label: "no subagent prefix here" }),
       embedder,
@@ -217,7 +217,8 @@ describe("backfillDerivables", () => {
     const db = store.rawDb();
 
     const report = backfillDerivables(db);
-    expect(report.updated).toBe(1);
+    expect(report.updated).toBe(0);
+    expect(report.skippedNoop).toBe(1);
 
     const row = db
       .prepare<[string], { agent_persona: string | null; parent_session_id: string | null }>(
@@ -225,5 +226,64 @@ describe("backfillDerivables", () => {
       )
       .get("sub_malformed");
     expect(row).toMatchObject({ agent_persona: null, parent_session_id: null });
+  });
+
+  it("stamps parent but not persona for the dominant production case: subagent-shaped id with an unprefixed classifier label", async () => {
+    // Real corpus rows never carry the "[subagent <slug>]" prefix — the
+    // classifier's generated title replaced chunk.label before the row
+    // landed in sessions. Parent is still derivable from the id; persona
+    // is genuinely lost.
+    await store.insertSession(
+      baseRecord({
+        id: "sub_prod",
+        runtime: "claude-code/1.0",
+        runtimeSessionId: "parent-1/agent-abc",
+        label: "Directory exploration blocked by permissions",
+      }),
+      embedder,
+    );
+    const db = store.rawDb();
+
+    const report = backfillDerivables(db);
+    expect(report.updated).toBe(1);
+    expect(report.subagentCandidates).toBe(1);
+
+    const row = db
+      .prepare<[string], { agent_persona: string | null; parent_session_id: string | null }>(
+        "SELECT agent_persona, parent_session_id FROM sessions WHERE id = ?",
+      )
+      .get("sub_prod");
+    expect(row).toMatchObject({ agent_persona: null, parent_session_id: "parent-1" });
+  });
+
+  it("re-run over unrecoverable-persona rows reports updated=0 (bug: WHERE agent_persona IS NULL re-counted them as updated forever)", async () => {
+    await store.insertSession(
+      baseRecord({
+        id: "sub_unrecoverable",
+        runtime: "claude-code/1.0",
+        runtimeSessionId: "parent-1/agent-abc",
+        label: "Classifier generated title, no subagent prefix",
+      }),
+      embedder,
+    );
+    const db = store.rawDb();
+
+    const first = backfillDerivables(db);
+    expect(first.updated).toBe(1);
+    expect(first.skippedNoop).toBe(0);
+
+    const second = backfillDerivables(db);
+    expect(second.updated).toBe(0);
+    expect(second.skippedNoop).toBe(1);
+    expect(second.skippedAlreadyStamped).toBe(0);
+    expect(second.total).toBe(1);
+
+    // The row itself is unchanged by the second run.
+    const row = db
+      .prepare<[string], { agent_persona: string | null; parent_session_id: string | null }>(
+        "SELECT agent_persona, parent_session_id FROM sessions WHERE id = ?",
+      )
+      .get("sub_unrecoverable");
+    expect(row).toMatchObject({ agent_persona: null, parent_session_id: "parent-1" });
   });
 });

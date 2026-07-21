@@ -1358,7 +1358,8 @@ program
       console.log(
         `backfill-derivables${opts.dryRun ? " (dry-run)" : ""}: ` +
         `updated=${report.updated} skipped(already-stamped)=${report.skippedAlreadyStamped} ` +
-        `subagent-candidates=${report.subagentCandidates} unknown-parent=${report.unknownParent} total=${report.total}`,
+        `skipped(no-op)=${report.skippedNoop} subagent-candidates=${report.subagentCandidates} ` +
+        `unknown-parent=${report.unknownParent} total=${report.total}`,
       );
     } finally {
       await stack.storage.close();
