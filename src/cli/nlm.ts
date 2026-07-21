@@ -1339,6 +1339,33 @@ program
   });
 
 program
+  .command("backfill-derivables")
+  .description(
+    "Retroactive: stamp agent_persona + parent_session_id (#352 phase 2) onto sessions ingested\n" +
+    "before the scheduler started stamping them at classify time. Idempotent (WHERE agent_persona IS NULL).",
+  )
+  .option("--dry-run", "report counts without writing")
+  .action(async (opts: { dryRun?: boolean }) => {
+    const { backfillDerivables } = await import("../core/ingest/backfill-derivables.js");
+    const stack = await buildStack();
+    try {
+      if (!(stack.storage instanceof SqliteStorage)) {
+        console.error("backfill-derivables: only supported with SQLite storage (NLM_PG_URL must not be set)");
+        await stack.storage.close();
+        process.exit(1);
+      }
+      const report = backfillDerivables(stack.storage.rawDb(), { dryRun: Boolean(opts.dryRun) });
+      console.log(
+        `backfill-derivables${opts.dryRun ? " (dry-run)" : ""}: ` +
+        `updated=${report.updated} skipped(already-stamped)=${report.skippedAlreadyStamped} ` +
+        `subagent-candidates=${report.subagentCandidates} unknown-parent=${report.unknownParent} total=${report.total}`,
+      );
+    } finally {
+      await stack.storage.close();
+    }
+  });
+
+program
   .command("mcp")
   .description("Run as an MCP stdio server (for ~/.mcp.json)")
   .action(async () => {
