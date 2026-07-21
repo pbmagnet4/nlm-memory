@@ -88,14 +88,6 @@ describe("RecallService against SqliteSessionStore (integration)", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("loads sessions with their entities and markers via list()", async () => {
-    const all = await store.list();
-    expect(all).toHaveLength(3);
-    const b = all.find((s) => s.id === "sess_b");
-    expect(b?.entities).toEqual(["NLM", "Postgres"]);
-    expect(b?.open).toEqual(["timing of cutover from SQLite to Postgres"]);
-  });
-
   it("keyword recall finds the right session through the full pipeline", async () => {
     const svc = new RecallService({
       store,
@@ -156,7 +148,7 @@ describe("RecallService against SqliteSessionStore (integration)", () => {
       migrationsDir: MIGRATIONS_DIR,
     });
     await reopened.init();
-    const all = await reopened.sessions.list();
+    const all = await reopened.sessions.getByIds(["sess_a", "sess_b", "sess_c"]);
     expect(all).toHaveLength(3);
     await reopened.close();
   });

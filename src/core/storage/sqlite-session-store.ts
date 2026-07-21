@@ -605,37 +605,6 @@ export class SqliteSessionStore implements SessionStore {
     }
   }
 
-  async list(filter?: SessionFilter): Promise<ReadonlyArray<Session>> {
-    const rows = this.db
-      .prepare<[], SessionRow>(`
-        SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
-               label, summary, status, transcript_kind, transcript_path, body,
-               classifier_provider, classifier_model, classifier_confidence
-        FROM sessions
-        ORDER BY started_at ASC
-      `)
-      .all();
-
-    if (rows.length === 0) return [];
-
-    const ids = rows.map((r) => r.id);
-    const entitiesByIdMap = this.loadEntities(ids);
-    const markersByIdMap = this.loadMarkers(ids);
-    const overlay = this.overlay();
-
-    const sessions = rows.map((r) => this.rowToSession(r, entitiesByIdMap, markersByIdMap, overlay));
-
-    if (!filter) return sessions;
-    return sessions.filter((s) => {
-      if (filter.entity !== undefined && !s.entities.includes(filter.entity)) {
-        return false;
-      }
-      if (filter.hasDecisions === true && s.decisions.length === 0) return false;
-      if (filter.hasOpenQuestions === true && s.open.length === 0) return false;
-      return true;
-    });
-  }
-
   async getById(sessionId: string): Promise<Session | null> {
     const row = this.db
       .prepare<[string], SessionRow>(`

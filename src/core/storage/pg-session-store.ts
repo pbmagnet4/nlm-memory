@@ -99,30 +99,6 @@ export class PgSessionStore implements SessionStore {
     return this.overlayCache;
   }
 
-  async list(filter?: SessionFilter): Promise<ReadonlyArray<Session>> {
-    const result = await this.pool.query<SessionRow>(
-      `SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
-              label, summary, status, transcript_kind, transcript_path, body,
-              classifier_provider, classifier_model, classifier_confidence
-       FROM sessions ORDER BY started_at ASC`,
-    );
-    if (result.rows.length === 0) return [];
-    const ids = result.rows.map((r) => r.id);
-    const [entitiesMap, markersMap, overlay] = await Promise.all([
-      this.loadEntities(ids),
-      this.loadMarkers(ids),
-      this.overlay(),
-    ]);
-    const sessions = result.rows.map((r) => rowToSession(r, entitiesMap, markersMap, overlay));
-    if (!filter) return sessions;
-    return sessions.filter((s) => {
-      if (filter.entity !== undefined && !s.entities.includes(filter.entity)) return false;
-      if (filter.hasDecisions === true && s.decisions.length === 0) return false;
-      if (filter.hasOpenQuestions === true && s.open.length === 0) return false;
-      return true;
-    });
-  }
-
   async getById(sessionId: string): Promise<Session | null> {
     const result = await this.pool.query<SessionRow>(
       `SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,

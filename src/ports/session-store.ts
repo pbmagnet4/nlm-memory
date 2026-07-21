@@ -37,8 +37,6 @@ export interface SearchOptions {
 }
 
 export interface SessionStore {
-  list(filter?: SessionFilter): Promise<ReadonlyArray<Session>>;
-
   getById(sessionId: string): Promise<Session | null>;
 
   getByIds(ids: ReadonlyArray<string>): Promise<ReadonlyArray<Session>>;
