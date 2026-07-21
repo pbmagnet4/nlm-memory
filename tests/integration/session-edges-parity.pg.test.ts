@@ -68,6 +68,12 @@ describe.skipIf(!PG_TEST_URL)("session_edges.kind parity (PostgreSQL)", () => {
   });
 
   afterEach(async () => {
+    // This file inserts branched_from/merged_from edges directly. In the
+    // shared-Postgres serial CI lane, rows left behind here outlive this
+    // file and can trip a later file's ALTER TABLE ... ADD CONSTRAINT
+    // (e.g. session-search.pg.test.ts re-validates session_edges.kind)
+    // with a 23514 check-constraint violation on preexisting rows.
+    await pool.query(TRUNCATE_SQL);
     await storage.close();
   });
 
