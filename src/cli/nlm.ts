@@ -1345,7 +1345,11 @@ program
     "before the scheduler started stamping them at classify time. Idempotent (WHERE agent_persona IS NULL).",
   )
   .option("--dry-run", "report counts without writing")
-  .action(async (opts: { dryRun?: boolean }) => {
+  .option(
+    "--with-transcript-scan",
+    "also scan each candidate's transcript for primary_model/total_tokens/skill (slower)",
+  )
+  .action(async (opts: { dryRun?: boolean; withTranscriptScan?: boolean }) => {
     const { backfillDerivables } = await import("../core/ingest/backfill-derivables.js");
     const stack = await buildStack();
     try {
@@ -1354,12 +1358,15 @@ program
         await stack.storage.close();
         process.exit(1);
       }
-      const report = backfillDerivables(stack.storage.rawDb(), { dryRun: Boolean(opts.dryRun) });
+      const report = await backfillDerivables(stack.storage.rawDb(), {
+        dryRun: Boolean(opts.dryRun),
+        withTranscriptScan: Boolean(opts.withTranscriptScan),
+      });
       console.log(
         `backfill-derivables${opts.dryRun ? " (dry-run)" : ""}: ` +
         `updated=${report.updated} skipped(already-stamped)=${report.skippedAlreadyStamped} ` +
         `skipped(no-op)=${report.skippedNoop} subagent-candidates=${report.subagentCandidates} ` +
-        `unknown-parent=${report.unknownParent} total=${report.total}`,
+        `unknown-parent=${report.unknownParent} transcript-scanned=${report.transcriptScanned} total=${report.total}`,
       );
     } finally {
       await stack.storage.close();

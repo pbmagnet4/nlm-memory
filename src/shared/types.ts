@@ -58,6 +58,19 @@ export interface Session {
    * on bulk reads.
    */
   readonly parentSessionId?: string | null;
+  /**
+   * Majority model across assistant messages in the transcript (claude-code
+   * jsonl only, v1). NULL when not derivable (missing/unreadable transcript,
+   * non-claude-code kind). Populated by getById; absent on bulk reads. See
+   * docs/superpowers/plans/2026-07-21-352-phase2-tierb.md.
+   */
+  readonly primaryModel?: string | null;
+  /** Sum of input_tokens + output_tokens across assistant messages. Same
+   *  derivability/absence contract as primaryModel. */
+  readonly totalTokens?: number | null;
+  /** Slug of the first Skill-tool invocation in the transcript, or NULL.
+   *  Same derivability/absence contract as primaryModel. */
+  readonly skill?: string | null;
 }
 
 /**

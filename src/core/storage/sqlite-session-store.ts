@@ -73,6 +73,16 @@ export interface IngestRecord {
   readonly agentPersona?: string | null;
   /** RUNTIME parent session id (join key against runtime_session_id). Same omit/COALESCE contract as agentPersona. */
   readonly parentSessionId?: string | null;
+  /**
+   * Majority model across assistant messages in the transcript (claude-code
+   * jsonl only, v1), from scanTranscriptDerivables. NULL when not derivable.
+   * Same omit/COALESCE contract as agentPersona.
+   */
+  readonly primaryModel?: string | null;
+  /** Sum of input_tokens + output_tokens across assistant messages. Same omit/COALESCE contract as agentPersona. */
+  readonly totalTokens?: number | null;
+  /** Slug of the first Skill-tool invocation in the transcript, or null. Same omit/COALESCE contract as agentPersona. */
+  readonly skill?: string | null;
 }
 
 /**
@@ -108,6 +118,9 @@ type SessionRow = {
   scope: string | null;
   agent_persona?: string | null;
   parent_session_id?: string | null;
+  primary_model?: string | null;
+  total_tokens?: number | null;
+  skill?: string | null;
 };
 
 type EntityRow = { session_id: string; entity_canonical: string };
@@ -318,12 +331,14 @@ export class SqliteSessionStore implements SessionStore {
           label, summary, body, status,
           transcript_kind, transcript_path, transcript_offset, transcript_length,
           classifier_provider, classifier_model, classifier_confidence,
-          scope, agent_persona, parent_session_id
+          scope, agent_persona, parent_session_id,
+          primary_model, total_tokens, skill
         ) VALUES (@id, @runtime, @runtimeSessionId, @startedAt, @endedAt, @durationMin,
           @label, @summary, @body, @status,
           @transcriptKind, @transcriptPath, @transcriptOffset, @transcriptLength,
           @classifierProvider, @classifierModel, @classifierConfidence,
-          @scope, @agentPersona, @parentSessionId)
+          @scope, @agentPersona, @parentSessionId,
+          @primaryModel, @totalTokens, @skill)
         ON CONFLICT(id) DO UPDATE SET
           ended_at = excluded.ended_at,
           duration_min = excluded.duration_min,
@@ -337,6 +352,9 @@ export class SqliteSessionStore implements SessionStore {
           scope = COALESCE(excluded.scope, scope),
           agent_persona = COALESCE(excluded.agent_persona, agent_persona),
           parent_session_id = COALESCE(excluded.parent_session_id, parent_session_id),
+          primary_model = COALESCE(excluded.primary_model, primary_model),
+          total_tokens = COALESCE(excluded.total_tokens, total_tokens),
+          skill = COALESCE(excluded.skill, skill),
           updated_at = datetime('now')
       `).run({
         id: record.id,
@@ -359,6 +377,9 @@ export class SqliteSessionStore implements SessionStore {
         scope: record.scope,
         agentPersona: record.agentPersona ?? null,
         parentSessionId: record.parentSessionId ?? null,
+        primaryModel: record.primaryModel ?? null,
+        totalTokens: record.totalTokens ?? null,
+        skill: record.skill ?? null,
       });
 
       db.prepare("DELETE FROM markers WHERE session_id = ?").run(record.id);
@@ -625,7 +646,8 @@ export class SqliteSessionStore implements SessionStore {
         SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
                label, summary, status, transcript_kind, transcript_path, body,
                classifier_provider, classifier_model, classifier_confidence,
-               agent_persona, parent_session_id
+               agent_persona, parent_session_id,
+               primary_model, total_tokens, skill
         FROM sessions
         WHERE id = ?
       `)
@@ -1151,6 +1173,9 @@ export class SqliteSessionStore implements SessionStore {
       classifierConfidence: row.classifier_confidence ?? null,
       agentPersona: row.agent_persona ?? null,
       parentSessionId: row.parent_session_id ?? null,
+      primaryModel: row.primary_model ?? null,
+      totalTokens: row.total_tokens ?? null,
+      skill: row.skill ?? null,
     };
   }
 }
