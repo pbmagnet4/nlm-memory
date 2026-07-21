@@ -35,6 +35,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+      - name: Rebuild native modules
+        # npm >=11.6 skips dependency install scripts by default; force the better-sqlite3 build
+        run: npm rebuild better-sqlite3
 
       - name: Typecheck
         run: npm run typecheck
