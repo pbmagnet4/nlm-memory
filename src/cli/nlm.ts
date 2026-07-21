@@ -466,6 +466,7 @@ program
               codeEmbedder: codeEmb,
               installScope: scope,
               signalStore: signals,
+              sessionScopeReader: store,
               workDigest: { store, topicProvider: loadTopicProvider(), workstreams: storage.workstreams, ...workDigestEnv() },
               workstreams: { store: storage.workstreams, sessions: store, facts: facts, exemplars: storage.exemplars },
             },
@@ -1388,6 +1389,7 @@ program
       codeEmbedder: buildCodeEmbedder(),
       installScope: scope,
       signalStore: signals,
+      sessionScopeReader: store,
       workDigest: { store, topicProvider: loadTopicProvider(), workstreams: storage.workstreams, ...workDigestEnv() },
       workstreams: { store: storage.workstreams, sessions: store, facts: facts, exemplars: storage.exemplars },
     });

@@ -1,14 +1,16 @@
 /**
- * reportOutcomeHandler unit tests — the MCP handler for report_outcome.
+ * reportOutcomeHandler unit tests for the MCP report_outcome tool.
  *
  * Same fakeStore pattern as tests/unit/http/signal-routes.test.ts: this tool
  * is a thin adapter over the same normalizeSignal + SignalStore.insert path
  * POST /api/signal uses, so the row shape it produces must match.
  */
 
-import { describe, expect, it, beforeEach } from "vitest";
+import { afterEach, describe, expect, it, beforeEach } from "vitest";
 import { reportOutcomeHandler } from "../../../src/mcp/server.js";
 import type { McpDeps } from "../../../src/mcp/server.js";
+import { createApp } from "../../../src/http/app.js";
+import type { SessionScopeReader } from "../../../src/core/signals/stamp-scope.js";
 import type { SignalStore, SignalAggregationFilter } from "../../../src/ports/signal-store.js";
 import type { Signal } from "../../../src/shared/types.js";
 
@@ -24,12 +26,17 @@ function fakeStore(): SignalStore & { rows: Signal[] } {
   };
 }
 
-function makeDeps(signalStore?: SignalStore, installScope?: string): McpDeps {
+function makeDeps(
+  signalStore?: SignalStore,
+  installScope?: string,
+  sessionScopeReader?: SessionScopeReader,
+): McpDeps {
   return {
     recall: {} as McpDeps["recall"],
     store: {} as McpDeps["store"],
     ...(signalStore ? { signalStore } : {}),
     ...(installScope !== undefined ? { installScope } : {}),
+    ...(sessionScopeReader ? { sessionScopeReader } : {}),
   };
 }
 
@@ -151,5 +158,75 @@ describe("reportOutcomeHandler", () => {
 
     expect(result.isError).toBe(true);
     expect(store.rows).toHaveLength(0);
+  });
+});
+
+describe("reportOutcomeHandler scope parity with POST /api/signal", () => {
+  const prevStampFlag = process.env["NLM_SCOPE_STAMP"];
+  let store: ReturnType<typeof fakeStore>;
+
+  const scopeReader: SessionScopeReader = {
+    async getSessionScopeById(id) {
+      if (id === "sess_scoped") return "project-alpha";
+      if (id === "sess_global") return "global";
+      return null;
+    },
+  };
+
+  beforeEach(() => {
+    store = fakeStore();
+    process.env["NLM_SCOPE_STAMP"] = "1";
+  });
+
+  afterEach(() => {
+    if (prevStampFlag === undefined) delete process.env["NLM_SCOPE_STAMP"];
+    else process.env["NLM_SCOPE_STAMP"] = prevStampFlag;
+  });
+
+  it("a session-correlated tool write carries the same scope the HTTP path stamps", async () => {
+    await reportOutcomeHandler(makeDeps(store, "install-test", scopeReader), {
+      session_id: "sess_scoped",
+      outcome: "pass",
+      source_of_record: "ci:github-actions",
+    });
+    expect(store.rows[0]!.scope).toBe("project-alpha");
+
+    const httpStore = fakeStore();
+    const app = createApp({
+      recall: { search: async () => ({ query: "", mode: "keyword", limit: 0, total: 0, results: [] }) } as never,
+      store: {} as never,
+      signalStore: httpStore,
+      installScope: "install-test",
+      sessionScopeReader: scopeReader,
+    } as never);
+    const res = await app.request("/api/signal", {
+      method: "POST",
+      headers: { "content-type": "application/json", host: "localhost:3940" },
+      body: JSON.stringify({
+        kind: "review", producer: "mcp", outcome: "pass",
+        session: "sess_scoped", detail: { source_of_record: "ci:github-actions" },
+      }),
+    });
+    expect(res.status).toBe(202);
+    expect(httpStore.rows[0]!.scope).toBe(store.rows[0]!.scope);
+  });
+
+  it("a session with global scope stamps null, matching the HTTP path", async () => {
+    await reportOutcomeHandler(makeDeps(store, "install-test", scopeReader), {
+      session_id: "sess_global",
+      outcome: "fail",
+      source_of_record: "ci:github-actions",
+    });
+    expect(store.rows[0]!.scope).toBeNull();
+  });
+
+  it("leaves scope null when NLM_SCOPE_STAMP is unset", async () => {
+    delete process.env["NLM_SCOPE_STAMP"];
+    await reportOutcomeHandler(makeDeps(store, "install-test", scopeReader), {
+      session_id: "sess_scoped",
+      outcome: "pass",
+      source_of_record: "ci:github-actions",
+    });
+    expect(store.rows[0]!.scope).toBeNull();
   });
 });

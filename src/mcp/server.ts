@@ -33,6 +33,7 @@ import type { Workstream } from "@core/workstream/model.js";
 import { resolveWorkstreamId } from "@core/workstream/resolve.js";
 import { suggestMerges } from "@core/workstream/merge-suggest.js";
 import { normalizeSignal } from "@core/signals/ingest-signal.js";
+import { stampSignalScope, type SessionScopeReader } from "@core/signals/stamp-scope.js";
 import type { SignalStore } from "@ports/signal-store.js";
 import type {
   FactKind,
@@ -65,6 +66,9 @@ export interface McpDeps {
   readonly installScope?: string;
   /** Wire to enable report_outcome (writes to the same signals store /api/signal uses). */
   readonly signalStore?: SignalStore;
+  /** Scope inheritance for report_outcome, mirroring /api/signal: a
+   *  session-correlated signal inherits that session's stamped scope. */
+  readonly sessionScopeReader?: SessionScopeReader;
   /** Wire to enable the work_summary tool (operator daily work digest). */
   readonly workDigest?: BuildWorkDigestDeps;
   /** Wire to enable recall_workstream. Mirrors RollupDeps + the store for idOrLabel resolution. */
@@ -744,18 +748,18 @@ export async function citeSessionHandler(
   }
 }
 
-const REPORT_OUTCOME_DESCRIPTION = `Record whether a session's decision held up or was overturned. THIS IS THE CONTRACT SURFACE for outcome signals — it writes the same append-only \`signals\` row that POST /api/signal writes (producer "mcp"), just over MCP instead of HTTP.
+const REPORT_OUTCOME_DESCRIPTION = `Record whether a session's decision held up or was overturned. THIS IS THE CONTRACT SURFACE for outcome signals: it writes the same append-only \`signals\` row that POST /api/signal writes (producer "mcp"), just over MCP instead of HTTP.
 
-Expected callers are deterministic producers: hooks, n8n workflows, CI pipelines confirming a build/deploy/test result against a prior session. Agents rarely self-report their own outcome (measured ~1% of calls in practice) — outcome should come from independent evidence, not the agent's opinion of its own work.
+Expected callers are deterministic producers: hooks, CI pipelines, and automation platforms confirming a build/deploy/test result against a prior session. Agents rarely self-report their own outcome; outcome should come from independent evidence, not the agent's opinion of its own work.
 
 Args:
   - session_id or correlation_key: at least one required. session_id is the NLM session this outcome applies to. correlation_key is an external identifier (e.g. a CI run id) to use when no NLM session_id is known; it is recorded on the row for traceability but is not (yet) joined into the Tier-B outcome rollup.
-  - outcome: one of pass | fail | fix | exhausted — the same vocabulary POST /api/signal accepts.
+  - outcome: one of pass | fail | fix | exhausted, the same vocabulary POST /api/signal accepts.
   - source_of_record: required. Identifies the deterministic system asserting this outcome (e.g. "ci:github-actions", "hook:post-tool-use", "n8n:deploy-workflow").
   - detail: optional passthrough object for additional context.`;
 
 /** The kind stamped on rows this tool writes. Loosely, this row represents an
- *  outcome *review* of a prior session's decision — "review" is the closest
+ *  outcome *review* of a prior session's decision, and "review" is the closest
  *  fit among the existing SignalKind vocabulary (gate|eval|review|test); no
  *  literal "outcome" kind exists (see rollup.ts's own note on this same
  *  ambiguity). Tier-A correlation in rollup.ts keys on session_id only, so
@@ -784,7 +788,7 @@ export async function reportOutcomeHandler(
     return err(new Error("signal store not available"));
   }
   try {
-    const signal = normalizeSignal(
+    let signal = normalizeSignal(
       {
         kind: REPORT_OUTCOME_KIND,
         producer: "mcp",
@@ -798,6 +802,7 @@ export async function reportOutcomeHandler(
       },
       deps.installScope,
     );
+    signal = await stampSignalScope(signal, { sessionScopeReader: deps.sessionScopeReader });
     await deps.signalStore.insert(signal);
     return ok({ recorded: true, id: signal.id, outcome: signal.outcome });
   } catch (e) {

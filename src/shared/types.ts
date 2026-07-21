@@ -301,7 +301,7 @@ export interface FactHistoryChain {
 export type SignalKind = "gate" | "eval" | "review" | "test";
 export type SignalOutcome = "pass" | "fail" | "fix" | "exhausted";
 
-/** Canonical outcome vocabulary as a runtime array — single source of truth
+/** Canonical outcome vocabulary as a runtime array: the single source of truth
  *  for both ingest validation (`ingest-signal.ts`) and any boundary (e.g. the
  *  MCP `report_outcome` tool) that needs to enumerate/validate the set. */
 export const SIGNAL_OUTCOMES = ["pass", "fail", "fix", "exhausted"] as const satisfies readonly SignalOutcome[];
