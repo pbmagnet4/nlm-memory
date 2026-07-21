@@ -178,6 +178,34 @@ describe("deriveOutcome", () => {
     expect(verdict.confidence).toBe("high");
   });
 
+  it("precedence collision: held (14+ days un-superseded) wins over an inbound continues edge", async () => {
+    const deps = makeDeps({
+      session: { id: SESSION_ID, endedAt: "2026-01-01T00:00:00.000Z", status: "closed" },
+      now: () => new Date("2026-01-20T00:00:00.000Z"), // 19 days elapsed, held-eligible
+      edges: { listForSession: async () => [{ fromSession: "sess-c", toSession: SESSION_ID, kind: "continues" }] },
+    });
+
+    const verdict = await deriveOutcome(SESSION_ID, deps);
+
+    expect(verdict.verdict).toBe("held");
+    expect(verdict.tier).toBe("B");
+    expect(verdict.confidence).toBe("medium");
+  });
+
+  it("precedence collision: continuation wins over re-derivation-pair membership", async () => {
+    const deps = makeDeps({
+      session: { id: SESSION_ID, endedAt: "2026-01-10T00:00:00.000Z", status: "closed" },
+      now: () => new Date("2026-01-12T00:00:00.000Z"), // not held-eligible
+      edges: { listForSession: async () => [{ fromSession: "sess-c", toSession: SESSION_ID, kind: "continues" }] },
+      reDerivationPairs: [{ a: SESSION_ID, b: "sess-d", sharedEntities: ["pgvector"], jaccard: 0.9 }],
+    });
+
+    const verdict = await deriveOutcome(SESSION_ID, deps);
+
+    expect(verdict.verdict).toBe("built-upon");
+    expect(verdict.confidence).toBe("medium");
+  });
+
   it("unknown session id yields unobserved/low with no evidence", async () => {
     const deps = makeDeps({ session: null });
 
