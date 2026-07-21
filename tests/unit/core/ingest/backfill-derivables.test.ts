@@ -445,6 +445,80 @@ describe("backfillDerivables --with-transcript-scan (#352 phase-2, Task 5)", () 
     expect(rerun.transcriptScanned).toBe(0);
   });
 
+  it("bug: all-null scans (missing transcript) counted as updated forever - must be skippedNoop on every run with no UPDATE fired", async () => {
+    // Scan-candidate row: persona already stamped, scan columns NULL,
+    // transcript_path points at a file that does not exist.
+    await store.insertSession(
+      baseRecord({
+        id: "s_missing",
+        runtimeSessionId: "orch-7",
+        agentPersona: "orchestrator",
+        parentSessionId: null,
+        transcriptPath: join(tmp, "rotated-away.jsonl"),
+      }),
+      embedder,
+    );
+    const db = store.rawDb();
+    const totalChanges = () =>
+      (db.prepare("SELECT total_changes() AS c").get() as { c: number }).c;
+
+    const before1 = totalChanges();
+    const run1 = await backfillDerivables(db, { withTranscriptScan: true });
+    expect(run1.updated).toBe(0);
+    expect(run1.skippedNoop).toBe(1);
+    expect(run1.transcriptScanned).toBe(0);
+    expect(totalChanges()).toBe(before1);
+
+    const before2 = totalChanges();
+    const run2 = await backfillDerivables(db, { withTranscriptScan: true });
+    expect(run2.updated).toBe(0);
+    expect(run2.skippedNoop).toBe(1);
+    expect(run2.transcriptScanned).toBe(0);
+    expect(totalChanges()).toBe(before2);
+  });
+
+  it("bug: persona-unrecoverable rows (persona NULL forever) re-scanned + re-counted as updated on every run after their scan columns were stamped", async () => {
+    // The live T9 churn shape: a subagent row whose persona can never be
+    // recovered stays selectable via the persona arm on every run. Run 1
+    // legitimately stamps parent + scan columns; runs 2+ must be no-ops,
+    // not repeat updated/transcript-scanned with byte-identical writes.
+    const path = writeTranscript([
+      { type: "assistant", message: { role: "assistant", model: "claude-opus-4-7", usage: { input_tokens: 10, output_tokens: 5 }, content: "hi" } },
+    ]);
+    await store.insertSession(
+      baseRecord({
+        id: "s_churn",
+        runtime: "claude-code/1.0",
+        runtimeSessionId: "parent-1/agent-abc",
+        label: "Classifier generated title, no subagent prefix",
+        transcriptPath: path,
+      }),
+      embedder,
+    );
+    const db = store.rawDb();
+
+    const run1 = await backfillDerivables(db, { withTranscriptScan: true });
+    expect(run1.updated).toBe(1);
+    expect(run1.transcriptScanned).toBe(1);
+
+    const run2 = await backfillDerivables(db, { withTranscriptScan: true });
+    expect(run2.updated).toBe(0);
+    expect(run2.skippedNoop).toBe(1);
+    expect(run2.transcriptScanned).toBe(0);
+
+    const row = db
+      .prepare<[string], { agent_persona: string | null; parent_session_id: string | null; primary_model: string | null; total_tokens: number | null }>(
+        "SELECT agent_persona, parent_session_id, primary_model, total_tokens FROM sessions WHERE id = ?",
+      )
+      .get("s_churn");
+    expect(row).toMatchObject({
+      agent_persona: null,
+      parent_session_id: "parent-1",
+      primary_model: "claude-opus-4-7",
+      total_tokens: 15,
+    });
+  });
+
   it("is idempotent: a previously-stamped transcript column is preserved (COALESCE), not overwritten by a later degraded scan", async () => {
     const goodPath = writeTranscript([
       { type: "assistant", message: { role: "assistant", model: "claude-opus-4-7", usage: { input_tokens: 1, output_tokens: 1 }, content: "hi" } },

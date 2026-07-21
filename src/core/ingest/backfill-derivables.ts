@@ -46,8 +46,12 @@
  * scannable, leaving the flag shipped but effectively unwired for exactly
  * the rows Task 3 already processed. Rows selected only via that arm get a
  * scan-only write (persona/parent untouched); either way the scan columns
- * COALESCE-preserve, and a re-run reports updated=0 because a stamped scan
- * column excludes the row from the OR arm on the next pass.
+ * COALESCE-preserve, and a re-run reports updated=0: a stamped scan column
+ * excludes the row from the OR arm on the next pass, and rows that stay
+ * selectable via the persona arm (persona-unrecoverable subagent rows) skip
+ * the re-scan once any scan column is stamped and count as no-op when the
+ * scan cannot change the row (all-null result, or derivables already
+ * stored).
  */
 
 import type { Database } from "better-sqlite3";
@@ -71,6 +75,9 @@ interface CandidateRow {
   readonly parent_session_id: string | null;
   readonly transcript_path: string | null;
   readonly transcript_kind: string | null;
+  readonly primary_model: string | null;
+  readonly total_tokens: number | null;
+  readonly skill: string | null;
 }
 
 export interface BackfillOptions {
@@ -122,7 +129,7 @@ const SCAN_CANDIDATE_ARM =
 function selectCandidates(db: Database, withTranscriptScan: boolean): CandidateRow[] {
   return db
     .prepare<[], CandidateRow>(
-      "SELECT id, runtime, runtime_session_id, label, agent_persona, parent_session_id, transcript_path, transcript_kind" +
+      "SELECT id, runtime, runtime_session_id, label, agent_persona, parent_session_id, transcript_path, transcript_kind, primary_model, total_tokens, skill" +
       " FROM sessions WHERE agent_persona IS NULL" +
       (withTranscriptScan ? SCAN_CANDIDATE_ARM : ""),
     )
@@ -171,22 +178,38 @@ export async function backfillDerivables(db: Database, opts: BackfillOptions = {
       if (meta.parentSessionId === "unknown") unknownParent++;
     }
 
+    // Any non-null stored scan column means a completed prior scan already
+    // stamped every field this transcript can derive (all three co-derive
+    // from the same pass, at ingest and here) - re-scanning would only
+    // re-derive values COALESCE discards. Skipping is what keeps
+    // persona-unrecoverable rows (agent_persona NULL forever, re-selected
+    // every run via the persona arm) from re-streaming their transcript and
+    // churning as "updated" on every pass.
+    const scanAlreadyRan =
+      row.primary_model !== null || row.total_tokens !== null || row.skill !== null;
     let transcript = NULL_TRANSCRIPT_DERIVABLES;
-    if (opts.withTranscriptScan && row.transcript_path) {
+    if (opts.withTranscriptScan && row.transcript_path && !scanAlreadyRan) {
       transcript = await scanTranscriptDerivables(row.transcript_path, row.transcript_kind ?? "");
       if (transcript.primaryModel !== null || transcript.totalTokens !== null || transcript.skill !== null) {
         transcriptScanned++;
       }
     }
 
-    // Persona-null rows: the write is a no-op exactly when the derived
+    // Persona-null rows: the meta write is a no-op exactly when the derived
     // persona is also NULL and the derived parent matches what a prior run
     // already stamped (or is equally NULL). Scan-only rows have nothing to
     // write for meta by definition.
     const metaIsNoop = meta === null || (meta.persona === null && meta.parentSessionId === row.parent_session_id);
-    const transcriptIsNoop =
-      transcript.primaryModel === null && transcript.totalTokens === null && transcript.skill === null;
-    if (metaIsNoop && transcriptIsNoop) {
+    // The scan write is COALESCE-guarded, so it changes the row only where a
+    // stored column is NULL and the scan derived a value for it. An all-null
+    // scan (missing/unreadable transcript) or a scan whose derivables are
+    // already stored is a no-op - counting those as "updated" was the run-N
+    // churn bug (updated=N repeating forever with byte-identical results).
+    const transcriptWrites =
+      (row.primary_model === null && transcript.primaryModel !== null) ||
+      (row.total_tokens === null && transcript.totalTokens !== null) ||
+      (row.skill === null && transcript.skill !== null);
+    if (metaIsNoop && !transcriptWrites) {
       skippedNoop++;
       continue;
     }
