@@ -38,11 +38,16 @@
  * candidate's transcript file for primary_model/total_tokens/skill via
  * scanTranscriptDerivables. Off by default — scanning streams every
  * candidate's transcript off disk and is far slower than the persona/parent
- * derivation above, which only touches already-loaded columns. Reuses the
- * same candidate set (WHERE agent_persona IS NULL) rather than a second
- * query; a row with a non-null transcript_path gets scanned regardless of
- * whether its persona/parent derivation was itself a no-op, so a
- * persona-unrecoverable row can still pick up model/token/skill data.
+ * derivation above, which only touches already-loaded columns. When the
+ * flag is set, candidacy widens beyond WHERE agent_persona IS NULL with an
+ * OR arm keyed on the scan's own columns (claude-code-jsonl rows with a
+ * transcript_path and all three scan columns still NULL) — otherwise a row
+ * whose persona was stamped by an earlier flagless run would never be
+ * scannable, leaving the flag shipped but effectively unwired for exactly
+ * the rows Task 3 already processed. Rows selected only via that arm get a
+ * scan-only write (persona/parent untouched); either way the scan columns
+ * COALESCE-preserve, and a re-run reports updated=0 because a stamped scan
+ * column excludes the row from the OR arm on the next pass.
  */
 
 import type { Database } from "better-sqlite3";
@@ -62,6 +67,7 @@ interface CandidateRow {
   readonly runtime: string;
   readonly runtime_session_id: string | null;
   readonly label: string;
+  readonly agent_persona: string | null;
   readonly parent_session_id: string | null;
   readonly transcript_path: string | null;
   readonly transcript_kind: string | null;
@@ -83,7 +89,10 @@ export interface BackfillReport {
   readonly total: number;
   /** Rows whose write would change something (or did, when not --dry-run). */
   readonly updated: number;
-  /** Rows already stamped (agent_persona NOT NULL) before this run. */
+  /**
+   * Rows not selected at all: agent_persona already stamped and (when
+   * withTranscriptScan) not eligible for the scan arm either.
+   */
   readonly skippedAlreadyStamped: number;
   /**
    * Selected rows whose derived values match what's already stored — persona
@@ -101,10 +110,21 @@ export interface BackfillReport {
   readonly transcriptScanned: number;
 }
 
-function selectCandidates(db: Database): CandidateRow[] {
+// Widened OR arm for --with-transcript-scan: rows already persona-stamped
+// (e.g. by an earlier flagless Task 3 run) but never transcript-scanned.
+// Scoped to claude-code-jsonl since scanTranscriptDerivables derives nothing
+// for any other kind; requires ALL three scan columns NULL so any stamped
+// scan column excludes the row on the next pass (re-run idempotency).
+const SCAN_CANDIDATE_ARM =
+  " OR (transcript_path IS NOT NULL AND transcript_kind = 'claude-code-jsonl'" +
+  " AND primary_model IS NULL AND total_tokens IS NULL AND skill IS NULL)";
+
+function selectCandidates(db: Database, withTranscriptScan: boolean): CandidateRow[] {
   return db
     .prepare<[], CandidateRow>(
-      "SELECT id, runtime, runtime_session_id, label, parent_session_id, transcript_path, transcript_kind FROM sessions WHERE agent_persona IS NULL",
+      "SELECT id, runtime, runtime_session_id, label, agent_persona, parent_session_id, transcript_path, transcript_kind" +
+      " FROM sessions WHERE agent_persona IS NULL" +
+      (withTranscriptScan ? SCAN_CANDIDATE_ARM : ""),
     )
     .all();
 }
@@ -129,7 +149,7 @@ function deriveMeta(row: CandidateRow): { persona: string | null; parentSessionI
 
 export async function backfillDerivables(db: Database, opts: BackfillOptions = {}): Promise<BackfillReport> {
   const total = (db.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number }).n;
-  const candidates = selectCandidates(db);
+  const candidates = selectCandidates(db, Boolean(opts.withTranscriptScan));
   const skippedAlreadyStamped = total - candidates.length;
 
   let subagentCandidates = 0;
@@ -138,14 +158,18 @@ export async function backfillDerivables(db: Database, opts: BackfillOptions = {
   let transcriptScanned = 0;
   const toWrite: {
     id: string;
-    meta: { persona: string | null; parentSessionId: string | null };
+    // null meta = scan-only row (persona already stamped; selected via the
+    // widened OR arm) — the write must not touch persona/parent.
+    meta: { persona: string | null; parentSessionId: string | null } | null;
     transcript: TranscriptDerivables;
   }[] = [];
 
   for (const row of candidates) {
-    const meta = deriveMeta(row);
-    if (meta.parentSessionId !== null) subagentCandidates++;
-    if (meta.parentSessionId === "unknown") unknownParent++;
+    const meta = row.agent_persona === null ? deriveMeta(row) : null;
+    if (meta) {
+      if (meta.parentSessionId !== null) subagentCandidates++;
+      if (meta.parentSessionId === "unknown") unknownParent++;
+    }
 
     let transcript = NULL_TRANSCRIPT_DERIVABLES;
     if (opts.withTranscriptScan && row.transcript_path) {
@@ -155,11 +179,11 @@ export async function backfillDerivables(db: Database, opts: BackfillOptions = {
       }
     }
 
-    // Stored persona is NULL by selection, so the write is a no-op exactly
-    // when the derived persona is also NULL, the derived parent matches what
-    // a prior run already stamped (or is equally NULL), and the transcript
-    // scan (if run) derived nothing either.
-    const metaIsNoop = meta.persona === null && meta.parentSessionId === row.parent_session_id;
+    // Persona-null rows: the write is a no-op exactly when the derived
+    // persona is also NULL and the derived parent matches what a prior run
+    // already stamped (or is equally NULL). Scan-only rows have nothing to
+    // write for meta by definition.
+    const metaIsNoop = meta === null || (meta.persona === null && meta.parentSessionId === row.parent_session_id);
     const transcriptIsNoop =
       transcript.primaryModel === null && transcript.totalTokens === null && transcript.skill === null;
     if (metaIsNoop && transcriptIsNoop) {
@@ -173,7 +197,7 @@ export async function backfillDerivables(db: Database, opts: BackfillOptions = {
     return { total, updated: toWrite.length, skippedAlreadyStamped, skippedNoop, subagentCandidates, unknownParent, transcriptScanned };
   }
 
-  const updateStmt = db.prepare<[string | null, string | null, string | null, number | null, string | null, string], void>(
+  const metaAndScanStmt = db.prepare<[string | null, string | null, string | null, number | null, string | null, string], void>(
     `UPDATE sessions SET
        agent_persona = ?, parent_session_id = ?,
        primary_model = COALESCE(primary_model, ?),
@@ -181,19 +205,35 @@ export async function backfillDerivables(db: Database, opts: BackfillOptions = {
        skill = COALESCE(skill, ?)
      WHERE id = ? AND agent_persona IS NULL`,
   );
+  const scanOnlyStmt = db.prepare<[string | null, number | null, string | null, string], void>(
+    `UPDATE sessions SET
+       primary_model = COALESCE(primary_model, ?),
+       total_tokens = COALESCE(total_tokens, ?),
+       skill = COALESCE(skill, ?)
+     WHERE id = ?`,
+  );
 
   for (let i = 0; i < toWrite.length; i += BATCH_SIZE) {
     const batch = toWrite.slice(i, i + BATCH_SIZE);
     const runBatch = db.transaction((rows: typeof batch) => {
       for (const row of rows) {
-        updateStmt.run(
-          row.meta.persona,
-          row.meta.parentSessionId,
-          row.transcript.primaryModel,
-          row.transcript.totalTokens,
-          row.transcript.skill,
-          row.id,
-        );
+        if (row.meta) {
+          metaAndScanStmt.run(
+            row.meta.persona,
+            row.meta.parentSessionId,
+            row.transcript.primaryModel,
+            row.transcript.totalTokens,
+            row.transcript.skill,
+            row.id,
+          );
+        } else {
+          scanOnlyStmt.run(
+            row.transcript.primaryModel,
+            row.transcript.totalTokens,
+            row.transcript.skill,
+            row.id,
+          );
+        }
       }
     });
     runBatch(batch);

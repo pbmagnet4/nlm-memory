@@ -397,6 +397,54 @@ describe("backfillDerivables --with-transcript-scan (#352 phase-2, Task 5)", () 
     expect(row).toMatchObject({ primary_model: null });
   });
 
+  it("bug: persona-stamped rows were unreachable by --with-transcript-scan (flag shipped but effectively unwired for Task-3-processed rows)", async () => {
+    const path = writeTranscript([
+      { type: "assistant", message: { role: "assistant", model: "claude-opus-4-7", usage: { input_tokens: 40, output_tokens: 2 }, content: [{ type: "tool_use", name: "Skill", input: { skill: "session-close" } }] } },
+    ]);
+    // Already persona-stamped (as an earlier flagless Task 3 run would leave
+    // it) but never transcript-scanned.
+    await store.insertSession(
+      baseRecord({
+        id: "s_stamped",
+        runtimeSessionId: "orch-6",
+        agentPersona: "orchestrator",
+        parentSessionId: null,
+        transcriptPath: path,
+      }),
+      embedder,
+    );
+    const db = store.rawDb();
+    const readRow = () =>
+      db
+        .prepare<[string], { agent_persona: string | null; primary_model: string | null; total_tokens: number | null; skill: string | null }>(
+          "SELECT agent_persona, primary_model, total_tokens, skill FROM sessions WHERE id = ?",
+        )
+        .get("s_stamped");
+
+    // Without the flag: not a candidate, untouched.
+    const withoutFlag = await backfillDerivables(db);
+    expect(withoutFlag.updated).toBe(0);
+    expect(withoutFlag.transcriptScanned).toBe(0);
+    expect(readRow()).toMatchObject({ agent_persona: "orchestrator", primary_model: null, total_tokens: null, skill: null });
+
+    // With the flag: selected via the widened scan arm, scanned + updated.
+    const withFlag = await backfillDerivables(db, { withTranscriptScan: true });
+    expect(withFlag.updated).toBe(1);
+    expect(withFlag.transcriptScanned).toBe(1);
+    expect(readRow()).toMatchObject({
+      agent_persona: "orchestrator",
+      primary_model: "claude-opus-4-7",
+      total_tokens: 42,
+      skill: "session-close",
+    });
+
+    // With the flag again: scan columns now stamped, so the scan arm no
+    // longer selects the row -- updated=0.
+    const rerun = await backfillDerivables(db, { withTranscriptScan: true });
+    expect(rerun.updated).toBe(0);
+    expect(rerun.transcriptScanned).toBe(0);
+  });
+
   it("is idempotent: a previously-stamped transcript column is preserved (COALESCE), not overwritten by a later degraded scan", async () => {
     const goodPath = writeTranscript([
       { type: "assistant", message: { role: "assistant", model: "claude-opus-4-7", usage: { input_tokens: 1, output_tokens: 1 }, content: "hi" } },
