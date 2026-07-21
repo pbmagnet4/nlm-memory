@@ -216,6 +216,22 @@ describe("MCP adapter", () => {
     expect(body.outcome.verdict).toBe("overturned");
   });
 
+  it("get_session degrades to no-outcome when the outcome path throws (SQLITE_BUSY class)", async () => {
+    const throwingDb = {
+      prepare() {
+        throw new Error("SQLITE_BUSY: database is locked");
+      },
+    } as unknown as import("better-sqlite3").Database;
+    const result = await getSessionHandler(
+      { recall, store, outcomeDb: throwingDb },
+      { id: "sess_a" },
+    );
+    expect(result.isError).toBeUndefined();
+    const body = parsePayload(result) as Record<string, unknown>;
+    expect(body["id"]).toBe("sess_a");
+    expect("outcome" in body).toBe(false);
+  });
+
   it("createMcpServer registers both tools without throwing", () => {
     const server = createMcpServer({ recall, store });
     expect(server).toBeDefined();

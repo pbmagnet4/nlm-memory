@@ -409,9 +409,17 @@ export async function getSessionHandler(
         })()
       : null;
 
-    const outcome = deps.outcomeDb
-      ? await deriveOutcome(session.id, await buildSqliteOutcomeDeps(deps.outcomeDb))
-      : undefined;
+    // Isolated: the outcome rollup is enrichment, not the payload. A throw
+    // here (SQLITE_BUSY, stale handle, unmigrated db) must degrade to
+    // no-outcome, never fail the whole get_session call.
+    let outcome;
+    if (deps.outcomeDb) {
+      try {
+        outcome = await deriveOutcome(session.id, await buildSqliteOutcomeDeps(deps.outcomeDb));
+      } catch {
+        outcome = undefined;
+      }
+    }
 
     return ok({ ...session, supersedes, supersededBy, ...(outcome ? { outcome } : {}) });
   } catch (e) {
