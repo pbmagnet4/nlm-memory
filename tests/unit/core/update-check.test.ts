@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  getCachedUpdateStatus,
   getUpdateStatus,
   isStrictlyNewer,
 } from "../../../src/core/update-check/check.js";
@@ -171,6 +172,60 @@ describe("getUpdateStatus", () => {
     expect(status.latest).toBeNull();
     expect(status.behind).toBe(false);
     expect(status.disabled).toBe("unknown-error");
+  });
+});
+
+describe("getCachedUpdateStatus", () => {
+  let tmp: string;
+  let cachePath: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "nlm-upd-cached-"));
+    cachePath = join(tmp, "update-check.json");
+    delete process.env["NLM_DISABLE_UPDATE_CHECK"];
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+    delete process.env["NLM_DISABLE_UPDATE_CHECK"];
+  });
+
+  it("returns unknown-error with latest: null, behind: false when no cache exists (never fetches)", async () => {
+    const status = await getCachedUpdateStatus({ currentVersion: "0.5.7", cachePath });
+    expect(status.current).toBe("0.5.7");
+    expect(status.latest).toBeNull();
+    expect(status.behind).toBe(false);
+    expect(status.disabled).toBe("unknown-error");
+  });
+
+  it("reads a cached newer version and reports behind: true, with no network call", async () => {
+    writeFileSync(
+      cachePath,
+      JSON.stringify({ current: "0.5.7", latest: "0.5.8", checkedAt: new Date().toISOString() }),
+    );
+    const status = await getCachedUpdateStatus({ currentVersion: "0.5.7", cachePath });
+    expect(status.latest).toBe("0.5.8");
+    expect(status.behind).toBe(true);
+    expect(status.disabled).toBeUndefined();
+  });
+
+  it("still reads a stale (>24h) cache instead of refetching", async () => {
+    const stale = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    writeFileSync(
+      cachePath,
+      JSON.stringify({ current: "0.5.7", latest: "0.5.8", checkedAt: stale.toISOString() }),
+    );
+    const status = await getCachedUpdateStatus({ currentVersion: "0.5.7", cachePath });
+    expect(status.latest).toBe("0.5.8");
+    expect(status.behind).toBe(true);
+  });
+
+  it("returns user-opt-out when NLM_DISABLE_UPDATE_CHECK=1", async () => {
+    process.env["NLM_DISABLE_UPDATE_CHECK"] = "1";
+    const status = await getCachedUpdateStatus({ currentVersion: "0.5.7", cachePath });
+    expect(status.latest).toBeNull();
+    expect(status.behind).toBe(false);
+    expect(status.disabled).toBe("user-opt-out");
   });
 });
 

@@ -36,7 +36,7 @@ import { logQuery, recallStats } from "@core/recall/query-log.js";
 import { recentQueryLog } from "@core/recall/recent-log.js";
 import { appendCitation, citationStats } from "@core/recall/citation-log.js";
 import { appendSupersedence } from "@core/storage/supersedence-log.js";
-import { getUpdateStatus } from "@core/update-check/check.js";
+import { getCachedUpdateStatus, getUpdateStatus, type UpdateCheckDeps } from "@core/update-check/check.js";
 import {
   buildClearCookie,
   buildSessionCookie,
@@ -161,6 +161,8 @@ export interface HttpDeps {
   readonly exemplarStore?: CodeExemplarStore;
   /** Optional code embedder for semantic recall-code queries. */
   readonly codeEmbedder?: CodeEmbedder;
+  /** Test-only override for /api/health's update-check cache read (defaults to ~/.nlm/update-check.json via NLM_UPDATE_CHECK_CACHE). */
+  readonly updateCheckDeps?: Pick<UpdateCheckDeps, "cachePath" | "now">;
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -351,7 +353,7 @@ export function createApp(deps: HttpDeps): Hono {
   const boundPort = process.env["NLM_PORT"] ? Number.parseInt(process.env["NLM_PORT"], 10) : Number.parseInt(DEFAULT_NLM_PORT, 10);
 
   installLocalOnlyMiddleware(app, boundPort);
-  registerHealthRoute(app);
+  registerHealthRoute(app, deps);
   registerMcpRoute(app, deps);
   registerRecallRoutes(app, deps);
   registerHookRoutes(app);
@@ -536,13 +538,24 @@ function renderAuthPage(): string {
 </main></body></html>`;
 }
 
-function registerHealthRoute(app: Hono): void {
-  app.get("/api/health", (c) => {
+function registerHealthRoute(app: Hono, deps: HttpDeps): void {
+  app.get("/api/health", async (c) => {
     const snap = corpusSnapshot();
     const corpus = snap
       ? { state: snap.state, dbBytes: snap.dbBytes, sessions: snap.sessions, entities: snap.entities, lastComputedAt: snap.lastComputedAt }
       : null;
-    return c.json({ status: "ok", service: "nlm-memory", version: pkg.version, warmup: warmupSnapshot(), embedding: laneHealthSnapshot(), embedInflight: inflightSnapshot(), corpus });
+    // Cache-only read (see check.ts) — never fetches the registry, so this
+    // stays fast and never fails the health check when npm is unreachable.
+    const cachedUpdate = await getCachedUpdateStatus({
+      currentVersion: pkg.version,
+      ...deps.updateCheckDeps,
+    });
+    const update = {
+      current: cachedUpdate.current,
+      latest: cachedUpdate.disabled ? null : cachedUpdate.latest,
+      behind: cachedUpdate.disabled ? false : cachedUpdate.behind,
+    };
+    return c.json({ status: "ok", service: "nlm-memory", version: pkg.version, warmup: warmupSnapshot(), embedding: laneHealthSnapshot(), embedInflight: inflightSnapshot(), corpus, update });
   });
 
   // Passive update poll for the UI. Same daily-cached check the CLI

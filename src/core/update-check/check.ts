@@ -125,6 +125,47 @@ export async function getUpdateStatus(
   return status;
 }
 
+/**
+ * Cache-only read: never fetches the registry, even on a miss or a stale
+ * (>24h) entry. For request paths (like GET /api/health) that must stay
+ * fast and never depend on npm being reachable.
+ */
+export async function getCachedUpdateStatus(
+  deps: Pick<UpdateCheckDeps, "currentVersion" | "cachePath" | "now">,
+): Promise<UpdateStatus> {
+  const now = (deps.now ?? (() => new Date()))();
+  const current = deps.currentVersion;
+
+  if (isOptedOut()) {
+    return {
+      current,
+      latest: null,
+      behind: false,
+      checkedAt: now.toISOString(),
+      disabled: "user-opt-out",
+    };
+  }
+
+  const cachePath = deps.cachePath ?? defaultCachePath();
+  const cached = await readCache(cachePath);
+  if (!cached) {
+    return {
+      current,
+      latest: null,
+      behind: false,
+      checkedAt: now.toISOString(),
+      disabled: "unknown-error",
+    };
+  }
+
+  return {
+    current,
+    latest: cached.latest,
+    behind: cached.latest !== null && isStrictlyNewer(cached.latest, current),
+    checkedAt: cached.checkedAt,
+  };
+}
+
 async function readCache(path: string): Promise<CachedStatus | null> {
   try {
     const raw = await readFile(path, "utf8");
