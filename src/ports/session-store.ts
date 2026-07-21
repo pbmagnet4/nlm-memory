@@ -9,12 +9,6 @@
 import type { BindingSource } from "@core/workstream/model.js";
 import type { Session, SessionStatus } from "@shared/types.js";
 
-export interface SessionFilter {
-  readonly entity?: string;
-  readonly hasDecisions?: boolean;
-  readonly hasOpenQuestions?: boolean;
-}
-
 export interface SemanticNeighbor {
   readonly sessionId: string;
   readonly distance: number;

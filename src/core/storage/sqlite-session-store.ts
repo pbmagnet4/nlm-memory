@@ -20,7 +20,6 @@ import type {
   KeywordNeighbor,
   SearchOptions,
   SemanticNeighbor,
-  SessionFilter,
   SessionStore,
 } from "@ports/session-store.js";
 import type {
