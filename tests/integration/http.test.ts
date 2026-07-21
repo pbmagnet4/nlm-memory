@@ -198,6 +198,27 @@ describe("HTTP adapter", () => {
       expect(body.update.behind).toBe(true);
     });
 
+    it("reports behind: false with latest populated when the fresh cache matches current", async () => {
+      writeFileSync(
+        updateCheckCachePath,
+        JSON.stringify({
+          current: pkg.version,
+          latest: pkg.version,
+          checkedAt: new Date().toISOString(),
+        }),
+      );
+      const res = await app.request("/api/health");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        update: { current: string; latest: string | null; behind: boolean };
+      };
+      expect(body.update).toEqual({
+        current: pkg.version,
+        latest: pkg.version,
+        behind: false,
+      });
+    });
+
     it("never blocks or fails health when the update-check is opted out (npm unreachable equivalent)", async () => {
       process.env["NLM_DISABLE_UPDATE_CHECK"] = "1";
       const res = await app.request("/api/health");
