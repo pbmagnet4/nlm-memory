@@ -211,7 +211,7 @@ export class FactRecallService {
       }
       return boosted;
     } catch {
-      // Best-effort: corroboration boost skipped on any FactStore failure — recall proceeds unboosted. If boosts seem globally absent, look here first.
+      // Best-effort: corroboration boost skipped on any FactStore failure - recall proceeds unboosted. If boosts seem globally absent, look here first.
       return hits;
     }
   }

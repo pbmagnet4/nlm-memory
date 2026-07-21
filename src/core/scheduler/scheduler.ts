@@ -56,7 +56,7 @@ function loadAliasToLabel(): Map<string, string> {
     const raw = readFileSync(join(homedir(), ".nlm", "work-topics.json"), "utf8");
     return aliasToLabelMap(parseWorkTopics(JSON.parse(raw)));
   } catch {
-    // Workstream alias map missing or malformed — workstreams unbound.
+    // Workstream alias map missing or malformed - workstreams unbound.
     return new Map();
   }
 }
