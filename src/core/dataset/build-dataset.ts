@@ -575,6 +575,7 @@ function computeIntegrityAlerts(db: Database.Database): DatasetResponse["alerts"
       sampleIds: v.sampleIds,
     }));
   } catch {
+    // Integrity checks fail gracefully — no alerts surface on DB errors.
     return [];
   }
 }

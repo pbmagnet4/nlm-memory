@@ -37,6 +37,7 @@ export async function readSupersedenceLog(): Promise<
   try {
     raw = await readFile(path, "utf8");
   } catch {
+    // Log file missing or unreadable — no supersedence history recovered.
     return [];
   }
   const results: Array<SupersedenceEntry & { ts: string; source?: string }> = [];
@@ -57,6 +58,7 @@ export async function readSupersedenceLog(): Promise<
         ...(typeof obj["source"] === "string" ? { source: obj["source"] } : {}),
       });
     } catch {
+      // Malformed entry in log — skip and continue parsing.
       continue;
     }
   }

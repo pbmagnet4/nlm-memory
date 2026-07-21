@@ -52,6 +52,7 @@ export function extractFromGitSha(params: GitShaExtractParams): CodeExemplarInpu
       { cwd: repoPath, encoding: "utf8", timeout: 10_000 },
     );
   } catch {
+    // Git show failed — exemplar extraction from this commit skipped.
     return null;
   }
 
@@ -83,6 +84,7 @@ export function extractFromGitSha(params: GitShaExtractParams): CodeExemplarInpu
       ...(params.ts ? { ts: params.ts } : {}),
     });
   } catch {
+    // Normalization failed — exemplar from git hunk discarded.
     return null;
   }
 }
@@ -123,6 +125,7 @@ export function extractFromDetail(signal: Signal, opts: ExtractOptions): CodeExe
       ts: signal.ts,
     });
   } catch {
+    // Normalization failed — exemplar from signal detail discarded.
     return null;
   }
 }

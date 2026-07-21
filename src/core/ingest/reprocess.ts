@@ -124,6 +124,7 @@ function loadState(path: string, lane: LaneIdentity): Set<string> {
     }
     return new Set();
   } catch {
+    // Malformed state file: restart reprocessing from scratch.
     return new Set();
   }
 }

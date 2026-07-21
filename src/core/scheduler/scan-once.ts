@@ -66,6 +66,7 @@ export async function scanOnce(
     try {
       st = statSync(path);
     } catch {
+      // Inaccessible file — skip and continue scan.
       continue;
     }
     const age = now - st.mtimeMs;
@@ -172,6 +173,7 @@ export async function scanOncePg(
     try {
       st = statSync(sourcePath);
     } catch {
+      // Inaccessible file — skip and continue scan.
       continue;
     }
     if (now - st.mtimeMs < idleMs) continue;
