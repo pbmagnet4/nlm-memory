@@ -3,7 +3,7 @@
  * a real SqliteSessionStore + RecallService. No network, no port binding.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -75,6 +75,7 @@ describe("HTTP adapter", () => {
   let store: SqliteSessionStore;
   let app: Hono;
   let queryLogPath: string;
+  let updateCheckCachePath: string;
 
   beforeEach(async () => {
     tmp = mkdtempSync(join(tmpdir(), "nlm-http-"));
@@ -93,7 +94,16 @@ describe("HTTP adapter", () => {
       llm: new FixedEmbedder(unit([0, 1, 0])),
     });
     queryLogPath = join(tmp, "query_log.jsonl");
-    app = createApp({ recall, store, liveStore: store, queryLogPath });
+    // Redirected into the per-test tmpdir so /api/health's update field never
+    // touches the host's real ~/.nlm/update-check.json or the npm registry.
+    updateCheckCachePath = join(tmp, "update-check-cache.json");
+    app = createApp({
+      recall,
+      store,
+      liveStore: store,
+      queryLogPath,
+      updateCheckDeps: { cachePath: updateCheckCachePath },
+    });
   });
 
   afterEach(async () => {
@@ -152,6 +162,53 @@ describe("HTTP adapter", () => {
       expect(body.corpus.sessions).toBe(100);
       expect(body.corpus.entities).toBe(500);
       expect(body.corpus.lastComputedAt).toBe("2026-07-03T00:00:00.000Z");
+    });
+  });
+
+  describe("update field in /api/health", () => {
+    afterEach(() => {
+      delete process.env["NLM_DISABLE_UPDATE_CHECK"];
+    });
+
+    it("reports latest: null, behind: false when no update-check cache exists yet", async () => {
+      const res = await app.request("/api/health");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        update: { current: string; latest: string | null; behind: boolean };
+      };
+      expect(body.update.current).toBe(pkg.version);
+      expect(body.update.latest).toBeNull();
+      expect(body.update.behind).toBe(false);
+    });
+
+    it("reflects a cached newer version as behind: true", async () => {
+      writeFileSync(
+        updateCheckCachePath,
+        JSON.stringify({
+          current: pkg.version,
+          latest: "999.0.0",
+          checkedAt: new Date().toISOString(),
+        }),
+      );
+      const res = await app.request("/api/health");
+      const body = (await res.json()) as {
+        update: { current: string; latest: string | null; behind: boolean };
+      };
+      expect(body.update.latest).toBe("999.0.0");
+      expect(body.update.behind).toBe(true);
+    });
+
+    it("never blocks or fails health when the update-check is opted out (npm unreachable equivalent)", async () => {
+      process.env["NLM_DISABLE_UPDATE_CHECK"] = "1";
+      const res = await app.request("/api/health");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        status: string;
+        update: { current: string; latest: string | null; behind: boolean };
+      };
+      expect(body.status).toBe("ok");
+      expect(body.update.latest).toBeNull();
+      expect(body.update.behind).toBe(false);
     });
   });
 
