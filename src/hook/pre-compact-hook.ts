@@ -18,6 +18,7 @@ import { loadSurfaced } from "@core/hook/memo.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
 import { hookAuthHeaders } from "./hook-auth.js";
 import { readStdin, fetchWithTimeout, appendHookEvent } from "./hook-helpers.js";
+import { DEFAULT_NLM_PORT } from "../shared/net.js";
 
 const POST_TIMEOUT_MS = 1500;
 
@@ -33,7 +34,7 @@ export interface PreCompactResult {
 
 export async function runPreCompact(
   input: PreCompactInput,
-  portValue = process.env["NLM_PORT"] ?? "3940",
+  portValue = process.env["NLM_PORT"] ?? DEFAULT_NLM_PORT,
 ): Promise<PreCompactResult> {
   const surfacedSet = [...loadSurfaced(input.conversationId)];
   const payload = {

@@ -114,6 +114,7 @@ import { warmupSnapshot } from "@core/health/warmup-state.js";
 import { laneHealthSnapshot } from "@core/health/embedding-lane-state.js";
 import { inflightSnapshot } from "@core/health/embed-inflight.js";
 import { corpusSnapshot } from "@core/health/corpus-state.js";
+import { DEFAULT_NLM_PORT } from "../shared/net.js";
 
 const HERMES_RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 
@@ -347,7 +348,7 @@ const VALID_FACT_KINDS: ReadonlyArray<FactKind> = ["decision", "open", "attribut
 
 export function createApp(deps: HttpDeps): Hono {
   const app = new Hono();
-  const boundPort = process.env["NLM_PORT"] ? Number.parseInt(process.env["NLM_PORT"], 10) : 3940;
+  const boundPort = process.env["NLM_PORT"] ? Number.parseInt(process.env["NLM_PORT"], 10) : Number.parseInt(DEFAULT_NLM_PORT, 10);
 
   installLocalOnlyMiddleware(app, boundPort);
   registerHealthRoute(app);

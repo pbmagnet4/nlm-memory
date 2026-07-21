@@ -327,6 +327,9 @@ function appendHookEvent(data) {
   }
 }
 
+// src/shared/net.ts
+var DEFAULT_NLM_PORT = "3940";
+
 // src/hook/stop-hook.ts
 var RESPONSE_PREVIEW_CHARS = 200;
 var POST_TIMEOUT_MS = 1500;
@@ -414,7 +417,7 @@ function logStopResult(result) {
   });
 }
 async function postCitationOverHttp(conversationId, citedId, kind, responsePreview) {
-  const port = process.env["NLM_PORT"] ?? "3940";
+  const port = process.env["NLM_PORT"] ?? DEFAULT_NLM_PORT;
   const url = `http://127.0.0.1:${port}/api/recall/cite-event`;
   await fetchWithTimeout(url, {
     method: "POST",

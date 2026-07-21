@@ -22,6 +22,7 @@ import { hookAuthHeaders } from "./hook-auth.js";
 import { parseScoreFloor, parseRelativeFloor } from "./score-floor.js";
 import { recallOverHttp } from "./recall-over-http.js";
 import { readStdin, hookModeFromEnv, fetchWithTimeout } from "./hook-helpers.js";
+import { DEFAULT_NLM_PORT } from "../shared/net.js";
 
 // This hook recalls in hybrid mode, whose matchScore is normalized to 0..1
 // (mergeHybrid in recall-service.ts), so the default absolute floor is 0.
@@ -97,7 +98,7 @@ export function composeSessionStartOutput(failureModeBlock: string, recallBlock:
 
 async function fetchFailureModeBlock(repo: string): Promise<string> {
   if (!repo) return "";
-  const portValue = process.env["NLM_PORT"] ?? "3940";
+  const portValue = process.env["NLM_PORT"] ?? DEFAULT_NLM_PORT;
   const url = `http://127.0.0.1:${portValue}/api/signals/failure-modes?repo=${encodeURIComponent(repo)}`;
   try {
     const res = await fetchWithTimeout(url, {

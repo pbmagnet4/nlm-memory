@@ -28,6 +28,7 @@ import {
 import { autoloadEnv } from "../llm/env-autoload.js";
 import { hookAuthHeaders } from "./hook-auth.js";
 import { readStdin, fetchWithTimeout, hookModeFromEnv, appendHookEvent } from "./hook-helpers.js";
+import { DEFAULT_NLM_PORT } from "../shared/net.js";
 
 const RESPONSE_PREVIEW_CHARS = 200;
 const POST_TIMEOUT_MS = 1500;
@@ -172,7 +173,7 @@ async function postCitationOverHttp(
   kind: CitationKind,
   responsePreview: string,
 ): Promise<void> {
-  const port = process.env["NLM_PORT"] ?? "3940";
+  const port = process.env["NLM_PORT"] ?? DEFAULT_NLM_PORT;
   const url = `http://127.0.0.1:${port}/api/recall/cite-event`;
   await fetchWithTimeout(url, {
     method: "POST",

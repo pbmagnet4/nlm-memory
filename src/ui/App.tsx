@@ -17,6 +17,7 @@ import { StubPage } from "./pages/Stub.js";
 import { ToastHost } from "./components/Toast.js";
 import { ConfirmDialog } from "./components/ConfirmDialog.js";
 import { readViewSettings } from "./lib/view-settings.js";
+import { DEFAULT_NLM_PORT } from "@shared/net.js";
 
 export function App() {
   return (
@@ -56,7 +57,7 @@ function AppHeader() {
       <span className="wordmark-page">{page}</span>
       <span className="header-spacer" />
       <span className="status-dot" aria-hidden="true" />
-      <span className="header-info">nlm-memory · :3940</span>
+      <span className="header-info">nlm-memory · :{DEFAULT_NLM_PORT}</span>
     </header>
   );
 }

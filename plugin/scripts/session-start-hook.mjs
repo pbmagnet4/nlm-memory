@@ -362,6 +362,9 @@ function hookModeFromEnv() {
   return process.env["NLM_HOOK_MODE"] === "live" ? "live" : "shadow";
 }
 
+// src/shared/net.ts
+var DEFAULT_NLM_PORT = "3940";
+
 // src/hook/recall-over-http.ts
 var RECALL_LIMIT = 5;
 function parseRecallTimeout(raw) {
@@ -373,7 +376,7 @@ var RECALL_TIMEOUT_MS = parseRecallTimeout(process.env["NLM_HOOK_RECALL_TIMEOUT_
 async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword") {
   const query = extractRecallQuery(prompt);
   if (query === null) return { hits: [], facts: [], exemplars: [] };
-  const portValue = process.env["NLM_PORT"] ?? "3940";
+  const portValue = process.env["NLM_PORT"] ?? DEFAULT_NLM_PORT;
   const url = (
     // 127.0.0.1, not localhost: each hook is a fresh process with no connection
     // reuse, and Node resolves localhost to IPv6 ::1 first — a measured ~50-300ms
@@ -461,7 +464,7 @@ function composeSessionStartOutput(failureModeBlock, recallBlock) {
 }
 async function fetchFailureModeBlock(repo) {
   if (!repo) return "";
-  const portValue = process.env["NLM_PORT"] ?? "3940";
+  const portValue = process.env["NLM_PORT"] ?? DEFAULT_NLM_PORT;
   const url = `http://127.0.0.1:${portValue}/api/signals/failure-modes?repo=${encodeURIComponent(repo)}`;
   try {
     const res = await fetchWithTimeout(url, {

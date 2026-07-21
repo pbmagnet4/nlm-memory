@@ -119,6 +119,7 @@ import { runChecksOnSqlite, runChecksOnPg, applyFixOnSqlite, applyFixOnPg } from
 import { normalizeLabel } from "../core/workstream/model.js";
 import { resolveWorkstreamId } from "../core/workstream/resolve.js";
 import { suggestMerges } from "../core/entities/dedup-suggest.js";
+import { DEFAULT_NLM_PORT } from "../shared/net.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -130,7 +131,7 @@ const PG_MIGRATIONS_DIR = join(
 );
 const UI_DIST = resolve(__dirname, "../../dist/ui");
 const DEFAULT_DB_PATH = resolve(homedir(), ".nlm/canonical.sqlite");
-const DEFAULT_PORT = 3940;
+const DEFAULT_PORT = Number.parseInt(DEFAULT_NLM_PORT, 10);
 
 function dbPath(): string {
   return process.env["NLM_DB_PATH"] ?? DEFAULT_DB_PATH;
@@ -2300,7 +2301,7 @@ program
 program
   .command("digest")
   .description("Compose a daily-activity digest from the running daemon (optionally post to Telegram)")
-  .option("-p, --port <n>", "daemon port", (v) => Number.parseInt(v, 10), Number.parseInt(process.env["NLM_PORT"] ?? "3940", 10))
+  .option("-p, --port <n>", "daemon port", (v) => Number.parseInt(v, 10), Number.parseInt(process.env["NLM_PORT"] ?? DEFAULT_NLM_PORT, 10))
   .option("--telegram", "post to Telegram instead of printing to stdout (requires TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)")
   .action(async (opts) => {
     autoloadEnv();

@@ -18,6 +18,7 @@ import type { PointerExemplar, PointerFact } from "@core/hook/pointer-block.js";
 import { hookAuthHeaders } from "./hook-auth.js";
 import { extractRecallQuery } from "@core/hook/query-extract.js";
 import { fetchWithTimeout } from "./hook-helpers.js";
+import { DEFAULT_NLM_PORT } from "../shared/net.js";
 
 export const RECALL_LIMIT = 5;
 
@@ -49,7 +50,7 @@ export async function recallOverHttp(
 ): Promise<RecallOverHttpResult> {
   const query = extractRecallQuery(prompt);
   if (query === null) return { hits: [], facts: [], exemplars: [] };
-  const portValue = process.env["NLM_PORT"] ?? "3940";
+  const portValue = process.env["NLM_PORT"] ?? DEFAULT_NLM_PORT;
   const url =
     // 127.0.0.1, not localhost: each hook is a fresh process with no connection
     // reuse, and Node resolves localhost to IPv6 ::1 first — a measured ~50-300ms
