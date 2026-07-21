@@ -8,7 +8,7 @@ import { mkdtempSync, mkdirSync, copyFileSync, rmSync, readdirSync } from "node:
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ClaudeCodeAdapter } from "../../../../src/core/adapters/claude-code.js";
+import { ClaudeCodeAdapter, deriveSubagentMeta } from "../../../../src/core/adapters/claude-code.js";
 import { safeSessionId } from "../../../../src/core/adapters/common.js";
 
 const FIXTURES = resolve(__dirname, "../../../fixtures/claude_code");
@@ -132,5 +132,42 @@ describe("ClaudeCodeAdapter chunk.model", () => {
     expect(chunk).not.toBeNull();
     if (!chunk) return;
     expect(chunk.model).toBeUndefined();
+  });
+});
+
+describe("deriveSubagentMeta", () => {
+  it("subagent id + labelled: extracts persona slug and parent id", () => {
+    const result = deriveSubagentMeta("abc123/agent-def456", "[subagent code-reviewer] reviewed the diff");
+    expect(result).toEqual({ persona: "code-reviewer", parentSessionId: "abc123" });
+  });
+
+  it("top-level id (no slash): orchestrator persona, no parent", () => {
+    const result = deriveSubagentMeta("session-ddd-004", "Drafted the Acme project summary");
+    expect(result).toEqual({ persona: "orchestrator", parentSessionId: null });
+  });
+
+  it("subagent id with anon slug tag: persona is the literal anon tag", () => {
+    const result = deriveSubagentMeta("abc123/agent-def456", "[subagent anon] did some work");
+    expect(result).toEqual({ persona: "anon", parentSessionId: "abc123" });
+  });
+
+  it("malformed id (slash but no /agent- marker): nulls, never throws", () => {
+    const result = deriveSubagentMeta("abc123/not-a-subagent-id", "[subagent code-reviewer] ...");
+    expect(result).toEqual({ persona: null, parentSessionId: null });
+  });
+
+  it("malformed id (empty agent suffix): nulls, never throws", () => {
+    const result = deriveSubagentMeta("abc123/agent-", "[subagent code-reviewer] ...");
+    expect(result).toEqual({ persona: null, parentSessionId: null });
+  });
+
+  it("subagent id but label missing the subagent tag: parent recovered, persona null", () => {
+    const result = deriveSubagentMeta("abc123/agent-def456", "just a plain label");
+    expect(result).toEqual({ persona: null, parentSessionId: "abc123" });
+  });
+
+  it("empty string id: treated as top-level, never throws", () => {
+    const result = deriveSubagentMeta("", "");
+    expect(result).toEqual({ persona: "orchestrator", parentSessionId: null });
   });
 });

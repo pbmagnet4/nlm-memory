@@ -44,6 +44,20 @@ export interface Session {
   readonly classifierProvider?: string | null;
   readonly classifierModel?: string | null;
   readonly classifierConfidence?: number | null;
+  /**
+   * Subagent persona slug for claude-code subagent sessions (e.g. "code-reviewer"),
+   * "orchestrator" for top-level claude-code sessions, or the runtime name for
+   * every other adapter. NULL when not derivable. Populated by getById; absent
+   * on bulk reads. See docs/superpowers/plans/2026-07-21-352-phase2-tierb.md.
+   */
+  readonly agentPersona?: string | null;
+  /**
+   * RUNTIME parent session id (join key against `sessions.runtime_session_id`,
+   * not the internal `sessions.id`) for claude-code subagent sessions; NULL
+   * for top-level or non-claude-code sessions. Populated by getById; absent
+   * on bulk reads.
+   */
+  readonly parentSessionId?: string | null;
 }
 
 /**

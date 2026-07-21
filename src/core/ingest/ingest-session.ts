@@ -108,6 +108,11 @@ export async function ingestSession(input: IngestInput, deps: IngestDeps): Promi
     // Push ingest carries no project directory; the scope backfill command
     // derives it later from the transcript when evidence exists.
     scope: null,
+    // Webhook pushes have no adapter chunk to derive subagent lineage from;
+    // stamp the runtime name as persona, matching every non-claude-code
+    // adapter at the scheduler stamp site (#352 phase 2).
+    agentPersona: input.runtime,
+    parentSessionId: null,
     ...(deps.classifierDescriptor !== undefined
       ? { classifier: { ...deps.classifierDescriptor, confidence: classification.confidence } }
       : {}),

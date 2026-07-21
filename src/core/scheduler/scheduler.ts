@@ -22,6 +22,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { LLMClient } from "@ports/llm-client.js";
 import type { TranscriptAdapter } from "@ports/transcript-adapter.js";
+import { deriveSubagentMeta } from "@core/adapters/claude-code.js";
 import type { SignalStore } from "@ports/signal-store.js";
 import type { CodeExemplarStore } from "@ports/code-exemplar-store.js";
 import type { CodeEmbedder } from "@ports/code-embedder.js";
@@ -291,6 +292,14 @@ export class ScanScheduler {
           continue;
         }
 
+        // Task #352 phase 2: stamp agent_persona/parent_session_id at classify
+        // time. claude-code encodes subagent lineage in runtimeSessionId +
+        // label (deriveSubagentMeta reverses that encoding); every other
+        // adapter has no subagent concept, so persona is just the runtime name.
+        const subagentMeta = adapter.name === "claude-code"
+          ? deriveSubagentMeta(chunk.runtimeSessionId, chunk.label)
+          : { persona: adapter.name, parentSessionId: null };
+
         const record: IngestRecord = {
           id: chunk.id,
           runtime: chunk.runtime,
@@ -310,6 +319,8 @@ export class ScanScheduler {
           decisions: classification.decisions,
           openQuestions: classification.open,
           scope: chunkScope,
+          agentPersona: subagentMeta.persona,
+          parentSessionId: subagentMeta.parentSessionId,
           ...(this.opts.classifierDescriptor !== undefined
             ? { classifier: { ...this.opts.classifierDescriptor, confidence: classification.confidence } }
             : {}),
