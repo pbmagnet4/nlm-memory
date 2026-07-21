@@ -187,6 +187,51 @@ describe("MCP adapter", () => {
     expect(result.content[0]?.text).toContain("not found");
   });
 
+  it("get_session omits outcome when outcomeDb is not wired", async () => {
+    const result = await getSessionHandler({ recall, store }, { id: "sess_a" });
+    const body = parsePayload(result) as Record<string, unknown>;
+    expect("outcome" in body).toBe(false);
+  });
+
+  it("get_session attaches a Tier-B outcome verdict when outcomeDb is wired (#352 phase 2)", async () => {
+    const result = await getSessionHandler(
+      { recall, store, outcomeDb: storage.rawDb() },
+      { id: "sess_a" },
+    );
+    expect(result.isError).toBeUndefined();
+    const body = parsePayload(result) as { outcome: { verdict: string; tier: string; confidence: string; evidence: string[] } };
+    expect(body.outcome).toBeDefined();
+    expect(body.outcome.verdict).toBe("unobserved");
+    expect(body.outcome.tier).toBe("B");
+    expect(body.outcome.evidence).toEqual([]);
+  });
+
+  it("get_session's wired outcome verdict reflects supersedence, matching deriveOutcome's precedence", async () => {
+    await store.markSuperseded("sess_b", "sess_a");
+    const result = await getSessionHandler(
+      { recall, store, outcomeDb: storage.rawDb() },
+      { id: "sess_b" },
+    );
+    const body = parsePayload(result) as { outcome: { verdict: string } };
+    expect(body.outcome.verdict).toBe("overturned");
+  });
+
+  it("get_session degrades to no-outcome when the outcome path throws (SQLITE_BUSY class)", async () => {
+    const throwingDb = {
+      prepare() {
+        throw new Error("SQLITE_BUSY: database is locked");
+      },
+    } as unknown as import("better-sqlite3").Database;
+    const result = await getSessionHandler(
+      { recall, store, outcomeDb: throwingDb },
+      { id: "sess_a" },
+    );
+    expect(result.isError).toBeUndefined();
+    const body = parsePayload(result) as Record<string, unknown>;
+    expect(body["id"]).toBe("sess_a");
+    expect("outcome" in body).toBe(false);
+  });
+
   it("createMcpServer registers both tools without throwing", () => {
     const server = createMcpServer({ recall, store });
     expect(server).toBeDefined();

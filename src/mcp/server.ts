@@ -32,6 +32,11 @@ import { normalizeLabel } from "@core/workstream/model.js";
 import type { Workstream } from "@core/workstream/model.js";
 import { resolveWorkstreamId } from "@core/workstream/resolve.js";
 import { suggestMerges } from "@core/workstream/merge-suggest.js";
+import { normalizeSignal } from "@core/signals/ingest-signal.js";
+import { stampSignalScope, type SessionScopeReader } from "@core/signals/stamp-scope.js";
+import type { SignalStore } from "@ports/signal-store.js";
+import { deriveOutcome } from "@core/outcome/rollup.js";
+import { buildSqliteOutcomeDeps } from "@core/storage/sqlite-outcome-store.js";
 import type {
   FactKind,
   FactRecallQuery,
@@ -39,6 +44,8 @@ import type {
   RecallMode,
   RecallQuery,
 } from "@shared/types.js";
+import { SIGNAL_OUTCOMES } from "@shared/types.js";
+import type Database from "better-sqlite3";
 
 const CHARACTER_LIMIT = 25_000;
 const DEFAULT_LIMIT = 10;
@@ -60,6 +67,11 @@ export interface McpDeps {
   /** Optional code embedder for recall_code semantic search. */
   readonly codeEmbedder?: import("@ports/code-embedder.js").CodeEmbedder;
   readonly installScope?: string;
+  /** Wire to enable report_outcome (writes to the same signals store /api/signal uses). */
+  readonly signalStore?: SignalStore;
+  /** Scope inheritance for report_outcome, mirroring /api/signal: a
+   *  session-correlated signal inherits that session's stamped scope. */
+  readonly sessionScopeReader?: SessionScopeReader;
   /** Wire to enable the work_summary tool (operator daily work digest). */
   readonly workDigest?: BuildWorkDigestDeps;
   /** Wire to enable recall_workstream. Mirrors RollupDeps + the store for idOrLabel resolution. */
@@ -69,6 +81,12 @@ export interface McpDeps {
     readonly facts: Pick<FactStore, "listBySessions">;
     readonly exemplars: Pick<import("@ports/code-exemplar-store.js").CodeExemplarStore, "listBySessions">;
   };
+  /**
+   * Raw SQLite handle for the Tier-B outcome rollup (#352 phase 2). Wire to
+   * attach `outcome` to get_session's response; omit to skip it (e.g. under
+   * PgStorage, which has no adapter yet).
+   */
+  readonly outcomeDb?: Database.Database;
 }
 
 export interface ToolResult {
@@ -391,7 +409,19 @@ export async function getSessionHandler(
         })()
       : null;
 
-    return ok({ ...session, supersedes, supersededBy });
+    // Isolated: the outcome rollup is enrichment, not the payload. A throw
+    // here (SQLITE_BUSY, stale handle, unmigrated db) must degrade to
+    // no-outcome, never fail the whole get_session call.
+    let outcome;
+    if (deps.outcomeDb) {
+      try {
+        outcome = await deriveOutcome(session.id, await buildSqliteOutcomeDeps(deps.outcomeDb));
+      } catch {
+        outcome = undefined;
+      }
+    }
+
+    return ok({ ...session, supersedes, supersededBy, ...(outcome ? { outcome } : {}) });
   } catch (e) {
     return err(e);
   }
@@ -531,6 +561,10 @@ run, or any quote you intend to reference verbatim.
 
 The recall_sessions digest is optimized for ranking and scanning; the full body
 contains the actual conversation transcript that produced the decision.
+
+When wired, the response includes an \`outcome\` object: whether the session's
+decision held, was overturned, was built upon, was re-derived later, or
+remains unobserved, plus the evidence tier/confidence behind that verdict.
 
 Args:
   - id: Canonical session ID returned by recall_sessions (e.g. "cc_abc123",
@@ -734,6 +768,68 @@ export async function citeSessionHandler(
       ...(input.reason !== undefined ? { responsePreview: input.reason } : {}),
     });
     return ok({ logged: true, id: input.id });
+  } catch (e) {
+    return err(e);
+  }
+}
+
+const REPORT_OUTCOME_DESCRIPTION = `Record whether a session's decision held up or was overturned. THIS IS THE CONTRACT SURFACE for outcome signals: it writes the same append-only \`signals\` row that POST /api/signal writes (producer "mcp"), just over MCP instead of HTTP.
+
+Expected callers are deterministic producers: hooks, CI pipelines, and automation platforms confirming a build/deploy/test result against a prior session. Agents rarely self-report their own outcome; outcome should come from independent evidence, not the agent's opinion of its own work.
+
+Args:
+  - session_id or correlation_key: at least one required. session_id is the NLM session this outcome applies to. correlation_key is an external identifier (e.g. a CI run id) to use when no NLM session_id is known; it is recorded on the row for traceability but is not (yet) joined into the Tier-B outcome rollup.
+  - outcome: one of pass | fail | fix | exhausted, the same vocabulary POST /api/signal accepts.
+  - source_of_record: required. Identifies the deterministic system asserting this outcome (e.g. "ci:github-actions", "hook:post-tool-use", "n8n:deploy-workflow").
+  - detail: optional passthrough object for additional context.`;
+
+/** The kind stamped on rows this tool writes. Loosely, this row represents an
+ *  outcome *review* of a prior session's decision, and "review" is the closest
+ *  fit among the existing SignalKind vocabulary (gate|eval|review|test); no
+ *  literal "outcome" kind exists (see rollup.ts's own note on this same
+ *  ambiguity). Tier-A correlation in rollup.ts keys on session_id only, so
+ *  this choice does not affect verdict derivation. */
+const REPORT_OUTCOME_KIND = "review" as const;
+
+export interface ReportOutcomeInput {
+  readonly session_id?: string | undefined;
+  readonly correlation_key?: string | undefined;
+  readonly outcome: string;
+  readonly source_of_record: string;
+  readonly detail?: Record<string, unknown> | undefined;
+}
+
+export async function reportOutcomeHandler(
+  deps: McpDeps,
+  input: ReportOutcomeInput,
+): Promise<ToolResult> {
+  if (!input.session_id && !input.correlation_key) {
+    return err(new Error("session_id or correlation_key is required"));
+  }
+  if (!input.source_of_record || input.source_of_record.length === 0) {
+    return err(new Error("source_of_record is required"));
+  }
+  if (!deps.signalStore || deps.installScope === undefined) {
+    return err(new Error("signal store not available"));
+  }
+  try {
+    let signal = normalizeSignal(
+      {
+        kind: REPORT_OUTCOME_KIND,
+        producer: "mcp",
+        outcome: input.outcome,
+        session: input.session_id ?? null,
+        detail: {
+          ...(input.detail ?? {}),
+          source_of_record: input.source_of_record,
+          ...(input.correlation_key ? { correlation_key: input.correlation_key } : {}),
+        },
+      },
+      deps.installScope,
+    );
+    signal = await stampSignalScope(signal, { sessionScopeReader: deps.sessionScopeReader });
+    await deps.signalStore.insert(signal);
+    return ok({ recorded: true, id: signal.id, outcome: signal.outcome });
   } catch (e) {
     return err(e);
   }
@@ -982,6 +1078,44 @@ export function createMcpServer(deps: McpDeps): McpServer {
     },
     async (args) => citeSessionHandler(args) as never,
   );
+
+  if (deps.signalStore && deps.installScope !== undefined) {
+    server.registerTool(
+      "report_outcome",
+      {
+        title: "Report Session Outcome",
+        description: REPORT_OUTCOME_DESCRIPTION,
+        inputSchema: {
+          session_id: z
+            .string()
+            .optional()
+            .describe("NLM session ID this outcome applies to. Required if correlation_key is omitted."),
+          correlation_key: z
+            .string()
+            .optional()
+            .describe("External correlation identifier (e.g. a CI run id) when no NLM session_id is known. Required if session_id is omitted."),
+          outcome: z
+            .enum(SIGNAL_OUTCOMES)
+            .describe("pass = held. fail | fix | exhausted = overturned."),
+          source_of_record: z
+            .string()
+            .min(1)
+            .describe("The deterministic system asserting this outcome (e.g. \"ci:github-actions\", \"hook:post-tool-use\")."),
+          detail: z
+            .record(z.string(), z.unknown())
+            .optional()
+            .describe("Optional passthrough context, stored on the signal row."),
+        },
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async (args) => reportOutcomeHandler(deps, args) as never,
+    );
+  }
 
   server.registerTool(
     "mark_superseded",

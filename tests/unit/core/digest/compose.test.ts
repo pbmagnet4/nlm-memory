@@ -115,4 +115,41 @@ describe("composeDigest", () => {
     expect(line).toMatch(/…$/);
     expect(line).not.toMatch(/\bstraggler-[a-z-]*…$/);
   });
+
+  it("shows tier-b outcome coverage with the honest unobserved majority", () => {
+    const text = composeDigest({
+      stats: baseStats,
+      recent: [],
+      port: 3940,
+      hookAlert: null,
+      now: FIXED_NOW,
+      outcomeCoverage: { total: 10, held: 1, overturned: 1, builtUpon: 1, reDerivedLater: 0, unobserved: 7 },
+    });
+    expect(text).toContain(
+      "tier-b outcomes (30d, 10 sessions): held 10% · overturned 10% · built-upon 10% · re-derived 0% · unobserved 70%",
+    );
+  });
+
+  it("shows a no-data line when outcomeCoverage is absent", () => {
+    const text = composeDigest({
+      stats: baseStats,
+      recent: [],
+      port: 3940,
+      hookAlert: null,
+      now: FIXED_NOW,
+    });
+    expect(text).toContain("tier-b outcomes (30d): no sessions ended in window");
+  });
+
+  it("shows a no-data line when outcomeCoverage.total is zero", () => {
+    const text = composeDigest({
+      stats: baseStats,
+      recent: [],
+      port: 3940,
+      hookAlert: null,
+      now: FIXED_NOW,
+      outcomeCoverage: { total: 0, held: 0, overturned: 0, builtUpon: 0, reDerivedLater: 0, unobserved: 0 },
+    });
+    expect(text).toContain("tier-b outcomes (30d): no sessions ended in window");
+  });
 });

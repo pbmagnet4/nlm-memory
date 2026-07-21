@@ -12,6 +12,7 @@
  */
 
 import { isProbe } from "../telemetry/probe-filter.js";
+import type { OutcomeCoverage } from "../outcome/coverage.js";
 
 export interface RecallStats {
   readonly total: number;
@@ -41,6 +42,8 @@ export interface ComposeInput {
   readonly port: number;
   readonly hookAlert: string | null;
   readonly precision?: DigestPrecision | null;
+  /** Tier-B outcome rollup over sessions ended in the last 30 days (#352 phase 2). */
+  readonly outcomeCoverage?: OutcomeCoverage | null;
   /** Override "now" for deterministic tests; defaults to Date.now(). */
   readonly now?: Date;
 }
@@ -96,6 +99,7 @@ export function composeDigest(input: ComposeInput): string {
     `Last 24h (real traffic): ${real24h.length} queries · ${sourceStr}\n` +
     `Last 7d: ${real7d} real / ${total7d} total · surfaced ${pct(input.stats.hit_rate)}\n` +
     `Recall precision (cited/surfaced): ${formatPrecision(input.precision)}\n` +
+    `${formatOutcomeCoverage(input.outcomeCoverage)}\n` +
     `\n` +
     `Top real queries (24h):\n` +
     `${topLines}\n` +
@@ -111,6 +115,16 @@ function pct(n: number): string {
 function formatPrecision(p: DigestPrecision | null | undefined): string {
   if (!p || p.precisionAtK === null) return "n/a (no scored conversations yet)";
   return `${pct(p.precisionAtK)} (${p.conversationCount} conv)`;
+}
+
+function formatOutcomeCoverage(c: OutcomeCoverage | null | undefined): string {
+  if (!c || c.total === 0) return "tier-b outcomes (30d): no sessions ended in window";
+  const share = (n: number) => pct(n / c.total);
+  return (
+    `tier-b outcomes (30d, ${c.total} sessions): ` +
+    `held ${share(c.held)} · overturned ${share(c.overturned)} · built-upon ${share(c.builtUpon)} · ` +
+    `re-derived ${share(c.reDerivedLater)} · unobserved ${share(c.unobserved)}`
+  );
 }
 
 function truncate(s: string, max: number): string {

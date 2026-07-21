@@ -41,6 +41,11 @@ type SessionRow = {
   classifier_provider?: string | null;
   classifier_model?: string | null;
   classifier_confidence?: number | null;
+  agent_persona?: string | null;
+  parent_session_id?: string | null;
+  primary_model?: string | null;
+  total_tokens?: number | null;
+  skill?: string | null;
 };
 
 /**
@@ -102,7 +107,9 @@ export class PgSessionStore implements SessionStore {
     const result = await this.pool.query<SessionRow>(
       `SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
               label, summary, status, transcript_kind, transcript_path, body,
-              classifier_provider, classifier_model, classifier_confidence
+              classifier_provider, classifier_model, classifier_confidence,
+              agent_persona, parent_session_id,
+              primary_model, total_tokens, skill
        FROM sessions WHERE id = $1`,
       [sessionId],
     );
@@ -439,8 +446,9 @@ export class PgSessionStore implements SessionStore {
            label, summary, body, status, transcript_kind, transcript_path,
            transcript_offset, transcript_length,
            classifier_provider, classifier_model, classifier_confidence,
-           scope
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+           scope, agent_persona, parent_session_id,
+           primary_model, total_tokens, skill
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
          ON CONFLICT (id) DO UPDATE SET
            ended_at = EXCLUDED.ended_at,
            duration_min = EXCLUDED.duration_min,
@@ -452,6 +460,11 @@ export class PgSessionStore implements SessionStore {
            classifier_model = EXCLUDED.classifier_model,
            classifier_confidence = EXCLUDED.classifier_confidence,
            scope = COALESCE(EXCLUDED.scope, sessions.scope),
+           agent_persona = COALESCE(EXCLUDED.agent_persona, sessions.agent_persona),
+           parent_session_id = COALESCE(EXCLUDED.parent_session_id, sessions.parent_session_id),
+           primary_model = COALESCE(EXCLUDED.primary_model, sessions.primary_model),
+           total_tokens = COALESCE(EXCLUDED.total_tokens, sessions.total_tokens),
+           skill = COALESCE(EXCLUDED.skill, sessions.skill),
            updated_at = NOW()`,
         [
           record.id, record.runtime, record.runtimeSessionId,
@@ -464,6 +477,11 @@ export class PgSessionStore implements SessionStore {
           record.classifier?.model ?? null,
           record.classifier?.confidence ?? null,
           record.scope,
+          record.agentPersona ?? null,
+          record.parentSessionId ?? null,
+          record.primaryModel ?? null,
+          record.totalTokens ?? null,
+          record.skill ?? null,
         ],
       );
       await client.query("DELETE FROM markers WHERE session_id = $1", [record.id]);
@@ -809,5 +827,10 @@ function rowToSession(
     classifierProvider: row.classifier_provider ?? null,
     classifierModel: row.classifier_model ?? null,
     classifierConfidence: row.classifier_confidence ?? null,
+    agentPersona: row.agent_persona ?? null,
+    parentSessionId: row.parent_session_id ?? null,
+    primaryModel: row.primary_model ?? null,
+    totalTokens: row.total_tokens ?? null,
+    skill: row.skill ?? null,
   };
 }

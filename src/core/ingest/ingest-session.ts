@@ -9,6 +9,7 @@
 
 import { createHash } from "node:crypto";
 import { extractFacts } from "@core/facts/extract-facts.js";
+import { scanTranscriptDerivables } from "@core/ingest/transcript-derivables.js";
 import type { SqliteFactStore } from "@core/storage/sqlite-fact-store.js";
 import type { IngestRecord, SqliteSessionStore } from "@core/storage/sqlite-session-store.js";
 import { PgSessionStore } from "@core/storage/pg-session-store.js";
@@ -87,6 +88,15 @@ export async function ingestSession(input: IngestInput, deps: IngestDeps): Promi
     };
   }
 
+  // Task #352 phase 2 (Task 5): scan the transcript file (if any) for
+  // primary_model/total_tokens/skill. Webhook pushes carry transcriptKind
+  // "webhook", not "claude-code-jsonl", so this always resolves all-null
+  // today -- wired for parity with the scheduler stamp site and any future
+  // webhook kind that does carry a scannable transcript.
+  const transcriptDerivables = input.transcriptPath
+    ? await scanTranscriptDerivables(input.transcriptPath, "webhook")
+    : { primaryModel: null, totalTokens: null, skill: null };
+
   const record: IngestRecord = {
     id,
     runtime: input.runtime,
@@ -108,6 +118,14 @@ export async function ingestSession(input: IngestInput, deps: IngestDeps): Promi
     // Push ingest carries no project directory; the scope backfill command
     // derives it later from the transcript when evidence exists.
     scope: null,
+    // Webhook pushes have no adapter chunk to derive subagent lineage from;
+    // stamp the runtime name as persona, matching every non-claude-code
+    // adapter at the scheduler stamp site (#352 phase 2).
+    agentPersona: input.runtime,
+    parentSessionId: null,
+    primaryModel: transcriptDerivables.primaryModel,
+    totalTokens: transcriptDerivables.totalTokens,
+    skill: transcriptDerivables.skill,
     ...(deps.classifierDescriptor !== undefined
       ? { classifier: { ...deps.classifierDescriptor, confidence: classification.confidence } }
       : {}),

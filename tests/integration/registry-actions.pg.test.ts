@@ -237,7 +237,7 @@ describe.skipIf(!PG_TEST_URL)("data-management routes (PG backend)", () => {
     expect(stats.dbPath).toBe("postgresql");
     expect(stats.dbPresent).toBe(true);
     expect(stats.dbBytes).toBeGreaterThan(0);
-    expect(stats.schemaVersion).toBe(31);
+    expect(stats.schemaVersion).toBe(32);
     expect(stats.tables.find((t) => t.name === "sessions")?.rows).toBe(1);
     expect(stats.runtimes).toContainEqual({ runtime: "claude-code", n: 1 });
   });

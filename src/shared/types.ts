@@ -44,6 +44,33 @@ export interface Session {
   readonly classifierProvider?: string | null;
   readonly classifierModel?: string | null;
   readonly classifierConfidence?: number | null;
+  /**
+   * Subagent persona slug for claude-code subagent sessions (e.g. "code-reviewer"),
+   * "orchestrator" for top-level claude-code sessions, or the runtime name for
+   * every other adapter. NULL when not derivable. Populated by getById; absent
+   * on bulk reads. See docs/superpowers/plans/2026-07-21-352-phase2-tierb.md.
+   */
+  readonly agentPersona?: string | null;
+  /**
+   * RUNTIME parent session id (join key against `sessions.runtime_session_id`,
+   * not the internal `sessions.id`) for claude-code subagent sessions; NULL
+   * for top-level or non-claude-code sessions. Populated by getById; absent
+   * on bulk reads.
+   */
+  readonly parentSessionId?: string | null;
+  /**
+   * Majority model across assistant messages in the transcript (claude-code
+   * jsonl only, v1). NULL when not derivable (missing/unreadable transcript,
+   * non-claude-code kind). Populated by getById; absent on bulk reads. See
+   * docs/superpowers/plans/2026-07-21-352-phase2-tierb.md.
+   */
+  readonly primaryModel?: string | null;
+  /** Sum of input_tokens + output_tokens across assistant messages. Same
+   *  derivability/absence contract as primaryModel. */
+  readonly totalTokens?: number | null;
+  /** Slug of the first Skill-tool invocation in the transcript, or NULL.
+   *  Same derivability/absence contract as primaryModel. */
+  readonly skill?: string | null;
 }
 
 /**
@@ -273,6 +300,11 @@ export interface FactHistoryChain {
 
 export type SignalKind = "gate" | "eval" | "review" | "test";
 export type SignalOutcome = "pass" | "fail" | "fix" | "exhausted";
+
+/** Canonical outcome vocabulary as a runtime array: the single source of truth
+ *  for both ingest validation (`ingest-signal.ts`) and any boundary (e.g. the
+ *  MCP `report_outcome` tool) that needs to enumerate/validate the set. */
+export const SIGNAL_OUTCOMES = ["pass", "fail", "fix", "exhausted"] as const satisfies readonly SignalOutcome[];
 
 /** Producer-side payload. `install_scope` and `id` are stamped server-side. */
 export interface SignalInput {

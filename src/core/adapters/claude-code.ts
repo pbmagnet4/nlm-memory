@@ -238,6 +238,42 @@ export class ClaudeCodeAdapter implements TranscriptAdapter {
   }
 }
 
+// ── subagent metadata derivation ─────────────────────────────────────────
+
+// Matches the `<parent>/agent-<id>` shape parseSession stamps onto
+// runtimeSessionId for subagent chunks (see the isSubagent branch above).
+const SUBAGENT_ID_PATTERN = /^(.+)\/agent-([^/]+)$/;
+// Matches the `[subagent <slug>] ...` prefix parseSession stamps onto label
+// for the same chunks.
+const SUBAGENT_LABEL_PATTERN = /^\[subagent ([^\]]+)\]/;
+
+/**
+ * Re-derives subagent persona + parent link from a claude-code chunk's
+ * already-computed `runtimeSessionId` and `label` — the same two fields the
+ * ingest stamp site has on hand, without re-reading the raw transcript.
+ * Reverse of the encoding parseSession performs above: id has no slash ->
+ * top-level session ("orchestrator", no parent); id matches
+ * `<parent>/agent-<id>` -> parent + persona parsed from the label's
+ * `[subagent <slug>]` prefix. Any other shape is treated as malformed and
+ * returns nulls rather than throwing.
+ */
+export function deriveSubagentMeta(
+  runtimeSessionId: string,
+  label: string,
+): { persona: string | null; parentSessionId: string | null } {
+  if (!runtimeSessionId.includes("/")) {
+    return { persona: "orchestrator", parentSessionId: null };
+  }
+  const idMatch = SUBAGENT_ID_PATTERN.exec(runtimeSessionId);
+  if (!idMatch) {
+    return { persona: null, parentSessionId: null };
+  }
+  const parentSessionId = idMatch[1]!;
+  const labelMatch = SUBAGENT_LABEL_PATTERN.exec(label);
+  const persona = labelMatch ? labelMatch[1]!.trim() || null : null;
+  return { persona, parentSessionId };
+}
+
 // ── content extraction ───────────────────────────────────────────────────
 
 function extractText(content: unknown): string {

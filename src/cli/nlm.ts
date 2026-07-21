@@ -465,6 +465,8 @@ program
               exemplarStore: storage.exemplars,
               codeEmbedder: codeEmb,
               installScope: scope,
+              signalStore: signals,
+              sessionScopeReader: store,
               workDigest: { store, topicProvider: loadTopicProvider(), workstreams: storage.workstreams, ...workDigestEnv() },
               workstreams: { store: storage.workstreams, sessions: store, facts: facts, exemplars: storage.exemplars },
             },
@@ -1339,10 +1341,45 @@ program
   });
 
 program
+  .command("backfill-derivables")
+  .description(
+    "Retroactive: stamp agent_persona + parent_session_id (#352 phase 2) onto sessions ingested\n" +
+    "before the scheduler started stamping them at classify time. Idempotent (WHERE agent_persona IS NULL).",
+  )
+  .option("--dry-run", "report counts without writing")
+  .option(
+    "--with-transcript-scan",
+    "also scan each candidate's transcript for primary_model/total_tokens/skill (slower)",
+  )
+  .action(async (opts: { dryRun?: boolean; withTranscriptScan?: boolean }) => {
+    const { backfillDerivables } = await import("../core/ingest/backfill-derivables.js");
+    const stack = await buildStack();
+    try {
+      if (!(stack.storage instanceof SqliteStorage)) {
+        console.error("backfill-derivables: only supported with SQLite storage (NLM_PG_URL must not be set)");
+        await stack.storage.close();
+        process.exit(1);
+      }
+      const report = await backfillDerivables(stack.storage.rawDb(), {
+        dryRun: Boolean(opts.dryRun),
+        withTranscriptScan: Boolean(opts.withTranscriptScan),
+      });
+      console.log(
+        `backfill-derivables${opts.dryRun ? " (dry-run)" : ""}: ` +
+        `updated=${report.updated} skipped(already-stamped)=${report.skippedAlreadyStamped} ` +
+        `skipped(no-op)=${report.skippedNoop} subagent-candidates=${report.subagentCandidates} ` +
+        `unknown-parent=${report.unknownParent} transcript-scanned=${report.transcriptScanned} total=${report.total}`,
+      );
+    } finally {
+      await stack.storage.close();
+    }
+  });
+
+program
   .command("mcp")
   .description("Run as an MCP stdio server (for ~/.mcp.json)")
   .action(async () => {
-    const { recall, store, facts, factRecall, storage, scope } = await buildStack();
+    const { recall, store, facts, factRecall, storage, scope, signals } = await buildStack();
     const server = createMcpServer({
       recall,
       store,
@@ -1351,8 +1388,13 @@ program
       exemplarStore: storage.exemplars,
       codeEmbedder: buildCodeEmbedder(),
       installScope: scope,
+      signalStore: signals,
+      sessionScopeReader: store,
       workDigest: { store, topicProvider: loadTopicProvider(), workstreams: storage.workstreams, ...workDigestEnv() },
       workstreams: { store: storage.workstreams, sessions: store, facts: facts, exemplars: storage.exemplars },
+      // Tier-B outcome rollup (#352 phase 2) only has a SQLite adapter today;
+      // PgStorage deployments skip get_session's `outcome` field until parity lands.
+      ...(storage instanceof SqliteStorage ? { outcomeDb: storage.rawDb() } : {}),
     });
     const transport = new StdioServerTransport();
     await server.connect(transport);
@@ -1757,10 +1799,9 @@ const SESSION_START_HOOK_JS = resolve(__dirname, "../hook/session-start-hook.js"
 const SESSION_END_HOOK_JS = resolve(__dirname, "../hook/session-end-hook.js");
 const STOP_HOOK_JS = resolve(__dirname, "../hook/stop-hook.js");
 const PRE_COMPACT_HOOK_JS = resolve(__dirname, "../hook/pre-compact-hook.js");
-const SUBAGENT_START_HOOK_JS = resolve(__dirname, "../hook/subagent-start-hook.js");
 
 interface HookSpec {
-  readonly event: "UserPromptSubmit" | "SessionStart" | "SessionEnd" | "Stop" | "PreCompact" | "SubagentStart";
+  readonly event: "UserPromptSubmit" | "SessionStart" | "SessionEnd" | "Stop" | "PreCompact";
   readonly script: string;
   readonly label: string;
 }
@@ -1771,7 +1812,6 @@ const ALL_HOOKS: ReadonlyArray<HookSpec> = [
   { event: "SessionEnd", script: SESSION_END_HOOK_JS, label: "session-end" },
   { event: "Stop", script: STOP_HOOK_JS, label: "stop" },
   { event: "PreCompact", script: PRE_COMPACT_HOOK_JS, label: "pre-compact" },
-  { event: "SubagentStart", script: SUBAGENT_START_HOOK_JS, label: "subagent-start" },
 ];
 
 function claudeSettingsPath(): string {
@@ -1784,7 +1824,7 @@ const hook = program
 
 hook
   .command("install")
-  .description("Add the NLM hooks (recall + session-end + stop) to ~/.claude/settings.json (live mode)")
+  .description("Add the NLM hooks (recall + session-start + session-end + stop + pre-compact) to ~/.claude/settings.json (live mode)")
   .action(() => {
     const path = claudeSettingsPath();
     const installed: HookSpec[] = [];

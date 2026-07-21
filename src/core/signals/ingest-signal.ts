@@ -10,10 +10,10 @@
  */
 
 import { createHash } from "node:crypto";
-import type { Signal, SignalKind, SignalOutcome } from "@shared/types.js";
+import { SIGNAL_OUTCOMES, type Signal, type SignalKind, type SignalOutcome } from "@shared/types.js";
 
 const KINDS: ReadonlySet<string> = new Set(["gate", "eval", "review", "test"]);
-const OUTCOMES: ReadonlySet<string> = new Set(["pass", "fail", "fix", "exhausted"]);
+const OUTCOMES: ReadonlySet<string> = new Set(SIGNAL_OUTCOMES);
 
 export function signalId(parts: {
   sessionId: string | null;
