@@ -9,7 +9,6 @@
  * Skips when the env var is absent.
  */
 
-import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,10 +21,6 @@ const MIGRATIONS_DIR = join(
   fileURLToPath(new URL(".", import.meta.url)),
   "../../migrations/pg",
 );
-// PG has no version-gated runner; init() applies 001 only. Apply the
-// operator-shipped 019 split migration so the schema admits 'replaced' /
-// 'replaces' (mirrors production, where an operator runs it once).
-const PG_019_SQL = readFileSync(join(MIGRATIONS_DIR, "019_split_replaces.sql"), "utf8");
 
 function makeRecord(id: string, transcriptPath: string): IngestRecord {
   return {
@@ -69,7 +64,6 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore search with supersedence", () => {
       migrationsDir: MIGRATIONS_DIR,
     });
     await storage.init();
-    await storage.pgPool().query(PG_019_SQL);
     await storage.pgPool().query(TRUNCATE_SQL);
   });
 
