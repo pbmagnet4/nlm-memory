@@ -61,7 +61,7 @@ describe.skipIf(!PG_TEST_URL)("pg migration runner", () => {
     const { rows } = await storage.pgPool().query<{ version: number }>(
       "SELECT version FROM schema_migrations ORDER BY version",
     );
-    expect(rows.map((r) => r.version)).toEqual([1, 19, 25, 26, 28, 29, 30, 31]);
+    expect(rows.map((r) => r.version)).toEqual([1, 19, 25, 26, 28, 29, 30, 31, 32]);
 
     await storage.pgPool().query(
       "INSERT INTO workstreams (id, label) VALUES ('ws_test', 'Test WS')",
@@ -102,7 +102,7 @@ describe.skipIf(!PG_TEST_URL)("pg migration runner", () => {
 
     expect(secondRun).toHaveLength(0);
     expect(after.map((r) => r.version)).toEqual(before.map((r) => r.version));
-    expect(before.map((r) => r.version)).toEqual([1, 19, 25, 26, 28, 29, 30, 31]);
+    expect(before.map((r) => r.version)).toEqual([1, 19, 25, 26, 28, 29, 30, 31, 32]);
 
     await storage.close();
   });
@@ -130,7 +130,7 @@ describe.skipIf(!PG_TEST_URL)("pg migration runner", () => {
     const { rows } = await storage.pgPool().query<{ version: number }>(
       "SELECT version FROM schema_migrations ORDER BY version",
     );
-    expect(rows.map((r) => r.version)).toEqual([1, 19, 25, 26, 28, 29, 30, 31]);
+    expect(rows.map((r) => r.version)).toEqual([1, 19, 25, 26, 28, 29, 30, 31, 32]);
 
     await storage.close();
   });
