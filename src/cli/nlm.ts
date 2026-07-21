@@ -465,6 +465,7 @@ program
               exemplarStore: storage.exemplars,
               codeEmbedder: codeEmb,
               installScope: scope,
+              signalStore: signals,
               workDigest: { store, topicProvider: loadTopicProvider(), workstreams: storage.workstreams, ...workDigestEnv() },
               workstreams: { store: storage.workstreams, sessions: store, facts: facts, exemplars: storage.exemplars },
             },
@@ -1377,7 +1378,7 @@ program
   .command("mcp")
   .description("Run as an MCP stdio server (for ~/.mcp.json)")
   .action(async () => {
-    const { recall, store, facts, factRecall, storage, scope } = await buildStack();
+    const { recall, store, facts, factRecall, storage, scope, signals } = await buildStack();
     const server = createMcpServer({
       recall,
       store,
@@ -1386,6 +1387,7 @@ program
       exemplarStore: storage.exemplars,
       codeEmbedder: buildCodeEmbedder(),
       installScope: scope,
+      signalStore: signals,
       workDigest: { store, topicProvider: loadTopicProvider(), workstreams: storage.workstreams, ...workDigestEnv() },
       workstreams: { store: storage.workstreams, sessions: store, facts: facts, exemplars: storage.exemplars },
     });
