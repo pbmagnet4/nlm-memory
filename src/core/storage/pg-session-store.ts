@@ -73,13 +73,14 @@ async function findContinuesPredecessorPg(
   const placeholders = entities.map((_, i) => `$${i + 3}`).join(",");
   // session_entities rows are always written with the same tenant_id as their
   // owning session (every write site stamps both together), so scoping the
-  // outer `sessions` row by tenant is sufficient — the join to
-  // session_entities is already transitively tenant-scoped via session_id.
+  // outer `sessions` row by tenant is already sufficient. The `se.tenant_id =
+  // s.tenant_id` join condition below is defense in depth (guard test C4
+  // explicitly permits column-to-column tenant equality as a join form).
   const tc = tenantClausePg(tenantId, 2, "s.tenant_id");
   const res = await client.query<{ id: string }>(
     `SELECT s.id AS id
        FROM sessions s
-       JOIN session_entities se ON se.session_id = s.id
+       JOIN session_entities se ON se.session_id = s.id AND se.tenant_id = s.tenant_id
       WHERE s.id != $1
         AND ${tc.sql}
         AND se.entity_canonical IN (${placeholders})
@@ -729,10 +730,12 @@ export class PgSessionStore implements SessionStore {
     // facts.tenant_id is always stamped to match its source_session_id's
     // session tenant (every write site stamps both together), so scoping by
     // source_session_id = s.id against an already tenant-filtered `s` is
-    // sufficient without a redundant facts.tenant_id check.
+    // already sufficient. The f.tenant_id = s.tenant_id condition below is
+    // defense in depth (guard test C4 permits column-to-column tenant
+    // equality as a join form).
     const existingFactsClause = filter.reprocess
       ? ""
-      : "AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.source_session_id = s.id)";
+      : "AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.source_session_id = s.id AND f.tenant_id = s.tenant_id)";
     const tc = tenantClausePg(tenantId, params.length + 1, "s.tenant_id");
     params.push(tc.param);
     const result = await this.pool.query<{ id: string; started_at: string; body: string | null }>(

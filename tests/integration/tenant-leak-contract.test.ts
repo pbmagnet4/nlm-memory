@@ -294,12 +294,15 @@ describe("tenant leak-test contract (spec §6, sqlite lane)", () => {
   );
 
   // Pre-threading floor for case 11, checkable today at the raw-source level
-  // (no store behavior required): the literal `tenant_id =` must not appear
+  // (no store behavior required): no literal bind-param or string-literal
+  // `tenant_id = ?` / `tenant_id = $n` / `tenant_id = '...'` form may appear
   // inline anywhere in the files Wave C's full guard test
-  // (tests/integration/tenant-guard.test.ts) will scan. It is vacuously true
-  // before Wave B threading starts and stays true only if every future WHERE
-  // fragment routes through tenantClause instead of inlining the column.
-  it("case 11 (pre-threading floor): no store/actions/dataset/http SQL string inlines the literal tenant_id =", () => {
+  // (tests/integration/tenant-guard.test.ts) authoritatively scans. Column-
+  // to-column equality (`tenant_id = <alias>.tenant_id` / `<alias>.tenant_id
+  // = <alias2>.tenant_id`) is explicitly PERMITTED — it's the defense-in-
+  // depth join form Wave C4 restored in findContinuesPredecessor and
+  // listBackfillCandidates (sqlite + pg), not a hand-rolled tenant filter.
+  it("case 11 (pre-threading floor): no store/actions/dataset/http SQL string inlines a bind-param or literal tenant_id =", () => {
     const scanFiles: string[] = [];
     for (const f of readdirSync(join(ROOT, "src/core/storage"))) {
       if (f.endsWith(".ts")) scanFiles.push(join(ROOT, "src/core/storage", f));
@@ -308,7 +311,16 @@ describe("tenant leak-test contract (spec §6, sqlite lane)", () => {
     scanFiles.push(join(ROOT, "src/core/dataset/build-dataset.ts"));
     scanFiles.push(join(ROOT, "src/http/app.ts"));
 
-    const offenders = scanFiles.filter((file) => /tenant_id\s*=/.test(readFileSync(file, "utf8")));
+    const columnEquality = /^\w+\.tenant_id$/;
+    const offenders: string[] = [];
+    for (const file of scanFiles) {
+      for (const line of readFileSync(file, "utf8").split("\n")) {
+        for (const m of line.matchAll(/tenant_id\s*=\s*(\S+)/g)) {
+          const rhs = (m[1] ?? "").replace(/[,);'"`]+$/, "");
+          if (!columnEquality.test(rhs)) offenders.push(`${file}: ${line.trim()}`);
+        }
+      }
+    }
     expect(offenders).toEqual([]);
   });
 

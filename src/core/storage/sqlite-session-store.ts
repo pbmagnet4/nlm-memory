@@ -197,14 +197,17 @@ function findContinuesPredecessor(
   const placeholders = entities.map(() => "?").join(",");
   // session_entities rows are always written with the same tenant_id as their
   // owning session (every write site stamps both together), so scoping the
-  // outer `sessions` row by tenant is sufficient — the join to
-  // session_entities is already transitively tenant-scoped via session_id.
+  // outer `sessions` row by tenant is already sufficient. The `se.tenant_id =
+  // s.tenant_id` join condition below is defense in depth (guard test C4
+  // explicitly permits column-to-column tenant equality as a join form) — it
+  // costs nothing and survives a future write path that stamps the two rows
+  // inconsistently.
   const tc = tenantClause(tenantId, "s.tenant_id");
   const row = db
     .prepare<unknown[], { id: string }>(
       `SELECT s.id AS id
          FROM sessions s
-         JOIN session_entities se ON se.session_id = s.id
+         JOIN session_entities se ON se.session_id = s.id AND se.tenant_id = s.tenant_id
         WHERE s.id != ?
           AND ${tc.sql}
           AND se.entity_canonical IN (${placeholders})
@@ -611,9 +614,13 @@ export class SqliteSessionStore implements SessionStore {
          WHERE ${tc.sql} AND s.started_at < ? AND s.body IS NOT NULL AND length(s.body) > 0
            ${filter.from ? "AND s.id > ?" : ""}
          ORDER BY s.started_at ASC, s.id ASC`
+      // facts.tenant_id is always stamped to match its source_session_id's
+      // session tenant, so this is defense in depth on top of the already
+      // tenant-filtered outer sessions row (guard test C4 permits
+      // column-to-column tenant equality as a join form).
       : `SELECT s.id, s.started_at, s.body FROM sessions s
          WHERE ${tc.sql} AND s.started_at < ? AND s.body IS NOT NULL AND length(s.body) > 0
-           AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.source_session_id = s.id)
+           AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.source_session_id = s.id AND f.tenant_id = s.tenant_id)
            ${filter.from ? "AND s.id > ?" : ""}
          ORDER BY s.started_at ASC, s.id ASC`;
     const rows = filter.from
