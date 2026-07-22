@@ -10,7 +10,7 @@ const ws = (id: string, mergedInto: string | null): Workstream => ({
 
 function deps(all: Workstream[], sessionsByWs: Record<string, string[]>): RollupDeps {
   return {
-    workstreams: { listAll: async () => all, getById: async (id) => all.find((w) => w.id === id) ?? null },
+    workstreams: { listAll: async () => all, getById: async (_tenantId, id) => all.find((w) => w.id === id) ?? null },
     sessions: { listSessionIdsByWorkstreams: async (_tenantId, ids) => ids.flatMap((i) => sessionsByWs[i] ?? []) },
     facts: { listBySessions: async (_tenantId, sids) => sids.map((s) => ({ id: `f_${s}` })) as any },
     exemplars: { listBySessions: async (_tenantId, sids) => sids.map((s) => ({ id: `e_${s}` })) as any },

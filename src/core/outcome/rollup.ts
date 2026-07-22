@@ -35,15 +35,15 @@ import type { OutcomeDeps, OutcomeVerdict } from "@ports/outcome.js";
 const DEFAULT_HELD_AFTER_DAYS = 14;
 const MS_PER_DAY = 86_400_000;
 
-export async function deriveOutcome(sessionId: string, deps: OutcomeDeps): Promise<OutcomeVerdict> {
-  const session = await deps.sessions.getById(sessionId);
+export async function deriveOutcome(tenantId: string, sessionId: string, deps: OutcomeDeps): Promise<OutcomeVerdict> {
+  const session = await deps.sessions.getById(tenantId, sessionId);
   if (!session) {
     return { verdict: "unobserved", tier: "B", confidence: "low", evidence: [] };
   }
 
   // 1. Tier A: correlated signal rows are the strongest evidence and settle
   // the verdict outright, ahead of every heuristic below.
-  const signals = await deps.signals.listForSession(sessionId);
+  const signals = await deps.signals.listForSession(tenantId, sessionId);
   if (signals.length > 0) {
     const anyNegative = signals.some((s) => s.outcome !== "pass");
     return {
@@ -54,7 +54,7 @@ export async function deriveOutcome(sessionId: string, deps: OutcomeDeps): Promi
     };
   }
 
-  const edges = await deps.edges.listForSession(sessionId);
+  const edges = await deps.edges.listForSession(tenantId, sessionId);
 
   // 2. Supersession beats "held" beats continuation beats re-derivation.
   const supersedingEdge = edges.find(

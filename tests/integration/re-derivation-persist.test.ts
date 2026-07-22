@@ -71,7 +71,7 @@ describe("corpus monitor persists re-derivation pairs for the outcome rollup", (
     const deps = await buildSqliteOutcomeDeps(storage.rawDb(), { reDerivationPairsPath: pairsPath });
     expect(deps.reDerivationPairs).toEqual(report.pairs);
 
-    const verdictA = await deriveOutcome("a", deps);
+    const verdictA = await deriveOutcome("team_local", "a", deps);
     expect(verdictA).toEqual({
       verdict: "re-derived-later",
       tier: "B",
@@ -79,7 +79,7 @@ describe("corpus monitor persists re-derivation pairs for the outcome rollup", (
       evidence: ["re-derivation-pair:b"],
     });
 
-    const verdictB = await deriveOutcome("b", deps);
+    const verdictB = await deriveOutcome("team_local", "b", deps);
     expect(verdictB.verdict).toBe("re-derived-later");
     expect(verdictB.evidence).toEqual(["re-derivation-pair:a"]);
   });
@@ -91,7 +91,7 @@ describe("corpus monitor persists re-derivation pairs for the outcome rollup", (
     const deps = await buildSqliteOutcomeDeps(storage.rawDb(), {
       reDerivationPairsPath: join(tmp, "nonexistent-pairs.json"),
     });
-    const verdict = await deriveOutcome("a", deps);
+    const verdict = await deriveOutcome("team_local", "a", deps);
     expect(verdict.verdict).toBe("unobserved");
   });
 
@@ -102,7 +102,7 @@ describe("corpus monitor persists re-derivation pairs for the outcome rollup", (
     writeFileSync(pairsPath, "{not valid json", "utf8");
     const deps = await buildSqliteOutcomeDeps(storage.rawDb(), { reDerivationPairsPath: pairsPath });
     expect(deps.reDerivationPairs).toEqual([]);
-    const verdict = await deriveOutcome("a", deps);
+    const verdict = await deriveOutcome("team_local", "a", deps);
     expect(verdict.verdict).toBe("unobserved");
   });
 });

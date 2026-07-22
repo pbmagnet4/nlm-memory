@@ -32,6 +32,10 @@ export interface EntityStore {
    *   7. Keep the source entities row with status='retired', session_count=0.
    *
    * Errors loudly when target is missing or already retired.
+   *
+   * Tenancy (program spec §4, M2 plan Wave B4): entities is a STAMP table
+   * with composite PK (tenant_id, canonical). Merge operates within one
+   * tenant only — source and target must both resolve within tenantId.
    */
-  merge(source: string, target: string): Promise<void>;
+  merge(tenantId: string, source: string, target: string): Promise<void>;
 }

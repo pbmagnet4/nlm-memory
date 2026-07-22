@@ -121,22 +121,22 @@ describe.skipIf(!PG_TEST_URL)("pg scope stamping parity", () => {
   });
 
   it("workstream create stores scope (pg)", async () => {
-    const ws = await storage.workstreams.create({ id: "ws_pg_scope", label: "project-alpha", scope: "client-a" });
+    const ws = await storage.workstreams.create("team_local", { id: "ws_pg_scope", label: "project-alpha", scope: "client-a" });
     expect(ws.scope).toBe("client-a");
     const row = (await pool.query("SELECT scope FROM workstreams WHERE id = 'ws_pg_scope'")).rows[0];
     expect(row.scope).toBe("client-a");
 
-    const wsNull = await storage.workstreams.create({ id: "ws_pg_null", label: "project-beta", scope: null });
+    const wsNull = await storage.workstreams.create("team_local", { id: "ws_pg_null", label: "project-beta", scope: null });
     expect(wsNull.scope).toBeNull();
   });
 
   it("signal insert stores scope (pg)", async () => {
     const { makeSignal } = await import("../fixtures/signals.js");
-    await storage.signals.insert(makeSignal({ id: "sig_pg_scope", scope: "client-a" }));
+    await storage.signals.insert("team_local", makeSignal({ id: "sig_pg_scope", scope: "client-a" }));
     const row = (await pool.query("SELECT scope FROM signals WHERE id = 'sig_pg_scope'")).rows[0];
     expect(row.scope).toBe("client-a");
 
-    await storage.signals.insert(makeSignal({ id: "sig_pg_null", scope: null }));
+    await storage.signals.insert("team_local", makeSignal({ id: "sig_pg_null", scope: null }));
     const nullRow = (await pool.query("SELECT scope FROM signals WHERE id = 'sig_pg_null'")).rows[0];
     expect(nullRow.scope).toBeNull();
   });

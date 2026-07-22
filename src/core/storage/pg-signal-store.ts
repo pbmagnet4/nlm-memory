@@ -1,11 +1,17 @@
 /**
  * PgSignalStore - SignalStore over pg.Pool. Receives its Pool from PgStorage.
  * Insert is idempotent via ON CONFLICT (id) DO NOTHING.
+ *
+ * Tenancy: mirrors SqliteSignalStore — every method takes `tenantId` as its
+ * non-optional first parameter and routes STAMP-table WHERE fragments
+ * through `tenantClausePg`; `installScope` stays the within-tenant
+ * discriminator (program spec §4.6 hardening 3).
  */
 
 import type { Pool } from "pg";
 import type { SignalAggregationFilter, SignalStore } from "@ports/signal-store.js";
 import type { Signal, SignalKind, SignalOutcome } from "@shared/types.js";
+import { tenantClausePg } from "@core/tenancy/tenant-clause.js";
 
 type SignalRow = {
   id: string;
@@ -30,30 +36,31 @@ const SCAN_CAP = 5000;
 const INSERT_SQL = `
   INSERT INTO signals (
     id, v, install_scope, kind, producer, outcome, model, repo,
-    step, detail, session_id, scope, ts, created_at
-  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+    step, detail, session_id, scope, ts, created_at, tenant_id
+  ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
   ON CONFLICT (id) DO NOTHING`;
 
-function insertParams(s: Signal): unknown[] {
+function insertParams(s: Signal, tenantId: string): unknown[] {
   return [
     s.id, s.v, s.installScope, s.kind, s.producer, s.outcome, s.model, s.repo,
     s.step, s.detail === null ? null : JSON.stringify(s.detail), s.sessionId, s.scope, s.ts, s.createdAt,
+    tenantId,
   ];
 }
 
 export class PgSignalStore implements SignalStore {
   constructor(private readonly pool: Pool) {}
 
-  async insert(signal: Signal): Promise<void> {
-    await this.pool.query(INSERT_SQL, insertParams(signal));
+  async insert(tenantId: string, signal: Signal): Promise<void> {
+    await this.pool.query(INSERT_SQL, insertParams(signal, tenantId));
   }
 
-  async insertMany(signals: ReadonlyArray<Signal>): Promise<void> {
+  async insertMany(tenantId: string, signals: ReadonlyArray<Signal>): Promise<void> {
     if (signals.length === 0) return;
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      for (const s of signals) await client.query(INSERT_SQL, insertParams(s));
+      for (const s of signals) await client.query(INSERT_SQL, insertParams(s, tenantId));
       await client.query("COMMIT");
     } catch (err) {
       await client.query("ROLLBACK");
@@ -63,7 +70,7 @@ export class PgSignalStore implements SignalStore {
     }
   }
 
-  async listForAggregation(filter: SignalAggregationFilter): Promise<ReadonlyArray<Signal>> {
+  async listForAggregation(tenantId: string, filter: SignalAggregationFilter): Promise<ReadonlyArray<Signal>> {
     const where: string[] = ["install_scope = $1"];
     const params: unknown[] = [filter.installScope];
     let idx = 2;
@@ -71,6 +78,9 @@ export class PgSignalStore implements SignalStore {
     if (filter.model !== undefined) { where.push(`model = $${idx++}`); params.push(filter.model); }
     if (filter.kind !== undefined) { where.push(`kind = $${idx++}`); params.push(filter.kind); }
     if (filter.sinceTs !== undefined) { where.push(`ts >= $${idx++}`); params.push(filter.sinceTs); }
+    const tc = tenantClausePg(tenantId, idx++);
+    where.push(tc.sql);
+    params.push(tc.param);
     const limit = Math.max(1, Math.min(SCAN_CAP, Math.trunc(filter.limit ?? SCAN_CAP)));
     params.push(limit);
     const result = await this.pool.query<SignalRow>(
@@ -85,16 +95,18 @@ export class PgSignalStore implements SignalStore {
     return result.rows.map(rowToSignal);
   }
 
-  async countSince(installScope: string, sinceTs: string): Promise<number> {
+  async countSince(tenantId: string, installScope: string, sinceTs: string): Promise<number> {
+    const tc = tenantClausePg(tenantId, 3);
     const result = await this.pool.query<{ n: string }>(
-      "SELECT COUNT(*)::text AS n FROM signals WHERE install_scope = $1 AND ts >= $2",
-      [installScope, sinceTs],
+      `SELECT COUNT(*)::text AS n FROM signals WHERE install_scope = $1 AND ts >= $2 AND ${tc.sql}`,
+      [installScope, sinceTs, tc.param],
     );
     return Number.parseInt(result.rows[0]?.n ?? "0", 10);
   }
 
-  async pruneOlderThan(olderThanTs: string): Promise<number> {
-    const result = await this.pool.query("DELETE FROM signals WHERE ts < $1", [olderThanTs]);
+  async pruneOlderThan(tenantId: string, olderThanTs: string): Promise<number> {
+    const tc = tenantClausePg(tenantId, 2);
+    const result = await this.pool.query(`DELETE FROM signals WHERE ts < $1 AND ${tc.sql}`, [olderThanTs, tc.param]);
     return result.rowCount ?? 0;
   }
 }

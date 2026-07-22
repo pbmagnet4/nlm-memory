@@ -62,29 +62,29 @@ describe("sqlite outcome adapters", () => {
         makeSession({ id: "s1", endedAt: "2026-01-01T00:00:00.000Z", status: "closed", body: "x".repeat(50_000) }),
       );
       const reader = new SqliteOutcomeSessionReader(storage.rawDb());
-      const result = await reader.getById("s1");
+      const result = await reader.getById("team_local", "s1");
       expect(result).toEqual({ id: "s1", endedAt: "2026-01-01T00:00:00.000Z", status: "closed" });
       expect(result && "body" in result).toBe(false);
     });
 
     it("returns null for an unknown session", async () => {
       const reader = new SqliteOutcomeSessionReader(storage.rawDb());
-      expect(await reader.getById("missing")).toBeNull();
+      expect(await reader.getById("team_local", "missing")).toBeNull();
     });
   });
 
   describe("SqliteOutcomeSignalReader", () => {
     it("lists signals correlated to a session", async () => {
-      await storage.signals.insert(makeSignal({ id: "sig-1", sessionId: "s1", outcome: "fail" }));
-      await storage.signals.insert(makeSignal({ id: "sig-2", sessionId: "s2", outcome: "pass" }));
+      await storage.signals.insert("team_local", makeSignal({ id: "sig-1", sessionId: "s1", outcome: "fail" }));
+      await storage.signals.insert("team_local", makeSignal({ id: "sig-2", sessionId: "s2", outcome: "pass" }));
       const reader = new SqliteOutcomeSignalReader(storage.rawDb());
-      const result = await reader.listForSession("s1");
+      const result = await reader.listForSession("team_local", "s1");
       expect(result).toEqual([{ id: "sig-1", outcome: "fail" }]);
     });
 
     it("returns an empty array for a session with no signals", async () => {
       const reader = new SqliteOutcomeSignalReader(storage.rawDb());
-      expect(await reader.listForSession("s1")).toEqual([]);
+      expect(await reader.listForSession("team_local", "s1")).toEqual([]);
     });
   });
 
@@ -96,7 +96,7 @@ describe("sqlite outcome adapters", () => {
       storage.sessions.insertEdgeForTest("s2", "s1", "continues");
       storage.sessions.insertEdgeForTest("s3", "s2", "continues"); // touches s2, not s1
       const reader = new SqliteOutcomeEdgeReader(storage.rawDb());
-      const result = await reader.listForSession("s1");
+      const result = await reader.listForSession("team_local", "s1");
       expect(result).toEqual([{ fromSession: "s2", toSession: "s1", kind: "continues" }]);
     });
   });
@@ -128,7 +128,7 @@ describe("sqlite outcome adapters", () => {
         citationLogPath,
         reDerivationPairsPath: join(tmp, "nonexistent-pairs.json"),
       });
-      const session = await deps.sessions.getById("s1");
+      const session = await deps.sessions.getById("team_local", "s1");
       expect(session?.status).toBe("superseded");
       expect(deps.reDerivationPairs).toEqual([]);
     });
@@ -188,7 +188,7 @@ describe("sqlite outcome adapters", () => {
       storage.sessions.insertSessionForTest(
         makeSession({ id: "s_old", endedAt: "2025-01-01T00:00:00.000Z", status: "closed" }),
       );
-      await storage.signals.insert(makeSignal({ id: "sig-1", sessionId: "s1", outcome: "pass" }));
+      await storage.signals.insert("team_local", makeSignal({ id: "sig-1", sessionId: "s1", outcome: "pass" }));
       storage.sessions.insertEdgeForTest("s2", "s1", "continues");
       writeFileSync(
         citationLogPath,
@@ -199,7 +199,7 @@ describe("sqlite outcome adapters", () => {
       const pairs = [{ a: "s1", b: "s2", sharedEntities: ["pgvector"], jaccard: 0.9 }];
       writeFileSync(pairsPath, JSON.stringify(pairs));
 
-      const input = await loadOutcomeCoverageInput(storage.rawDb(), {
+      const input = await loadOutcomeCoverageInput(storage.rawDb(), "team_local", {
         sinceIso: "2026-01-01T00:00:00.000Z",
         citationLogPath,
         reDerivationPairsPath: pairsPath,
@@ -216,7 +216,7 @@ describe("sqlite outcome adapters", () => {
       storage.sessions.insertSessionForTest(
         makeSession({ id: "s_old", endedAt: "2025-01-01T00:00:00.000Z", status: "closed" }),
       );
-      const input = await loadOutcomeCoverageInput(storage.rawDb(), {
+      const input = await loadOutcomeCoverageInput(storage.rawDb(), "team_local", {
         sinceIso: "2026-01-01T00:00:00.000Z",
         citationLogPath,
         reDerivationPairsPath: join(tmp, "nonexistent-pairs.json"),

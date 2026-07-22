@@ -239,7 +239,7 @@ export async function recallWorkstreamHandler(
     const conversationId = resolveConversationByQuery(idOrLabel) ?? undefined;
     const ws = deps.workstreams.store;
     const found =
-      (await ws.getById(idOrLabel)) ?? (await ws.findByNormalizedLabel(normalizeLabel(idOrLabel)));
+      (await ws.getById(DEFAULT_TEAM_ID, idOrLabel)) ?? (await ws.findByNormalizedLabel(DEFAULT_TEAM_ID, normalizeLabel(idOrLabel)));
     if (!found) return okText(`No workstream matches "${idOrLabel}".`);
     const view = await rollupWorkstream(
       { workstreams: deps.workstreams.store, sessions: deps.workstreams.sessions, facts: deps.workstreams.facts, exemplars: deps.workstreams.exemplars },
@@ -265,18 +265,19 @@ export async function recallWorkstreamHandler(
   }
 }
 
-/** idOrLabel -> live survivor workstream (merged_into resolved) | null. One source of truth for lifecycle handlers. */
+/** idOrLabel -> live survivor workstream (merged_into resolved) | null, within tenantId. One source of truth for lifecycle handlers. */
 async function resolveWorkstream(
   store: import("@ports/workstream-store.js").WorkstreamStore,
+  tenantId: string,
   idOrLabel: string,
 ): Promise<Workstream | null> {
   const found =
-    (await store.getById(idOrLabel)) ?? (await store.findByNormalizedLabel(normalizeLabel(idOrLabel)));
+    (await store.getById(tenantId, idOrLabel)) ?? (await store.findByNormalizedLabel(tenantId, normalizeLabel(idOrLabel)));
   if (!found) return null;
-  const all = await store.listAll();
+  const all = await store.listAll(tenantId);
   const byId = new Map(all.map((w) => [w.id, { id: w.id, mergedInto: w.mergedInto }]));
   const survivorId = resolveWorkstreamId(found.id, byId);
-  return survivorId === found.id ? found : ((await store.getById(survivorId)) ?? found);
+  return survivorId === found.id ? found : ((await store.getById(tenantId, survivorId)) ?? found);
 }
 
 export async function renameWorkstreamHandler(
@@ -289,13 +290,13 @@ export async function renameWorkstreamHandler(
     const label = (input.label ?? "").trim();
     if (!idOrLabel || !label) return okText("Provide the workstream (id or label) and the new label.");
     const ws = deps.workstreams.store;
-    const target = await resolveWorkstream(ws, idOrLabel);
+    const target = await resolveWorkstream(ws, DEFAULT_TEAM_ID, idOrLabel);
     if (!target) return okText(`No workstream matches "${idOrLabel}".`);
-    const collision = await ws.findByNormalizedLabel(normalizeLabel(label));
+    const collision = await ws.findByNormalizedLabel(DEFAULT_TEAM_ID, normalizeLabel(label));
     if (collision && collision.id !== target.id) {
       return okText(`Label "${label}" is already used by workstream "${collision.label}" (${collision.id}).`);
     }
-    await ws.setLabel(target.id, label);
+    await ws.setLabel(DEFAULT_TEAM_ID, target.id, label);
     return okText(`Renamed workstream ${target.id}: "${target.label}" -> "${label}".`);
   } catch (e) {
     return err(e);
@@ -310,9 +311,9 @@ export async function retireWorkstreamHandler(
   try {
     const idOrLabel = (input.idOrLabel ?? "").trim();
     if (!idOrLabel) return okText("Provide a workstream id or label.");
-    const target = await resolveWorkstream(deps.workstreams.store, idOrLabel);
+    const target = await resolveWorkstream(deps.workstreams.store, DEFAULT_TEAM_ID, idOrLabel);
     if (!target) return okText(`No workstream matches "${idOrLabel}".`);
-    await deps.workstreams.store.setStatus(target.id, "retired");
+    await deps.workstreams.store.setStatus(DEFAULT_TEAM_ID, target.id, "retired");
     return okText(`Retired workstream "${target.label}" (${target.id}).`);
   } catch (e) {
     return err(e);
@@ -329,12 +330,12 @@ export async function mergeWorkstreamsHandler(
     const intoArg = (input.into ?? "").trim();
     if (!fromArg || !intoArg) return okText("Provide both `from` and `into` (workstream id or label).");
     const ws = deps.workstreams.store;
-    const from = await resolveWorkstream(ws, fromArg);
-    const into = await resolveWorkstream(ws, intoArg);
+    const from = await resolveWorkstream(ws, DEFAULT_TEAM_ID, fromArg);
+    const into = await resolveWorkstream(ws, DEFAULT_TEAM_ID, intoArg);
     if (!from) return okText(`No workstream matches "${fromArg}".`);
     if (!into) return okText(`No workstream matches "${intoArg}".`);
     if (from.id === into.id) return okText(`"${fromArg}" and "${intoArg}" resolve to the same workstream — nothing to merge.`);
-    await ws.merge(from.id, into.id);
+    await ws.merge(DEFAULT_TEAM_ID, from.id, into.id);
     return okText(`Merged "${from.label}" (${from.id}) into "${into.label}" (${into.id}).`);
   } catch (e) {
     return err(e);
@@ -350,7 +351,7 @@ export async function rebindSessionHandler(
     const sessionId = (input.sessionId ?? "").trim();
     const wsArg = (input.workstream ?? "").trim();
     if (!sessionId || !wsArg) return okText("Provide both a sessionId and a workstream (id or label).");
-    const ws = await resolveWorkstream(deps.workstreams.store, wsArg);
+    const ws = await resolveWorkstream(deps.workstreams.store, DEFAULT_TEAM_ID, wsArg);
     if (!ws) return okText(`No workstream matches "${wsArg}".`);
     await deps.store.setWorkstreamBinding(DEFAULT_TEAM_ID, sessionId, ws.id, "operator", null);
     return okText(`Rebound session ${sessionId} -> workstream "${ws.label}" (${ws.id}).`);
@@ -417,7 +418,7 @@ export async function getSessionHandler(
     let outcome;
     if (deps.outcomeDb) {
       try {
-        outcome = await deriveOutcome(session.id, await buildSqliteOutcomeDeps(deps.outcomeDb));
+        outcome = await deriveOutcome(DEFAULT_TEAM_ID, session.id, await buildSqliteOutcomeDeps(deps.outcomeDb));
       } catch {
         outcome = undefined;
       }
@@ -830,7 +831,7 @@ export async function reportOutcomeHandler(
       deps.installScope,
     );
     signal = await stampSignalScope(signal, DEFAULT_TEAM_ID, { sessionScopeReader: deps.sessionScopeReader });
-    await deps.signalStore.insert(signal);
+    await deps.signalStore.insert(DEFAULT_TEAM_ID, signal);
     return ok({ recorded: true, id: signal.id, outcome: signal.outcome });
   } catch (e) {
     return err(e);
@@ -844,10 +845,10 @@ export async function listMergeSuggestionsHandler(
   if (!deps.workstreams) return okText("list_merge_suggestions is not available in this deployment.");
   try {
     const minScore = typeof input.minScore === "number" ? input.minScore : 0.5;
-    const all = (await deps.workstreams.store.listAll()).filter((w) => w.status === "active");
+    const all = (await deps.workstreams.store.listAll(DEFAULT_TEAM_ID)).filter((w) => w.status === "active");
     if (all.length < 2) return okText("Not enough active workstreams to suggest merges.");
     const ids = all.map((w) => w.id);
-    const entMap = await deps.workstreams.store.entitiesFor(ids);
+    const entMap = await deps.workstreams.store.entitiesFor(DEFAULT_TEAM_ID, ids);
     const items = await Promise.all(
       all.map(async (w) => ({
         id: w.id, label: w.label,

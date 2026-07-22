@@ -19,6 +19,7 @@ export function renderFailureMode(mode: FailureMode, windowDays: number): string
 }
 
 export async function buildFailureModeBlock(
+  tenantId: string,
   store: SignalStore,
   args: { installScope: string; repo: string; model?: string; now?: () => Date },
   opts: FailureModeRecallOptions = {},
@@ -28,7 +29,7 @@ export async function buildFailureModeBlock(
   const now = (args.now ?? (() => new Date()))();
   const sinceTs = new Date(now.getTime() - windowDays * 86_400_000).toISOString();
 
-  const signals = await store.listForAggregation({
+  const signals = await store.listForAggregation(tenantId, {
     installScope: args.installScope,
     repo: args.repo,
     ...(args.model ? { model: args.model } : {}),

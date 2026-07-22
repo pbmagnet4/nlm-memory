@@ -33,7 +33,7 @@ export async function buildWorkDigest(deps: BuildWorkDigestDeps, tenantId: strin
   const readTs = deps.readTimestamps ?? readTranscriptTimestamps;
 
   const provider = deps.workstreams ? workstreamTopicProvider(topicProvider) : topicProvider;
-  const wsList = deps.workstreams ? await deps.workstreams.listAll() : [];
+  const wsList = deps.workstreams ? await deps.workstreams.listAll(tenantId) : [];
   const wsById = new Map(wsList.map((w) => [w.id, { id: w.id, mergedInto: w.mergedInto }]));
   const wsLabel = new Map(wsList.map((w) => [w.id, w.label]));
   function resolveWs(id: string | null | undefined): { id: string; label: string } | null {

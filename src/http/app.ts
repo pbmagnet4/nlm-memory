@@ -1654,7 +1654,7 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
       sessionScopeReader: deps.sessionScopeReader,
     });
     try {
-      await deps.signalStore.insert(signal);
+      await deps.signalStore.insert(DEFAULT_TEAM_ID, signal);
     } catch {
       return c.json({ error: "signal insert failed" }, 500);
     }
@@ -1692,6 +1692,7 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
     if (!repo) return c.json({ error: "repo is required" }, 400);
     const model = c.req.query("model");
     const block = await buildFailureModeBlock(
+      DEFAULT_TEAM_ID,
       deps.signalStore,
       { installScope: deps.installScope, repo, ...(model ? { model } : {}) },
     );
@@ -1708,7 +1709,7 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
       return c.json({ error: "days must be 1..365" }, 400);
     }
     const sinceTs = new Date(Date.now() - days * 86_400_000).toISOString();
-    const rows = await deps.signalStore.listForAggregation({ installScope: deps.installScope, sinceTs });
+    const rows = await deps.signalStore.listForAggregation(DEFAULT_TEAM_ID, { installScope: deps.installScope, sinceTs });
     const modes = aggregateFailureModes(rows);
     return c.json({ days, total: rows.length, modes });
   });

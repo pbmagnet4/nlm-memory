@@ -40,11 +40,11 @@ export interface OutcomeCoverage {
   readonly unobserved: number;
 }
 
-export async function computeOutcomeCoverage(input: OutcomeCoverageInput): Promise<OutcomeCoverage> {
+export async function computeOutcomeCoverage(tenantId: string, input: OutcomeCoverageInput): Promise<OutcomeCoverage> {
   const counts = { held: 0, overturned: 0, builtUpon: 0, reDerivedLater: 0, unobserved: 0 };
 
   for (const session of input.sessions) {
-    const verdict = await deriveOutcome(session.id, {
+    const verdict = await deriveOutcome(tenantId, session.id, {
       sessions: { getById: async () => session },
       signals: { listForSession: async () => input.signalsBySession.get(session.id) ?? [] },
       edges: { listForSession: async () => input.edgesBySession.get(session.id) ?? [] },

@@ -457,7 +457,7 @@ export class ScanScheduler {
           // skip a malformed embedded signal; one bad entry must not lose the rest
         }
       }
-      if (normalized.length > 0) await this.opts.signalStore.insertMany(normalized);
+      if (normalized.length > 0) await this.opts.signalStore.insertMany(this.opts.tenantId, normalized);
     } catch (e) {
       this.opts.logger(
         `[scheduler] signal drain failed for ${chunk.id}: ${e instanceof Error ? e.message : String(e)}`,

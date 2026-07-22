@@ -38,14 +38,14 @@ function scopeMatches(wsScope: string | null, sessionScope: string | null): bool
 
 async function applyBinding(deps: BindDeps, tenantId: string, input: BindInput, workstreamId: string): Promise<BindResult> {
   await deps.sessions.setWorkstreamBinding(tenantId, input.sessionId, workstreamId, deps.source ?? "classifier", null);
-  await deps.workstreams.upsertEntities(workstreamId, input.entities);
-  await deps.workstreams.touchLastSession(workstreamId, input.startedAt);
+  await deps.workstreams.upsertEntities(tenantId, workstreamId, input.entities);
+  await deps.workstreams.touchLastSession(tenantId, workstreamId, input.startedAt);
   return { workstreamId };
 }
 
 export async function bindSessionToWorkstream(deps: BindDeps, tenantId: string, input: BindInput): Promise<BindResult | null> {
   try {
-    const all = await deps.workstreams.listAll();
+    const all = await deps.workstreams.listAll(tenantId);
     const content = `${input.label}\n${(input.body || input.summary).slice(0, NAMING_CONTENT_CHARS)}`;
 
     if (scopeStampEnabled()) {
@@ -58,7 +58,7 @@ export async function bindSessionToWorkstream(deps: BindDeps, tenantId: string, 
       }
 
       if (named && named.trim()) {
-        const ws = await deps.workstreams.create({ id: makeWorkstreamId(), label: named.trim(), scope: input.scope });
+        const ws = await deps.workstreams.create(tenantId, { id: makeWorkstreamId(), label: named.trim(), scope: input.scope });
         return applyBinding(deps, tenantId, input, ws.id);
       }
       return null;

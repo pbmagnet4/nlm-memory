@@ -14,10 +14,10 @@ export interface RollupDeps {
 }
 
 export async function rollupWorkstream(deps: RollupDeps, tenantId: string, workstreamId: string): Promise<WorkstreamRollup | null> {
-  const all = await deps.workstreams.listAll();
+  const all = await deps.workstreams.listAll(tenantId);
   const byId = new Map(all.map((w) => [w.id, { id: w.id, mergedInto: w.mergedInto }]));
   const survivorId = resolveWorkstreamId(workstreamId, byId);
-  const workstream = await deps.workstreams.getById(survivorId);
+  const workstream = await deps.workstreams.getById(tenantId, survivorId);
   if (!workstream) return null;
 
   const memberIds = all.filter((w) => resolveWorkstreamId(w.id, byId) === survivorId).map((w) => w.id);

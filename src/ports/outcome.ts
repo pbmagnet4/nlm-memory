@@ -19,7 +19,7 @@ export interface OutcomeSession {
 }
 
 export interface OutcomeSessionReader {
-  getById(sessionId: string): Promise<OutcomeSession | null>;
+  getById(tenantId: string, sessionId: string): Promise<OutcomeSession | null>;
 }
 
 /** Tier-A evidence: a `signals` row correlated to the session. */
@@ -29,7 +29,7 @@ export interface OutcomeSignal {
 }
 
 export interface OutcomeSignalReader {
-  listForSession(sessionId: string): Promise<ReadonlyArray<OutcomeSignal>>;
+  listForSession(tenantId: string, sessionId: string): Promise<ReadonlyArray<OutcomeSignal>>;
 }
 
 /**
@@ -50,7 +50,7 @@ export interface OutcomeEdge {
 }
 
 export interface OutcomeEdgeReader {
-  listForSession(sessionId: string): Promise<ReadonlyArray<OutcomeEdge>>;
+  listForSession(tenantId: string, sessionId: string): Promise<ReadonlyArray<OutcomeEdge>>;
 }
 
 /**

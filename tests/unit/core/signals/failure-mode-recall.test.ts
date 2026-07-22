@@ -19,7 +19,7 @@ const NOW = () => new Date("2026-06-09T12:00:00.000Z");
 
 describe("buildFailureModeBlock", () => {
   it("renders a block when a mode crosses threshold", async () => {
-    const block = await buildFailureModeBlock(storeOf(), { installScope: "i", repo: "/repo/x", now: NOW });
+    const block = await buildFailureModeBlock("team_local", storeOf(), { installScope: "i", repo: "/repo/x", now: NOW });
     expect(block).toContain("Known failure modes");
     expect(block).toContain("types");
     expect(block).toContain("80%");
@@ -27,7 +27,7 @@ describe("buildFailureModeBlock", () => {
   });
 
   it("returns empty string when nothing crosses threshold", async () => {
-    const block = await buildFailureModeBlock(storeOf([]), { installScope: "i", repo: "/repo/x", now: NOW });
+    const block = await buildFailureModeBlock("team_local", storeOf([]), { installScope: "i", repo: "/repo/x", now: NOW });
     expect(block).toBe("");
   });
 
@@ -36,7 +36,7 @@ describe("buildFailureModeBlock", () => {
     for (const step of ["a", "b", "c", "d"]) {
       for (let i = 0; i < 10; i++) many.push(makeSignal({ id: `${step}${i}`, outcome: "fail", step }));
     }
-    const block = await buildFailureModeBlock(storeOf(many), { installScope: "i", repo: "/repo/x", now: NOW }, { maxModes: 2 });
+    const block = await buildFailureModeBlock("team_local", storeOf(many), { installScope: "i", repo: "/repo/x", now: NOW }, { maxModes: 2 });
     expect(block.split("\n").filter((l) => l.startsWith("- "))).toHaveLength(2);
   });
 

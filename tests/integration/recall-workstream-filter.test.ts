@@ -27,7 +27,7 @@ function buildWorkstreamResolver(
   wsStore: WorkstreamStore,
 ): (idOrLabel: string) => Promise<ReadonlyArray<string>> {
   return async (idOrLabel: string) => {
-    const all = await wsStore.listAll();
+    const all = await wsStore.listAll("team_local");
     const byId = new Map(all.map((w) => [w.id, { id: w.id, mergedInto: w.mergedInto }]));
     const target =
       all.find((w) => w.id === idOrLabel) ??
@@ -68,7 +68,7 @@ describe("RecallService workstream filter (integration)", () => {
 
     // Bind s1 to workstream "NLM"
     const wsId = makeWorkstreamId();
-    await wsStore.create({ id: wsId, label: "NLM", scope: null });
+    await wsStore.create("team_local", { id: wsId, label: "NLM", scope: null });
     await store.setWorkstreamBinding("team_local", s1.id, wsId, "operator", 1.0);
 
     const svc = new RecallService({
@@ -95,11 +95,11 @@ describe("RecallService workstream filter (integration)", () => {
     // Seed two workstreams: ancestor and survivor.
     const ancestorId = makeWorkstreamId();
     const survivorId = makeWorkstreamId();
-    await wsStore.create({ id: ancestorId, label: "NLM Alpha", scope: null });
-    await wsStore.create({ id: survivorId, label: "NLM Core", scope: null });
+    await wsStore.create("team_local", { id: ancestorId, label: "NLM Alpha", scope: null });
+    await wsStore.create("team_local", { id: survivorId, label: "NLM Core", scope: null });
 
     // Merge ancestor INTO survivor: sets ancestor.mergedInto = survivorId.
-    await wsStore.merge(ancestorId, survivorId);
+    await wsStore.merge("team_local", ancestorId, survivorId);
 
     // Seed a session keyword-matching "refactor" and bind it to the ANCESTOR only.
     // If merge-chain resolution is absent, searching by survivor would miss this

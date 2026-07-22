@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseWorkTopics } from "../src/core/workstream/work-topics.js";
+import { DEFAULT_TEAM_ID } from "../src/core/tenancy/default-team.js";
 export type { WorkTopic } from "../src/core/workstream/work-topics.js";
 export { parseWorkTopics };
 
@@ -44,15 +45,15 @@ async function main(): Promise<void> {
     let created = 0;
     let topped = 0;
     for (const t of topics) {
-      const existing = await storage.workstreams.findByNormalizedLabel(normalizeLabel(t.label));
+      const existing = await storage.workstreams.findByNormalizedLabel(DEFAULT_TEAM_ID, normalizeLabel(t.label));
       const ws =
-        existing ?? (await storage.workstreams.create({ id: makeWorkstreamId(), label: t.label, scope: null }));
+        existing ?? (await storage.workstreams.create(DEFAULT_TEAM_ID, { id: makeWorkstreamId(), label: t.label, scope: null }));
       if (!existing) {
         created++;
       } else {
         topped++;
       }
-      await storage.workstreams.upsertEntities(ws.id, t.entities);
+      await storage.workstreams.upsertEntities(DEFAULT_TEAM_ID, ws.id, t.entities);
     }
     process.stdout.write(
       `seed-workstreams: ${topics.length} topics -> ${created} created, ${topped} already-present (entities topped up)\n`,

@@ -26,6 +26,7 @@ import { checkHookInjection } from "@core/digest/hook-injection.js";
 import { hookAuthHeaders } from "../hook/hook-auth.js";
 import { computeOutcomeCoverage, type OutcomeCoverage } from "@core/outcome/coverage.js";
 import { loadOutcomeCoverageInput } from "@core/storage/sqlite-outcome-store.js";
+import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 
 /** Sessions ended in the last N days count toward the Tier-B coverage block. */
 const OUTCOME_COVERAGE_WINDOW_DAYS = 30;
@@ -47,8 +48,8 @@ async function loadOutcomeCoverage(): Promise<OutcomeCoverage | null> {
     const sinceIso = new Date(
       Date.now() - OUTCOME_COVERAGE_WINDOW_DAYS * 24 * 60 * 60 * 1000,
     ).toISOString();
-    const input = await loadOutcomeCoverageInput(db, { sinceIso });
-    return await computeOutcomeCoverage(input);
+    const input = await loadOutcomeCoverageInput(db, DEFAULT_TEAM_ID, { sinceIso });
+    return await computeOutcomeCoverage(DEFAULT_TEAM_ID, input);
   } finally {
     db.close();
   }

@@ -53,6 +53,7 @@ import type {
   OutcomeSignalReader,
 } from "@ports/outcome.js";
 import type { SessionStatus, SignalOutcome } from "@shared/types.js";
+import { tenantClause } from "@core/tenancy/tenant-clause.js";
 
 const RELEVANT_EDGE_KINDS = "('supersedes','replaces','continues')";
 
@@ -76,12 +77,13 @@ function loadCachedReDerivationPairs(pairsPath: string): ReadonlyArray<ReDerivat
 export class SqliteOutcomeSessionReader implements OutcomeSessionReader {
   constructor(private readonly db: Database.Database) {}
 
-  async getById(sessionId: string): Promise<OutcomeSession | null> {
+  async getById(tenantId: string, sessionId: string): Promise<OutcomeSession | null> {
+    const tc = tenantClause(tenantId);
     const row = this.db
-      .prepare<[string], { id: string; ended_at: string | null; status: SessionStatus }>(
-        "SELECT id, ended_at, status FROM sessions WHERE id = ?",
+      .prepare<[string, string], { id: string; ended_at: string | null; status: SessionStatus }>(
+        `SELECT id, ended_at, status FROM sessions WHERE id = ? AND ${tc.sql}`,
       )
-      .get(sessionId);
+      .get(sessionId, tc.param);
     if (!row) return null;
     return { id: row.id, endedAt: row.ended_at, status: row.status };
   }
@@ -90,25 +92,35 @@ export class SqliteOutcomeSessionReader implements OutcomeSessionReader {
 export class SqliteOutcomeSignalReader implements OutcomeSignalReader {
   constructor(private readonly db: Database.Database) {}
 
-  async listForSession(sessionId: string): Promise<ReadonlyArray<OutcomeSignal>> {
+  async listForSession(tenantId: string, sessionId: string): Promise<ReadonlyArray<OutcomeSignal>> {
+    const tc = tenantClause(tenantId);
     return this.db
-      .prepare<[string], { id: string; outcome: SignalOutcome }>(
-        "SELECT id, outcome FROM signals WHERE session_id = ?",
+      .prepare<[string, string], { id: string; outcome: SignalOutcome }>(
+        `SELECT id, outcome FROM signals WHERE session_id = ? AND ${tc.sql}`,
       )
-      .all(sessionId);
+      .all(sessionId, tc.param);
   }
 }
 
 export class SqliteOutcomeEdgeReader implements OutcomeEdgeReader {
   constructor(private readonly db: Database.Database) {}
 
-  async listForSession(sessionId: string): Promise<ReadonlyArray<OutcomeEdge>> {
+  /**
+   * session_edges carries no tenant_id (DERIVE-VIA-FK) — the tenant filter
+   * is applied via a join back to the tenant-filtered `sessions` row for
+   * `to_session` (this session), matching the resolveSuccessors pattern in
+   * SqliteSessionStore.
+   */
+  async listForSession(tenantId: string, sessionId: string): Promise<ReadonlyArray<OutcomeEdge>> {
+    const tc = tenantClause(tenantId, "s.tenant_id");
     const rows = this.db
-      .prepare<[string], { from_session: string; to_session: string; kind: OutcomeEdgeKind }>(
-        `SELECT from_session, to_session, kind FROM session_edges
-         WHERE to_session = ? AND kind IN ${RELEVANT_EDGE_KINDS}`,
+      .prepare<[string, string], { from_session: string; to_session: string; kind: OutcomeEdgeKind }>(
+        `SELECT se.from_session, se.to_session, se.kind
+         FROM session_edges se
+         JOIN sessions s ON s.id = se.to_session
+         WHERE se.to_session = ? AND se.kind IN ${RELEVANT_EDGE_KINDS} AND ${tc.sql}`,
       )
-      .all(sessionId);
+      .all(sessionId, tc.param);
     return rows.map((r) => ({ fromSession: r.from_session, toSession: r.to_session, kind: r.kind }));
   }
 }
@@ -180,15 +192,17 @@ export interface LoadOutcomeCoverageInputOptions {
  */
 export async function loadOutcomeCoverageInput(
   db: Database.Database,
+  tenantId: string,
   opts: LoadOutcomeCoverageInputOptions,
 ): Promise<OutcomeCoverageInput> {
+  const sessionTc = tenantClause(tenantId);
   const sessionRows = db
-    .prepare<[string], { id: string; ended_at: string | null; status: SessionStatus }>(
+    .prepare<[string, string], { id: string; ended_at: string | null; status: SessionStatus }>(
       `SELECT id, ended_at, status FROM sessions
-       WHERE ended_at IS NOT NULL AND ended_at >= ?
+       WHERE ended_at IS NOT NULL AND ended_at >= ? AND ${sessionTc.sql}
        ORDER BY ended_at DESC`,
     )
-    .all(opts.sinceIso);
+    .all(opts.sinceIso, sessionTc.param);
   const sessions: OutcomeSession[] = sessionRows.map((r) => ({
     id: r.id,
     endedAt: r.ended_at,
@@ -203,17 +217,21 @@ export async function loadOutcomeCoverageInput(
     const ids = sessions.map((s) => s.id);
     const placeholders = ids.map(() => "?").join(",");
 
+    const signalTc = tenantClause(tenantId);
     const signalRows = db
-      .prepare<string[], { session_id: string; id: string; outcome: SignalOutcome }>(
-        `SELECT session_id, id, outcome FROM signals WHERE session_id IN (${placeholders})`,
+      .prepare<unknown[], { session_id: string; id: string; outcome: SignalOutcome }>(
+        `SELECT session_id, id, outcome FROM signals WHERE session_id IN (${placeholders}) AND ${signalTc.sql}`,
       )
-      .all(...ids);
+      .all(...ids, signalTc.param);
     for (const r of signalRows) {
       const list = signalsBySession.get(r.session_id) ?? [];
       list.push({ id: r.id, outcome: r.outcome });
       signalsBySession.set(r.session_id, list);
     }
 
+    // session_edges carries no tenant_id (DERIVE-VIA-FK); ids are already
+    // sourced from the tenant-filtered sessions query above, so a plain IN
+    // is sufficient here — no candidate id can resolve to another tenant.
     const edgeRows = db
       .prepare<string[], { from_session: string; to_session: string; kind: OutcomeEdgeKind }>(
         `SELECT from_session, to_session, kind FROM session_edges

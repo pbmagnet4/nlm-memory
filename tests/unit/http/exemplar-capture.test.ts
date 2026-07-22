@@ -8,9 +8,9 @@ import type { Signal, CodeExemplarInput } from "../../../src/shared/types.js";
 function fakeSignalStore(): SignalStore {
   const rows: Signal[] = [];
   return {
-    async insert(s) { if (!rows.some((r) => r.id === s.id)) rows.push(s); },
-    async insertMany(ss) { for (const s of ss) if (!rows.some((r) => r.id === s.id)) rows.push(s); },
-    async listForAggregation(_f: SignalAggregationFilter) { return rows; },
+    async insert(_tenantId, s) { if (!rows.some((r) => r.id === s.id)) rows.push(s); },
+    async insertMany(_tenantId, ss) { for (const s of ss) if (!rows.some((r) => r.id === s.id)) rows.push(s); },
+    async listForAggregation(_tenantId: string, _f: SignalAggregationFilter) { return rows; },
     async countSince() { return rows.length; },
     async pruneOlderThan() { return 0; },
   };

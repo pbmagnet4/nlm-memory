@@ -66,10 +66,10 @@ describe("ScanScheduler signal drain", () => {
 
     const stored: Signal[] = [];
     const signalStore: SignalStore = {
-      async insert(s) {
+      async insert(_tenantId, s) {
         stored.push(s);
       },
-      async insertMany(ss) {
+      async insertMany(_tenantId, ss) {
         stored.push(...ss);
       },
       async listForAggregation() {
@@ -182,8 +182,8 @@ describe("ScanScheduler signal drain", () => {
 
     const stored: Signal[] = [];
     const signalStore: SignalStore = {
-      async insert(s) { stored.push(s); },
-      async insertMany(ss) { stored.push(...ss); },
+      async insert(_tenantId, s) { stored.push(s); },
+      async insertMany(_tenantId, ss) { stored.push(...ss); },
       async listForAggregation() { return []; },
       async countSince() { return 0; },
       async pruneOlderThan() { return 0; },
@@ -234,8 +234,8 @@ describe("ScanScheduler signal drain", () => {
       const transcriptPath = writeTempJsonl(dir, "sess.jsonl");
       const stored: Signal[] = [];
       const signalStore: SignalStore = {
-        async insert(s) { stored.push(s); },
-        async insertMany(ss) { stored.push(...ss); },
+        async insert(_tenantId, s) { stored.push(s); },
+        async insertMany(_tenantId, ss) { stored.push(...ss); },
         async listForAggregation() { return []; },
         async countSince() { return 0; },
         async pruneOlderThan() { return 0; },

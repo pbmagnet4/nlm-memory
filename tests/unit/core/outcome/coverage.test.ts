@@ -17,7 +17,7 @@ function baseInput(overrides: Partial<OutcomeCoverageInput> = {}): OutcomeCovera
 
 describe("computeOutcomeCoverage", () => {
   it("returns all-zero counts for an empty window", async () => {
-    const coverage = await computeOutcomeCoverage(baseInput());
+    const coverage = await computeOutcomeCoverage("team_local", baseInput());
     expect(coverage).toEqual({
       total: 0,
       held: 0,
@@ -34,7 +34,7 @@ describe("computeOutcomeCoverage", () => {
       { id: "s2", endedAt: "2026-01-18T00:00:00.000Z", status: "closed" },
       { id: "s3", endedAt: "2026-01-17T00:00:00.000Z", status: "closed" },
     ];
-    const coverage = await computeOutcomeCoverage(baseInput({ sessions }));
+    const coverage = await computeOutcomeCoverage("team_local", baseInput({ sessions }));
     expect(coverage.total).toBe(3);
     expect(coverage.unobserved).toBe(3);
     expect(coverage.held + coverage.overturned + coverage.builtUpon + coverage.reDerivedLater).toBe(0);
@@ -45,7 +45,7 @@ describe("computeOutcomeCoverage", () => {
       { id: "s1", endedAt: "2026-01-19T00:00:00.000Z", status: "superseded" },
       { id: "s2", endedAt: "2026-01-18T00:00:00.000Z", status: "closed" },
     ];
-    const coverage = await computeOutcomeCoverage(baseInput({ sessions }));
+    const coverage = await computeOutcomeCoverage("team_local", baseInput({ sessions }));
     expect(coverage.overturned).toBe(1);
     expect(coverage.unobserved).toBe(1);
   });
@@ -55,7 +55,7 @@ describe("computeOutcomeCoverage", () => {
       { id: "s1", endedAt: "2026-01-01T00:00:00.000Z", status: "closed" }, // 19 days elapsed -> held
       { id: "s2", endedAt: "2026-01-18T00:00:00.000Z", status: "closed" }, // 2 days elapsed -> unobserved
     ];
-    const coverage = await computeOutcomeCoverage(baseInput({ sessions }));
+    const coverage = await computeOutcomeCoverage("team_local", baseInput({ sessions }));
     expect(coverage.held).toBe(1);
     expect(coverage.unobserved).toBe(1);
   });
@@ -68,7 +68,7 @@ describe("computeOutcomeCoverage", () => {
     const edgesBySession = new Map<string, ReadonlyArray<OutcomeEdge>>([
       ["s1", [{ fromSession: "s3", toSession: "s1", kind: "continues" }]],
     ]);
-    const coverage = await computeOutcomeCoverage(baseInput({ sessions, edgesBySession }));
+    const coverage = await computeOutcomeCoverage("team_local", baseInput({ sessions, edgesBySession }));
     expect(coverage.builtUpon).toBe(1);
     expect(coverage.unobserved).toBe(1);
   });
@@ -77,7 +77,7 @@ describe("computeOutcomeCoverage", () => {
     const sessions: OutcomeSession[] = [
       { id: "s1", endedAt: "2026-01-18T00:00:00.000Z", status: "closed" },
     ];
-    const coverage = await computeOutcomeCoverage(
+    const coverage = await computeOutcomeCoverage("team_local", 
       baseInput({ sessions, reDerivationPairs: [{ a: "s1", b: "s9", sharedEntities: ["x"], jaccard: 0.9 }] }),
     );
     expect(coverage.reDerivedLater).toBe(1);
@@ -90,7 +90,7 @@ describe("computeOutcomeCoverage", () => {
     const signalsBySession = new Map<string, ReadonlyArray<OutcomeSignal>>([
       ["s1", [{ id: "sig-1", outcome: "fail" }]],
     ]);
-    const coverage = await computeOutcomeCoverage(baseInput({ sessions, signalsBySession }));
+    const coverage = await computeOutcomeCoverage("team_local", baseInput({ sessions, signalsBySession }));
     expect(coverage.overturned).toBe(1);
   });
 
@@ -102,7 +102,7 @@ describe("computeOutcomeCoverage", () => {
     const signalsBySession = new Map<string, ReadonlyArray<OutcomeSignal>>([
       ["s1", [{ id: "sig-1", outcome: "pass" }]],
     ]);
-    const coverage = await computeOutcomeCoverage(baseInput({ sessions, signalsBySession }));
+    const coverage = await computeOutcomeCoverage("team_local", baseInput({ sessions, signalsBySession }));
     expect(coverage.held).toBe(1); // s1 via tier-A
     expect(coverage.unobserved).toBe(1); // s2 has no signals of its own
   });

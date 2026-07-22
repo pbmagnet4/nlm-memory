@@ -46,9 +46,9 @@ function fakeSignalStore(): SignalStore & { rows: Signal[] } {
   const rows: Signal[] = [];
   return {
     rows,
-    async insert(s) { if (!rows.some((r) => r.id === s.id)) rows.push(s); },
-    async insertMany(ss) { for (const s of ss) if (!rows.some((r) => r.id === s.id)) rows.push(s); },
-    async listForAggregation(_f: SignalAggregationFilter) { return rows; },
+    async insert(_tenantId, s) { if (!rows.some((r) => r.id === s.id)) rows.push(s); },
+    async insertMany(_tenantId, ss) { for (const s of ss) if (!rows.some((r) => r.id === s.id)) rows.push(s); },
+    async listForAggregation(_tenantId: string, _f: SignalAggregationFilter) { return rows; },
     async countSince() { return rows.length; },
     async pruneOlderThan() { return 0; },
   };
@@ -169,7 +169,7 @@ describe("scope stamping (NLM_SCOPE_STAMP flag)", () => {
       delete process.env["NLM_SCOPE_STAMP"];
       process.env["NLM_WORKSTREAM_BIND"] = "true";
       buildChunkFixture(projectsDir, "scope-off-bind-002");
-      await storage.workstreams.create({ id: "ws_scope_b", label: "project-alpha", scope: "scope-b" });
+      await storage.workstreams.create("team_local", { id: "ws_scope_b", label: "project-alpha", scope: "scope-b" });
 
       await makeScheduler(true).tick();
 
@@ -299,7 +299,7 @@ describe("scope stamping (NLM_SCOPE_STAMP flag)", () => {
       process.env["NLM_SCOPE_STAMP"] = "1";
       process.env["NLM_WORKSTREAM_BIND"] = "true";
       const projDir = buildChunkFixture(projectsDir, "scope-isolation-sess-006");
-      await storage.workstreams.create({ id: "ws_scope_b", label: "project-alpha", scope: "scope-b" });
+      await storage.workstreams.create("team_local", { id: "ws_scope_b", label: "project-alpha", scope: "scope-b" });
 
       await makeScheduler(true).tick();
 
@@ -329,7 +329,7 @@ describe("scope stamping (NLM_SCOPE_STAMP flag)", () => {
       process.env["NLM_WORKSTREAM_BIND"] = "true";
       const projDir = buildChunkFixture(projectsDir, "scope-bind-sess-007");
       const expectedScope = realpathSync(projDir);
-      await storage.workstreams.create({ id: "ws_scope_a", label: "project-alpha", scope: expectedScope });
+      await storage.workstreams.create("team_local", { id: "ws_scope_a", label: "project-alpha", scope: expectedScope });
 
       await makeScheduler(true).tick();
 
@@ -347,8 +347,8 @@ describe("scope stamping (NLM_SCOPE_STAMP flag)", () => {
       process.env["NLM_SCOPE_STAMP"] = "1";
       process.env["NLM_WORKSTREAM_BIND"] = "true";
       buildChunkFixture(projectsDir, "scope-null-sess-008", { cwd: false });
-      await storage.workstreams.create({ id: "ws_null_scope", label: "project-alpha", scope: null });
-      await storage.workstreams.create({ id: "ws_some_scope", label: "project-alpha", scope: "scope-x" });
+      await storage.workstreams.create("team_local", { id: "ws_null_scope", label: "project-alpha", scope: null });
+      await storage.workstreams.create("team_local", { id: "ws_some_scope", label: "project-alpha", scope: "scope-x" });
 
       await makeScheduler(true).tick();
 

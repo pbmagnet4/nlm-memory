@@ -40,7 +40,7 @@ describe("deriveOutcome", () => {
       now: () => new Date("2026-01-15T00:00:00.000Z"), // exactly 14 days later
     });
 
-    const verdict = await deriveOutcome(SESSION_ID, deps);
+    const verdict = await deriveOutcome("team_local", SESSION_ID, deps);
 
     expect(verdict.verdict).toBe("held");
     expect(verdict.tier).toBe("B");
@@ -53,7 +53,7 @@ describe("deriveOutcome", () => {
       now: () => new Date("2026-01-15T00:00:00.000Z"), // 14.0 days exactly
     });
 
-    const verdict = await deriveOutcome(SESSION_ID, deps);
+    const verdict = await deriveOutcome("team_local", SESSION_ID, deps);
 
     expect(verdict.verdict).toBe("held");
   });
@@ -64,7 +64,7 @@ describe("deriveOutcome", () => {
       now: () => new Date("2026-01-14T23:59:59.000Z"), // one second short of 14 days
     });
 
-    const verdict = await deriveOutcome(SESSION_ID, deps);
+    const verdict = await deriveOutcome("team_local", SESSION_ID, deps);
 
     expect(verdict.verdict).not.toBe("held");
     expect(verdict.verdict).toBe("unobserved");
@@ -75,7 +75,7 @@ describe("deriveOutcome", () => {
       session: { id: SESSION_ID, endedAt: "2026-01-01T00:00:00.000Z", status: "superseded" },
     });
 
-    const verdict = await deriveOutcome(SESSION_ID, deps);
+    const verdict = await deriveOutcome("team_local", SESSION_ID, deps);
 
     expect(verdict.verdict).toBe("overturned");
     expect(verdict.tier).toBe("B");
@@ -88,7 +88,7 @@ describe("deriveOutcome", () => {
       edges: { listForSession: async () => [{ fromSession: "sess-b", toSession: SESSION_ID, kind: "replaces" }] },
     });
 
-    const verdict = await deriveOutcome(SESSION_ID, deps);
+    const verdict = await deriveOutcome("team_local", SESSION_ID, deps);
 
     expect(verdict.verdict).toBe("overturned");
     expect(verdict.evidence.length).toBeGreaterThan(0);
@@ -101,7 +101,7 @@ describe("deriveOutcome", () => {
       edges: { listForSession: async () => [{ fromSession: "sess-c", toSession: SESSION_ID, kind: "continues" }] },
     });
 
-    const verdict = await deriveOutcome(SESSION_ID, deps);
+    const verdict = await deriveOutcome("team_local", SESSION_ID, deps);
 
     expect(verdict.verdict).toBe("built-upon");
     expect(verdict.tier).toBe("B");
@@ -115,7 +115,7 @@ describe("deriveOutcome", () => {
       reDerivationPairs: [{ a: SESSION_ID, b: "sess-d", sharedEntities: ["pgvector"], jaccard: 0.9 }],
     });
 
-    const verdict = await deriveOutcome(SESSION_ID, deps);
+    const verdict = await deriveOutcome("team_local", SESSION_ID, deps);
 
     expect(verdict.verdict).toBe("re-derived-later");
     expect(verdict.confidence).toBe("medium");
@@ -127,7 +127,7 @@ describe("deriveOutcome", () => {
       now: () => new Date("2026-01-12T00:00:00.000Z"),
     });
 
-    const verdict = await deriveOutcome(SESSION_ID, deps);
+    const verdict = await deriveOutcome("team_local", SESSION_ID, deps);
 
     expect(verdict.verdict).toBe("unobserved");
     expect(verdict.confidence).toBe("low");
@@ -142,7 +142,7 @@ describe("deriveOutcome", () => {
       citations: { listForSession: async () => [{ conversationId: "conv-1" }] },
     });
 
-    const verdict = await deriveOutcome(SESSION_ID, deps);
+    const verdict = await deriveOutcome("team_local", SESSION_ID, deps);
 
     expect(verdict.verdict).toBe("unobserved");
     expect(verdict.producerDegraded).toBe(true);
@@ -157,7 +157,7 @@ describe("deriveOutcome", () => {
       edges: { listForSession: async () => [{ fromSession: "sess-c", toSession: SESSION_ID, kind: "continues" }] },
     });
 
-    const verdict = await deriveOutcome(SESSION_ID, deps);
+    const verdict = await deriveOutcome("team_local", SESSION_ID, deps);
 
     expect(verdict.verdict).toBe("held");
     expect(verdict.tier).toBe("A");
@@ -171,7 +171,7 @@ describe("deriveOutcome", () => {
       signals: { listForSession: async () => [{ id: "sig-2", outcome: "fail" }] },
     });
 
-    const verdict = await deriveOutcome(SESSION_ID, deps);
+    const verdict = await deriveOutcome("team_local", SESSION_ID, deps);
 
     expect(verdict.verdict).toBe("overturned");
     expect(verdict.tier).toBe("A");
@@ -185,7 +185,7 @@ describe("deriveOutcome", () => {
       edges: { listForSession: async () => [{ fromSession: "sess-c", toSession: SESSION_ID, kind: "continues" }] },
     });
 
-    const verdict = await deriveOutcome(SESSION_ID, deps);
+    const verdict = await deriveOutcome("team_local", SESSION_ID, deps);
 
     expect(verdict.verdict).toBe("held");
     expect(verdict.tier).toBe("B");
@@ -200,7 +200,7 @@ describe("deriveOutcome", () => {
       reDerivationPairs: [{ a: SESSION_ID, b: "sess-d", sharedEntities: ["pgvector"], jaccard: 0.9 }],
     });
 
-    const verdict = await deriveOutcome(SESSION_ID, deps);
+    const verdict = await deriveOutcome("team_local", SESSION_ID, deps);
 
     expect(verdict.verdict).toBe("built-upon");
     expect(verdict.confidence).toBe("medium");
@@ -209,7 +209,7 @@ describe("deriveOutcome", () => {
   it("unknown session id yields unobserved/low with no evidence", async () => {
     const deps = makeDeps({ session: null });
 
-    const verdict = await deriveOutcome(SESSION_ID, deps);
+    const verdict = await deriveOutcome("team_local", SESSION_ID, deps);
 
     expect(verdict.verdict).toBe("unobserved");
     expect(verdict.confidence).toBe("low");

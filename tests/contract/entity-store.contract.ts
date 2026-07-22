@@ -49,7 +49,7 @@ export function runEntityStoreContract(h: EntityStoreContractHarness): void {
         await h.seedEntity(storage, "source-ent", { sessionIds: ["sess_shared", "sess_source_only"] });
         await h.seedEntity(storage, "target-ent", { sessionIds: ["sess_shared"] });
 
-        await storage.entities.merge("source-ent", "target-ent");
+        await storage.entities.merge("team_local", "source-ent", "target-ent");
 
         const targetLinks = await h.getSessionEntityLinks(storage, "target-ent");
         expect(targetLinks.sort()).toEqual(["sess_shared", "sess_source_only"].sort());
@@ -66,7 +66,7 @@ export function runEntityStoreContract(h: EntityStoreContractHarness): void {
         await h.seedEntity(storage, "source-ent", { sessionIds: ["sess_a"] });
         await h.seedEntity(storage, "target-ent", { sessionIds: ["sess_b"] });
 
-        await storage.entities.merge("source-ent", "target-ent");
+        await storage.entities.merge("team_local", "source-ent", "target-ent");
 
         const row = await h.getEntityRow(storage, "target-ent");
         expect(row?.sessionCount).toBe(2);
@@ -77,7 +77,7 @@ export function runEntityStoreContract(h: EntityStoreContractHarness): void {
         await h.seedEntity(storage, "source-ent", { sessionIds: ["sess_a"] });
         await h.seedEntity(storage, "target-ent", { sessionIds: [] });
 
-        await storage.entities.merge("source-ent", "target-ent");
+        await storage.entities.merge("team_local", "source-ent", "target-ent");
 
         const row = await h.getEntityRow(storage, "source-ent");
         expect(row?.sessionCount).toBe(0);
@@ -89,7 +89,7 @@ export function runEntityStoreContract(h: EntityStoreContractHarness): void {
         await h.seedEntity(storage, "source-ent", {});
         await h.seedEntity(storage, "target-ent", {});
 
-        await storage.entities.merge("source-ent", "target-ent");
+        await storage.entities.merge("team_local", "source-ent", "target-ent");
 
         const v = await h.getVariantRow(storage, "source-ent");
         expect(v).not.toBeNull();
@@ -103,7 +103,7 @@ export function runEntityStoreContract(h: EntityStoreContractHarness): void {
         await h.seedEntity(storage, "source-ent", { sessionIds: ["sess_a"] });
         await h.seedEntity(storage, "target-ent", {});
 
-        await storage.entities.merge("source-ent", "target-ent");
+        await storage.entities.merge("team_local", "source-ent", "target-ent");
 
         const row = await h.getEntityRow(storage, "source-ent");
         expect(row?.status).toBe("retired");
@@ -114,7 +114,7 @@ export function runEntityStoreContract(h: EntityStoreContractHarness): void {
         await h.seedEntity(storage, "source-ent", {});
         await h.seedEntity(storage, "target-ent", {});
 
-        await storage.entities.merge("source-ent", "target-ent");
+        await storage.entities.merge("team_local", "source-ent", "target-ent");
 
         const row = await h.getEntityRow(storage, "source-ent");
         expect(row).not.toBeNull();
@@ -127,7 +127,7 @@ export function runEntityStoreContract(h: EntityStoreContractHarness): void {
         await h.seedEntity(storage, "target-ent", {});
         await h.seedVariant(storage, "old-alias", "source-ent");
 
-        await storage.entities.merge("source-ent", "target-ent");
+        await storage.entities.merge("team_local", "source-ent", "target-ent");
 
         const v = await h.getVariantRow(storage, "old-alias");
         expect(v?.canonical).toBe("target-ent");
@@ -141,7 +141,7 @@ export function runEntityStoreContract(h: EntityStoreContractHarness): void {
         await h.seedEntity(storage, "source-ent", { firstSeen: "sess_late", lastSeen: "sess_late" });
         await h.seedEntity(storage, "target-ent", { firstSeen: "sess_early", lastSeen: "sess_early" });
 
-        await storage.entities.merge("source-ent", "target-ent");
+        await storage.entities.merge("team_local", "source-ent", "target-ent");
 
         const row = await h.getEntityRow(storage, "target-ent");
         expect(row?.firstSeenSession).toBe("sess_early");
@@ -154,7 +154,7 @@ export function runEntityStoreContract(h: EntityStoreContractHarness): void {
         await h.seedEntity(storage, "source-ent", { firstSeen: "sess_early", lastSeen: "sess_early" });
         await h.seedEntity(storage, "target-ent", { firstSeen: "sess_late", lastSeen: "sess_late" });
 
-        await storage.entities.merge("source-ent", "target-ent");
+        await storage.entities.merge("team_local", "source-ent", "target-ent");
 
         const row = await h.getEntityRow(storage, "target-ent");
         expect(row?.firstSeenSession).toBe("sess_early");
@@ -168,7 +168,7 @@ export function runEntityStoreContract(h: EntityStoreContractHarness): void {
         await h.seedEntity(storage, "source-ent", {});
         await h.seedEntity(storage, "target-ent", { firstSeen: "sess_a", lastSeen: "sess_a" });
 
-        await storage.entities.merge("source-ent", "target-ent");
+        await storage.entities.merge("team_local", "source-ent", "target-ent");
 
         const row = await h.getEntityRow(storage, "target-ent");
         expect(row?.firstSeenSession).toBe("sess_a");
@@ -180,7 +180,7 @@ export function runEntityStoreContract(h: EntityStoreContractHarness): void {
       it("throws when target entity is missing", async () => {
         await h.seedEntity(storage, "source-ent", {});
 
-        await expect(storage.entities.merge("source-ent", "nonexistent")).rejects.toThrow(
+        await expect(storage.entities.merge("team_local", "source-ent", "nonexistent")).rejects.toThrow(
           /target entity not found/,
         );
       });
@@ -189,9 +189,9 @@ export function runEntityStoreContract(h: EntityStoreContractHarness): void {
         await h.seedEntity(storage, "source-ent", {});
         await h.seedEntity(storage, "intermediate", {});
         await h.seedEntity(storage, "retired-target", {});
-        await storage.entities.merge("retired-target", "intermediate");
+        await storage.entities.merge("team_local", "retired-target", "intermediate");
 
-        await expect(storage.entities.merge("source-ent", "retired-target")).rejects.toThrow(
+        await expect(storage.entities.merge("team_local", "source-ent", "retired-target")).rejects.toThrow(
           /target entity is retired/,
         );
       });
@@ -199,7 +199,7 @@ export function runEntityStoreContract(h: EntityStoreContractHarness): void {
       it("throws when source entity is missing", async () => {
         await h.seedEntity(storage, "target-ent", {});
 
-        await expect(storage.entities.merge("nonexistent", "target-ent")).rejects.toThrow(
+        await expect(storage.entities.merge("team_local", "nonexistent", "target-ent")).rejects.toThrow(
           /source entity not found/,
         );
       });

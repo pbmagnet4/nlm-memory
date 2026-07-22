@@ -21,17 +21,21 @@ export interface SignalAggregationFilter {
 
 export interface SignalStore {
   /** Insert one signal. Idempotent: a duplicate id is a no-op, not an error. */
-  insert(signal: Signal): Promise<void>;
+  insert(tenantId: string, signal: Signal): Promise<void>;
 
   /** Insert many signals in one transaction. Duplicate ids are skipped. */
-  insertMany(signals: ReadonlyArray<Signal>): Promise<void>;
+  insertMany(tenantId: string, signals: ReadonlyArray<Signal>): Promise<void>;
 
-  /** Rows matching the filter, newest `ts` first, for in-process aggregation. */
-  listForAggregation(filter: SignalAggregationFilter): Promise<ReadonlyArray<Signal>>;
+  /**
+   * Rows matching the filter, newest `ts` first, for in-process aggregation.
+   * Tenant is the outer mandatory filter; installScope stays the within-
+   * tenant discriminator (program spec §4.6 hardening 3).
+   */
+  listForAggregation(tenantId: string, filter: SignalAggregationFilter): Promise<ReadonlyArray<Signal>>;
 
-  /** Count signals for an install with `ts >= sinceTs`. */
-  countSince(installScope: string, sinceTs: string): Promise<number>;
+  /** Count signals for an install with `ts >= sinceTs`, within tenantId. */
+  countSince(tenantId: string, installScope: string, sinceTs: string): Promise<number>;
 
-  /** Delete signals with `ts < olderThanTs`. Returns rows deleted. */
-  pruneOlderThan(olderThanTs: string): Promise<number>;
+  /** Delete signals with `ts < olderThanTs`, within tenantId. Returns rows deleted. */
+  pruneOlderThan(tenantId: string, olderThanTs: string): Promise<number>;
 }

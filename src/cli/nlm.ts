@@ -373,7 +373,7 @@ async function buildStack() {
     codeEmbedder: buildCodeEmbedder(),
     installScope: scope,
     resolveWorkstreamMembers: async (idOrLabel: string): Promise<ReadonlyArray<string>> => {
-      const all = await wsStore.listAll();
+      const all = await wsStore.listAll(DEFAULT_TEAM_ID);
       const byId = new Map(all.map((w) => [w.id, { id: w.id, mergedInto: w.mergedInto }]));
       const target = all.find((w) => w.id === idOrLabel)
         ?? all.find((w) => normalizeLabel(w.label) === normalizeLabel(idOrLabel));
@@ -575,7 +575,7 @@ program
     const SIGNAL_PRUNE_INTERVAL_MS = 6 * 60 * 60_000;
     const signalPruneTimer = setInterval(() => {
       const cutoff = new Date(Date.now() - SIGNAL_RETENTION_DAYS * 86_400_000).toISOString();
-      void signals.pruneOlderThan(cutoff).catch(() => { /* prune is best-effort */ });
+      void signals.pruneOlderThan(DEFAULT_TEAM_ID, cutoff).catch(() => { /* prune is best-effort */ });
     }, SIGNAL_PRUNE_INTERVAL_MS);
     signalPruneTimer.unref();
 
@@ -2384,7 +2384,7 @@ program
     const storage = await buildStorage(dbPath());
     const scope = installScope();
     const sinceTs = new Date(Date.now() - opts.days * 86_400_000).toISOString();
-    const rows = await storage.signals.listForAggregation({ installScope: scope, sinceTs });
+    const rows = await storage.signals.listForAggregation(DEFAULT_TEAM_ID, { installScope: scope, sinceTs });
     const { aggregateFailureModes } = await import("../core/signals/aggregate.js");
     const { recommendActions } = await import("../core/signals/recommend.js");
     const modes = aggregateFailureModes(rows);
@@ -2812,7 +2812,7 @@ entitiesCmd
     if (opts.applySafe) {
       for (const s of safe) {
         try {
-          await storage.entities.merge(s.source, s.target);
+          await storage.entities.merge(DEFAULT_TEAM_ID, s.source, s.target);
           console.log(`merged: ${s.source} -> ${s.target}`);
           merged++;
         } catch (err) {
@@ -2837,7 +2837,7 @@ entitiesCmd
         const answer = await ask(`merge ${s.source} -> ${s.target}? [y/N] `);
         if (answer.trim().toLowerCase() === "y") {
           try {
-            await storage.entities.merge(s.source, s.target);
+            await storage.entities.merge(DEFAULT_TEAM_ID, s.source, s.target);
             console.log(`merged: ${s.source} -> ${s.target}`);
             merged++;
           } catch (err) {
