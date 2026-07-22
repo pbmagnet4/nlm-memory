@@ -64,7 +64,7 @@ describe.skipIf(!PG_TEST_URL)("pg session reads apply the action overlay", () =>
     await storage.sessions.insertSessionForTest(session);
 
     const oqId = openQuestionId(session.id, openText);
-    await writeActionsBatchPg(pool, [
+    await writeActionsBatchPg(pool, "team_local", [
       { kind: "resolve_open", subjectType: "open_question", subjectId: oqId },
     ]);
 
@@ -78,7 +78,7 @@ describe.skipIf(!PG_TEST_URL)("pg session reads apply the action overlay", () =>
     await storage.sessions.insertSessionForTest(session);
 
     const oqId = openQuestionId(session.id, openText);
-    await writeActionsBatchPg(pool, [
+    await writeActionsBatchPg(pool, "team_local", [
       {
         kind: "promote_open",
         subjectType: "open_question",
@@ -97,7 +97,7 @@ describe.skipIf(!PG_TEST_URL)("pg session reads apply the action overlay", () =>
     const session = makeSession({ id: "sess_overlay_2", entities: [entity] });
     await storage.sessions.insertSessionForTest(session);
 
-    await writeActionsBatchPg(pool, [
+    await writeActionsBatchPg(pool, "team_local", [
       { kind: "retire_entity", subjectType: "entity", subjectId: entity },
     ]);
 
@@ -125,7 +125,7 @@ describe.skipIf(!PG_TEST_URL)("pg session reads apply the action overlay", () =>
 
     await storage.sessions.getByIds("team_local", [session.id]); // populate cache
     const oqId = openQuestionId(session.id, openText);
-    await writeActionPg(pool, { kind: "resolve_open", subjectType: "open_question", subjectId: oqId });
+    await writeActionPg(pool, "team_local", { kind: "resolve_open", subjectType: "open_question", subjectId: oqId });
     const stale = await storage.sessions.getByIds("team_local", [session.id]);
     expect(stale[0]?.open?.some((q) => q === openText)).toBe(true); // cache still active
     storage.sessions.invalidateOverlayCache();

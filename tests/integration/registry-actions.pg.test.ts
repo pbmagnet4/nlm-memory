@@ -29,6 +29,7 @@ import { createApp } from "../../src/http/app.js";
 import { RecallService } from "../../src/core/recall/recall-service.js";
 import type { Hono } from "hono";
 import { FixedEmbedder } from "../fixtures/llm-stubs.js";
+import { makeSession } from "../fixtures/sessions.js";
 import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
@@ -163,7 +164,11 @@ describe.skipIf(!PG_TEST_URL)("PG actions-log", () => {
   });
 
   it("writeActionPg then listActionsPg round-trips, undoActionPg reverts", async () => {
-    const id = await writeActionPg(pool, {
+    // subject_type 'session' is tenant-resolved via a join back to `sessions`
+    // (actions-log.ts's subjectTenantPredicate) — the row must exist for
+    // listActionsPg to surface it under T.
+    await storage.sessions.insertSessionForTest(makeSession({ id: "sess_1" }), T);
+    const id = await writeActionPg(pool, T, {
       kind: "dismiss",
       subjectType: "session",
       subjectId: "sess_1",
@@ -171,15 +176,15 @@ describe.skipIf(!PG_TEST_URL)("PG actions-log", () => {
     });
     expect(id).toMatch(/^act_/);
 
-    const listed = await listActionsPg(pool, { subjectId: "sess_1" });
+    const listed = await listActionsPg(pool, T, { subjectId: "sess_1" });
     expect(listed).toHaveLength(1);
     expect(listed[0]!.kind).toBe("dismiss");
     expect(listed[0]!.payload).toEqual({ reason: "noise" });
 
-    const undo = await undoActionPg(pool, id);
+    const undo = await undoActionPg(pool, T, id);
     expect(undo?.originalKind).toBe("dismiss");
     // The original is now reverted; undoing it again returns null.
-    expect(await undoActionPg(pool, id)).toBeNull();
+    expect(await undoActionPg(pool, T, id)).toBeNull();
   });
 
   it("writeActionsBatchPg collapses identical rows within the batch (#294)", async () => {
@@ -189,32 +194,44 @@ describe.skipIf(!PG_TEST_URL)("PG actions-log", () => {
       subjectId: "alert_1",
       payload: { reason: "noise" },
     } as const;
-    const ids = await writeActionsBatchPg(pool, [
+    const ids = await writeActionsBatchPg(pool, T, [
       dup,
       dup,
       { kind: "dismiss", subjectType: "alert", subjectId: "alert_2" },
     ]);
     expect(ids).toHaveLength(2);
 
-    const listed = await listActionsPg(pool, { limit: 10 });
+    const listed = await listActionsPg(pool, T, { limit: 10 });
     expect(listed).toHaveLength(2);
   });
 
   it("undoActionPg rejects undoing an 'undo' row (#294)", async () => {
-    const id = await writeActionPg(pool, {
+    const id = await writeActionPg(pool, T, {
       kind: "dismiss",
       subjectType: "alert",
       subjectId: "alert_undo_of_undo",
     });
-    const undo = await undoActionPg(pool, id);
+    const undo = await undoActionPg(pool, T, id);
     expect(undo).not.toBeNull();
-    expect(await undoActionPg(pool, undo!.undoId)).toBeNull();
+    expect(await undoActionPg(pool, T, undo!.undoId)).toBeNull();
   });
 
   it("actions_kind_check constraint rejects an unknown kind (#294)", async () => {
     await expect(
-      writeActionPg(pool, { kind: "not_a_real_kind", subjectType: "alert", subjectId: "x" }),
+      writeActionPg(pool, T, { kind: "not_a_real_kind", subjectType: "alert", subjectId: "x" }),
     ).rejects.toThrow(/actions_kind_check/);
+  });
+
+  it("tenant isolation: listActionsPg/undoActionPg never surface a session-scoped action from another tenant", async () => {
+    await storage.sessions.insertSessionForTest(makeSession({ id: "sess_tenant_iso" }), T);
+    const id = await writeActionPg(pool, T, {
+      kind: "dismiss",
+      subjectType: "session",
+      subjectId: "sess_tenant_iso",
+    });
+    expect(await listActionsPg(pool, "team_other", { subjectId: "sess_tenant_iso" })).toHaveLength(0);
+    expect(await undoActionPg(pool, "team_other", id)).toBeNull();
+    expect(await listActionsPg(pool, T, { subjectId: "sess_tenant_iso" })).toHaveLength(1);
   });
 });
 

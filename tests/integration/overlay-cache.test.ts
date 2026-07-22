@@ -30,7 +30,7 @@ describe("overlay cache invalidation (sqlite)", () => {
   it("a resolve_open action becomes visible after invalidateOverlayCache", async () => {
     const before = await storage.sessions.getByIds("team_local", [SESSION_ID]);
     expect(before[0]?.open?.some((q) => q === OPEN_TEXT)).toBe(true);
-    writeAction(storage.sessions.rawDb(), {
+    writeAction(storage.sessions.rawDb(), "team_local", {
       kind: "resolve_open",
       subjectType: "open_question",
       subjectId: openQuestionId(SESSION_ID, OPEN_TEXT),
@@ -42,7 +42,7 @@ describe("overlay cache invalidation (sqlite)", () => {
 
   it("the cache is live: a write without invalidation stays hidden until invalidated", async () => {
     await storage.sessions.getByIds("team_local", [SESSION_ID]); // populate cache
-    writeAction(storage.sessions.rawDb(), {
+    writeAction(storage.sessions.rawDb(), "team_local", {
       kind: "resolve_open",
       subjectType: "open_question",
       subjectId: openQuestionId(SESSION_ID, OPEN_TEXT),
@@ -58,7 +58,7 @@ describe("overlay cache invalidation (sqlite)", () => {
     vi.useFakeTimers();
     try {
       await storage.sessions.getByIds("team_local", [SESSION_ID]); // populate cache
-      writeAction(storage.sessions.rawDb(), {
+      writeAction(storage.sessions.rawDb(), "team_local", {
         kind: "resolve_open",
         subjectType: "open_question",
         subjectId: openQuestionId(SESSION_ID, OPEN_TEXT),

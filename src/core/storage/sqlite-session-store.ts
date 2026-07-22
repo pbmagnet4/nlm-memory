@@ -221,8 +221,11 @@ function findContinuesPredecessor(
 
 export class SqliteSessionStore implements SessionStore {
   private readonly db: Database.Database;
-  private overlayCache: ActionOverlay | null = null;
-  private overlayCacheAt = 0;
+  // Keyed by tenantId — a single-tenant Map entry today (DEFAULT_TEAM_ID),
+  // but the overlay's content is tenant-scoped (program spec §4.6 hardening
+  // 1) and must never bleed across tenants once M3 adds real multi-tenant
+  // traffic to one daemon instance.
+  private overlayCache = new Map<string, { overlay: ActionOverlay; at: number }>();
 
   /**
    * @internal. Construct via SqliteStorage.create(...) instead. Direct
@@ -266,19 +269,20 @@ export class SqliteSessionStore implements SessionStore {
   }
 
   invalidateOverlayCache(): void {
-    this.overlayCache = null;
+    this.overlayCache.clear();
   }
 
-  private overlay(): ActionOverlay {
+  private overlay(tenantId: string): ActionOverlay {
     // TTL backstop: explicit invalidation covers the daemon's own writers; the
     // 30s expiry bounds staleness if another process ever writes actions to
     // this database file.
-    if (this.overlayCache !== null && Date.now() - this.overlayCacheAt < 30_000) {
-      return this.overlayCache;
+    const cached = this.overlayCache.get(tenantId);
+    if (cached !== undefined && Date.now() - cached.at < 30_000) {
+      return cached.overlay;
     }
-    this.overlayCache = loadActionOverlay(this.db);
-    this.overlayCacheAt = Date.now();
-    return this.overlayCache;
+    const overlay = loadActionOverlay(this.db, tenantId);
+    this.overlayCache.set(tenantId, { overlay, at: Date.now() });
+    return overlay;
   }
 
   /** Recently-written sessions ordered by created_at desc. Powers /live Writes column. */
@@ -695,7 +699,7 @@ export class SqliteSessionStore implements SessionStore {
     const entities = this.loadEntities(tenantId, [sessionId]);
     const markers = this.loadMarkers([sessionId]);
     const edges = this.loadSessionEdges([sessionId]);
-    const overlay = this.overlay();
+    const overlay = this.overlay(tenantId);
     return this.rowToSession(row, entities, markers, overlay, edges);
   }
 
@@ -722,7 +726,7 @@ export class SqliteSessionStore implements SessionStore {
     const foundIds = rows.map((r) => r.id);
     const entitiesByIdMap = this.loadEntities(tenantId, foundIds);
     const markersByIdMap = this.loadMarkers(foundIds);
-    const overlay = this.overlay();
+    const overlay = this.overlay(tenantId);
     return rows.map((r) =>
       this.rowToSession({ ...r, body: null }, entitiesByIdMap, markersByIdMap, overlay),
     );
@@ -743,7 +747,7 @@ export class SqliteSessionStore implements SessionStore {
     const ids = rows.map((r) => r.id);
     const entitiesByIdMap = this.loadEntities(tenantId, ids);
     const markersByIdMap = this.loadMarkers(ids);
-    const overlay = this.overlay();
+    const overlay = this.overlay(tenantId);
     return rows.map((r) =>
       this.rowToSession({ ...r, body: null }, entitiesByIdMap, markersByIdMap, overlay),
     );

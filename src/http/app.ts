@@ -201,6 +201,16 @@ interface DataStats {
   runtimes: Array<{ runtime: string; n: number }>;
 }
 
+/**
+ * Tenancy (program spec §4.6 disposition LOCAL, M2 plan Wave B6): `GET
+ * /api/data/stats` is a LOCAL-dispositioned route (spec §4.6) — hard-403'd
+ * under `NLM_HOSTED=1` by Wave C's hosted-mode gate, same class as
+ * `/api/dataset` and `/api/data/backup`. These are per-table row counts +
+ * migration bookkeeping for the Settings → Data page, not corpus content;
+ * left whole-DB deliberately rather than fake-filtered by tenant, which
+ * would misrepresent what the counts mean (they're meant to show the whole
+ * install's state, e.g. for a local operator sanity-checking their db).
+ */
 function sqliteDataStats(
   db: import("better-sqlite3").Database,
   dbPath: string,
@@ -1064,7 +1074,7 @@ function registerDatasetRoute(app: Hono, deps: HttpDeps): void {
   app.get("/api/dataset", (c) => {
     if (!deps.dbPath) return c.json({ error: "dataset endpoint requires dbPath" }, 503);
     const includePaths = c.req.query("include_paths") === "true";
-    return c.json(buildDataset(deps.dbPath, { includePaths }));
+    return c.json(buildDataset(deps.dbPath, DEFAULT_TEAM_ID, { includePaths }));
   });
 }
 
@@ -1177,8 +1187,8 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
     if (!parsed) return c.json({ error: "invalid action payload" }, 400);
     const store = deps.liveStore;
     const id = store instanceof PgSessionStore
-      ? await writeActionPg(store.pool, parsed)
-      : writeAction(store.rawDb(), parsed);
+      ? await writeActionPg(store.pool, DEFAULT_TEAM_ID, parsed)
+      : writeAction(store.rawDb(), DEFAULT_TEAM_ID, parsed);
     store.invalidateOverlayCache();
     return c.json({ id, timestamp: new Date().toISOString() });
   });
@@ -1193,8 +1203,8 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
     if (inputs.length === 0) return c.json({ accepted: 0, ids: [] });
     const store = deps.liveStore;
     const ids = store instanceof PgSessionStore
-      ? await writeActionsBatchPg(store.pool, inputs)
-      : writeActionsBatch(store.rawDb(), inputs);
+      ? await writeActionsBatchPg(store.pool, DEFAULT_TEAM_ID, inputs)
+      : writeActionsBatch(store.rawDb(), DEFAULT_TEAM_ID, inputs);
     store.invalidateOverlayCache();
     return c.json({ accepted: ids.length, ids });
   });
@@ -1203,8 +1213,8 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.liveStore) return c.json({ error: "actions require liveStore" }, 503);
     const store = deps.liveStore;
     const result = store instanceof PgSessionStore
-      ? await undoActionPg(store.pool, c.req.param("id"))
-      : undoAction(store.rawDb(), c.req.param("id"));
+      ? await undoActionPg(store.pool, DEFAULT_TEAM_ID, c.req.param("id"))
+      : undoAction(store.rawDb(), DEFAULT_TEAM_ID, c.req.param("id"));
     if (!result) return c.json({ error: "action not found or already undone" }, 404);
     store.invalidateOverlayCache();
     return c.json({ id: result.undoId, timestamp: new Date().toISOString() });
@@ -1223,8 +1233,8 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
     };
     const store = deps.liveStore;
     const rows = store instanceof PgSessionStore
-      ? await listActionsPg(store.pool, opts)
-      : listActions(store.rawDb(), opts);
+      ? await listActionsPg(store.pool, DEFAULT_TEAM_ID, opts)
+      : listActions(store.rawDb(), DEFAULT_TEAM_ID, opts);
     return c.json({ actions: rows });
   });
 }

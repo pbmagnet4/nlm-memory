@@ -7,10 +7,20 @@
  * Shared by buildDataset (UI projection) and SqliteSessionStore (recall
  * path), so the same overlay drives both surfaces. Append-only; every
  * mutation lives as a row in `actions`.
+ *
+ * Tenancy (program spec §4.6 hardening 1, M2 plan Wave B6): `actions` has no
+ * tenant_id column (see `@core/actions/actions-log.ts`'s module doc comment
+ * for the full mechanism/rationale). `loadActionOverlay`/`loadActionOverlayPg`
+ * reuse the same subject-resolvability predicate so an overlay entry keyed
+ * by an entity canonical or session-derived id that collides across tenants
+ * (the fixture's adversarial shared-entity case) never applies to the wrong
+ * tenant's projection — e.g. team B retiring their own "shared-entity" must
+ * never mark team A's distinct "shared-entity" row retired too.
  */
 
 import type Database from "better-sqlite3";
 import type { Pool } from "pg";
+import { subjectTenantPredicate, subjectTenantPredicatePg } from "./actions-log.js";
 
 export interface ActionOverlay {
   readonly dismissedAlerts: Set<string>;
@@ -129,32 +139,35 @@ export function reduceActionRows(rows: ReadonlyArray<ActionRow>): ActionOverlay 
   return overlay;
 }
 
-export function loadActionOverlay(db: Database.Database): ActionOverlay {
+export function loadActionOverlay(db: Database.Database, tenantId: string): ActionOverlay {
   const hasActions = db
     .prepare<[], { name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='actions'")
     .get();
   if (!hasActions) return EMPTY_OVERLAY;
 
+  const pred = subjectTenantPredicate(tenantId);
   // ORDER BY id keeps reducer deterministic: later writes overwrite earlier
   // ones, so the latest non-reverted rename per subject wins.
   const rows = db
-    .prepare<[], ActionRow>(`
+    .prepare<unknown[], ActionRow>(`
       SELECT kind, subject_type, subject_id, payload
       FROM actions
-      WHERE reverted_by IS NULL
+      WHERE reverted_by IS NULL AND ${pred.sql}
       ORDER BY id
     `)
-    .all();
+    .all(...pred.params);
 
   return reduceActionRows(rows);
 }
 
-export async function loadActionOverlayPg(pool: Pool): Promise<ActionOverlay> {
+export async function loadActionOverlayPg(pool: Pool, tenantId: string): Promise<ActionOverlay> {
+  const pred = subjectTenantPredicatePg(tenantId, 1);
   const result = await pool.query<ActionRow>(
     `SELECT kind, subject_type, subject_id, payload
      FROM actions
-     WHERE reverted_by IS NULL
+     WHERE reverted_by IS NULL AND ${pred.sql}
      ORDER BY id`,
+    pred.params,
   );
   return reduceActionRows(result.rows);
 }

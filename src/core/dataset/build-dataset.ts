@@ -6,6 +6,21 @@
  * alerts, snoozed entities, retired labels, merged variants) are deferred:
  * the action log isn't yet exposed by the TS daemon. Returns persisted
  * state directly.
+ *
+ * Tenancy (program spec §4.6 hardening 1, M2 plan Wave B6): `buildDataset`
+ * takes `tenantId` and constrains every table read — direct WHERE via
+ * `tenantClause` for the STAMP tables (`sessions`, `entities`), a join back
+ * to the tenant-filtered session id set for the DERIVE tables
+ * (`session_entities`, `markers`, `session_edges`), and the same
+ * subject-resolvability predicate as `actions-log.ts` for the action
+ * overlay — even though the `GET /api/dataset` route itself is
+ * LOCAL-dispositioned and 403s in hosted mode (Wave C's hosted-mode gate).
+ * This is defense-in-depth: the guard test scans this file's SQL
+ * regardless of the route's gate, and a future caller that reuses this
+ * function outside the gated route stays safe by construction.
+ * `computeIntegrityAlerts` (below) is the one exception, documented at its
+ * call site — it stays whole-DB, matching the `sqliteDataStats` treatment
+ * of migration/structural bookkeeping.
  */
 
 import { existsSync } from "node:fs";
@@ -16,6 +31,7 @@ import { loadActionOverlay, openQuestionId, decisionId } from "@core/actions/ove
 import type { ActionOverlay } from "@core/actions/overlay.js";
 import type { SessionStatus } from "@shared/types.js";
 import { runCheapChecksOnSqlite } from "@core/integrity/check-invariants.js";
+import { tenantClause } from "@core/tenancy/tenant-clause.js";
 
 export interface DatasetSession {
   readonly id: string;
@@ -185,7 +201,7 @@ export interface BuildDatasetOptions {
   readonly includePaths?: boolean;
 }
 
-export function buildDataset(dbPath: string, options: BuildDatasetOptions = {}): DatasetResponse {
+export function buildDataset(dbPath: string, tenantId: string, options: BuildDatasetOptions = {}): DatasetResponse {
   if (!existsSync(dbPath)) return EMPTY_DATASET(dbPath, false);
   const db = new Database(dbPath, { readonly: true });
   try {
@@ -194,7 +210,7 @@ export function buildDataset(dbPath: string, options: BuildDatasetOptions = {}):
     // vec extension only required for semantic search; tolerable here.
   }
   try {
-    return projectFromDb(db, dbPath, options.includePaths ?? false);
+    return projectFromDb(db, dbPath, tenantId, options.includePaths ?? false);
   } finally {
     db.close();
   }
@@ -220,22 +236,33 @@ export function isPathShapedEntity(canonical: string): boolean {
   return false;
 }
 
-function projectFromDb(db: Database.Database, dbPath: string, includePaths: boolean): DatasetResponse {
+function projectFromDb(db: Database.Database, dbPath: string, tenantId: string, includePaths: boolean): DatasetResponse {
+  const sessionsTc = tenantClause(tenantId);
   const sessionRows = db
-    .prepare<[], SessionRow>(`
+    .prepare<unknown[], SessionRow>(`
       SELECT id, started_at, ended_at, duration_min, label, summary,
              status, transcript_path, runtime
       FROM sessions
+      WHERE ${sessionsTc.sql}
       ORDER BY started_at ASC
     `)
-    .all();
+    .all(sessionsTc.param);
 
   if (sessionRows.length === 0) return EMPTY_DATASET(dbPath, true);
 
+  // session_entities/markers/session_edges carry no tenant_id (DERIVE) — ids
+  // are already sourced from the tenant-filtered sessions query above, so a
+  // plain IN is sufficient (mirrors SqliteSessionStore.loadMarkers/
+  // loadSessionEdges, which take an already tenant-resolved id list).
+  const sessionIds = sessionRows.map((s) => s.id);
+  const sessionIdPlaceholders = sessionIds.map(() => "?").join(",");
+
   const entitiesBySession = new Map<string, string[]>();
   for (const r of db
-    .prepare<[], EntityRow>("SELECT session_id, entity_canonical FROM session_entities ORDER BY session_id")
-    .all()) {
+    .prepare<unknown[], EntityRow>(
+      `SELECT session_id, entity_canonical FROM session_entities WHERE session_id IN (${sessionIdPlaceholders}) ORDER BY session_id`,
+    )
+    .all(...sessionIds)) {
     const list = entitiesBySession.get(r.session_id);
     if (list) list.push(r.entity_canonical);
     else entitiesBySession.set(r.session_id, [r.entity_canonical]);
@@ -244,8 +271,10 @@ function projectFromDb(db: Database.Database, dbPath: string, includePaths: bool
   const decisionsBySession = new Map<string, string[]>();
   const openBySession = new Map<string, { id: string; text: string }[]>();
   for (const r of db
-    .prepare<[], MarkerRow>("SELECT session_id, kind, text, position FROM markers ORDER BY session_id, position")
-    .all()) {
+    .prepare<unknown[], MarkerRow>(
+      `SELECT session_id, kind, text, position FROM markers WHERE session_id IN (${sessionIdPlaceholders}) ORDER BY session_id, position`,
+    )
+    .all(...sessionIds)) {
     if (r.kind === "decision") {
       const list = decisionsBySession.get(r.session_id);
       if (list) list.push(r.text);
@@ -264,8 +293,11 @@ function projectFromDb(db: Database.Database, dbPath: string, includePaths: bool
   const replacedByBy = new Map<string, string>();
   const continuesBy = new Map<string, string>();
   for (const r of db
-    .prepare<[], EdgeRow>("SELECT from_session, to_session, kind FROM session_edges")
-    .all()) {
+    .prepare<unknown[], EdgeRow>(
+      `SELECT from_session, to_session, kind FROM session_edges
+       WHERE from_session IN (${sessionIdPlaceholders}) OR to_session IN (${sessionIdPlaceholders})`,
+    )
+    .all(...sessionIds, ...sessionIds)) {
     if (r.kind === "supersedes") {
       supersedesBy.set(r.from_session, r.to_session);
       supersededByBy.set(r.to_session, r.from_session);
@@ -277,14 +309,15 @@ function projectFromDb(db: Database.Database, dbPath: string, includePaths: bool
     }
   }
 
+  const entitiesTc = tenantClause(tenantId);
   const allEntityRows = db
-    .prepare<[], EntityCatalogRow>(`
+    .prepare<unknown[], EntityCatalogRow>(`
       SELECT canonical, type, status, session_count, last_seen_session
-      FROM entities ORDER BY session_count DESC
+      FROM entities WHERE ${entitiesTc.sql} ORDER BY session_count DESC
     `)
-    .all();
+    .all(entitiesTc.param);
 
-  const overlay = loadActionOverlay(db);
+  const overlay = loadActionOverlay(db, tenantId);
 
   // Count-folding pass (Option B): runs before coherence computation so the
   // target entity's bucket reflects the absorbed session count.
@@ -388,6 +421,12 @@ function projectFromDb(db: Database.Database, dbPath: string, includePaths: bool
 
   const metrics = computeMetrics(sessions, entityRows);
   const staleAlerts = computeStaleAlerts(sessions, entityRows, overlay);
+  // Whole-DB by design, not tenant-constrained: these are schema/referential
+  // integrity checks (orphaned edges, cyclic supersedence, ghost embedding
+  // rows), not corpus content — the same class of migration/structural
+  // bookkeeping sqliteDataStats leaves whole-DB. Tenant-scoping would give a
+  // false sense of per-tenant isolation for a check whose whole point is
+  // spotting corruption that isn't supposed to respect any boundary.
   const integrityAlerts = computeIntegrityAlerts(db);
   const alerts = [...staleAlerts, ...integrityAlerts];
   const runtimes = computeRuntimes(sessions);

@@ -99,23 +99,25 @@ export class PgSessionStore implements SessionStore {
   // functions) can share the same connection pool. See docs/plans/2026-05-31-pg-adapter.md.
   constructor(readonly pool: Pool) {}
 
-  private overlayCache: ActionOverlay | null = null;
-  private overlayCacheAt = 0;
+  // Keyed by tenantId — see SqliteSessionStore's identical cache for the
+  // tenancy rationale (program spec §4.6 hardening 1).
+  private overlayCache = new Map<string, { overlay: ActionOverlay; at: number }>();
 
   invalidateOverlayCache(): void {
-    this.overlayCache = null;
+    this.overlayCache.clear();
   }
 
-  private async overlay(): Promise<ActionOverlay> {
+  private async overlay(tenantId: string): Promise<ActionOverlay> {
     // TTL backstop: explicit invalidation covers the daemon's own writers; the
     // 30s expiry bounds staleness if another process ever writes actions to
     // this database.
-    if (this.overlayCache !== null && Date.now() - this.overlayCacheAt < 30_000) {
-      return this.overlayCache;
+    const cached = this.overlayCache.get(tenantId);
+    if (cached !== undefined && Date.now() - cached.at < 30_000) {
+      return cached.overlay;
     }
-    this.overlayCache = await loadActionOverlayPg(this.pool);
-    this.overlayCacheAt = Date.now();
-    return this.overlayCache;
+    const overlay = await loadActionOverlayPg(this.pool, tenantId);
+    this.overlayCache.set(tenantId, { overlay, at: Date.now() });
+    return overlay;
   }
 
   async getById(tenantId: string, sessionId: string): Promise<Session | null> {
@@ -134,7 +136,7 @@ export class PgSessionStore implements SessionStore {
       this.loadEntities(tenantId, [sessionId]),
       this.loadMarkers([sessionId]),
       this.loadEdges([sessionId]),
-      this.overlay(),
+      this.overlay(tenantId),
     ]);
     const edges = edgesMap.get(sessionId);
     return rowToSession(result.rows[0], entitiesMap, markersMap, overlay, edges);
@@ -155,7 +157,7 @@ export class PgSessionStore implements SessionStore {
     const [entitiesMap, markersMap, overlay] = await Promise.all([
       this.loadEntities(tenantId, foundIds),
       this.loadMarkers(foundIds),
-      this.overlay(),
+      this.overlay(tenantId),
     ]);
     return result.rows.map((r) => rowToSession({ ...r, body: null }, entitiesMap, markersMap, overlay));
   }
@@ -175,7 +177,7 @@ export class PgSessionStore implements SessionStore {
     const [entitiesMap, markersMap, overlay] = await Promise.all([
       this.loadEntities(tenantId, ids),
       this.loadMarkers(ids),
-      this.overlay(),
+      this.overlay(tenantId),
     ]);
     return result.rows.map((r) => rowToSession({ ...r, body: null }, entitiesMap, markersMap, overlay));
   }
