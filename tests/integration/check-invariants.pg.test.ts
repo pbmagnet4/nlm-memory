@@ -18,6 +18,7 @@ import {
   applyFixOnPg,
 } from "../../src/core/integrity/check-invariants.js";
 import type { Pool } from "pg";
+import { usePgTestSchema } from "../helpers/pg-test-schema.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
 const MIGRATIONS_DIR = join(
@@ -43,12 +44,13 @@ async function insertSession(pool: Pool, id: string, status = "closed"): Promise
 }
 
 describe.skipIf(!PG_TEST_URL)("check-invariants (PostgreSQL)", () => {
+  const pgUrl = usePgTestSchema(PG_TEST_URL, import.meta.url);
   let storage: PgStorage;
   let pool: Pool;
 
   beforeEach(async () => {
     storage = PgStorage.create({
-      connectionString: PG_TEST_URL!,
+      connectionString: pgUrl(),
       migrationsDir: MIGRATIONS_DIR,
     });
     await storage.init();

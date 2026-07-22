@@ -18,6 +18,7 @@ import type { FactStoreContractHarness } from "../../tests/contract/fact-store.c
 import { PgStorage } from "../../src/core/storage/pg-storage.js";
 import type { Storage } from "../../src/ports/storage.js";
 import type { Session } from "../../src/shared/types.js";
+import { usePgTestSchema } from "../helpers/pg-test-schema.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
 const MIGRATIONS_DIR = join(
@@ -34,32 +35,33 @@ const TRUNCATE_SQL = `
   RESTART IDENTITY CASCADE
 `;
 
-const harness: FactStoreContractHarness = {
-  name: "PgStorage",
-
-  async setup(): Promise<Storage> {
-    if (!PG_TEST_URL) throw new Error("NLM_PG_TEST_URL not set");
-    const storage = PgStorage.create({
-      connectionString: PG_TEST_URL,
-      migrationsDir: MIGRATIONS_DIR,
-    });
-    await storage.init();
-    await storage.pgPool().query(TRUNCATE_SQL);
-    return storage;
-  },
-
-  async teardown(storage: Storage): Promise<void> {
-    await storage.close();
-  },
-
-  async seedSession(storage: Storage, session: Session): Promise<void> {
-    await (storage as PgStorage).sessions.insertSessionForTest(session);
-  },
-};
-
 describe.skipIf(!PG_TEST_URL)(
   "PgStorage: fact-store contract",
   () => {
+    const pgUrl = usePgTestSchema(PG_TEST_URL, import.meta.url);
+
+    const harness: FactStoreContractHarness = {
+      name: "PgStorage",
+
+      async setup(): Promise<Storage> {
+        const storage = PgStorage.create({
+          connectionString: pgUrl(),
+          migrationsDir: MIGRATIONS_DIR,
+        });
+        await storage.init();
+        await storage.pgPool().query(TRUNCATE_SQL);
+        return storage;
+      },
+
+      async teardown(storage: Storage): Promise<void> {
+        await storage.close();
+      },
+
+      async seedSession(storage: Storage, session: Session): Promise<void> {
+        await (storage as PgStorage).sessions.insertSessionForTest(session);
+      },
+    };
+
     beforeAll(async () => {
       const dbName = new URL(PG_TEST_URL!).pathname.slice(1);
       const pool = new Pool({ connectionString: PG_TEST_URL! });

@@ -21,6 +21,7 @@ import { PgStorage } from "../../src/core/storage/pg-storage.js";
 import { ClaudeCodeAdapter } from "../../src/core/adapters/claude-code.js";
 import { ScanScheduler } from "../../src/core/scheduler/scheduler.js";
 import type { ClassifyResult, EmbedResult, LLMClient } from "../../src/ports/llm-client.js";
+import { usePgTestSchema } from "../helpers/pg-test-schema.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
 const MIGRATIONS_DIR = join(
@@ -80,13 +81,14 @@ function buildFixture(projects: string): void {
 }
 
 describe.skipIf(!PG_TEST_URL)("ScanScheduler workstream bind pg (flag-gated)", () => {
+  const pgUrl = usePgTestSchema(PG_TEST_URL, import.meta.url);
   let storage: PgStorage;
   let projects: string;
   const prevFlag = process.env["NLM_WORKSTREAM_BIND"];
 
   beforeEach(async () => {
     if (!PG_TEST_URL) return;
-    storage = PgStorage.create({ connectionString: PG_TEST_URL, migrationsDir: MIGRATIONS_DIR });
+    storage = PgStorage.create({ connectionString: pgUrl(), migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     await storage.pgPool().query(TRUNCATE_SQL);
     await storage.workstreams.create("team_local", { id: "ws_nlm_test", label: "NLM", scope: null });

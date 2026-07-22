@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { PgStorage } from "../../src/core/storage/pg-storage.js";
+import { usePgTestSchema } from "../helpers/pg-test-schema.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
 const MIGRATIONS_DIR = join(
@@ -54,12 +55,13 @@ async function insertEdgePair(pool: Pool, kind: string): Promise<void> {
 }
 
 describe.skipIf(!PG_TEST_URL)("session_edges.kind parity (PostgreSQL)", () => {
+  const pgUrl = usePgTestSchema(PG_TEST_URL, import.meta.url);
   let storage: PgStorage;
   let pool: Pool;
 
   beforeEach(async () => {
     storage = PgStorage.create({
-      connectionString: PG_TEST_URL!,
+      connectionString: pgUrl(),
       migrationsDir: MIGRATIONS_DIR,
     });
     await storage.init();
@@ -68,12 +70,6 @@ describe.skipIf(!PG_TEST_URL)("session_edges.kind parity (PostgreSQL)", () => {
   });
 
   afterEach(async () => {
-    // This file inserts branched_from/merged_from edges directly. In the
-    // shared-Postgres serial CI lane, rows left behind here outlive this
-    // file and can trip a later file's ALTER TABLE ... ADD CONSTRAINT
-    // (e.g. session-search.pg.test.ts re-validates session_edges.kind)
-    // with a 23514 check-constraint violation on preexisting rows.
-    await pool.query(TRUNCATE_SQL);
     await storage.close();
   });
 

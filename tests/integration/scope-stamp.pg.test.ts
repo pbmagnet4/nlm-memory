@@ -12,6 +12,7 @@ import type { Pool } from "pg";
 import { PgStorage } from "../../src/core/storage/pg-storage.js";
 import type { IngestRecord } from "../../src/core/storage/sqlite-session-store.js";
 import { makeFact } from "../fixtures/facts.js";
+import { usePgTestSchema } from "../helpers/pg-test-schema.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
 const MIGRATIONS_DIR = join(
@@ -54,12 +55,13 @@ function makeRecord(id: string, scope: string | null): IngestRecord {
 }
 
 describe.skipIf(!PG_TEST_URL)("pg scope stamping parity", () => {
+  const pgUrl = usePgTestSchema(PG_TEST_URL, import.meta.url);
   let storage: PgStorage;
   let pool: Pool;
 
   beforeAll(async () => {
     storage = PgStorage.create({
-      connectionString: PG_TEST_URL!,
+      connectionString: pgUrl(),
       migrationsDir: MIGRATIONS_DIR,
     });
     await storage.init();

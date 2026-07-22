@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PgStorage } from "../../src/core/storage/pg-storage.js";
 import type { IngestRecord } from "../../src/core/storage/sqlite-session-store.js";
+import { usePgTestSchema } from "../helpers/pg-test-schema.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
 const MIGRATIONS_DIR = join(
@@ -53,12 +54,12 @@ function makeRecord(id: string, body: string): IngestRecord {
 }
 
 describe.skipIf(!PG_TEST_URL)("keywordSearch OR semantics parity (pg)", () => {
+  const pgUrl = usePgTestSchema(PG_TEST_URL, import.meta.url);
   let storage: PgStorage;
 
   beforeEach(async () => {
-    if (!PG_TEST_URL) throw new Error("NLM_PG_TEST_URL not set");
     storage = PgStorage.create({
-      connectionString: PG_TEST_URL,
+      connectionString: pgUrl(),
       migrationsDir: MIGRATIONS_DIR,
     });
     await storage.init();

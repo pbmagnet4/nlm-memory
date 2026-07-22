@@ -19,6 +19,7 @@ import { makeFact } from "../fixtures/facts.js";
 import { makeSession } from "../fixtures/sessions.js";
 import { runChecksOnPg } from "../../src/core/integrity/check-invariants.js";
 import { StubEmbedder } from "../fixtures/llm-stubs.js";
+import { usePgTestSchema } from "../helpers/pg-test-schema.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
 const MIGRATIONS_DIR = join(
@@ -36,12 +37,13 @@ const TRUNCATE_SQL = `
 `;
 
 describe.skipIf(!PG_TEST_URL)("pg fact ingest correctness (#351 parity)", () => {
+  const pgUrl = usePgTestSchema(PG_TEST_URL, import.meta.url);
   let storage: PgStorage;
   let pool: Pool;
 
   beforeAll(async () => {
     storage = PgStorage.create({
-      connectionString: PG_TEST_URL!,
+      connectionString: pgUrl(),
       migrationsDir: MIGRATIONS_DIR,
     });
     await storage.init();

@@ -26,12 +26,14 @@ import { StubEmbedder } from "../fixtures/llm-stubs.js";
 import type { Fact } from "../../src/shared/types.js";
 import type { IngestRecord } from "../../src/core/storage/sqlite-session-store.js";
 import { ingestSession } from "../../src/core/ingest/ingest-session.js";
+import { usePgTestSchema } from "../helpers/pg-test-schema.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
 const MIGRATIONS_DIR = join(
   fileURLToPath(new URL(".", import.meta.url)),
   "../../migrations/pg",
 );
+const pgUrl = usePgTestSchema(PG_TEST_URL, import.meta.url);
 
 const TRUNCATE_SQL =
   "TRUNCATE TABLE sessions, facts, fact_embeddings, adapter_state RESTART IDENTITY CASCADE";
@@ -87,7 +89,7 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore.insertSession factSink (PG)", () =
   let pool: Pool;
 
   beforeAll(async () => {
-    storage = PgStorage.create({ connectionString: PG_TEST_URL!, migrationsDir: MIGRATIONS_DIR });
+    storage = PgStorage.create({ connectionString: pgUrl(), migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     pool = storage.pgPool();
   });
@@ -221,7 +223,7 @@ describe.skipIf(!PG_TEST_URL)("ScanScheduler tick over PG", () => {
   let fixturePath: string;
 
   beforeAll(async () => {
-    storage = PgStorage.create({ connectionString: PG_TEST_URL!, migrationsDir: MIGRATIONS_DIR });
+    storage = PgStorage.create({ connectionString: pgUrl(), migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     pool = storage.pgPool();
   });
@@ -272,7 +274,7 @@ describe.skipIf(!PG_TEST_URL)("ingestSession webhook path over PG", () => {
   let pool: Pool;
 
   beforeAll(async () => {
-    storage = PgStorage.create({ connectionString: PG_TEST_URL!, migrationsDir: MIGRATIONS_DIR });
+    storage = PgStorage.create({ connectionString: pgUrl(), migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     pool = storage.pgPool();
   });

@@ -31,6 +31,7 @@ import type { Hono } from "hono";
 import { FixedEmbedder } from "../fixtures/llm-stubs.js";
 import { makeSession } from "../fixtures/sessions.js";
 import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
+import { usePgTestSchema } from "../helpers/pg-test-schema.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
 const T = DEFAULT_TEAM_ID;
@@ -38,6 +39,7 @@ const MIGRATIONS_DIR = join(
   fileURLToPath(new URL(".", import.meta.url)),
   "../../migrations/pg",
 );
+const pgUrl = usePgTestSchema(PG_TEST_URL, import.meta.url);
 
 const TRUNCATE_SQL =
   "TRUNCATE TABLE sources, providers, actions RESTART IDENTITY CASCADE";
@@ -48,7 +50,7 @@ describe.skipIf(!PG_TEST_URL)("PgSourceRegistry (PG)", () => {
   let registry: PgSourceRegistry;
 
   beforeAll(async () => {
-    storage = PgStorage.create({ connectionString: PG_TEST_URL!, migrationsDir: MIGRATIONS_DIR });
+    storage = PgStorage.create({ connectionString: pgUrl(), migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     pool = storage.pgPool();
     const dbName = new URL(PG_TEST_URL!).pathname.slice(1);
@@ -117,7 +119,7 @@ describe.skipIf(!PG_TEST_URL)("PgProviderRegistry (PG)", () => {
   let registry: PgProviderRegistry;
 
   beforeAll(async () => {
-    storage = PgStorage.create({ connectionString: PG_TEST_URL!, migrationsDir: MIGRATIONS_DIR });
+    storage = PgStorage.create({ connectionString: pgUrl(), migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     pool = storage.pgPool();
   });
@@ -150,7 +152,7 @@ describe.skipIf(!PG_TEST_URL)("PG actions-log", () => {
   let pool: Pool;
 
   beforeAll(async () => {
-    storage = PgStorage.create({ connectionString: PG_TEST_URL!, migrationsDir: MIGRATIONS_DIR });
+    storage = PgStorage.create({ connectionString: pgUrl(), migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     pool = storage.pgPool();
   });
@@ -244,7 +246,7 @@ describe.skipIf(!PG_TEST_URL)("data-management routes (PG backend)", () => {
     // The backup/restore routes gate on NLM_MCP_TOKEN before the PG guard; clear
     // it so the 501 assertions don't get pre-empted by a 401 in a token'd env.
     delete process.env["NLM_MCP_TOKEN"];
-    storage = PgStorage.create({ connectionString: PG_TEST_URL!, migrationsDir: MIGRATIONS_DIR });
+    storage = PgStorage.create({ connectionString: pgUrl(), migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     store = storage.sessions;
     const recall = new RecallService({ store, llm: new FixedEmbedder() });

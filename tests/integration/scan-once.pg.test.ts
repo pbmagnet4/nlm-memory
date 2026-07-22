@@ -32,6 +32,7 @@ import type {
   SessionChunk,
   TranscriptAdapter,
 } from "../../src/ports/transcript-adapter.js";
+import { usePgTestSchema } from "../helpers/pg-test-schema.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
 const MIGRATIONS_DIR = join(
@@ -83,13 +84,14 @@ async function readState(pool: Pool, sourcePath: string) {
 }
 
 describe.skipIf(!PG_TEST_URL)("scanOncePg: adapter_state lifecycle (PG)", () => {
+  const pgUrl = usePgTestSchema(PG_TEST_URL, import.meta.url);
   let storage: PgStorage;
   let pool: Pool;
   let tmp: string;
   let fixturePath: string;
 
   beforeAll(async () => {
-    storage = PgStorage.create({ connectionString: PG_TEST_URL!, migrationsDir: MIGRATIONS_DIR });
+    storage = PgStorage.create({ connectionString: pgUrl(), migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     pool = storage.pgPool();
   });

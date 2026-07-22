@@ -17,12 +17,14 @@ import {
 } from "../contract/entity-store.contract.js";
 import { PgStorage } from "../../src/core/storage/pg-storage.js";
 import type { Storage } from "../../src/ports/storage.js";
+import { usePgTestSchema } from "../helpers/pg-test-schema.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
 const MIGRATIONS_DIR = join(
   fileURLToPath(new URL(".", import.meta.url)),
   "../../migrations/pg",
 );
+const pgUrl = usePgTestSchema(PG_TEST_URL, import.meta.url);
 
 const TRUNCATE_SQL = `
   TRUNCATE TABLE
@@ -36,9 +38,8 @@ const TRUNCATE_SQL = `
 `;
 
 async function makeStorage(): Promise<PgStorage> {
-  if (!PG_TEST_URL) throw new Error("NLM_PG_TEST_URL not set");
   const storage = PgStorage.create({
-    connectionString: PG_TEST_URL,
+    connectionString: pgUrl(),
     migrationsDir: MIGRATIONS_DIR,
   });
   await storage.init();

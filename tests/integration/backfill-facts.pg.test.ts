@@ -17,6 +17,7 @@ import { PgStorage } from "../../src/core/storage/pg-storage.js";
 import { backfillFacts } from "../../src/core/facts/backfill-facts.js";
 import type { ClassifyResult, EmbedResult, ExtractedFact, LLMClient } from "../../src/ports/llm-client.js";
 import type { Session } from "../../src/shared/types.js";
+import { usePgTestSchema } from "../helpers/pg-test-schema.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
 const MIGRATIONS_DIR = join(
@@ -52,13 +53,14 @@ function session(id: string, body: string, startedAt: string): Session {
 }
 
 describe.skipIf(!PG_TEST_URL)("backfillFacts (PG backend)", () => {
+  const pgUrl = usePgTestSchema(PG_TEST_URL, import.meta.url);
   let storage: PgStorage;
   let pool: Pool;
   let tmp: string;
   let statePath: string;
 
   beforeAll(async () => {
-    storage = PgStorage.create({ connectionString: PG_TEST_URL!, migrationsDir: MIGRATIONS_DIR });
+    storage = PgStorage.create({ connectionString: pgUrl(), migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     pool = storage.pgPool();
   });

@@ -20,6 +20,7 @@ import { PgStorage } from "../../src/core/storage/pg-storage.js";
 import { writeActionsBatchPg, writeActionPg } from "../../src/core/actions/actions-log.js";
 import { openQuestionId } from "../../src/core/actions/overlay.js";
 import { makeSession } from "../fixtures/sessions.js";
+import { usePgTestSchema } from "../helpers/pg-test-schema.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
 const MIGRATIONS_DIR = join(
@@ -37,12 +38,13 @@ const TRUNCATE_SQL = `
 `;
 
 describe.skipIf(!PG_TEST_URL)("pg session reads apply the action overlay", () => {
+  const pgUrl = usePgTestSchema(PG_TEST_URL, import.meta.url);
   let storage: PgStorage;
   let pool: Pool;
 
   beforeAll(async () => {
     storage = PgStorage.create({
-      connectionString: PG_TEST_URL!,
+      connectionString: pgUrl(),
       migrationsDir: MIGRATIONS_DIR,
     });
     await storage.init();

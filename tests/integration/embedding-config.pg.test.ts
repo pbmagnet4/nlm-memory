@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
 import { runMigrationsPg } from "../../src/core/storage/pg-migrate.js";
 import { PgEmbeddingConfigStore } from "../../src/core/storage/pg-embedding-config.js";
+import { usePgTestSchema } from "../helpers/pg-test-schema.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
 const MIGRATIONS_DIR = join(
@@ -22,11 +23,12 @@ const MIGRATIONS_DIR = join(
 );
 
 describe.skipIf(!PG_TEST_URL)("PgEmbeddingConfigStore", () => {
+  const pgUrl = usePgTestSchema(PG_TEST_URL, import.meta.url);
   let pool: Pool;
   let store: PgEmbeddingConfigStore;
 
   beforeEach(async () => {
-    pool = new Pool({ connectionString: PG_TEST_URL! });
+    pool = new Pool({ connectionString: pgUrl() });
     await runMigrationsPg(pool, MIGRATIONS_DIR);
     await pool.query("TRUNCATE TABLE embedding_config");
     store = new PgEmbeddingConfigStore(pool);

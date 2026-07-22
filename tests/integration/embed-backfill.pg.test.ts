@@ -5,10 +5,10 @@
  * Requires a running PostgreSQL instance. Set NLM_PG_TEST_URL, e.g.:
  *   export NLM_PG_TEST_URL=postgres://postgres:nlm@127.0.0.1:5544/nlm_test
  *
- * Each top-level describe creates its own isolated database (unique suffix) in
- * beforeAll and drops it in afterAll. This prevents afterEach schema mutations
- * (ALTER TABLE for dim changes) from leaking the degenerate-centroid ivfflat
- * state to other test files that run against the shared server DB.
+ * Each top-level describe gets its own isolated pg schema (pg-test-schema
+ * helper) in beforeAll and drops it in afterAll. This prevents afterEach
+ * schema mutations (ALTER TABLE for dim changes) from leaking the
+ * degenerate-centroid ivfflat state to other test files.
  *
  * Skips when the env var is absent.
  */
@@ -18,11 +18,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import type { Pool } from "pg";
 import { PgStorage } from "../../src/core/storage/pg-storage.js";
 import { reembedCorpusPg } from "../../src/core/embedding/pg-embed-backfill.js";
 import type { EmbedResult, LLMClient } from "../../src/ports/llm-client.js";
 import { makeSession } from "../fixtures/sessions.js";
+import { usePgTestSchema } from "../helpers/pg-test-schema.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
 const MIGRATIONS_DIR = join(
@@ -39,49 +40,6 @@ const TRUNCATE_SQL = `
     embedding_config
   RESTART IDENTITY CASCADE
 `;
-
-/** Return a new connection string pointing to a different database on the same server. */
-function withDatabase(baseUrl: string, dbName: string): string {
-  const u = new URL(baseUrl);
-  u.pathname = `/${dbName}`;
-  return u.toString();
-}
-
-/**
- * Create a fresh isolated database by connecting to the base test DB and issuing
- * CREATE DATABASE. Runs migrations on the new DB using PgStorage.init().
- * Returns the dbName and a connection string for the new DB.
- */
-async function createIsolatedDb(
-  baseUrl: string,
-  suffix: string,
-): Promise<{ dbName: string; dbUrl: string }> {
-  const dbName = `nlm_embed_test_${suffix}`;
-  const adminPool = new Pool({ connectionString: baseUrl });
-  try {
-    await adminPool.query(`DROP DATABASE IF EXISTS "${dbName}"`);
-    await adminPool.query(`CREATE DATABASE "${dbName}"`);
-  } finally {
-    await adminPool.end();
-  }
-  const dbUrl = withDatabase(baseUrl, dbName);
-  const storage = PgStorage.create({ connectionString: dbUrl, migrationsDir: MIGRATIONS_DIR });
-  try {
-    await storage.init();
-  } finally {
-    await storage.close();
-  }
-  return { dbName, dbUrl };
-}
-
-async function dropIsolatedDb(baseUrl: string, dbName: string): Promise<void> {
-  const adminPool = new Pool({ connectionString: baseUrl });
-  try {
-    await adminPool.query(`DROP DATABASE IF EXISTS "${dbName}"`);
-  } finally {
-    await adminPool.end();
-  }
-}
 
 class DeterministicEmbedder implements LLMClient {
   calls = 0;
@@ -120,17 +78,15 @@ const seedSessions = [
 ];
 
 describe.skipIf(!PG_TEST_URL)("reembedCorpusPg", () => {
+  const pgTestUrl = usePgTestSchema(PG_TEST_URL, import.meta.url);
   let storage: PgStorage;
   let pool: Pool;
-  let dbName: string;
   let dbUrl: string;
   let tmp: string;
   let statePath: string;
 
   beforeAll(async () => {
-    const result = await createIsolatedDb(PG_TEST_URL!, `basic_${Date.now()}`);
-    dbName = result.dbName;
-    dbUrl = result.dbUrl;
+    dbUrl = pgTestUrl();
     storage = PgStorage.create({ connectionString: dbUrl, migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     pool = storage.pgPool();
@@ -138,7 +94,6 @@ describe.skipIf(!PG_TEST_URL)("reembedCorpusPg", () => {
 
   afterAll(async () => {
     await storage.close();
-    await dropIsolatedDb(PG_TEST_URL!, dbName);
   });
 
   beforeEach(async () => {
@@ -195,17 +150,15 @@ describe.skipIf(!PG_TEST_URL)("reembedCorpusPg", () => {
 });
 
 describe.skipIf(!PG_TEST_URL)("reembedCorpusPg rebuild on dim mismatch", () => {
+  const pgTestUrl = usePgTestSchema(PG_TEST_URL, import.meta.url);
   let storage: PgStorage;
   let pool: Pool;
-  let dbName: string;
   let dbUrl: string;
   let tmp: string;
   let statePath: string;
 
   beforeAll(async () => {
-    const result = await createIsolatedDb(PG_TEST_URL!, `rebuild_${Date.now()}`);
-    dbName = result.dbName;
-    dbUrl = result.dbUrl;
+    dbUrl = pgTestUrl();
     storage = PgStorage.create({ connectionString: dbUrl, migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     pool = storage.pgPool();
@@ -213,7 +166,6 @@ describe.skipIf(!PG_TEST_URL)("reembedCorpusPg rebuild on dim mismatch", () => {
 
   afterAll(async () => {
     await storage.close();
-    await dropIsolatedDb(PG_TEST_URL!, dbName);
   });
 
   beforeEach(async () => {
