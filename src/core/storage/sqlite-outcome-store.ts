@@ -17,24 +17,28 @@
  *    `@core/outcome/coverage.js`'s `computeOutcomeCoverage`, not `deriveOutcome`
  *    directly.
  *
- * `reDerivationPairs` is always `[]` here — measured on the real corpus copy
- * (~4.6k sessions/42d window), `computeReDerivationRate`
- * (`@core/metrics/re-derivation.js`) costs ~7s: an N+1 query per session for
- * entities/decisions, then an O(n^2) pairwise jaccard scan. That blows the
- * ~2s digest budget and would add multi-second latency to every `get_session`
- * call. Re-derivation is also the rollup's lowest-precedence, rarest bucket
- * (9 pairs across the whole corpus at the 42-day window in the same
- * measurement) — sessions that would have landed there fall back to
- * `unobserved`, which stays honest rather than silently wrong. Follow-up:
- * either make `computeReDerivationRate` scale (batch its per-session reads,
- * bucket by shared entity instead of an O(n^2) scan) or have the existing
- * 24h corpus-monitor cron persist its pairs (not just the summary rate it
- * writes today) for these adapters to read instead of recomputing inline.
+ * `reDerivationPairs` (#405) is read from the cache file the 24h
+ * corpus-monitor job writes (`~/.nlm/re-derivation-pairs.json` by default,
+ * see `src/cli/nlm.ts`'s `persistReDerivationPairs`), not recomputed inline.
+ * Measured on the real corpus copy (~4.6k sessions/42d window),
+ * `computeReDerivationRate` (`@core/metrics/re-derivation.js`) costs ~7s: an
+ * N+1 query per session for entities/decisions, then an O(n^2) pairwise
+ * jaccard scan. That blows the ~2s digest budget and would add
+ * multi-second latency to every `get_session` call - fine for a background
+ * cron, not for a request path. The monitor overwrites the cache every 24h
+ * cycle, so a read here is at most ~24h stale - well inside the tolerance
+ * of a 14-day-window verdict. Missing or corrupt file (first boot before
+ * the monitor's first run, a read racing a concurrent write, etc.) falls
+ * back to `[]`: sessions that would have landed in `re-derived-later` fall
+ * back to `unobserved`, which stays honest rather than silently wrong.
  */
 
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { readCitationLog } from "@core/recall/citation-log.js";
-import type { ReDerivationPair } from "@core/metrics/re-derivation.js";
+import { parseReDerivationPairsFile, type ReDerivationPair } from "@core/metrics/re-derivation.js";
 import type {
   OutcomeCitation,
   OutcomeCitationReader,
@@ -50,6 +54,16 @@ import type {
 import type { SessionStatus, SignalOutcome } from "@shared/types.js";
 
 const RELEVANT_EDGE_KINDS = "('supersedes','replaces','continues')";
+
+const DEFAULT_REDERIVATION_PAIRS_PATH = join(homedir(), ".nlm", "re-derivation-pairs.json");
+
+function loadCachedReDerivationPairs(pairsPath: string): ReadonlyArray<ReDerivationPair> {
+  try {
+    return parseReDerivationPairsFile(readFileSync(pairsPath, "utf8"));
+  } catch {
+    return [];
+  }
+}
 
 export class SqliteOutcomeSessionReader implements OutcomeSessionReader {
   constructor(private readonly db: Database.Database) {}
@@ -111,6 +125,8 @@ export class SqliteOutcomeCitationReader implements OutcomeCitationReader {
 
 export interface BuildSqliteOutcomeDepsOptions {
   readonly citationLogPath?: string;
+  /** Override for tests; defaults to `~/.nlm/re-derivation-pairs.json`. */
+  readonly reDerivationPairsPath?: string;
   readonly now?: () => Date;
   readonly heldAfterDays?: number;
 }
@@ -125,7 +141,7 @@ export async function buildSqliteOutcomeDeps(
     signals: new SqliteOutcomeSignalReader(db),
     edges: new SqliteOutcomeEdgeReader(db),
     citations: new SqliteOutcomeCitationReader(opts.citationLogPath),
-    reDerivationPairs: [],
+    reDerivationPairs: loadCachedReDerivationPairs(opts.reDerivationPairsPath ?? DEFAULT_REDERIVATION_PAIRS_PATH),
     ...(opts.now ? { now: opts.now } : {}),
     ...(opts.heldAfterDays !== undefined ? { heldAfterDays: opts.heldAfterDays } : {}),
   };
@@ -136,14 +152,16 @@ export interface OutcomeCoverageInput {
   readonly signalsBySession: ReadonlyMap<string, ReadonlyArray<OutcomeSignal>>;
   readonly edgesBySession: ReadonlyMap<string, ReadonlyArray<OutcomeEdge>>;
   readonly citationsBySession: ReadonlyMap<string, ReadonlyArray<OutcomeCitation>>;
-  /** Always `[]` from `loadOutcomeCoverageInput` — see the module doc comment. */
+  /** Read from the corpus-monitor's cache file - see the module doc comment. */
   readonly reDerivationPairs: ReadonlyArray<ReDerivationPair>;
 }
 
 export interface LoadOutcomeCoverageInputOptions {
-  /** ISO timestamp — only sessions with `ended_at >= sinceIso` are included. */
+  /** ISO timestamp - only sessions with `ended_at >= sinceIso` are included. */
   readonly sinceIso: string;
   readonly citationLogPath?: string;
+  /** Override for tests; defaults to `~/.nlm/re-derivation-pairs.json`. */
+  readonly reDerivationPairsPath?: string;
 }
 
 /**
@@ -213,5 +231,6 @@ export async function loadOutcomeCoverageInput(
     }
   }
 
-  return { sessions, signalsBySession, edgesBySession, citationsBySession, reDerivationPairs: [] };
+  const reDerivationPairs = loadCachedReDerivationPairs(opts.reDerivationPairsPath ?? DEFAULT_REDERIVATION_PAIRS_PATH);
+  return { sessions, signalsBySession, edgesBySession, citationsBySession, reDerivationPairs };
 }
