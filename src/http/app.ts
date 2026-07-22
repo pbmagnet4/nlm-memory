@@ -612,6 +612,10 @@ function registerMcpRoute(app: Hono, deps: HttpDeps): void {
 
 function registerRecallRoutes(app: Hono, deps: HttpDeps): void {
   app.get("/api/recall", async (c) => {
+    // Composition point for this request (program spec §4.6 "M2 threading
+    // semantics until M3"): DEFAULT_TEAM_ID until the Bearer token resolves
+    // a real tenant.
+    const tenantId = DEFAULT_TEAM_ID;
     const q = c.req.query("q") ?? "";
     const entity = c.req.query("entity");
     const kind = c.req.query("kind");
@@ -678,7 +682,7 @@ function registerRecallRoutes(app: Hono, deps: HttpDeps): void {
       ...(withExemplars ? { withRelatedExemplars: true } : {}),
       ...(includeSuperseded !== undefined ? { includeSuperseded } : {}),
     };
-    const result = await deps.recall.search(DEFAULT_TEAM_ID, query);
+    const result = await deps.recall.search(tenantId, query);
 
     // Fire-and-forget telemetry — never blocks the response.
     void logQuery(
@@ -866,7 +870,8 @@ function registerHermesAgentHookRoutes(app: Hono, deps: HttpDeps): void {
       return c.json({ context: null });
     }
     try {
-      const result = await deps.recall.search(DEFAULT_TEAM_ID, {
+      const tenantId = DEFAULT_TEAM_ID;
+      const result = await deps.recall.search(tenantId, {
         query: userMessage,
         mode: "keyword",
         limit: 5,
@@ -967,6 +972,7 @@ function registerFactRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.factRecall) {
       return c.json({ error: "fact recall not wired in this deployment" }, 503);
     }
+    const tenantId = DEFAULT_TEAM_ID;
     const q = c.req.query("q") ?? "";
     const subject = c.req.query("subject");
     const predicate = c.req.query("predicate");
@@ -1004,7 +1010,7 @@ function registerFactRoutes(app: Hono, deps: HttpDeps): void {
       ...(kind !== undefined ? { kind: kind as FactKind } : {}),
       ...(minConfidence !== undefined ? { minConfidence } : {}),
     };
-    const result = await deps.factRecall.search(DEFAULT_TEAM_ID, query);
+    const result = await deps.factRecall.search(tenantId, query);
 
     const source = c.req.header("x-recall-source") ?? "http";
     const runtime = c.req.header("x-recall-runtime") ?? null;
@@ -1040,7 +1046,8 @@ function registerFactRoutes(app: Hono, deps: HttpDeps): void {
       return c.json({ error: "subject is required" }, 400);
     }
     const predicate = c.req.query("predicate");
-    const chains = await deps.factStore.getHistory(DEFAULT_TEAM_ID, subject, predicate);
+    const tenantId = DEFAULT_TEAM_ID;
+    const chains = await deps.factStore.getHistory(tenantId, subject, predicate);
     return c.json({ subject, predicate: predicate ?? null, chains });
   });
 
@@ -1059,16 +1066,23 @@ function registerFactRoutes(app: Hono, deps: HttpDeps): void {
 }
 
 function registerLiveRoutes(app: Hono, deps: HttpDeps): void {
-  app.get("/api/live/recent-writes", (c) => {
+  // Pre-existing bug fixed in passing (C2): PgSessionStore's recentWrites/
+  // recentMarkers are async (return a Promise), but SqliteSessionStore's are
+  // synchronous — these handlers must be async + await the call so pg
+  // callers get the resolved array, not an unresolved Promise serialized as
+  // JSON.
+  app.get("/api/live/recent-writes", async (c) => {
     if (!deps.liveStore) return c.json({ writes: [] });
+    const tenantId = DEFAULT_TEAM_ID;
     const limit = parseLimit(c.req.query("limit"), 50, 200);
-    return c.json({ writes: deps.liveStore.recentWrites(DEFAULT_TEAM_ID, limit) });
+    return c.json({ writes: await deps.liveStore.recentWrites(tenantId, limit) });
   });
 
-  app.get("/api/live/recent-markers", (c) => {
+  app.get("/api/live/recent-markers", async (c) => {
     if (!deps.liveStore) return c.json({ markers: [] });
+    const tenantId = DEFAULT_TEAM_ID;
     const limit = parseLimit(c.req.query("limit"), 50, 200);
-    return c.json({ markers: deps.liveStore.recentMarkers(DEFAULT_TEAM_ID, limit) });
+    return c.json({ markers: await deps.liveStore.recentMarkers(tenantId, limit) });
   });
 }
 
@@ -1188,9 +1202,10 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
     const parsed = parseActionInput(body);
     if (!parsed) return c.json({ error: "invalid action payload" }, 400);
     const store = deps.liveStore;
+    const tenantId = DEFAULT_TEAM_ID;
     const id = store instanceof PgSessionStore
-      ? await writeActionPg(store.pool, DEFAULT_TEAM_ID, parsed)
-      : writeAction(store.rawDb(), DEFAULT_TEAM_ID, parsed);
+      ? await writeActionPg(store.pool, tenantId, parsed)
+      : writeAction(store.rawDb(), tenantId, parsed);
     store.invalidateOverlayCache();
     return c.json({ id, timestamp: new Date().toISOString() });
   });
@@ -1204,9 +1219,10 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
       .filter((x): x is NonNullable<ReturnType<typeof parseActionInput>> => x !== null);
     if (inputs.length === 0) return c.json({ accepted: 0, ids: [] });
     const store = deps.liveStore;
+    const tenantId = DEFAULT_TEAM_ID;
     const ids = store instanceof PgSessionStore
-      ? await writeActionsBatchPg(store.pool, DEFAULT_TEAM_ID, inputs)
-      : writeActionsBatch(store.rawDb(), DEFAULT_TEAM_ID, inputs);
+      ? await writeActionsBatchPg(store.pool, tenantId, inputs)
+      : writeActionsBatch(store.rawDb(), tenantId, inputs);
     store.invalidateOverlayCache();
     return c.json({ accepted: ids.length, ids });
   });
@@ -1214,9 +1230,10 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
   app.post("/api/action/:id/undo", async (c) => {
     if (!deps.liveStore) return c.json({ error: "actions require liveStore" }, 503);
     const store = deps.liveStore;
+    const tenantId = DEFAULT_TEAM_ID;
     const result = store instanceof PgSessionStore
-      ? await undoActionPg(store.pool, DEFAULT_TEAM_ID, c.req.param("id"))
-      : undoAction(store.rawDb(), DEFAULT_TEAM_ID, c.req.param("id"));
+      ? await undoActionPg(store.pool, tenantId, c.req.param("id"))
+      : undoAction(store.rawDb(), tenantId, c.req.param("id"));
     if (!result) return c.json({ error: "action not found or already undone" }, 404);
     store.invalidateOverlayCache();
     return c.json({ id: result.undoId, timestamp: new Date().toISOString() });
@@ -1234,9 +1251,10 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
       ...(kind ? { kind } : {}),
     };
     const store = deps.liveStore;
+    const tenantId = DEFAULT_TEAM_ID;
     const rows = store instanceof PgSessionStore
-      ? await listActionsPg(store.pool, DEFAULT_TEAM_ID, opts)
-      : listActions(store.rawDb(), DEFAULT_TEAM_ID, opts);
+      ? await listActionsPg(store.pool, tenantId, opts)
+      : listActions(store.rawDb(), tenantId, opts);
     return c.json({ actions: rows });
   });
 }
@@ -1289,7 +1307,8 @@ function registerClassifierRoutes(app: Hono, deps: HttpDeps): void {
 function registerSourceRoutes(app: Hono, deps: HttpDeps): void {
   app.get("/api/sources", async (c) => {
     if (!deps.sources) return c.json({ sources: [] });
-    return c.json({ sources: await deps.sources.list(DEFAULT_TEAM_ID) });
+    const tenantId = DEFAULT_TEAM_ID;
+    return c.json({ sources: await deps.sources.list(tenantId) });
   });
 
   app.post("/api/sources", async (c) => {
@@ -1297,10 +1316,11 @@ function registerSourceRoutes(app: Hono, deps: HttpDeps): void {
     const body = (await c.req.json().catch(() => null)) as Partial<SourceInsert> | null;
     const parsed = parseSourceInsert(body);
     if (!parsed) return c.json({ error: "invalid source payload" }, 400);
-    if (await deps.sources.getByName(DEFAULT_TEAM_ID, parsed.name)) {
+    const tenantId = DEFAULT_TEAM_ID;
+    if (await deps.sources.getByName(tenantId, parsed.name)) {
       return c.json({ error: `source named '${parsed.name}' already exists` }, 409);
     }
-    return c.json(await deps.sources.insert(DEFAULT_TEAM_ID, parsed), 201);
+    return c.json(await deps.sources.insert(tenantId, parsed), 201);
   });
 
   app.patch("/api/sources/:id", async (c) => {
@@ -1310,7 +1330,8 @@ function registerSourceRoutes(app: Hono, deps: HttpDeps): void {
     const body = (await c.req.json().catch(() => null)) as Partial<SourceUpdate> | null;
     const patch = parseSourceUpdate(body);
     if (!patch) return c.json({ error: "invalid patch payload" }, 400);
-    const updated = await deps.sources.update(DEFAULT_TEAM_ID, id, patch);
+    const tenantId = DEFAULT_TEAM_ID;
+    const updated = await deps.sources.update(tenantId, id, patch);
     if (!updated) return c.json({ error: `source ${id} not found` }, 404);
     return c.json(updated);
   });
@@ -1319,7 +1340,8 @@ function registerSourceRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.sources) return c.json({ error: "sources registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    const ok = await deps.sources.delete(DEFAULT_TEAM_ID, id);
+    const tenantId = DEFAULT_TEAM_ID;
+    const ok = await deps.sources.delete(tenantId, id);
     if (!ok) return c.json({ error: `source ${id} not found` }, 404);
     return c.json({ deleted: id });
   });
@@ -1328,7 +1350,8 @@ function registerSourceRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.sources) return c.json({ error: "sources registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    const token = await deps.sources.regenerateToken(DEFAULT_TEAM_ID, id);
+    const tenantId = DEFAULT_TEAM_ID;
+    const token = await deps.sources.regenerateToken(tenantId, id);
     if (!token) return c.json({ error: "regenerate-token only applies to webhook sources" }, 400);
     return c.json({ token });
   });
@@ -1369,7 +1392,12 @@ function registerIngestRoute(app: Hono, deps: HttpDeps): void {
     };
 
     const ingest = deps.ingest;
-    void ingestSession(input, ingest, DEFAULT_TEAM_ID).catch((e) => {
+    // Pre-wires M4 (spec §3): stamp the ingested session with the resolved
+    // source row's own tenant_id rather than the DEFAULT_TEAM_ID constant.
+    // Every source is stamped DEFAULT_TEAM_ID today (single-tenant), so this
+    // is a no-op in local mode — plumbing only, until M4 gives sources real
+    // per-team tenant_id values.
+    void ingestSession(input, ingest, source.tenantId).catch((e) => {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`[ingest] background failure for ${id}: ${msg}`);
     });
@@ -1384,7 +1412,8 @@ function registerIngestRoute(app: Hono, deps: HttpDeps): void {
 function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
   app.get("/api/providers", async (c) => {
     if (!deps.providers) return c.json({ providers: [] });
-    return c.json({ providers: await deps.providers.list(DEFAULT_TEAM_ID) });
+    const tenantId = DEFAULT_TEAM_ID;
+    return c.json({ providers: await deps.providers.list(tenantId) });
   });
 
   app.post("/api/providers", async (c) => {
@@ -1392,10 +1421,11 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
     const body = (await c.req.json().catch(() => null)) as Partial<ProviderInsert> | null;
     const parsed = parseProviderInsert(body);
     if (!parsed) return c.json({ error: "invalid provider payload" }, 400);
-    if (await deps.providers.getByName(DEFAULT_TEAM_ID, parsed.name)) {
+    const tenantId = DEFAULT_TEAM_ID;
+    if (await deps.providers.getByName(tenantId, parsed.name)) {
       return c.json({ error: `provider named '${parsed.name}' already exists` }, 409);
     }
-    return c.json(await deps.providers.insert(DEFAULT_TEAM_ID, parsed), 201);
+    return c.json(await deps.providers.insert(tenantId, parsed), 201);
   });
 
   app.patch("/api/providers/:id", async (c) => {
@@ -1405,7 +1435,8 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
     const body = (await c.req.json().catch(() => null)) as Partial<ProviderUpdate> | null;
     const patch = parseProviderUpdate(body);
     if (!patch) return c.json({ error: "invalid patch payload" }, 400);
-    const updated = await deps.providers.update(DEFAULT_TEAM_ID, id, patch);
+    const tenantId = DEFAULT_TEAM_ID;
+    const updated = await deps.providers.update(tenantId, id, patch);
     if (!updated) return c.json({ error: `provider ${id} not found` }, 404);
     return c.json(updated);
   });
@@ -1414,7 +1445,8 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.providers) return c.json({ error: "providers registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    const ok = await deps.providers.delete(DEFAULT_TEAM_ID, id);
+    const tenantId = DEFAULT_TEAM_ID;
+    const ok = await deps.providers.delete(tenantId, id);
     if (!ok) return c.json({ error: `provider ${id} not found` }, 404);
     return c.json({ deleted: id });
   });
@@ -1423,9 +1455,10 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.providers) return c.json({ error: "providers registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    const provider = await deps.providers.get(DEFAULT_TEAM_ID, id);
+    const tenantId = DEFAULT_TEAM_ID;
+    const provider = await deps.providers.get(tenantId, id);
     if (!provider) return c.json({ error: `provider ${id} not found` }, 404);
-    const key = await deps.providers.getSecret(DEFAULT_TEAM_ID, id);
+    const key = await deps.providers.getSecret(tenantId, id);
     try {
       const models = await listModels(provider, { apiKey: key });
       return c.json({ models });
@@ -1439,9 +1472,10 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.providers) return c.json({ error: "providers registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    const provider = await deps.providers.get(DEFAULT_TEAM_ID, id);
+    const tenantId = DEFAULT_TEAM_ID;
+    const provider = await deps.providers.get(tenantId, id);
     if (!provider) return c.json({ error: `provider ${id} not found` }, 404);
-    const key = await deps.providers.getSecret(DEFAULT_TEAM_ID, id);
+    const key = await deps.providers.getSecret(tenantId, id);
     const startedAt = Date.now();
     try {
       const models = await listModels(provider, { apiKey: key });
@@ -1460,7 +1494,8 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
 function registerSessionRoute(app: Hono, deps: HttpDeps): void {
   app.get("/api/session/:id", async (c) => {
     const id = c.req.param("id");
-    const session = await deps.store.getById(DEFAULT_TEAM_ID, id);
+    const tenantId = DEFAULT_TEAM_ID;
+    const session = await deps.store.getById(tenantId, id);
     if (!session) {
       return c.json({ error: `session ${id} not found` }, 404);
     }
@@ -1472,6 +1507,7 @@ function registerSessionRoute(app: Hono, deps: HttpDeps): void {
   // predecessor (the session being retired); body names the successor.
   app.post("/api/session/:id/supersede", async (c) => {
     const predecessorId = c.req.param("id");
+    const tenantId = DEFAULT_TEAM_ID;
     let body: unknown;
     try {
       body = await c.req.json();
@@ -1491,7 +1527,7 @@ function registerSessionRoute(app: Hono, deps: HttpDeps): void {
       return c.json({ error: "reason must be a string if provided" }, 400);
     }
     try {
-      await deps.store.markSuperseded(DEFAULT_TEAM_ID, predecessorId, successorId);
+      await deps.store.markSuperseded(tenantId, predecessorId, successorId);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       const status =
@@ -1661,12 +1697,13 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
       return c.json({ error: e instanceof Error ? e.message : "invalid signal" }, 400);
     }
     const rawBody = body as Record<string, unknown>;
-    signal = await stampSignalScope(signal, DEFAULT_TEAM_ID, {
+    const tenantId = DEFAULT_TEAM_ID;
+    signal = await stampSignalScope(signal, tenantId, {
       repoPath: typeof rawBody["repo_path"] === "string" ? rawBody["repo_path"] : null,
       sessionScopeReader: deps.sessionScopeReader,
     });
     try {
-      await deps.signalStore.insert(DEFAULT_TEAM_ID, signal);
+      await deps.signalStore.insert(tenantId, signal);
     } catch {
       return c.json({ error: "signal insert failed" }, 500);
     }
@@ -1683,11 +1720,11 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
       try {
         const exemplar = extractExemplar(signal, { installScope: deps.installScope });
         if (exemplar) {
-          const { id, skipped } = await exemplarStore.insert(DEFAULT_TEAM_ID, exemplar);
+          const { id, skipped } = await exemplarStore.insert(tenantId, exemplar);
           if (!skipped && deps.codeEmbedder) {
             void deps.codeEmbedder
               .embed(composeEmbedText(exemplar.taskContext, exemplar.code), "document")
-              .then((r) => exemplarStore.upsertEmbedding(DEFAULT_TEAM_ID, id, r.vector))
+              .then((r) => exemplarStore.upsertEmbedding(tenantId, id, r.vector))
               .catch(() => { /* degraded; exemplar stored without a vector */ });
           }
         }
@@ -1703,8 +1740,9 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
     const repo = c.req.query("repo");
     if (!repo) return c.json({ error: "repo is required" }, 400);
     const model = c.req.query("model");
+    const tenantId = DEFAULT_TEAM_ID;
     const block = await buildFailureModeBlock(
-      DEFAULT_TEAM_ID,
+      tenantId,
       deps.signalStore,
       { installScope: deps.installScope, repo, ...(model ? { model } : {}) },
     );
@@ -1721,7 +1759,8 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
       return c.json({ error: "days must be 1..365" }, 400);
     }
     const sinceTs = new Date(Date.now() - days * 86_400_000).toISOString();
-    const rows = await deps.signalStore.listForAggregation(DEFAULT_TEAM_ID, { installScope: deps.installScope, sinceTs });
+    const tenantId = DEFAULT_TEAM_ID;
+    const rows = await deps.signalStore.listForAggregation(tenantId, { installScope: deps.installScope, sinceTs });
     const modes = aggregateFailureModes(rows);
     return c.json({ days, total: rows.length, modes });
   });
@@ -1751,11 +1790,12 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
       return c.json({ error: e instanceof Error ? e.message : "invalid exemplar" }, 400);
     }
     inp = { ...inp, scope: scopeStampEnabled() ? inp.scope : null };
-    const { id, skipped } = await deps.exemplarStore.insert(DEFAULT_TEAM_ID, inp);
+    const tenantId = DEFAULT_TEAM_ID;
+    const { id, skipped } = await deps.exemplarStore.insert(tenantId, inp);
     if (!skipped && deps.codeEmbedder) {
       // Best-effort embedding: fire-and-forget, never blocks the response.
       deps.codeEmbedder.embed(composeEmbedText(inp.taskContext, inp.code), "document")
-        .then((r) => deps.exemplarStore!.upsertEmbedding(DEFAULT_TEAM_ID, id, r.vector))
+        .then((r) => deps.exemplarStore!.upsertEmbedding(tenantId, id, r.vector))
         .catch(() => { /* degraded; exemplar is still stored without a vector */ });
     }
     return c.json({ id, skipped, status: "accepted" }, 202);
@@ -1782,7 +1822,8 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
     if (patch.retired === undefined && patch.outcome === undefined) {
       return c.json({ error: "provide retire (boolean) and/or outcome" }, 400);
     }
-    const result = await deps.exemplarStore.setVerdict(DEFAULT_TEAM_ID, c.req.param("id"), patch, "human");
+    const tenantId = DEFAULT_TEAM_ID;
+    const result = await deps.exemplarStore.setVerdict(tenantId, c.req.param("id"), patch, "human");
     if (result.status === "not_found") return c.json({ error: "exemplar not found" }, 404);
     return c.json({ id: c.req.param("id"), status: result.status }, 200);
   });
@@ -1802,9 +1843,10 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
     const lang = c.req.query("lang");
     const model = c.req.query("model");
     const includeNegatives = c.req.query("negatives") !== "0";
+    const tenantId = DEFAULT_TEAM_ID;
 
     const result = await recallCode(
-      DEFAULT_TEAM_ID,
+      tenantId,
       {
         query,
         installScope: deps.installScope,

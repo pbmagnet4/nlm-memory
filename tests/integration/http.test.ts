@@ -490,6 +490,37 @@ describe("HTTP adapter", () => {
     expect(body.markers.some((m) => m.kind === "open")).toBe(true);
   });
 
+  it("GET /api/live/recent-writes awaits an async liveStore (pg-shaped) instead of serializing an unresolved Promise", async () => {
+    // Regression for C2's carried fix: PgSessionStore.recentWrites/
+    // recentMarkers are async, but the route handlers used to call them
+    // without await — under pg that returns a Promise, which Hono's c.json
+    // serializes as `{}`, silently losing every write/marker. This fake
+    // reproduces the pg-shaped (async) return without needing a real pg
+    // connection.
+    const fakeAsyncLiveStore = {
+      recentWrites: async (_tenantId: string, _limit: number) => [
+        { id: "sess_async", label: "async write", runtime: "claude-code", startedAt: "2026-07-22T00:00:00Z" },
+      ],
+      recentMarkers: async (_tenantId: string, _limit: number) => [
+        { kind: "decision", text: "async marker", sessionId: "sess_async" },
+      ],
+    } as unknown as SqliteSessionStore;
+    const recallForAsyncApp = new RecallService({ store, llm: new FixedEmbedder(unit([0, 1, 0])) });
+    const asyncApp = createApp({ recall: recallForAsyncApp, store, liveStore: fakeAsyncLiveStore });
+
+    const writesRes = await asyncApp.request("/api/live/recent-writes?limit=10");
+    expect(writesRes.status).toBe(200);
+    const writesBody = (await writesRes.json()) as { writes: { id: string }[] };
+    expect(writesBody.writes).toHaveLength(1);
+    expect(writesBody.writes[0]?.id).toBe("sess_async");
+
+    const markersRes = await asyncApp.request("/api/live/recent-markers?limit=10");
+    expect(markersRes.status).toBe(200);
+    const markersBody = (await markersRes.json()) as { markers: { kind: string }[] };
+    expect(markersBody.markers).toHaveLength(1);
+    expect(markersBody.markers[0]?.kind).toBe("decision");
+  });
+
   it("GET /api/recall/recent returns tailed log entries", async () => {
     await app.request("/api/recall?q=pgvector&mode=keyword");
     await waitForLines(queryLogPath, 1);
