@@ -12,13 +12,13 @@ The hook surface is **fail-open by design**: any error yields a clean exit with 
 
 | Runtime | Surface | Events | Install |
 |---|---|---|---|
-| **Claude Code** | `~/.claude/settings.json` hook command, stdin → stdout | UserPromptSubmit, SessionStart, SessionEnd, Stop, PreCompact, SubagentStart | `nlm connect claude-code` or `nlm setup` |
+| **Claude Code** | `~/.claude/settings.json` hook command, stdin → stdout | UserPromptSubmit, SessionStart, SessionEnd, Stop, PreCompact | `nlm connect claude-code` or `nlm setup` |
 | **Hermes Agent** | Plugin in `~/.hermes/plugins/nlm-memory/` | Parallel set (pre-turn, post-turn, lifecycle) | `nlm connect hermes-agent` or `nlm setup` |
 | **pi.dev** | Extension module loaded by pi's `packages[]` array, `pi.on("input", ...)` API | `input` only — pi has no Stop/PreCompact analogues; the passive pi adapter (`~/.pi/agent/sessions/**/*.jsonl`) covers transcript ingestion | `nlm connect pi` or `nlm setup` |
 
 The pi.dev surface is the slimmest because the runtime exposes fewer extension points. It still runs the same `runHook` orchestration (`src/hook/prompt-recall-hook.ts`) and writes to the same `~/.nlm/hook-state/<sessionId>.json` per-conversation memo and `~/.nlm/hook-log.jsonl` log file, so cross-runtime invariants (de-dup across fires, surfaced-IDs cap, gate classification) hold regardless of where you're typing.
 
-## The six hooks (Claude Code reference)
+## The five hooks (Claude Code reference)
 
 Claude Code is the most complete surface. Other runtimes implement a subset:
 
@@ -29,7 +29,8 @@ Claude Code is the most complete surface. Other runtimes implement a subset:
 | **SessionEnd** | When a Claude Code session closes | Delete the per-conversation surfaced-IDs memo so memo files don't accumulate under `~/.nlm/hook-state/`; log a `session-end` entry so the daily liveness canary can correlate closes against fires | No stdout output; cleans up state |
 | **Stop** | After the model's response completes | Scan the response for citations of surfaced session IDs; POST each fresh citation to `/api/recall/cite-event` | No stdout output; updates `useful_hit_rate` and citation log |
 | **PreCompact** | Before Claude Code compacts the conversation | Flush the per-conversation surfaced-IDs memo and stamp a compaction record so post-compaction recalls aren't gated by stale "already surfaced" state | No stdout output; clears state |
-| **SubagentStart** | When the runtime dispatches a subagent | Record the parent→subagent link so future corpus-linking logic can correlate subagent sessions back to the dispatching conversation | No stdout output; logs the parent/child IDs |
+
+Parent-to-subagent linkage needs no dedicated hook: the claude-code adapter derives it from the runtime session id (`<parent>/agent-<id>`) at ingest, so subagent threads stay coherent with zero per-dispatch overhead.
 
 Code: [`src/hook/`](../src/hook/).
 
