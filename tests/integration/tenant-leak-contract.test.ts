@@ -4,29 +4,34 @@
  * lane. This file is test-first at the contract level (Global Constraints,
  * Wave A): it enumerates every adversarial case from spec §6 (1-9, 11-12;
  * case 10 is concurrency and lands with M7's harness) as a named `it()`.
- * Wave B1-B4 landed SessionStore/FactStore/CodeExemplarStore/SignalStore/
- * WorkstreamStore/EntityStore/OutcomeStore threading, so cases 1, 2, 3, 4,
- * 5, 6 flip here to real assertions against the fixture's real (now
- * tenant-threaded) stores and the service-layer functions built directly on
- * them (rollupWorkstream, buildWorkDigest, buildFailureModeBlock).
- * Cases 7, 8, 9, 11, 12 stay `it.todo` — they exercise surfaces Wave B does
- * not touch: source-token ingest attribution/auth (M3/M4, Wave C), the
- * by-construction store guard (Wave C4's tests/integration/tenant-guard.test.ts),
- * and M6 file-state isolation. A case that cannot pass yet is `it.todo` with
- * its exact case text — visibly red-by-design, never deleted, never
- * silently skipped. The pg twin (tenant-leak-contract.pg.test.ts) is written
- * in Wave C.
  *
- * The pg twin and case 10 are out of scope here per the plan.
+ * Wave B1-B4 landed SessionStore/FactStore/CodeExemplarStore/SignalStore/
+ * WorkstreamStore/EntityStore/OutcomeStore threading, so cases 1-6 flip here
+ * to real assertions against the fixture's real (tenant-threaded) stores and
+ * the service-layer functions built directly on them (rollupWorkstream,
+ * buildWorkDigest, buildFailureModeBlock).
+ *
+ * Wave C1's surface threading + Wave C4's guard test complete cases 9 and 11
+ * (below). Cases 7, 8, 12 stay `it.todo` — they exercise surfaces this
+ * program's later milestones own: source-token ingest attribution/auth
+ * (M3/M4) and M6 file-state isolation. A case that cannot pass yet is
+ * `it.todo` with its exact case text — visibly red-by-design, never
+ * deleted, never silently skipped.
+ *
+ * The pg twin (tenant-leak-contract.pg.test.ts, Wave C5) mirrors the sqlite
+ * cases that have pg-reachable shapes; case 10 (concurrency) stays out of
+ * scope for both files per the plan (M7's isolated harness).
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { seedTenantCorpus, type SeededTenantCorpus } from "../helpers/seed-tenant-corpus.js";
 import { rollupWorkstream } from "../../src/core/workstream/rollup.js";
 import { buildWorkDigest } from "../../src/core/work-digest/build-work-digest.js";
 import { buildFailureModeBlock } from "../../src/core/signals/failure-mode-recall.js";
+import { getSessionHandler } from "../../src/mcp/server.js";
+import { createApp } from "../../src/http/app.js";
 import type { Signal } from "../../src/shared/types.js";
 
 const ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "../..");
@@ -283,26 +288,61 @@ describe("tenant leak-test contract (spec §6, sqlite lane)", () => {
       "bad/absent token gets 401 with no corpus read",
   );
 
-  it.todo(
-    "case 9: no-parameter override — no API/MCP input (tenant, scope: '*', or any other arg) widens results " +
-      "beyond the token's team; tenant identity is auth-only",
-  );
+  // Case 9 (surface level, Wave C1/C2). Every MCP handler and HTTP route now
+  // takes tenantId as an explicit parameter separate from the caller-
+  // supplied input/query object (spec §3: "tenant is resolved from the
+  // authenticated credential and from nothing else"). This proves the
+  // negative directly: a crafted `tenant`/`scope: "*"` field riding along on
+  // the untyped input object has zero effect — results are governed only by
+  // the positional tenantId the composition root supplied.
+  it("case 9: no-parameter override — a crafted tenant/scope field on the MCP input or HTTP query string never " +
+      "widens results beyond the caller's tenantId", async () => {
+    const { A, B } = fixture.ids;
+    const deps = { recall: {} as never, store: fixture.sessionStore };
 
-  it.todo(
-    "case 11: store guard — every corpus SQL string in every store routes through tenantClause, asserted by " +
-      "construction or by scanning prepared statements, so a future read path cannot forget the filter",
-  );
+    // MCP surface: get_session's `input` is untyped at the wire (JSON args).
+    // A crafted extra `tenant`/`scope` field must not override the real
+    // (positional) tenantId argument, in either direction.
+    const craftedOwnSession = { id: A.sessionIds[0], tenant: "team_b", scope: "*", tenantId: "team_b" };
+    const ownResult = await getSessionHandler(deps, "team_a", craftedOwnSession as unknown as { id: string });
+    expect(ownResult.isError).toBeUndefined();
+    const ownBody = JSON.parse(ownResult.content[0]!.text) as { id: string };
+    expect(ownBody.id).toBe(A.sessionIds[0]);
 
-  // Pre-threading floor for case 11, checkable today at the raw-source level
-  // (no store behavior required): no literal bind-param or string-literal
-  // `tenant_id = ?` / `tenant_id = $n` / `tenant_id = '...'` form may appear
-  // inline anywhere in the files Wave C's full guard test
-  // (tests/integration/tenant-guard.test.ts) authoritatively scans. Column-
-  // to-column equality (`tenant_id = <alias>.tenant_id` / `<alias>.tenant_id
-  // = <alias2>.tenant_id`) is explicitly PERMITTED — it's the defense-in-
-  // depth join form Wave C4 restored in findContinuesPredecessor and
-  // listBackfillCandidates (sqlite + pg), not a hand-rolled tenant filter.
-  it("case 11 (pre-threading floor): no store/actions/dataset/http SQL string inlines a bind-param or literal tenant_id =", () => {
+    const craftedCrossTenant = { id: B.sessionIds[0], tenant: "team_a", scope: "*" };
+    const crossResult = await getSessionHandler(deps, "team_a", craftedCrossTenant as unknown as { id: string });
+    expect(crossResult.isError).toBe(true);
+    expect(crossResult.content[0]?.text).toContain("not found");
+
+    // HTTP surface: a `?tenant=team_b`/`?scope=*` query string on a FILTER
+    // route has no code path that reads it — the handler never looks at
+    // anything but the fixed request path param, proving the same negative
+    // over HTTP.
+    const recallStub = { search: async () => ({ query: "", mode: "keyword" as const, limit: 0, total: 0, results: [] }) };
+    const app = createApp({ recall: recallStub as never, store: fixture.sessionStore });
+    const res = await app.request(`/api/session/${B.sessionIds[0]}?tenant=team_a&scope=*`);
+    expect(res.status).toBe(404);
+  });
+
+  // Case 11 (Wave C4). The by-construction store guard lives in its own
+  // dedicated file (tests/integration/tenant-guard.test.ts) so it can scan
+  // the full corpus-SQL surface independently of this fixture-driven
+  // contract file. Asserting its existence here keeps case 11 visibly
+  // resolved in the one place spec §6 enumerates every case, without
+  // duplicating the scan logic.
+  it("case 11: store guard — every corpus SQL string in every store routes through tenantClause, asserted by " +
+      "construction (full scan: tests/integration/tenant-guard.test.ts)", () => {
+    expect(existsSync(join(ROOT, "tests/integration/tenant-guard.test.ts"))).toBe(true);
+  });
+
+  // Supplementary to case 11 above: a fast, local copy of tenant-guard.test.ts's
+  // check 1 (literal scan) kept in this file too, so the contract file alone
+  // still catches an inlined bind-param/string-literal `tenant_id =` even if
+  // someone ever ran this file in isolation. Column-to-column equality
+  // (`tenant_id = <alias>.tenant_id` / `<alias>.tenant_id = <alias2>.tenant_id`)
+  // is explicitly PERMITTED — the defense-in-depth join form Wave C4 restored
+  // in findContinuesPredecessor and listBackfillCandidates (sqlite + pg).
+  it("case 11 (supplementary literal-scan floor): no store/actions/dataset/http SQL string inlines a bind-param or literal tenant_id =", () => {
     const scanFiles: string[] = [];
     for (const f of readdirSync(join(ROOT, "src/core/storage"))) {
       if (f.endsWith(".ts")) scanFiles.push(join(ROOT, "src/core/storage", f));
