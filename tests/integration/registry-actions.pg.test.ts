@@ -23,6 +23,7 @@ import {
   listActionsPg,
   undoActionPg,
   writeActionPg,
+  writeActionsBatchPg,
 } from "../../src/core/actions/actions-log.js";
 import { createApp } from "../../src/http/app.js";
 import { RecallService } from "../../src/core/recall/recall-service.js";
@@ -178,6 +179,41 @@ describe.skipIf(!PG_TEST_URL)("PG actions-log", () => {
     // The original is now reverted; undoing it again returns null.
     expect(await undoActionPg(pool, id)).toBeNull();
   });
+
+  it("writeActionsBatchPg collapses identical rows within the batch (#294)", async () => {
+    const dup = {
+      kind: "dismiss",
+      subjectType: "alert",
+      subjectId: "alert_1",
+      payload: { reason: "noise" },
+    } as const;
+    const ids = await writeActionsBatchPg(pool, [
+      dup,
+      dup,
+      { kind: "dismiss", subjectType: "alert", subjectId: "alert_2" },
+    ]);
+    expect(ids).toHaveLength(2);
+
+    const listed = await listActionsPg(pool, { limit: 10 });
+    expect(listed).toHaveLength(2);
+  });
+
+  it("undoActionPg rejects undoing an 'undo' row (#294)", async () => {
+    const id = await writeActionPg(pool, {
+      kind: "dismiss",
+      subjectType: "alert",
+      subjectId: "alert_undo_of_undo",
+    });
+    const undo = await undoActionPg(pool, id);
+    expect(undo).not.toBeNull();
+    expect(await undoActionPg(pool, undo!.undoId)).toBeNull();
+  });
+
+  it("actions_kind_check constraint rejects an unknown kind (#294)", async () => {
+    await expect(
+      writeActionPg(pool, { kind: "not_a_real_kind", subjectType: "alert", subjectId: "x" }),
+    ).rejects.toThrow(/actions_kind_check/);
+  });
 });
 
 describe.skipIf(!PG_TEST_URL)("data-management routes (PG backend)", () => {
@@ -237,7 +273,7 @@ describe.skipIf(!PG_TEST_URL)("data-management routes (PG backend)", () => {
     expect(stats.dbPath).toBe("postgresql");
     expect(stats.dbPresent).toBe(true);
     expect(stats.dbBytes).toBeGreaterThan(0);
-    expect(stats.schemaVersion).toBe(32);
+    expect(stats.schemaVersion).toBe(33);
     expect(stats.tables.find((t) => t.name === "sessions")?.rows).toBe(1);
     expect(stats.runtimes).toContainEqual({ runtime: "claude-code", n: 1 });
   });

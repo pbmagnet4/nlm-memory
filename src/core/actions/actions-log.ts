@@ -37,6 +37,29 @@ function makeActionId(): string {
   return `act_${ts}_${rand}`;
 }
 
+function actionDedupeKey(input: ActionInput): string {
+  return JSON.stringify([input.kind, input.subjectType, input.subjectId, input.payload ?? null]);
+}
+
+/**
+ * Collapses identical rows (same kind + subjectType + subjectId + payload)
+ * within a single batch, keeping the first occurrence. A batch is typically
+ * one UI gesture replayed by a flaky client retry, not intentionally repeated
+ * writes, so silently dropping the duplicates is the correct behavior rather
+ * than inserting redundant log rows.
+ */
+export function dedupeActionInputs(inputs: ReadonlyArray<ActionInput>): ActionInput[] {
+  const seen = new Set<string>();
+  const out: ActionInput[] = [];
+  for (const input of inputs) {
+    const key = actionDedupeKey(input);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(input);
+  }
+  return out;
+}
+
 export function writeAction(db: Database.Database, input: ActionInput): string {
   const id = makeActionId();
   const payload = input.payload ? JSON.stringify(input.payload) : null;
@@ -57,8 +80,9 @@ export function writeAction(db: Database.Database, input: ActionInput): string {
 }
 
 export function writeActionsBatch(db: Database.Database, inputs: ReadonlyArray<ActionInput>): string[] {
+  const deduped = dedupeActionInputs(inputs);
   const txn = db.transaction((rows: ReadonlyArray<ActionInput>) => rows.map((r) => writeAction(db, r)));
-  return txn(inputs);
+  return txn(deduped);
 }
 
 export interface UndoResult {
@@ -72,7 +96,11 @@ export function undoAction(db: Database.Database, actionId: string): UndoResult 
       "SELECT id, kind, subject_type, subject_id FROM actions WHERE id = ? AND reverted_by IS NULL",
     )
     .get(actionId);
-  if (!target) return null;
+  // An 'undo' row is itself unrevertable: reverting it wouldn't restore the
+  // original action (reverted_by on the original stays pointed at it), so it
+  // would just be a dead row. Reject cleanly with the same "not found or
+  // already undone" contract the caller already handles.
+  if (!target || target.kind === "undo") return null;
 
   const undoId = makeActionId();
   const undoPayload = JSON.stringify({
@@ -135,12 +163,13 @@ export async function writeActionPg(pool: Pool, input: ActionInput): Promise<str
 }
 
 export async function writeActionsBatchPg(pool: Pool, inputs: ReadonlyArray<ActionInput>): Promise<string[]> {
-  if (inputs.length === 0) return [];
+  const deduped = dedupeActionInputs(inputs);
+  if (deduped.length === 0) return [];
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const ids: string[] = [];
-    for (const input of inputs) {
+    for (const input of deduped) {
       const id = makeActionId();
       const payload = input.payload ? JSON.stringify(input.payload) : null;
       await client.query(
@@ -169,7 +198,9 @@ export async function undoActionPg(pool: Pool, actionId: string): Promise<UndoRe
       "SELECT id, kind, subject_type, subject_id FROM actions WHERE id = $1 AND reverted_by IS NULL FOR UPDATE",
       [actionId],
     );
-    if (!target.rows[0]) {
+    // See undoAction's sqlite counterpart: an 'undo' row can't itself be
+    // undone without leaving a dead row that doesn't restore anything.
+    if (!target.rows[0] || target.rows[0].kind === "undo") {
       await client.query("ROLLBACK");
       return null;
     }
