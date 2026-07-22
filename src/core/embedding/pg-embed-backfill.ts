@@ -78,7 +78,7 @@ export async function reembedCorpusPg(opts: PgBackfillOptions): Promise<Backfill
 
   try {
     const tableCheck = await pool.query<{ exists: boolean }>(
-      "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'embedding_config') AS exists",
+      "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'embedding_config') AS exists",
     );
     if (!tableCheck.rows[0]?.exists) {
       throw new Error(
