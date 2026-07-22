@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="264" viewBox="0 0 720 264" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif">
+<text x="16" y="28" font-size="15" font-weight="600" fill="#e6edf3">Recall-impact replay eval, pre-registered (n=100, blind judge)</text>
+<text x="16" y="72" font-size="13" font-weight="600" fill="#e6edf3">Decisive rate</text>
+<text x="16" y="88" font-size="11" fill="#9198a1">injection changed the outcome</text>
+<rect x="240" y="62" width="380" height="20" rx="4" fill="#3d444d" opacity="0.35"/>
+<rect x="240" y="62" width="319" height="20" rx="4" fill="#5E97D6"/>
+<line x1="354" y1="56" x2="354" y2="88" stroke="#9198a1" stroke-width="2" stroke-dasharray="3,3"/>
+<text x="360" y="54" font-size="10" fill="#9198a1">bar: at least 0.30</text>
+<text x="569" y="76" font-size="13" font-weight="700" fill="#e6edf3">0.840</text>
+<text x="16" y="130" font-size="13" font-weight="600" fill="#e6edf3">Win rate</text>
+<text x="16" y="146" font-size="11" fill="#9198a1">memory arm won, decisive pairs</text>
+<rect x="240" y="120" width="380" height="20" rx="4" fill="#3d444d" opacity="0.35"/>
+<rect x="240" y="120" width="335" height="20" rx="4" fill="#5E97D6"/>
+<line x1="468" y1="114" x2="468" y2="146" stroke="#9198a1" stroke-width="2" stroke-dasharray="3,3"/>
+<text x="474" y="112" font-size="10" fill="#9198a1">bar: at least 0.60</text>
+<text x="585" y="134" font-size="13" font-weight="700" fill="#e6edf3">0.881</text>
+<text x="16" y="188" font-size="13" font-weight="600" fill="#e6edf3">Harm check</text>
+<text x="16" y="204" font-size="11" fill="#9198a1">baseline arm won</text>
+<rect x="240" y="178" width="380" height="20" rx="4" fill="#3d444d" opacity="0.35"/>
+<rect x="240" y="178" width="45" height="20" rx="4" fill="#5E97D6"/>
+<line x1="392" y1="172" x2="392" y2="204" stroke="#9198a1" stroke-width="2" stroke-dasharray="3,3"/>
+<text x="398" y="170" font-size="10" fill="#9198a1">bar: at most 0.40</text>
+<text x="295" y="192" font-size="13" font-weight="700" fill="#e6edf3">0.119</text>
+<text x="16" y="236" font-size="10" fill="#9198a1">Verdict: PASS on every pre-registered gate. Judge agreement 20/20 on the double-judged subsample.</text>
+<text x="16" y="252" font-size="10" fill="#9198a1">Method and limitations: reports/replay-eval/2026-07-22-recall-impact.md</text>
+</svg>

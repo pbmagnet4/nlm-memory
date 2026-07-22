@@ -11,7 +11,7 @@
   <a href="https://github.com/pbmagnet4/nlm-memory/actions/workflows/ci.yml"><img src="https://github.com/pbmagnet4/nlm-memory/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status" /></a>
   <a href="https://github.com/pbmagnet4/nlm-memory/blob/main/LICENSE"><img src="https://img.shields.io/github/license/pbmagnet4/nlm-memory?color=blue" alt="License: Apache 2.0" /></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/node/v/nlm-memory?color=brightgreen" alt="Node 20+" /></a>
-  <img src="https://img.shields.io/badge/tests-1%2C700%2B%20passing-success" alt="1,700+ tests passing" />
+  <img src="https://img.shields.io/badge/tests-2%2C000%2B%20passing-success" alt="2,000+ tests passing" />
   <img src="https://img.shields.io/badge/MCP-9%20runtimes-8A2BE2" alt="MCP across 9 runtimes" />
   <img src="https://img.shields.io/badge/hooks-4%20runtimes-7B2CBF" alt="Hooks on 4 runtimes" />
   <img src="https://img.shields.io/badge/telemetry-none-informational" alt="Zero telemetry" />
@@ -82,7 +82,7 @@ One corpus across every adapter. MCP works against all nine. **Automatic context
 
 | Runtime | Connect | Sessions read from | Hooks |
 |---|---|---|---|
-| **Claude Code** | `nlm connect claude-code` | `~/.claude/projects/**/*.jsonl` | 6 hooks: UserPromptSubmit, SessionStart, SessionEnd, Stop, PreCompact, SubagentStart |
+| **Claude Code** | `nlm connect claude-code` | `~/.claude/projects/**/*.jsonl` | 5 hooks: UserPromptSubmit, SessionStart, SessionEnd, Stop, PreCompact |
 | **Codex CLI** | `nlm connect codex` | `~/.codex/sessions/` | Marketplace plugin (UserPromptSubmit + Stop) |
 | **Hermes** (WebUI) | `nlm connect hermes` | `~/.hermes/sessions/` | MCP only (writes the MCP server block to `~/.hermes/config.yaml`) |
 | **Hermes Agent** (NousResearch CLI) | `nlm connect hermes-agent` | `~/.hermes/state.db` | 6 hooks: pre_llm_call, post_llm_call, on_session_start/end/finalize/reset (Python plugin in `~/.hermes/plugins/nlm-memory/`) |
@@ -102,11 +102,11 @@ Two delivery paths. They share the same index.
 
 ### 1. Hooks — automatic context injection
 
-Hooks deliver memory into agent context. Four runtimes ship hooks today: Claude Code (six-hook lifecycle), Codex CLI (UserPromptSubmit + Stop via the marketplace plugin), Hermes Agent (six parallel hooks), and pi.dev (one `input` hook via [nlm/](nlm/README.md)). Cursor, Windsurf, and OpenCode don't expose a pre-prompt hook today, so the `--with-rules` install path drops a static rules snippet that asks the agent to call `recall_sessions` itself on history-flavored prompts (see [docs/hooks.md](docs/hooks.md) for the snippet). Full lifecycle, modes, logging surface, and the daily liveness canary documented in [docs/hooks.md](docs/hooks.md).
+Hooks deliver memory into agent context. Four runtimes ship hooks today: Claude Code (five-hook lifecycle), Codex CLI (UserPromptSubmit + Stop via the marketplace plugin), Hermes Agent (six parallel hooks), and pi.dev (one `input` hook via [nlm/](nlm/README.md)). Cursor, Windsurf, and OpenCode don't expose a pre-prompt hook today, so the `--with-rules` install path drops a static rules snippet that asks the agent to call `recall_sessions` itself on history-flavored prompts (see [docs/hooks.md](docs/hooks.md) for the snippet). Full lifecycle, modes, logging surface, and the daily liveness canary documented in [docs/hooks.md](docs/hooks.md).
 
 On fresh installs, the **SessionStart** hook injects the pointer block at conversation open. The **UserPromptSubmit** (per-prompt) lane is off by default: measured pulls are 72.4% useful vs 18.2% ambient on the same judge (see [reports/usefulness/2026-07-03-consumption-measurements.md](reports/usefulness/2026-07-03-consumption-measurements.md)), so pull-first via the recall MCP tools is the recommended posture. Set `NLM_HOOK_PROMPT_RECALL=on` to re-enable per-prompt injection.
 
-**Claude Code** — six hooks written to `~/.claude/settings.json` via `nlm connect claude-code`:
+**Claude Code** — five hooks written to `~/.claude/settings.json` via `nlm connect claude-code`:
 
 | Event | What NLM does | Mode |
 |---|---|---|
@@ -115,7 +115,6 @@ On fresh installs, the **SessionStart** hook injects the pointer block at conver
 | **SessionEnd** | Delete the per-conversation memo on session close so state files don't accumulate | always on |
 | **Stop** | Scan the model's response for citations of surfaced session IDs → updates `useful_hit_rate` and builds the reranker training substrate | always on |
 | **PreCompact** | Flush the per-conversation surfaced-IDs memo so post-compaction recalls aren't gated | always on |
-| **SubagentStart** | Record parent→subagent links so threads stay coherent across dispatches | always on |
 
 **Hermes Agent** — six hooks installed to `~/.hermes/plugins/nlm-memory/` via `nlm connect hermes-agent`. All calls are fire-and-forget except `pre_llm_call`, which returns a context string for injection:
 
@@ -134,11 +133,34 @@ On fresh installs, the **SessionStart** hook injects the pointer block at conver
 |---|---|---|
 | **input** | Score user message → if relevant sessions found, prepend pointer block to the prompt text via `{ action: "transform" }` | yes (returns transformed text) |
 
-All three fail-open: any daemon error yields a clean exit and never blocks the model. Switch Claude Code hooks to **shadow** mode (log-only, no injection) with `NLM_HOOK_MODE=shadow`.
+Parent-to-subagent links need no hook: the adapter derives them from the runtime session id at ingest, so subagent threads stay coherent with zero per-dispatch overhead. All hooks fail open: any daemon error yields a clean exit and never blocks the model. Switch Claude Code hooks to **shadow** mode (log-only, no injection) with `NLM_HOOK_MODE=shadow`.
 
 ### 2. MCP — explicit tools any agent can call
 
 Container-hosted agents (Hermes WebUI, Codex CLI, etc.) hit the Streamable-HTTP `POST /mcp` endpoint with `Authorization: Bearer ${NLM_MCP_TOKEN}`. Stdio MCP is also supported for Claude Code via `~/.mcp.json`.
+
+---
+
+## Does it actually help?
+
+We measured it instead of asserting it. A pre-registered replay eval took 100 real prompts from a live operator's hook log and replayed each one twice with the same generator: once with the context NLM had injected, once without. A judge from a different model family scored each pair blind, with response order randomized. The pass bar was written down before the run and could not move afterward.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/replay-eval-dark.svg" />
+  <source media="(prefers-color-scheme: light)" srcset="assets/replay-eval-light.svg" />
+  <img alt="Recall-impact replay eval results: decisive rate 0.840 against a 0.30 bar, win rate 0.881 against a 0.60 bar, harm check 0.119 against a 0.40 maximum. PASS on every pre-registered gate." src="assets/replay-eval-light.svg" width="720" />
+</picture>
+
+The injected context changed the judged outcome in 84% of pairs. When it did, the memory-armed answer won 88% of blind judgments, and the judge agreed with itself on 20 of 20 double-judged pairs. The known biases in the setup run against the memory arm, not for it: the replay generator is weaker than a production agent, and both arms saw truncated prompt previews.
+
+One corpus and one judge is evidence, not universality. So don't take our number. The harness ships in this repo and runs against your own hook log:
+
+```bash
+npm run eval:recall-impact-replay -- --pilot   # 10-pair mechanics check
+npm run eval:recall-impact-replay              # full pre-registered run
+```
+
+Full method, gates, and declared limitations: [the run report](reports/replay-eval/2026-07-22-recall-impact.md) and [the pre-registered spec](docs/superpowers/specs/2026-07-21-recall-impact-replay-eval-design.md).
 
 ---
 
@@ -199,6 +221,10 @@ NLM aggregates signals into failure modes per `(repo, model)` pair. A mode surfa
 GET /api/signals/failure-modes?repo=<repo>&model=<model>
 ```
 
+### Outcome rollup
+
+Signals also feed a corpus-internal outcome verdict per session, derived from later independent evidence only: a reported signal, supersession, a continuation edge, or nothing yet (`unobserved`, shown honestly). Never the agent's own opinion of its work, and never an LLM's grade of it. `get_session` returns the verdict with its evidence; `nlm digest` reports 30-day coverage. The design is deliberately conservative: a session with no downstream evidence stays `unobserved` instead of guessing.
+
 ### Inspection
 
 ```sh
@@ -233,7 +259,7 @@ Off by default — enable with `NLM_CODE_EXEMPLARS_ENABLED=1`. Capture rides the
 | Tool | What it does |
 |---|---|
 | `recall_sessions` | Hybrid keyword+semantic search across the full session corpus. Returns label, started_at, snippet, match score, `status`, and `superseded_by`. Superseded sessions are included (down-ranked, badged) so a decision investigation sees overturned reasoning; prefer the `superseded_by` successor for current state. |
-| `get_session` | Full body of one session by ID. Includes enriched `supersedes` / `supersededBy` links (id + label + summary) so chasing corrected facts doesn't need a second round-trip. |
+| `get_session` | Full body of one session by ID. Includes enriched `supersedes` / `supersededBy` links (id + label + summary) and a derived `outcome` verdict (held / overturned / built-upon / unobserved, with evidence) from the corpus-internal outcome rollup. |
 | `recall_facts` | Search structured facts: decisions, open questions, project state. Filterable by entity and kind. |
 | `get_fact_history` | Full version history of one fact — how a decision evolved over time. |
 | `cite_session` | Mark a session as explicitly referenced. Drives the `useful_hit_rate` metric and the future learned reranker. |
@@ -241,6 +267,7 @@ Off by default — enable with `NLM_CODE_EXEMPLARS_ENABLED=1`. Capture rides the
 **When to call `cite_session`:** Call it when a surfaced session actually changes what you say — you referenced it explicitly, it corrected a decision, or you called `get_session` to read the full body. Do not call it for sessions you scanned and discarded. The Stop hook auto-detects citation when a session ID appears verbatim in your response; `cite_session` covers the deliberate case where the session influenced your reasoning without being quoted directly. Both paths feed the same signal loop.
 
 | `mark_superseded` | Retroactively retire a stale session and point it at the newer one that replaces it. The editable-timeline write path — see [docs/supersedence.md](docs/supersedence.md). |
+| `report_outcome` | Write an outcome signal (pass / fail / fix / exhausted) for a session or correlation key. The contract surface for deterministic producers: CI, quality gates, automation platforms. Agents rarely self-report; wire your pipelines to this, not your prompts. |
 | `recall_code` | Semantic search over captured code exemplars — "code that passed/failed a gate like this task." Returns positives plus labeled negatives. Registered only when `NLM_CODE_EXEMPLARS_ENABLED=1`. |
 
 ---
@@ -251,7 +278,7 @@ Daemon binds `127.0.0.1:3940` (override with `NLM_PORT`). Selected endpoints:
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/api/health` | Host-only | Liveness probe; returns `{version, status, service}` |
+| GET | `/api/health` | Host-only | Liveness probe: version, warmup + embedding-lane state, corpus stats, and `update: {current, latest, behind}` from the daily npm check, so drift is observable |
 | GET | `/api/recall` | Bearer/Origin | Hybrid recall — `?q=`, `?mode=keyword\|semantic\|hybrid`, `?limit=`, `?include_superseded=true` (default off; opt-in to surface overturned sessions down-ranked, badged with `superseded_by`). Each result carries `status` + `superseded_by`. |
 | GET | `/api/recall/stats` | Bearer/Origin | 7-day stats: total, hit_rate, useful_hit_rate, top queries |
 | GET | `/api/recall/recent` | Bearer/Origin | Last N recall events for live tail/telemetry |
@@ -282,7 +309,7 @@ nlm digest                  # print to stdout
 nlm digest --telegram       # post to Telegram (TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)
 ```
 
-Reports 24h real-traffic (probes filtered), 7d hit_rate + useful_hit_rate, top 5 queries, and a **`WARN hook silent`** alert when Claude Code ran yesterday but no live hook fires were logged. That alert is the canary for post-install drift — node upgrades, `settings.json` hand-edits, and `dist/` moves silently break the hook while Claude Code keeps working. Setup-time smoke tests can't catch this; only the daily correlation can.
+Reports 24h real-traffic (probes filtered), 7d hit_rate + useful_hit_rate, honest cited-precision, top 5 queries, a tier-B outcome coverage line (held / overturned / built-upon / unobserved over the last 30 days), and a **`WARN hook silent`** alert when Claude Code ran yesterday but no live hook fires were logged. That alert is the canary for post-install drift — node upgrades, `settings.json` hand-edits, and `dist/` moves silently break the hook while Claude Code keeps working. Setup-time smoke tests can't catch this; only the daily correlation can.
 
 Wire to cron for a morning push:
 
@@ -324,6 +351,7 @@ ingest:  runtime transcript (jsonl/sqlite)
 recall: prompt / query
    -> tokenize + match scoring (label x3, entity-exact x4, decision x2, summary x1, phrase-bonus +5)
    -> hybrid: BM25-style keyword + vector cosine, fused by score
+   -> recency decay (180-day half-life, floored) x supersedence down-rank
    -> select-top-N gate (per-fire cap 3, per-conversation cap 10)
    -> pointer block prepended to model context (hooks) or returned as tool result (MCP)
 ```
@@ -492,7 +520,7 @@ npm install
 npm run build          # compile dist/ — commit the result, it ships in the repo
 npm run dev            # hot-reload daemon
 npm run ui:dev         # hot-reload UI at localhost:5173 (proxies /api to :3940)
-npm test               # 1,700+ tests across 245 files
+npm test               # 2,000+ tests across 240 files
 npm run typecheck
 node dist/cli/nlm.js doctor    # pre-publish: verify DB invariants (exit 1 on violations)
 ```
