@@ -79,7 +79,7 @@ const harness: EntityStoreContractHarness = {
     await pool.query(
       `INSERT INTO entities (canonical, type, status, first_seen_session, last_seen_session, session_count)
        VALUES ($1, 'candidate', $2, $3, $4, 0)
-       ON CONFLICT (canonical) DO NOTHING`,
+       ON CONFLICT (tenant_id, canonical) DO NOTHING`,
       [canonical, status, firstSeen, lastSeen],
     );
     for (const sid of opts.sessionIds ?? []) {

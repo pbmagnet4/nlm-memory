@@ -1,0 +1,27 @@
+# Postgres test instance for the pg contract-test lane (`npm run test:pg`).
+#
+#   docker compose -f docker-compose.pg-test.yml up -d
+#   export NLM_PG_TEST_URL="postgresql://nlm_test:nlm_test@127.0.0.1:54329/nlm_test"
+#   npm run test:pg
+#
+# Test-only: the suite DROPs and recreates schemas at will. Never point this
+# at a database holding real data. Data is tmpfs-backed (gone on restart) —
+# the suite migrates from scratch, so persistence would only mask ordering bugs.
+services:
+  nlm-pg-test:
+    image: pgvector/pgvector:pg16
+    container_name: nlm-pg-test
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:54329:5432"
+    environment:
+      POSTGRES_USER: nlm_test
+      POSTGRES_PASSWORD: nlm_test
+      POSTGRES_DB: nlm_test
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nlm_test -d nlm_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
