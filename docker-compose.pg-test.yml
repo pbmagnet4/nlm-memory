@@ -7,6 +7,13 @@
 # Test-only: the suite DROPs and recreates schemas at will. Never point this
 # at a database holding real data. Data is tmpfs-backed (gone on restart) —
 # the suite migrates from scratch, so persistence would only mask ordering bugs.
+#
+# tmpfs size is explicit: file-parallel pg tests (M7, per-file schema
+# isolation) run ~26 fully-migrated schemas concurrently instead of one
+# shared schema serially. An unsized tmpfs falls back to the host/runtime
+# default, which was observed too small under concurrent load (Postgres
+# crashed with "No space left on device" mid-suite, corrupting the cluster
+# into crash-recovery). 2G is comfortable headroom for the current suite size.
 services:
   nlm-pg-test:
     image: pgvector/pgvector:pg16
@@ -19,7 +26,7 @@ services:
       POSTGRES_PASSWORD: nlm_test
       POSTGRES_DB: nlm_test
     tmpfs:
-      - /var/lib/postgresql/data
+      - /var/lib/postgresql/data:size=2g
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U nlm_test -d nlm_test"]
       interval: 5s

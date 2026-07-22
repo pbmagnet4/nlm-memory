@@ -11,18 +11,62 @@
  * parameter (`-c search_path=<schema>,public`) resolves every unqualified
  * table/type reference against `<schema>` first. `public` stays second in
  * the path so unqualified references to pgvector's `vector` type still
- * resolve — the extension is installed once, database-wide, in `public` (see
- * README/setup); `CREATE EXTENSION IF NOT EXISTS vector` in migration 001 is
- * then a no-op in every other schema. Verified live against NLM_PG_TEST_URL
- * on 2026-07-22: concurrent schemas each get their own `schema_migrations`
- * and corpus tables, and `vector(N)` columns resolve correctly with the test
- * schema first in search_path.
+ * resolve — the extension is installed database-wide, explicitly into
+ * `public`; `CREATE EXTENSION IF NOT EXISTS vector` in migration 001 is then
+ * a no-op regardless of search_path.
+ *
+ * Extension bootstrap race (found live, 2026-07-22): pgvector is a
+ * relocatable extension, so an unqualified `CREATE EXTENSION IF NOT EXISTS
+ * vector` installs into whatever schema resolves first in search_path — NOT
+ * necessarily `public` — the first time it actually runs. On a database
+ * where the extension doesn't exist yet, N test files starting file-parallel
+ * all hit that first-ever creation concurrently: `IF NOT EXISTS` is a
+ * check-then-act, not atomic, so concurrent callers either race a
+ * `pg_extension_name_index` duplicate-key error, or one wins and installs
+ * the extension INTO its own throwaway test schema — which then deletes the
+ * extension along with everything else the moment that file's afterAll
+ * drops the schema, leaving every subsequent migration failing with `type
+ * "vector" does not exist`. Fix: bootstrap the extension explicitly into
+ * `public` (bypassing search_path with `SCHEMA public`) under a pg advisory
+ * lock before any schema is created, so every file agrees on one winner and
+ * the extension never lives inside a schema that gets dropped.
  */
 import { afterAll, beforeAll } from "vitest";
 import { Pool } from "pg";
 import { basename } from "node:path";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
+
+/** Arbitrary constant lock key, scoped to this bootstrap step only. */
+const VECTOR_EXTENSION_LOCK_KEY = 848_301_247;
+
+/**
+ * pg_advisory_lock/unlock are session-scoped: the lock and its release must
+ * run on the exact same physical connection. A `Pool`'s separate `.query()`
+ * calls are not guaranteed to reuse one connection, so locking and
+ * unlocking through `pool.query()` provides no real mutual exclusion (and
+ * can leave the lock held on a connection nothing ever explicitly
+ * releases). `pool.connect()` pins one PoolClient for the whole
+ * lock/create/unlock sequence.
+ */
+async function ensureVectorExtension(baseUrl: string): Promise<void> {
+  const admin = new Pool({ connectionString: baseUrl, max: 1 });
+  try {
+    const client = await admin.connect();
+    try {
+      await client.query("SELECT pg_advisory_lock($1)", [VECTOR_EXTENSION_LOCK_KEY]);
+      try {
+        await client.query("CREATE EXTENSION IF NOT EXISTS vector SCHEMA public");
+      } finally {
+        await client.query("SELECT pg_advisory_unlock($1)", [VECTOR_EXTENSION_LOCK_KEY]);
+      }
+    } finally {
+      client.release();
+    }
+  } finally {
+    await admin.end();
+  }
+}
 
 export interface PgTestSchema {
   readonly schema: string;
@@ -48,6 +92,7 @@ function schemaScopedUrl(baseUrl: string, schema: string): string {
 
 /** Creates a fresh, empty schema on the target database. Caller owns teardown via dropPgTestSchema. */
 export async function createPgTestSchema(baseUrl: string, fileUrl: string): Promise<PgTestSchema> {
+  await ensureVectorExtension(baseUrl);
   const schema = schemaNameFor(fileUrl);
   const admin = new Pool({ connectionString: baseUrl });
   try {
