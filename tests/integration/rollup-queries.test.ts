@@ -37,6 +37,6 @@ describe("listBySessions", () => {
 
   it("returns [] for empty input", async () => {
     expect(await storage.facts.listBySessions("team_local", [])).toEqual([]);
-    expect(await storage.exemplars.listBySessions([])).toEqual([]);
+    expect(await storage.exemplars.listBySessions("team_local", [])).toEqual([]);
   });
 });

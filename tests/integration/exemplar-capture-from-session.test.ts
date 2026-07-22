@@ -99,9 +99,9 @@ function fakeStore(): CodeExemplarStore & { inserted: CodeExemplarInput[]; embed
   const embedded: string[] = [];
   return {
     inserted, embedded,
-    async insert(i) { inserted.push(i); return { id: `ex_${inserted.length}`, skipped: false }; },
-    async insertMany(is) { for (const i of is) inserted.push(i); return is.length; },
-    async upsertEmbedding(id) { embedded.push(id); },
+    async insert(_tenantId, i) { inserted.push(i); return { id: `ex_${inserted.length}`, skipped: false }; },
+    async insertMany(_tenantId, is) { for (const i of is) inserted.push(i); return is.length; },
+    async upsertEmbedding(_tenantId, id) { embedded.push(id); },
     async searchByVector() { return []; },
     async getById() { return null; },
     async applyBucketCap() { return 0; },
@@ -142,7 +142,7 @@ describe("drainSessionExemplars", () => {
 
   it("is a no-op when the flag is off", async () => {
     const store = fakeStore();
-    const n = await drainSessionExemplars(ctx(), { exemplarStore: store, codeEmbedder: fakeEmbedder });
+    const n = await drainSessionExemplars("team_local", ctx(), { exemplarStore: store, codeEmbedder: fakeEmbedder });
     expect(n).toBe(0);
     expect(store.inserted).toHaveLength(0);
   });
@@ -150,7 +150,7 @@ describe("drainSessionExemplars", () => {
   it("inserts + embeds when the flag is on", async () => {
     process.env["NLM_CODE_EXEMPLARS_ENABLED"] = "1";
     const store = fakeStore();
-    const n = await drainSessionExemplars(ctx(), { exemplarStore: store, codeEmbedder: fakeEmbedder });
+    const n = await drainSessionExemplars("team_local", ctx(), { exemplarStore: store, codeEmbedder: fakeEmbedder });
     expect(n).toBe(1);
     expect(store.inserted).toHaveLength(1);
     await new Promise((r) => setTimeout(r, 10)); // let the fire-and-forget embed resolve
@@ -160,6 +160,6 @@ describe("drainSessionExemplars", () => {
   it("never throws when the store fails", async () => {
     process.env["NLM_CODE_EXEMPLARS_ENABLED"] = "1";
     const broken: CodeExemplarStore = { ...fakeStore(), async insert() { throw new Error("db down"); } };
-    await expect(drainSessionExemplars(ctx(), { exemplarStore: broken })).resolves.toBe(0);
+    await expect(drainSessionExemplars("team_local", ctx(), { exemplarStore: broken })).resolves.toBe(0);
   });
 });

@@ -17,6 +17,14 @@
  * "list rows missing a vector" method and adding one to the port for a
  * one-shot operational tool isn't worth it — same direct-SQLite call the
  * session backfill makes).
+ *
+ * Tenancy: this is an operator-run local CLI maintenance tool (`nlm
+ * embed-backfill --exemplars`), not a corpus-returning surface in the
+ * disposition table — the discovery query stays whole-DB (it repairs
+ * dropped embeddings across every row missing one), while the write itself
+ * routes through the now-tenant-checked `upsertEmbedding` so a tenant
+ * mismatch (impossible in local single-tenant mode; relevant once M3 wires
+ * a hosted equivalent) is a no-op, not a cross-tenant write.
  */
 
 import { existsSync } from "node:fs";
@@ -28,6 +36,7 @@ import { LLMUnreachableError } from "@ports/llm-client.js";
 import { composeEmbedText } from "./embed-text.js";
 
 export interface ExemplarBackfillOptions {
+  readonly tenantId: string;
   readonly dbPath: string;
   readonly embedder: CodeEmbedder;
   readonly store: CodeExemplarStore;
@@ -101,7 +110,7 @@ export async function backfillExemplarEmbeddings(
     }
 
     try {
-      await opts.store.upsertEmbedding(row.id, vector);
+      await opts.store.upsertEmbedding(opts.tenantId, row.id, vector);
     } catch (e) {
       failed += 1;
       opts.onProgress?.(idx, total, row.id, `FAIL (db): ${(e as Error).message}`);

@@ -1671,11 +1671,11 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
       try {
         const exemplar = extractExemplar(signal, { installScope: deps.installScope });
         if (exemplar) {
-          const { id, skipped } = await exemplarStore.insert(exemplar);
+          const { id, skipped } = await exemplarStore.insert(DEFAULT_TEAM_ID, exemplar);
           if (!skipped && deps.codeEmbedder) {
             void deps.codeEmbedder
               .embed(composeEmbedText(exemplar.taskContext, exemplar.code), "document")
-              .then((r) => exemplarStore.upsertEmbedding(id, r.vector))
+              .then((r) => exemplarStore.upsertEmbedding(DEFAULT_TEAM_ID, id, r.vector))
               .catch(() => { /* degraded; exemplar stored without a vector */ });
           }
         }
@@ -1738,11 +1738,11 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
       return c.json({ error: e instanceof Error ? e.message : "invalid exemplar" }, 400);
     }
     inp = { ...inp, scope: scopeStampEnabled() ? inp.scope : null };
-    const { id, skipped } = await deps.exemplarStore.insert(inp);
+    const { id, skipped } = await deps.exemplarStore.insert(DEFAULT_TEAM_ID, inp);
     if (!skipped && deps.codeEmbedder) {
       // Best-effort embedding: fire-and-forget, never blocks the response.
       deps.codeEmbedder.embed(composeEmbedText(inp.taskContext, inp.code), "document")
-        .then((r) => deps.exemplarStore!.upsertEmbedding(id, r.vector))
+        .then((r) => deps.exemplarStore!.upsertEmbedding(DEFAULT_TEAM_ID, id, r.vector))
         .catch(() => { /* degraded; exemplar is still stored without a vector */ });
     }
     return c.json({ id, skipped, status: "accepted" }, 202);
@@ -1769,7 +1769,7 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
     if (patch.retired === undefined && patch.outcome === undefined) {
       return c.json({ error: "provide retire (boolean) and/or outcome" }, 400);
     }
-    const result = await deps.exemplarStore.setVerdict(c.req.param("id"), patch, "human");
+    const result = await deps.exemplarStore.setVerdict(DEFAULT_TEAM_ID, c.req.param("id"), patch, "human");
     if (result.status === "not_found") return c.json({ error: "exemplar not found" }, 404);
     return c.json({ id: c.req.param("id"), status: result.status }, 200);
   });
@@ -1791,6 +1791,7 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
     const includeNegatives = c.req.query("negatives") !== "0";
 
     const result = await recallCode(
+      DEFAULT_TEAM_ID,
       {
         query,
         installScope: deps.installScope,

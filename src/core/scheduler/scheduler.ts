@@ -387,6 +387,7 @@ export class ScanScheduler {
           }
           if (this.opts.exemplarStore && this.opts.installScope) {
             await drainSessionExemplars(
+              this.opts.tenantId,
               {
                 sessionId: chunk.id,
                 projectDir: chunk.projectDir,
@@ -421,7 +422,7 @@ export class ScanScheduler {
       this.opts.installScope
     ) {
       try {
-        const pruned = await this.opts.exemplarStore.pruneReverted(this.opts.installScope);
+        const pruned = await this.opts.exemplarStore.pruneReverted(this.opts.tenantId, this.opts.installScope);
         if (pruned > 0) {
           this.opts.logger(`[scheduler] exemplar pruneReverted: deleted ${pruned}`);
         }
@@ -431,7 +432,7 @@ export class ScanScheduler {
         );
       }
       try {
-        await this.opts.exemplarStore.applyBucketCap(this.opts.installScope, exemplarMaxPerBucket());
+        await this.opts.exemplarStore.applyBucketCap(this.opts.tenantId, this.opts.installScope, exemplarMaxPerBucket());
       } catch (e) {
         this.opts.logger(
           `[scheduler] exemplar bucket cap failed: ${e instanceof Error ? e.message : String(e)}`,

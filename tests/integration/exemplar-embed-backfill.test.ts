@@ -86,16 +86,16 @@ describe("backfillExemplarEmbeddings", () => {
       makeExemplarInput({ code: "const a = 1;", taskContext: "declare a constant" }),
       makeExemplarInput({ code: "export function f() { return 2; }", taskContext: "export a fn" }),
     ];
-    for (const inp of inputs) await storage.exemplars.insert(inp);
+    for (const inp of inputs) await storage.exemplars.insert("team_local", inp);
 
     // Pre-condition: vector search finds nothing (no vectors exist).
-    const before = await storage.exemplars.searchByVector(unitWithLeading(1), {
+    const before = await storage.exemplars.searchByVector("team_local", unitWithLeading(1), {
       installScope: INSTALL_SCOPE,
     });
     expect(before.length).toBe(0);
 
     const embedder = new StubCodeEmbedder();
-    const report = await backfillExemplarEmbeddings({ dbPath, embedder, store: storage.exemplars });
+    const report = await backfillExemplarEmbeddings({ tenantId: "team_local", dbPath, embedder, store: storage.exemplars });
 
     expect(report.dbMissing).toBe(false);
     expect(report.total).toBe(2);
@@ -104,16 +104,16 @@ describe("backfillExemplarEmbeddings", () => {
     expect(embedder.calls).toBe(2);
 
     // Post-condition: the exemplars are now retrievable by vector search.
-    const after = await storage.exemplars.searchByVector(unitWithLeading(1), {
+    const after = await storage.exemplars.searchByVector("team_local", unitWithLeading(1), {
       installScope: INSTALL_SCOPE,
     });
     expect(after.length).toBe(2);
   });
 
   it("is idempotent — a second run finds no missing rows", async () => {
-    await storage.exemplars.insert(makeExemplarInput());
+    await storage.exemplars.insert("team_local", makeExemplarInput());
 
-    const first = await backfillExemplarEmbeddings({
+    const first = await backfillExemplarEmbeddings({ tenantId: "team_local",
       dbPath,
       embedder: new StubCodeEmbedder(),
       store: storage.exemplars,
@@ -121,7 +121,7 @@ describe("backfillExemplarEmbeddings", () => {
     expect(first.succeeded).toBe(1);
 
     const embedder2 = new StubCodeEmbedder();
-    const second = await backfillExemplarEmbeddings({ dbPath, embedder: embedder2, store: storage.exemplars });
+    const second = await backfillExemplarEmbeddings({ tenantId: "team_local", dbPath, embedder: embedder2, store: storage.exemplars });
     expect(second.total).toBe(0);
     expect(second.succeeded).toBe(0);
     expect(embedder2.calls).toBe(0);
@@ -130,13 +130,13 @@ describe("backfillExemplarEmbeddings", () => {
   it("leaves already-embedded rows untouched and only fills the gap", async () => {
     const embedded = makeExemplarInput({ code: "const x = 1;", taskContext: "x" });
     const vectorless = makeExemplarInput({ code: "const y = 2;", taskContext: "y" });
-    const { id: embeddedId } = await storage.exemplars.insert(embedded);
-    await storage.exemplars.insert(vectorless);
+    const { id: embeddedId } = await storage.exemplars.insert("team_local", embedded);
+    await storage.exemplars.insert("team_local", vectorless);
     // Pre-seed a vector for the first row only.
-    await storage.exemplars.upsertEmbedding(embeddedId, unitWithLeading(7));
+    await storage.exemplars.upsertEmbedding("team_local", embeddedId, unitWithLeading(7));
 
     const embedder = new StubCodeEmbedder();
-    const report = await backfillExemplarEmbeddings({ dbPath, embedder, store: storage.exemplars });
+    const report = await backfillExemplarEmbeddings({ tenantId: "team_local", dbPath, embedder, store: storage.exemplars });
 
     // Only the vectorless row gets embedded.
     expect(report.total).toBe(1);
@@ -145,7 +145,7 @@ describe("backfillExemplarEmbeddings", () => {
   });
 
   it("reports dbMissing when the database does not exist", async () => {
-    const report = await backfillExemplarEmbeddings({
+    const report = await backfillExemplarEmbeddings({ tenantId: "team_local",
       dbPath: join(tmp, "nope.sqlite"),
       embedder: new StubCodeEmbedder(),
       store: storage.exemplars,

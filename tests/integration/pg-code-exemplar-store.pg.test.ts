@@ -84,12 +84,12 @@ describe.skipIf(!PG_TEST_URL)("PgCodeExemplarStore.searchByVector (pgvector)", (
   afterEach(async () => { await storage.close(); });
 
   it("ranks the nearest embedding first", async () => {
-    const a = await storage.exemplars.insert(exemplar({ code: "const a = 1;" }));
-    const b = await storage.exemplars.insert(exemplar({ code: "const b = 2;" }));
-    await storage.exemplars.upsertEmbedding(a.id, unitVec(0));
-    await storage.exemplars.upsertEmbedding(b.id, unitVec(1));
+    const a = await storage.exemplars.insert("team_local", exemplar({ code: "const a = 1;" }));
+    const b = await storage.exemplars.insert("team_local", exemplar({ code: "const b = 2;" }));
+    await storage.exemplars.upsertEmbedding("team_local", a.id, unitVec(0));
+    await storage.exemplars.upsertEmbedding("team_local", b.id, unitVec(1));
 
-    const hits = await storage.exemplars.searchByVector(unitVec(0), {
+    const hits = await storage.exemplars.searchByVector("team_local", unitVec(0), {
       installScope: "install-test",
       k: 2,
     });
@@ -98,16 +98,16 @@ describe.skipIf(!PG_TEST_URL)("PgCodeExemplarStore.searchByVector (pgvector)", (
   });
 
   it("excludes negatives when includeNegatives is false", async () => {
-    const fail = await storage.exemplars.insert(exemplar({ code: "const c = 3;", outcome: "fail" }));
-    await storage.exemplars.upsertEmbedding(fail.id, unitVec(0));
+    const fail = await storage.exemplars.insert("team_local", exemplar({ code: "const c = 3;", outcome: "fail" }));
+    await storage.exemplars.upsertEmbedding("team_local", fail.id, unitVec(0));
 
-    const withNeg = await storage.exemplars.searchByVector(unitVec(0), {
+    const withNeg = await storage.exemplars.searchByVector("team_local", unitVec(0), {
       installScope: "install-test",
       includeNegatives: true,
     });
     expect(withNeg.map((h) => h.id)).toContain(fail.id);
 
-    const withoutNeg = await storage.exemplars.searchByVector(unitVec(0), {
+    const withoutNeg = await storage.exemplars.searchByVector("team_local", unitVec(0), {
       installScope: "install-test",
       includeNegatives: false,
     });

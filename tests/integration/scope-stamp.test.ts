@@ -364,7 +364,7 @@ describe("scope stamping (NLM_SCOPE_STAMP flag)", () => {
   describe("flag on: exemplar stamping", () => {
     it("stores the scope stamped on the exemplar input", async () => {
       process.env["NLM_SCOPE_STAMP"] = "1";
-      await storage.exemplars.insert({
+      await storage.exemplars.insert("team_local", {
         installScope: "install-test",
         signalId: null,
         sessionId: "sess_x",
@@ -627,7 +627,7 @@ describe("scope stamping (NLM_SCOPE_STAMP flag)", () => {
       const inserted: Array<{ scope: string | null }> = [];
       return {
         inserted,
-        async insert(inp: { scope: string | null }) {
+        async insert(_tenantId: string, inp: { scope: string | null }) {
           inserted.push({ scope: inp.scope });
           return { id: "ex_test", skipped: false };
         },

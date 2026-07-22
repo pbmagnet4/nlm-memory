@@ -90,9 +90,9 @@ describe("code-exemplar ranking gate", () => {
         outcome: ex.outcome,
         ts: new Date().toISOString(),
       });
-      const { id, skipped } = await storage.exemplars.insert(input);
+      const { id, skipped } = await storage.exemplars.insert("team_local", input);
       expect(skipped).toBe(false);
-      await storage.exemplars.upsertEmbedding(id, VECTORS[ex.marker]);
+      await storage.exemplars.upsertEmbedding("team_local", id, VECTORS[ex.marker]);
     }
   });
 
@@ -103,6 +103,7 @@ describe("code-exemplar ranking gate", () => {
 
   it("ranks pass/fix above fail/exhausted for a semantically matching query", async () => {
     const result = await recallCode(
+      "team_local",
       { query: "QUERY_GOOD add two numbers", installScope: SCOPE, includeNegatives: true, k: 10 },
       storage.exemplars,
       embedder,
@@ -123,6 +124,7 @@ describe("code-exemplar ranking gate", () => {
 
   it("excludes negatives when include_negatives=false", async () => {
     const result = await recallCode(
+      "team_local",
       { query: "QUERY_GOOD add two numbers", installScope: SCOPE, includeNegatives: false, k: 10 },
       storage.exemplars,
       embedder,
@@ -134,6 +136,7 @@ describe("code-exemplar ranking gate", () => {
 
   it("isolates by install_scope", async () => {
     const result = await recallCode(
+      "team_local",
       { query: "QUERY_GOOD add two numbers", installScope: "unrelated-scope", k: 10 },
       storage.exemplars,
       embedder,

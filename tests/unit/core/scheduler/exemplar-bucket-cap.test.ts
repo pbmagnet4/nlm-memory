@@ -29,7 +29,7 @@ function fixtureExemplarStore(capCalls: CapCall[]): CodeExemplarStore {
     async upsertEmbedding() {},
     async searchByVector() { return []; },
     async getById() { return null; },
-    async applyBucketCap(installScope, maxPerBucket) {
+    async applyBucketCap(_tenantId, installScope, maxPerBucket) {
       capCalls.push({ installScope, maxPerBucket });
       return 0;
     },

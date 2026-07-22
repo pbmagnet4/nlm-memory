@@ -69,6 +69,7 @@ export interface DrainExemplarDeps {
 }
 
 export async function drainSessionExemplars(
+  tenantId: string,
   ctx: SessionExemplarContext,
   deps: DrainExemplarDeps,
 ): Promise<number> {
@@ -76,7 +77,7 @@ export async function drainSessionExemplars(
   let count = 0;
   try {
     for (const input of captureExemplarsFromSession(ctx)) {
-      const { id, skipped } = await deps.exemplarStore.insert(input);
+      const { id, skipped } = await deps.exemplarStore.insert(tenantId, input);
       if (skipped) continue;
       count += 1;
       if (deps.codeEmbedder) {
@@ -84,7 +85,7 @@ export async function drainSessionExemplars(
         const store = deps.exemplarStore;
         void embedder
           .embed(composeEmbedText(input.taskContext, input.code), "document")
-          .then((r) => store.upsertEmbedding(id, r.vector))
+          .then((r) => store.upsertEmbedding(tenantId, id, r.vector))
           .catch(() => { /* degraded; exemplar stored without a vector */ });
       }
     }

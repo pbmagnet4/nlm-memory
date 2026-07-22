@@ -28,6 +28,7 @@ export interface RecallCodeResult {
  * as separate lists so the caller can surface them with distinct framing.
  */
 export async function recallCode(
+  tenantId: string,
   opts: RecallCodeOptions,
   store: CodeExemplarStore,
   codeEmbedder: CodeEmbedder | null,
@@ -70,7 +71,7 @@ export async function recallCode(
     k: opts.k ?? 5,
   };
 
-  const hits = await store.searchByVector(queryVector, filter);
+  const hits = await store.searchByVector(tenantId, queryVector, filter);
 
   const positives = hits.filter((h) => h.outcome === "pass" || h.outcome === "fix");
   const negatives = hits.filter((h) => h.outcome === "fail" || h.outcome === "exhausted");

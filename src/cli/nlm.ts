@@ -952,6 +952,7 @@ program
     try {
       const embedder = buildCodeEmbedder();
       const result = await recallCode(
+        DEFAULT_TEAM_ID,
         {
           query,
           installScope: getScope(),
@@ -1221,6 +1222,7 @@ program
       const { storage } = await buildStack();
       try {
         const report = await backfillExemplarEmbeddings({
+          tenantId: DEFAULT_TEAM_ID,
           dbPath: dbPath(),
           embedder: buildCodeEmbedder(),
           store: storage.exemplars,

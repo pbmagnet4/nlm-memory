@@ -22,9 +22,9 @@ function fakeExemplarStore(): CodeExemplarStore & { inserted: CodeExemplarInput[
   return {
     inserted,
     embedded,
-    async insert(input) { inserted.push(input); return { id: `ex_${inserted.length}`, skipped: false }; },
-    async insertMany(inputs) { for (const i of inputs) inserted.push(i); return inputs.length; },
-    async upsertEmbedding(id) { embedded.push(id); },
+    async insert(_tenantId, input) { inserted.push(input); return { id: `ex_${inserted.length}`, skipped: false }; },
+    async insertMany(_tenantId, inputs) { for (const i of inputs) inserted.push(i); return inputs.length; },
+    async upsertEmbedding(_tenantId, id) { embedded.push(id); },
     async searchByVector() { return []; },
     async getById() { return null; },
     async applyBucketCap() { return 0; },

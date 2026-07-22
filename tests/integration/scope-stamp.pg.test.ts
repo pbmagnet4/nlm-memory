@@ -142,7 +142,7 @@ describe.skipIf(!PG_TEST_URL)("pg scope stamping parity", () => {
   });
 
   it("exemplar insert stores scope (pg)", async () => {
-    await storage.exemplars.insert({
+    await storage.exemplars.insert("team_local", {
       installScope: "install-test",
       signalId: null,
       sessionId: null,

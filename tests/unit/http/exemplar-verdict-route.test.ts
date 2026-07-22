@@ -13,7 +13,7 @@ function fakeStore(calls: Array<{ id: string; patch: ExemplarVerdictPatch; sourc
     async applyBucketCap() { return 0; },
     async pruneReverted() { return 0; },
     async pruneOlderThan() { return 0; },
-    async setVerdict(id: string, patch: ExemplarVerdictPatch, source: ExemplarVerdictSource) {
+    async setVerdict(_tenantId: string, id: string, patch: ExemplarVerdictPatch, source: ExemplarVerdictSource) {
       calls.push({ id, patch, source });
       return { status: id === "missing" ? "not_found" as const : "applied" as const };
     },

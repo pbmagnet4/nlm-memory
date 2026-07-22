@@ -13,7 +13,7 @@ function deps(all: Workstream[], sessionsByWs: Record<string, string[]>): Rollup
     workstreams: { listAll: async () => all, getById: async (id) => all.find((w) => w.id === id) ?? null },
     sessions: { listSessionIdsByWorkstreams: async (_tenantId, ids) => ids.flatMap((i) => sessionsByWs[i] ?? []) },
     facts: { listBySessions: async (_tenantId, sids) => sids.map((s) => ({ id: `f_${s}` })) as any },
-    exemplars: { listBySessions: async (sids) => sids.map((s) => ({ id: `e_${s}` })) as any },
+    exemplars: { listBySessions: async (_tenantId, sids) => sids.map((s) => ({ id: `e_${s}` })) as any },
   };
 }
 

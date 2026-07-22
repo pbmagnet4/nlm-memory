@@ -24,7 +24,7 @@ export async function rollupWorkstream(deps: RollupDeps, tenantId: string, works
   const sessionIds = await deps.sessions.listSessionIdsByWorkstreams(tenantId, memberIds);
   const [facts, exemplars] = await Promise.all([
     deps.facts.listBySessions(tenantId, sessionIds),
-    deps.exemplars.listBySessions(sessionIds),
+    deps.exemplars.listBySessions(tenantId, sessionIds),
   ]);
   return { workstream, sessionIds, facts, exemplars };
 }

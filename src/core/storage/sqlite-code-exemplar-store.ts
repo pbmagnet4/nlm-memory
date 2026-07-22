@@ -6,12 +6,23 @@
  * (INSERT OR IGNORE on the primary key, which is sha256 of the dedup tuple).
  * The vec lane is managed separately via upsertEmbedding; inserts succeed
  * even when no embedder is configured.
+ *
+ * Tenancy (program spec §4, M2 plan Wave B3): every method takes `tenantId`
+ * as its non-optional first parameter. `code_exemplars` is a STAMP table;
+ * every SELECT/UPDATE/DELETE routes its WHERE fragment through
+ * `tenantClause`, and INSERTs stamp `tenant_id` explicitly.
+ * `code_exemplars_vec` carries no tenant_id (DERIVE-VIA-FK) — `searchByVector`
+ * is the purest vector path in the codebase (no keyword pre-filter at all);
+ * its tenant filter is applied inside the id-resolution SQL join against
+ * `code_exemplars`, with a JS re-check of each row's own tenant_id as
+ * defense in depth (never a substitute for the SQL filter).
  */
 
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { CodeExemplarSearchFilter, CodeExemplarStore, ExemplarVerdictPatch, ExemplarVerdictResult, ExemplarVerdictSource } from "@ports/code-exemplar-store.js";
 import type { CodeExemplar, CodeExemplarHit, CodeExemplarInput, CodeExemplarOutcome } from "@shared/types.js";
+import { tenantClause } from "@core/tenancy/tenant-clause.js";
 
 const VEC_DIM = 768;
 
@@ -57,22 +68,22 @@ export function exemplarId(parts: {
 export class SqliteCodeExemplarStore implements CodeExemplarStore {
   constructor(private readonly db: Database.Database) {}
 
-  async insert(input: CodeExemplarInput): Promise<{ id: string; skipped: boolean }> {
+  async insert(tenantId: string, input: CodeExemplarInput): Promise<{ id: string; skipped: boolean }> {
     const id = exemplarId({
       installScope: input.installScope,
       repo: input.repo,
       codeHash: input.codeHash,
       outcome: input.outcome,
     });
-    const info = this.insertStmt().run(this.toRow(id, input));
+    const info = this.insertStmt().run(this.toRow(id, input, tenantId));
     return { id, skipped: info.changes === 0 };
   }
 
-  async insertMany(inputs: ReadonlyArray<CodeExemplarInput>): Promise<number> {
+  async insertMany(tenantId: string, inputs: ReadonlyArray<CodeExemplarInput>): Promise<number> {
     if (inputs.length === 0) return 0;
     const stmt = this.insertStmt();
     let inserted = 0;
-    const txn = this.db.transaction((rows: ReadonlyArray<ExemplarRow>) => {
+    const txn = this.db.transaction((rows: ReadonlyArray<ExemplarRow & { tenant_id: string }>) => {
       for (const row of rows) {
         const info = stmt.run(row);
         if (info.changes > 0) inserted++;
@@ -86,16 +97,25 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
           codeHash: inp.codeHash,
           outcome: inp.outcome,
         });
-        return this.toRow(id, inp);
+        return this.toRow(id, inp, tenantId);
       }),
     );
     return inserted;
   }
 
-  async upsertEmbedding(exemplarId: string, vector: Float32Array): Promise<void> {
+  /**
+   * No-op if exemplarId isn't owned by tenantId — writing an embedding for
+   * another tenant's exemplar must never fall through to a write.
+   */
+  async upsertEmbedding(tenantId: string, exemplarId: string, vector: Float32Array): Promise<void> {
     if (vector.length !== VEC_DIM) {
       throw new Error(`code exemplar embeddings must be ${VEC_DIM}-dim (got ${vector.length})`);
     }
+    const tc = tenantClause(tenantId);
+    const owned = this.db
+      .prepare<[string, string], { id: string }>(`SELECT id FROM code_exemplars WHERE id = ? AND ${tc.sql}`)
+      .get(exemplarId, tc.param);
+    if (!owned) return;
     const buf = Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
     this.db.prepare("DELETE FROM code_exemplars_vec WHERE exemplar_id = ?").run(exemplarId);
     this.db
@@ -104,6 +124,7 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
   }
 
   async searchByVector(
+    tenantId: string,
     queryVector: Float32Array,
     filter: CodeExemplarSearchFilter,
   ): Promise<ReadonlyArray<CodeExemplarHit>> {
@@ -129,17 +150,29 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
     const ids = vecRows.map((r) => r.exemplar_id);
     const distanceById = new Map<string, number>(vecRows.map((r) => [r.exemplar_id, r.distance]));
 
+    // code_exemplars_vec carries no tenant_id (DERIVE-VIA-FK) — the vec0 KNN
+    // scan returns neighbors from the whole corpus regardless of tenant. The
+    // tenant filter is re-applied HERE, inside the id-resolution SQL against
+    // code_exemplars (program spec §4.3 vector-path rule) — this is the
+    // purest vector path in the codebase (no keyword pre-filter at all), so
+    // a candidate exemplar id that fails to resolve within the caller's
+    // tenant is excluded outright, not merely down-ranked.
     const placeholders = ids.map(() => "?").join(",");
+    const tc = tenantClause(tenantId);
     const rows = this.db
-      .prepare<string[], ExemplarRow>(
+      .prepare<unknown[], ExemplarRow & { tenant_id: string }>(
         `SELECT id, install_scope, signal_id, session_id, repo, model, lang,
-                task_context, code, code_hash, outcome, git_sha, survived, ts, created_at
+                task_context, code, code_hash, outcome, git_sha, survived, ts, created_at, tenant_id
          FROM code_exemplars
-         WHERE id IN (${placeholders}) AND install_scope = ? AND retired_at IS NULL`,
+         WHERE id IN (${placeholders}) AND install_scope = ? AND retired_at IS NULL AND ${tc.sql}`,
       )
-      .all(...ids, filter.installScope) as ExemplarRow[];
+      .all(...ids, filter.installScope, tc.param) as Array<ExemplarRow & { tenant_id: string }>;
 
-    let hits = rows.map((r): CodeExemplarHit => ({
+    // Defense in depth (never a substitute for the SQL filter above): re-check
+    // each resolved row's own tenant, read into a local first so this JS
+    // comparison can never be mistaken by the tenant-guard scan for an
+    // inlined SQL WHERE fragment (that literal is reserved for tenant-clause.ts).
+    let hits = rows.filter((r) => { const rowTenant = r["tenant_id"]; return rowTenant === tenantId; }).map((r): CodeExemplarHit => ({
       id: r.id,
       code: r.code,
       taskContext: r.task_context,
@@ -169,40 +202,43 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
     return hits.slice(0, k);
   }
 
-  async getById(id: string): Promise<CodeExemplar | null> {
+  async getById(tenantId: string, id: string): Promise<CodeExemplar | null> {
+    const tc = tenantClause(tenantId);
     const row = this.db
-      .prepare<[string], ExemplarRow>(
+      .prepare<[string, string], ExemplarRow>(
         `SELECT id, install_scope, signal_id, session_id, repo, model, lang,
                 task_context, code, code_hash, outcome, git_sha, survived, ts, created_at,
                 retired_at, label_source
-         FROM code_exemplars WHERE id = ?`,
+         FROM code_exemplars WHERE id = ? AND ${tc.sql}`,
       )
-      .get(id);
+      .get(id, tc.param);
     return row ? this.rowToExemplar(row) : null;
   }
 
-  async listBySessions(sessionIds: ReadonlyArray<string>): Promise<ReadonlyArray<CodeExemplar>> {
+  async listBySessions(tenantId: string, sessionIds: ReadonlyArray<string>): Promise<ReadonlyArray<CodeExemplar>> {
     if (sessionIds.length === 0) return [];
     const ph = sessionIds.map(() => "?").join(",");
+    const tc = tenantClause(tenantId);
     const rows = this.db
-      .prepare<string[], ExemplarRow>(
+      .prepare<unknown[], ExemplarRow>(
         `SELECT id, install_scope, signal_id, session_id, repo, model, lang,
                 task_context, code, code_hash, outcome, git_sha, survived, ts, created_at, retired_at, label_source
-         FROM code_exemplars WHERE session_id IN (${ph}) AND retired_at IS NULL ORDER BY ts ASC`,
+         FROM code_exemplars WHERE session_id IN (${ph}) AND retired_at IS NULL AND ${tc.sql} ORDER BY ts ASC`,
       )
-      .all(...sessionIds) as ExemplarRow[];
+      .all(...sessionIds, tc.param) as ExemplarRow[];
     return rows.map((r) => this.rowToExemplar(r));
   }
 
-  async applyBucketCap(installScope: string, maxPerBucket: number): Promise<number> {
+  async applyBucketCap(tenantId: string, installScope: string, maxPerBucket: number): Promise<number> {
     type BucketRow = { repo: string; lang: string | null; outcome_class: string };
+    const bucketTc = tenantClause(tenantId);
     const buckets = this.db
-      .prepare<[string], BucketRow>(
+      .prepare<unknown[], BucketRow>(
         `SELECT DISTINCT repo, lang,
            CASE WHEN outcome IN ('pass','fix') THEN 'positive' ELSE 'negative' END AS outcome_class
-         FROM code_exemplars WHERE install_scope = ?`,
+         FROM code_exemplars WHERE install_scope = ? AND ${bucketTc.sql}`,
       )
-      .all(installScope);
+      .all(installScope, bucketTc.param);
 
     let deleted = 0;
     const delStmt = this.db.prepare("DELETE FROM code_exemplars WHERE id = ?");
@@ -211,10 +247,11 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
         const outcomeList = bucket.outcome_class === "positive" ? ["pass", "fix"] : ["fail", "exhausted"];
         const placeholders = outcomeList.map(() => "?").join(",");
         const langFilter = bucket.lang !== null ? "AND lang = ?" : "AND lang IS NULL";
+        const idsTc = tenantClause(tenantId);
         const params: Array<string | null> =
           bucket.lang !== null
-            ? [installScope, bucket.repo, bucket.lang, ...outcomeList]
-            : [installScope, bucket.repo, ...outcomeList];
+            ? [installScope, bucket.repo, bucket.lang, ...outcomeList, idsTc.param]
+            : [installScope, bucket.repo, ...outcomeList, idsTc.param];
 
         type IdRow = { id: string };
         const allIds = this.db
@@ -222,6 +259,7 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
             `SELECT id FROM code_exemplars
              WHERE install_scope = ? AND repo = ? ${langFilter}
                AND outcome IN (${placeholders})
+               AND ${idsTc.sql}
              ORDER BY ts DESC`,
           )
           .all(...params)
@@ -239,13 +277,14 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
     return deleted;
   }
 
-  async pruneReverted(installScope: string): Promise<number> {
+  async pruneReverted(tenantId: string, installScope: string): Promise<number> {
     type IdRow = { id: string };
+    const tc = tenantClause(tenantId);
     const ids = this.db
-      .prepare<[string], IdRow>(
-        "SELECT id FROM code_exemplars WHERE install_scope = ? AND survived = 0",
+      .prepare<unknown[], IdRow>(
+        `SELECT id FROM code_exemplars WHERE install_scope = ? AND survived = 0 AND ${tc.sql}`,
       )
-      .all(installScope)
+      .all(installScope, tc.param)
       .map((r) => r.id);
     let deleted = 0;
     const txn = this.db.transaction(() => {
@@ -260,37 +299,42 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
   }
 
   async setVerdict(
+    tenantId: string,
     id: string,
     patch: ExemplarVerdictPatch,
     source: ExemplarVerdictSource,
   ): Promise<ExemplarVerdictResult> {
+    const tc = tenantClause(tenantId);
     const row = this.db
-      .prepare<[string], { label_source: "llm" | "human" }>(
-        "SELECT label_source FROM code_exemplars WHERE id = ?",
+      .prepare<unknown[], { label_source: "llm" | "human" }>(
+        `SELECT label_source FROM code_exemplars WHERE id = ? AND ${tc.sql}`,
       )
-      .get(id);
+      .get(id, tc.param);
     if (!row) return { status: "not_found" };
     if (source === "llm" && row.label_source === "human") return { status: "human_locked" };
 
-    const sets: string[] = ["label_source = @source"];
-    const params: Record<string, unknown> = { id, source };
+    const sets: string[] = ["label_source = ?"];
+    const params: unknown[] = [source];
     if (patch.retired !== undefined) {
-      sets.push("retired_at = @retiredAt");
-      params["retiredAt"] = patch.retired ? new Date().toISOString() : null;
+      sets.push("retired_at = ?");
+      params.push(patch.retired ? new Date().toISOString() : null);
     }
     if (patch.outcome !== undefined) {
-      sets.push("outcome = @outcome");
-      params["outcome"] = patch.outcome;
+      sets.push("outcome = ?");
+      params.push(patch.outcome);
     }
-    this.db.prepare(`UPDATE code_exemplars SET ${sets.join(", ")} WHERE id = @id`).run(params);
+    const updateTc = tenantClause(tenantId);
+    params.push(id, updateTc.param);
+    this.db.prepare(`UPDATE code_exemplars SET ${sets.join(", ")} WHERE id = ? AND ${updateTc.sql}`).run(...params);
     return { status: "applied" };
   }
 
-  async pruneOlderThan(olderThanTs: string): Promise<number> {
+  async pruneOlderThan(tenantId: string, olderThanTs: string): Promise<number> {
     type IdRow = { id: string };
+    const tc = tenantClause(tenantId);
     const ids = this.db
-      .prepare<[string], IdRow>("SELECT id FROM code_exemplars WHERE ts < ?")
-      .all(olderThanTs)
+      .prepare<unknown[], IdRow>(`SELECT id FROM code_exemplars WHERE ts < ? AND ${tc.sql}`)
+      .all(olderThanTs, tc.param)
       .map((r) => r.id);
     let deleted = 0;
     const txn = this.db.transaction(() => {
@@ -305,18 +349,18 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
   }
 
   private insertStmt() {
-    return this.db.prepare<ExemplarRow>(`
+    return this.db.prepare<ExemplarRow & { tenant_id: string }>(`
       INSERT OR IGNORE INTO code_exemplars (
         id, install_scope, signal_id, session_id, repo, model, lang,
-        task_context, code, code_hash, outcome, git_sha, survived, scope, ts, created_at
+        task_context, code, code_hash, outcome, git_sha, survived, scope, ts, created_at, tenant_id
       ) VALUES (
         @id, @install_scope, @signal_id, @session_id, @repo, @model, @lang,
-        @task_context, @code, @code_hash, @outcome, @git_sha, @survived, @scope, @ts, @created_at
+        @task_context, @code, @code_hash, @outcome, @git_sha, @survived, @scope, @ts, @created_at, @tenant_id
       )
     `);
   }
 
-  private toRow(id: string, inp: CodeExemplarInput): ExemplarRow {
+  private toRow(id: string, inp: CodeExemplarInput, tenantId: string): ExemplarRow & { tenant_id: string } {
     return {
       id,
       install_scope: inp.installScope,
@@ -336,6 +380,7 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
       created_at: new Date().toISOString(),
       retired_at: null,
       label_source: "llm",
+      tenant_id: tenantId,
     };
   }
 

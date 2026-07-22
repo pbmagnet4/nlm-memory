@@ -14,6 +14,7 @@ const DEFAULT_K = 2;
 const DEFAULT_MAX_DISTANCE = Number(process.env["NLM_EXEMPLAR_RECALL_MAX_DISTANCE"] ?? "1.0");
 
 export async function pickRelatedExemplars(
+  tenantId: string,
   query: string,
   store: CodeExemplarStore,
   codeEmbedder: CodeEmbedder,
@@ -25,7 +26,7 @@ export async function pickRelatedExemplars(
   if (laneHealth("code") === "stale") return [];
   try {
     const { vector } = await codeEmbedder.embed(query, "query", opts.signal);
-    const hits = await store.searchByVector(vector, { installScope, k });
+    const hits = await store.searchByVector(tenantId, vector, { installScope, k });
     return hits
       .filter((h) => h.distance <= maxDistance)
       .slice(0, k)

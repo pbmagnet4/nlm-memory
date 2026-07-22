@@ -1297,6 +1297,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
       },
       async (args) => {
         const result = await recallCode(
+          DEFAULT_TEAM_ID,
           {
             query: args.query,
             installScope,
@@ -1350,7 +1351,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
         if (patch.retired === undefined && patch.outcome === undefined) {
           return { content: [{ type: "text", text: JSON.stringify({ error: "provide retire and/or outcome" }) }] } as never;
         }
-        const res = await exemplarStore.setVerdict(a.exemplar_id, patch, "human");
+        const res = await exemplarStore.setVerdict(DEFAULT_TEAM_ID, a.exemplar_id, patch, "human");
         return { content: [{ type: "text", text: JSON.stringify({ exemplar_id: a.exemplar_id, status: res.status }) }] } as never;
       },
     );

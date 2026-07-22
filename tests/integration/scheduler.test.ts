@@ -664,7 +664,7 @@ describe("ScanScheduler.tick", () => {
 
     async function insertExemplar(storage: SqliteStorage, survived: 0 | 1 | null, code: string): Promise<string> {
       const { codeHash } = await import("../../src/core/exemplars/ingest-exemplar.js");
-      const { id } = await storage.exemplars.insert({
+      const { id } = await storage.exemplars.insert("team_local", {
         installScope: SCOPE,
         signalId: null,
         sessionId: null,
@@ -710,9 +710,9 @@ describe("ScanScheduler.tick", () => {
         else process.env["NLM_CODE_EXEMPLARS_ENABLED"] = origEnv;
       }
 
-      expect(await storage.exemplars.getById(revertedId)).toBeNull();
-      expect(await storage.exemplars.getById(nullId)).not.toBeNull();
-      expect(await storage.exemplars.getById(survivedId)).not.toBeNull();
+      expect(await storage.exemplars.getById("team_local", revertedId)).toBeNull();
+      expect(await storage.exemplars.getById("team_local", nullId)).not.toBeNull();
+      expect(await storage.exemplars.getById("team_local", survivedId)).not.toBeNull();
       expect(messages.some((m) => m.includes("pruneReverted") && m.includes("deleted 1"))).toBe(true);
     });
 

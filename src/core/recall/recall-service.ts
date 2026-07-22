@@ -298,7 +298,7 @@ export class RecallService {
       });
       try {
         const related = await Promise.race([
-          pickRelatedExemplars(q, store, embedder, scope, { signal: abort.signal }),
+          pickRelatedExemplars(tenantId, q, store, embedder, scope, { signal: abort.signal }),
           timeout,
         ]);
         if (related.length > 0) result = { ...result, relatedExemplars: related };
