@@ -2,7 +2,7 @@
  * Pure selection logic for the classifier eval's gold set (#403). Chooses
  * ~N sessions weighted toward ids seen in the citation log, with the
  * remainder filled by a seeded stratified sample over runtime x body-length
- * bucket. No I/O — the mulberry32 PRNG, seed derivation, and stratified
+ * bucket. No I/O - the mulberry32 PRNG, seed derivation, and stratified
  * sampler are reused from recall-impact-replay-lib.ts rather than
  * reimplemented, so every eval's selection path shares one audited PRNG.
  *
@@ -46,7 +46,7 @@ export interface GoldSelectionResult {
  * ids whose id is in `citedIds` (seeded shuffle, so ties don't always favor
  * insertion order), then fills the remainder with a stratified sample
  * (keyed on `runtime:lengthBucket`) over the rest of the pool. Deterministic
- * given the same `pool` order + `seed` — callers must pass `pool` in a
+ * given the same `pool` order + `seed` - callers must pass `pool` in a
  * stable order (e.g. sorted by id).
  */
 export function selectGoldSample(
@@ -87,7 +87,7 @@ export function selectGoldSample(
 
 /**
  * Extracts distinct `cited_id` values from citation-log.jsonl content.
- * Malformed lines are skipped — the citation log is a best-effort weighting
+ * Malformed lines are skipped - the citation log is a best-effort weighting
  * signal, not a correctness boundary, so one bad row must not abort the
  * build.
  */

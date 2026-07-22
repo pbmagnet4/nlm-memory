@@ -148,7 +148,7 @@ describe("selectGoldSample", () => {
       { runtime: "hermes", bucket: "medium", count: 10 },
     ]);
     const result = selectGoldSample(pool, new Set(), 10, 5);
-    // 60/100*10=6, 30/100*10=3, 10/100*10=1 — exact, no rounding needed.
+    // 60/100*10=6, 30/100*10=3, 10/100*10=1 - exact, no rounding needed.
     expect(result.fillStrataCounts["claude-code:short"]).toBe(6);
     expect(result.fillStrataCounts["claude-code:long"]).toBe(3);
     expect(result.fillStrataCounts["hermes:medium"]).toBe(1);

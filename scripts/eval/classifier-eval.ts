@@ -254,7 +254,7 @@ async function classifyAll(
 }
 
 /**
- * One entry of `NLM_EVAL_CANDIDATES` — see buildCandidates() below. `provider`
+ * One entry of `NLM_EVAL_CANDIDATES` - see buildCandidates() below. `provider`
  * selects which ClassifierClient wraps the endpoint: "ollama" reuses the
  * production OllamaClient, "openai-compatible" reuses the eval-local
  * OpenAICompatibleClassifier (Studio auditions and any other OpenAI-shaped
@@ -272,7 +272,7 @@ export function candidatesFromEnv(raw: string): CandidateConfig[] {
   try {
     specs = JSON.parse(raw);
   } catch (err) {
-    throw new Error(`NLM_EVAL_CANDIDATES: invalid JSON — ${(err as Error).message}`);
+    throw new Error(`NLM_EVAL_CANDIDATES: invalid JSON - ${(err as Error).message}`);
   }
   if (!Array.isArray(specs) || specs.length === 0) {
     throw new Error("NLM_EVAL_CANDIDATES: must be a non-empty JSON array");

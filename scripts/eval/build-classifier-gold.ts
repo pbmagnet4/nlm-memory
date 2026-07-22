@@ -1,5 +1,5 @@
 /**
- * build-classifier-gold — scripted, durable gold-set builder for the
+ * build-classifier-gold - scripted, durable gold-set builder for the
  * classifier extraction-quality eval (#403). Replaces the manual /tmp/nlm-309
  * rebuild procedure described in docs/eval-classifier.md, which depended on a
  * gold set that lived only in /tmp and vanished on reboot.
@@ -7,22 +7,22 @@
  * Selection: ~N sessions (default 30), weighted toward ids seen in
  * ~/.nlm/citation-log.jsonl, with the remainder filled by a seeded
  * stratified sample over runtime x body-length bucket. Deterministic given
- * the same DB snapshot + --seed (default 20260722) — no Math.random anywhere
+ * the same DB snapshot + --seed (default 20260722) - no Math.random anywhere
  * in the selection path. Selection math lives in lib/gold-selection.ts so it
  * can be fixture-tested without touching a real database.
  *
  * Production safety: NEVER reads the live canonical.sqlite in place. Always
  * makes a throwaway read-only copy (+ WAL/SHM, so uncommitted rows are still
- * visible) under a tmp dir first and reads from that copy only — mirrors
+ * visible) under a tmp dir first and reads from that copy only - mirrors
  * fact-recall-eval.ts's sandboxCopy. Never writes to ~/.nlm/canonical.sqlite
  * and never restarts the daemon; it is live.
  *
- * Output (durable — NOT /tmp):
+ * Output (durable - NOT /tmp):
  *   $out/gold-bodies.json       [{ id, runtime, cited, body }], bodies capped
  *                                at GOLD_BODY_CAP chars.
  *   $out/references-TODO.json   handoff scaffold for the strong-model
  *                                authorship step. This script does NOT author
- *                                reference.json itself — a human or
+ *                                reference.json itself - a human or
  *                                orchestrator fills in each entry's
  *                                decisions/open/entities separately, then
  *                                saves the result as reference.json in the
