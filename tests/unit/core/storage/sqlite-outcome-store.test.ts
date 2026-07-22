@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -124,10 +124,55 @@ describe("sqlite outcome adapters", () => {
       storage.sessions.insertSessionForTest(
         makeSession({ id: "s1", endedAt: "2026-01-01T00:00:00.000Z", status: "superseded" }),
       );
-      const deps = await buildSqliteOutcomeDeps(storage.rawDb(), { citationLogPath });
+      const deps = await buildSqliteOutcomeDeps(storage.rawDb(), {
+        citationLogPath,
+        reDerivationPairsPath: join(tmp, "nonexistent-pairs.json"),
+      });
       const session = await deps.sessions.getById("s1");
       expect(session?.status).toBe("superseded");
       expect(deps.reDerivationPairs).toEqual([]);
+    });
+
+    it("reads re-derivation pairs from the corpus-monitor's cache file", async () => {
+      const pairsPath = join(tmp, "re-derivation-pairs.json");
+      const pairs = [{ a: "s1", b: "s2", sharedEntities: ["pgvector"], jaccard: 0.8 }];
+      writeFileSync(pairsPath, JSON.stringify(pairs));
+      const deps = await buildSqliteOutcomeDeps(storage.rawDb(), { citationLogPath, reDerivationPairsPath: pairsPath });
+      expect(deps.reDerivationPairs).toEqual(pairs);
+    });
+
+    it("falls back to [] when the pairs cache file is corrupt", async () => {
+      const pairsPath = join(tmp, "re-derivation-pairs.json");
+      writeFileSync(pairsPath, "{not valid json");
+      const deps = await buildSqliteOutcomeDeps(storage.rawDb(), { citationLogPath, reDerivationPairsPath: pairsPath });
+      expect(deps.reDerivationPairs).toEqual([]);
+    });
+
+    it("falls back to [] when the pairs cache file contains a non-array shape", async () => {
+      const pairsPath = join(tmp, "re-derivation-pairs.json");
+      writeFileSync(pairsPath, JSON.stringify({ oops: "not an array" }));
+      const deps = await buildSqliteOutcomeDeps(storage.rawDb(), { citationLogPath, reDerivationPairsPath: pairsPath });
+      expect(deps.reDerivationPairs).toEqual([]);
+    });
+
+    it("discards a pairs cache older than 72h (monitor presumed dead)", async () => {
+      const pairsPath = join(tmp, "re-derivation-pairs.json");
+      const pairs = [{ a: "s1", b: "s2", sharedEntities: ["pgvector"], jaccard: 0.8 }];
+      writeFileSync(pairsPath, JSON.stringify(pairs));
+      const staleSec = (Date.now() - 73 * 60 * 60 * 1000) / 1000;
+      utimesSync(pairsPath, staleSec, staleSec);
+      const deps = await buildSqliteOutcomeDeps(storage.rawDb(), { citationLogPath, reDerivationPairsPath: pairsPath });
+      expect(deps.reDerivationPairs).toEqual([]);
+    });
+
+    it("keeps a pairs cache younger than 72h", async () => {
+      const pairsPath = join(tmp, "re-derivation-pairs.json");
+      const pairs = [{ a: "s1", b: "s2", sharedEntities: ["pgvector"], jaccard: 0.8 }];
+      writeFileSync(pairsPath, JSON.stringify(pairs));
+      const freshSec = (Date.now() - 71 * 60 * 60 * 1000) / 1000;
+      utimesSync(pairsPath, freshSec, freshSec);
+      const deps = await buildSqliteOutcomeDeps(storage.rawDb(), { citationLogPath, reDerivationPairsPath: pairsPath });
+      expect(deps.reDerivationPairs).toEqual(pairs);
     });
   });
 
@@ -150,16 +195,21 @@ describe("sqlite outcome adapters", () => {
         JSON.stringify({ ts: new Date().toISOString(), conversation_id: "conv-1", cited_id: "s2" }) + "\n",
       );
 
+      const pairsPath = join(tmp, "re-derivation-pairs.json");
+      const pairs = [{ a: "s1", b: "s2", sharedEntities: ["pgvector"], jaccard: 0.9 }];
+      writeFileSync(pairsPath, JSON.stringify(pairs));
+
       const input = await loadOutcomeCoverageInput(storage.rawDb(), {
         sinceIso: "2026-01-01T00:00:00.000Z",
         citationLogPath,
+        reDerivationPairsPath: pairsPath,
       });
 
       expect(input.sessions.map((s) => s.id).sort()).toEqual(["s1", "s2"]);
       expect(input.signalsBySession.get("s1")).toEqual([{ id: "sig-1", outcome: "pass" }]);
       expect(input.edgesBySession.get("s1")).toEqual([{ fromSession: "s2", toSession: "s1", kind: "continues" }]);
       expect(input.citationsBySession.get("s2")).toEqual([{ conversationId: "conv-1" }]);
-      expect(input.reDerivationPairs).toEqual([]);
+      expect(input.reDerivationPairs).toEqual(pairs);
     });
 
     it("returns empty maps and an empty session list outside the window", async () => {
@@ -169,9 +219,11 @@ describe("sqlite outcome adapters", () => {
       const input = await loadOutcomeCoverageInput(storage.rawDb(), {
         sinceIso: "2026-01-01T00:00:00.000Z",
         citationLogPath,
+        reDerivationPairsPath: join(tmp, "nonexistent-pairs.json"),
       });
       expect(input.sessions).toEqual([]);
       expect(input.signalsBySession.size).toBe(0);
+      expect(input.reDerivationPairs).toEqual([]);
     });
   });
 });

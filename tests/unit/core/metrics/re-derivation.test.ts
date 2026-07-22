@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   computeReDerivationRate,
+  parseReDerivationPairsFile,
   type ReDerivationDeps,
 } from "@core/metrics/re-derivation.js";
 
@@ -104,5 +105,24 @@ describe("computeReDerivationRate", () => {
     );
     const { pairs } = await computeReDerivationRate(deps, 90);
     expect(pairs.length).toBe(0);
+  });
+});
+
+describe("parseReDerivationPairsFile", () => {
+  it("parses a valid pairs array", () => {
+    const pairs = [{ a: "s1", b: "s2", sharedEntities: ["pgvector"], jaccard: 0.75 }];
+    expect(parseReDerivationPairsFile(JSON.stringify(pairs))).toEqual(pairs);
+  });
+
+  it("throws on corrupt JSON - the file-read caller is responsible for the [] fallback", () => {
+    expect(() => parseReDerivationPairsFile("{not json")).toThrow();
+  });
+
+  it("returns [] for a valid JSON non-array shape", () => {
+    expect(parseReDerivationPairsFile(JSON.stringify({ oops: true }))).toEqual([]);
+  });
+
+  it("returns [] for an empty array", () => {
+    expect(parseReDerivationPairsFile("[]")).toEqual([]);
   });
 });

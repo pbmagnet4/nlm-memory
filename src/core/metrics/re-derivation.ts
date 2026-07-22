@@ -101,6 +101,18 @@ export function sqliteReDerivationDeps(db: SqliteLike): ReDerivationDeps {
   };
 }
 
+/**
+ * Parses the on-disk cache the 24h corpus-monitor job writes to
+ * (`~/.nlm/re-derivation-pairs.json`, see `src/cli/nlm.ts`) and the SQLite
+ * outcome adapters read back (`@core/storage/sqlite-outcome-store.js`).
+ * The file is a plain `ReDerivationPair[]` - anything else (corrupt JSON,
+ * a non-array shape) is treated as no pairs rather than thrown.
+ */
+export function parseReDerivationPairsFile(raw: string): ReadonlyArray<ReDerivationPair> {
+  const parsed: unknown = JSON.parse(raw);
+  return Array.isArray(parsed) ? (parsed as ReDerivationPair[]) : [];
+}
+
 export async function computeReDerivationRate(
   deps: ReDerivationDeps,
   windowDays: number,

@@ -28,7 +28,7 @@
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { homedir } from "node:os";
-import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, copyFileSync, realpathSync, appendFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, copyFileSync, realpathSync, appendFileSync, renameSync } from "node:fs";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { Command } from "commander";
 import pkg from "../../package.json" with { type: "json" };
@@ -179,6 +179,30 @@ export function shouldAppendTrend(lastLineTs: string | null, now: number): boole
   const parsed = Date.parse(lastLineTs);
   if (!Number.isFinite(parsed)) return true;
   return now - parsed >= TREND_INTERVAL_MS;
+}
+
+/**
+ * Recomputes `computeReDerivationRate` and overwrites the pairs cache file
+ * (#405) that `@core/storage/sqlite-outcome-store.js` reads instead of
+ * recomputing the same O(n^2) scan inline. Called every 24h corpus-monitor
+ * cycle (not gated by `shouldAppendTrend`, which only paces the separate
+ * append-only trend log) so the cache stays ~24h fresh while the monitor
+ * runs. Exported for direct testing and smoke runs against a corpus copy.
+ */
+export async function persistReDerivationPairs(
+  rawDb: Parameters<typeof sqliteReDerivationDeps>[0],
+  pairsPath: string,
+  windowDays: number,
+): Promise<Awaited<ReturnType<typeof computeReDerivationRate>>> {
+  const deps = sqliteReDerivationDeps(rawDb);
+  const report = await computeReDerivationRate(deps, windowDays);
+  // Write-temp-then-rename: the outcome adapters read this file on every
+  // get_session, so a crash mid-write must never leave truncated JSON at
+  // the final path. rename is atomic within the same directory.
+  const tmpPath = `${pairsPath}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmpPath, JSON.stringify(report.pairs), "utf8");
+  renameSync(tmpPath, pairsPath);
+  return report;
 }
 
 function loadTopicProvider(): TopicProvider {
@@ -573,14 +597,16 @@ program
     }, ALERT_EMBEDDER_CHECK_INTERVAL_MS);
     alertEmbedderTimer.unref();
 
-    // Corpus monitor: 24h stats job + weekly re-derivation trend. SQLite only.
-    // First run is delayed ~60s so warmup finishes first; then repeats every 24h.
+    // Corpus monitor: 24h stats job + pairs-cache refresh + weekly trend log.
+    // SQLite only. First run is delayed ~60s so warmup finishes first; then
+    // repeats every 24h.
     if (!(storage instanceof PgStorage)) {
       const CORPUS_MONITOR_INTERVAL_MS = 24 * 60 * 60 * 1000;
       const CORPUS_MONITOR_INITIAL_DELAY_MS = 60 * 1000;
       const nlmDataDir = join(homedir(), ".nlm");
       const corpusStatsPath = join(nlmDataDir, "corpus-stats.jsonl");
       const rederivTrendPath = join(nlmDataDir, "re-derivation-trend.jsonl");
+      const rederivPairsPath = join(nlmDataDir, "re-derivation-pairs.json");
 
       const runCorpusMonitor = async () => {
         try {
@@ -615,9 +641,14 @@ program
           } catch {
             // file absent or unreadable; treat as no prior entry
           }
+          // Pairs cache is refreshed every 24h cycle regardless of the trend
+          // gate below - the trend JSONL is an append-only history and stays
+          // on its existing weekly cadence, but the pairs cache is a single
+          // overwritten file so refreshing it daily costs nothing extra and
+          // keeps sqlite-outcome-store.ts's reads within a ~24h staleness
+          // bound (see #405).
+          const report = await persistReDerivationPairs(rawDb, rederivPairsPath, 42);
           if (shouldAppendTrend(lastTrendTs, now)) {
-            const rdDeps = sqliteReDerivationDeps(rawDb);
-            const report = await computeReDerivationRate(rdDeps, 42);
             appendFileSync(
               rederivTrendPath,
               JSON.stringify({ ts, windowDays: 42, rate: report.rate, pairCount: report.pairs.length, eligible: report.eligible }) + "\n",
