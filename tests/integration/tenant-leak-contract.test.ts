@@ -4,15 +4,18 @@
  * lane. This file is test-first at the contract level (Global Constraints,
  * Wave A): it enumerates every adversarial case from spec §6 (1-9, 11-12;
  * case 10 is concurrency and lands with M7's harness) as a named `it()`.
- * Wave B lands SessionStore + FactStore threading, so cases 1, 2, and the
- * session/fact by-id slice of case 4 flip here to real assertions against
- * the fixture's real (now tenant-threaded) SqliteSessionStore/SqliteFactStore.
- * Cases 3, 5, 6, 7, 8, 9, 12 stay `it.todo` — they exercise
- * EntityStore/WorkstreamStore/SignalStore/source-token auth/M6 state, none
- * of which are threaded yet (Wave B3-B6, later work). A case that cannot
- * pass yet is `it.todo` with its exact case text — visibly red-by-design,
- * never deleted, never silently skipped. The pg twin
- * (tenant-leak-contract.pg.test.ts) is written in Wave C.
+ * Wave B1-B4 landed SessionStore/FactStore/CodeExemplarStore/SignalStore/
+ * WorkstreamStore/EntityStore/OutcomeStore threading, so cases 1, 2, 3, 4,
+ * 5, 6 flip here to real assertions against the fixture's real (now
+ * tenant-threaded) stores and the service-layer functions built directly on
+ * them (rollupWorkstream, buildWorkDigest, buildFailureModeBlock).
+ * Cases 7, 8, 9, 11, 12 stay `it.todo` — they exercise surfaces Wave B does
+ * not touch: source-token ingest attribution/auth (M3/M4, Wave C), the
+ * by-construction store guard (Wave C4's tests/integration/tenant-guard.test.ts),
+ * and M6 file-state isolation. A case that cannot pass yet is `it.todo` with
+ * its exact case text — visibly red-by-design, never deleted, never
+ * silently skipped. The pg twin (tenant-leak-contract.pg.test.ts) is written
+ * in Wave C.
  *
  * The pg twin and case 10 are out of scope here per the plan.
  */
@@ -21,6 +24,10 @@ import { readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { seedTenantCorpus, type SeededTenantCorpus } from "../helpers/seed-tenant-corpus.js";
+import { rollupWorkstream } from "../../src/core/workstream/rollup.js";
+import { buildWorkDigest } from "../../src/core/work-digest/build-work-digest.js";
+import { buildFailureModeBlock } from "../../src/core/signals/failure-mode-recall.js";
+import type { Signal } from "../../src/shared/types.js";
 
 const ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "../..");
 
@@ -113,11 +120,44 @@ describe("tenant leak-test contract (spec §6, sqlite lane)", () => {
     expect(resolved.map((f) => f.id)).toEqual([A.factIds[0]]);
   });
 
-  it.todo(
-    "case 3: entity- and kind-filtered recall as A never returns a B session; the same surface form registered as " +
+  // Case 3 (store level). "Entity-filtered recall" composes on top of
+  // getByIds/getEntities, both already tenant-filtered (case 1); this case
+  // adds the entity-registry-specific assertions: the shared surface form
+  // resolves to two tenant-local rows, a session's resolved entities never
+  // include the other tenant's solo entity, and EntityStore.merge refuses
+  // to resolve a source or target that lives only in the other tenant.
+  it("case 3: entity- and kind-filtered recall as A never returns a B session; the same surface form registered as " +
       "an entity in both corpora resolves to two tenant-local entity rows, and entity-registry reads as A never " +
-      "return an entity name that exists only in B",
-  );
+      "return an entity name that exists only in B", async () => {
+    const { A, B } = fixture.ids;
+
+    // Shared surface form ("shared-entity") resolves to two tenant-local rows.
+    const entityRows = fixture.db
+      .prepare("SELECT tenant_id FROM entities WHERE canonical = ? ORDER BY tenant_id")
+      .all(A.entityCanonical) as Array<{ tenant_id: string }>;
+    expect(entityRows.map((r) => r.tenant_id)).toEqual(["team_a", "team_b"]);
+
+    // Entity-registry read (getEntities) as A never surfaces B's solo entity.
+    const aEntities = await fixture.sessionStore.getEntities("team_a", A.sessionIds[1]);
+    expect(aEntities).toContain(A.soloEntityCanonical);
+    expect(aEntities).not.toContain(B.soloEntityCanonical);
+
+    // Cross-tenant session id: entity-registry read returns nothing, not B's entities.
+    const crossEntities = await fixture.sessionStore.getEntities("team_a", B.sessionIds[1]);
+    expect(crossEntities).toEqual([]);
+
+    // Entity-filtered session resolution: A's own sessions never carry B's solo entity.
+    const aSessions = await fixture.sessionStore.getByIds("team_a", [...A.sessionIds]);
+    for (const s of aSessions) expect(s.entities).not.toContain(B.soloEntityCanonical);
+
+    // Merge refusal: A cannot resolve a source or target entity that lives only in B.
+    await expect(
+      fixture.entityStore.merge("team_a", B.soloEntityCanonical, A.entityCanonical),
+    ).rejects.toThrow(/source entity not found/);
+    await expect(
+      fixture.entityStore.merge("team_a", A.soloEntityCanonical, B.soloEntityCanonical),
+    ).rejects.toThrow(/target entity not found/);
+  });
 
   // Case 4 (session + fact by-id parts, store level). The MCP/HTTP-layer
   // supersedence/continues enrichment fencing (program spec §4.6 hardening
@@ -137,15 +177,101 @@ describe("tenant leak-test contract (spec §6, sqlite lane)", () => {
     expect(chains).toEqual([]);
   });
 
-  it.todo(
-    "case 5: workstream surfaces — recall_workstream, list_merge_suggestions, merge_workstreams, rebind_session " +
-      "never pair, return, or move rows across tenants",
-  );
+  // Case 5 (store level). recall_workstream = rollupWorkstream composed
+  // directly over the tenant-threaded WorkstreamStore/SessionStore/
+  // FactStore/CodeExemplarStore; list_merge_suggestions candidate scoping =
+  // WorkstreamStore.candidatesByEntityOverlap; merge_workstreams/
+  // rebind_session = WorkstreamStore.merge/SessionStore.setWorkstreamBinding.
+  // The MCP-layer resolveWorkstream/handler wiring is Wave C scope.
+  it("case 5: workstream surfaces — recall_workstream, list_merge_suggestions, merge_workstreams, rebind_session " +
+      "never pair, return, or move rows across tenants", async () => {
+    const { A, B } = fixture.ids;
+    const rollupDeps = {
+      workstreams: fixture.workstreamStore,
+      sessions: fixture.sessionStore,
+      facts: fixture.factStore,
+      exemplars: fixture.exemplarStore,
+    };
 
-  it.todo(
-    "case 6: digest / work_summary / failure-mode block for A contain no B content; signals with identical repo " +
-      "basenames in A and B never cross",
-  );
+    // recall_workstream: A's own rollup contains no B content.
+    const rollup = await rollupWorkstream(rollupDeps, "team_a", A.workstreamId);
+    expect(rollup?.workstream.id).toBe(A.workstreamId);
+    expect(rollup?.sessionIds).toEqual([A.sessionIds[0]]);
+    expect(rollup?.facts.map((f) => f.id)).not.toContain(B.factIds[0]);
+    expect(rollup?.exemplars.map((e) => e.id)).not.toContain(B.exemplarId);
+
+    // B's workstream is invisible to a rollup requested as A.
+    expect(await rollupWorkstream(rollupDeps, "team_a", B.workstreamId)).toBeNull();
+
+    // list_merge_suggestions candidate scoping: overlap search as A never surfaces B's workstream.
+    const candidates = await fixture.workstreamStore.candidatesByEntityOverlap("team_a", [A.entityCanonical], 10);
+    expect(candidates.map((c) => c.workstreamId)).toContain(A.workstreamId);
+    expect(candidates.map((c) => c.workstreamId)).not.toContain(B.workstreamId);
+
+    // merge_workstreams refusal: A attempting to merge B's workstream is a true no-op — B's row is untouched.
+    await fixture.workstreamStore.merge("team_a", B.workstreamId, A.workstreamId);
+    const bWorkstream = await fixture.workstreamStore.getById("team_b", B.workstreamId);
+    expect(bWorkstream?.status).toBe("active");
+
+    // rebind_session refusal: A attempting to rebind B's session is a true no-op — B's own binding is untouched
+    // and A's workstream never gains B's session.
+    await fixture.sessionStore.setWorkstreamBinding("team_a", B.sessionIds[0], A.workstreamId, "classifier", 1.0);
+    const bBound = await fixture.sessionStore.listSessionIdsByWorkstreams("team_b", [B.workstreamId]);
+    expect(bBound).toContain(B.sessionIds[0]);
+    const aBound = await fixture.sessionStore.listSessionIdsByWorkstreams("team_a", [A.workstreamId]);
+    expect(aBound).not.toContain(B.sessionIds[0]);
+  });
+
+  // Case 6 (store/service level). work_summary = buildWorkDigest composed over
+  // the tenant-threaded SessionStore/WorkstreamStore; failure-mode block =
+  // buildFailureModeBlock/SignalStore.listForAggregation, with an adversarial
+  // installScope collision inserted inline (the fixture's own signals use
+  // installScope=teamId, which never collides) to prove tenant is the outer
+  // mandatory filter even when install_scope (the within-tenant discriminator,
+  // program spec §4.6 hardening 3) matches across tenants.
+  it("case 6: digest / work_summary / failure-mode block for A contain no B content; signals with identical repo " +
+      "basenames in A and B never cross", async () => {
+    const { A, B } = fixture.ids;
+
+    // work_summary: the digest window is computed from the fixture's actual
+    // startedAt so the local-midnight day boundary lands correctly regardless
+    // of the test runner's timezone.
+    const localDate = new Date("2026-07-20T00:00:00Z");
+    const dateStr = `${localDate.getFullYear()}-${String(localDate.getMonth() + 1).padStart(2, "0")}-${String(localDate.getDate()).padStart(2, "0")}`;
+    const digest = await buildWorkDigest(
+      { store: fixture.sessionStore, workstreams: fixture.workstreamStore },
+      "team_a",
+      dateStr,
+    );
+    expect(digest.coverage.sessions).toBe(2);
+    expect(digest.coverage.sessions).not.toBe(4);
+
+    // failure-mode / signal aggregation: identical repo basename, different full path — exact match only.
+    const aSignals = await fixture.signalStore.listForAggregation("team_a", { installScope: "team_a", repo: A.repo });
+    expect(aSignals.map((s) => s.id)).toEqual([A.signalId]);
+    const crossRepo = await fixture.signalStore.listForAggregation("team_a", { installScope: "team_a", repo: B.repo });
+    expect(crossRepo).toEqual([]);
+
+    // Adversarial install_scope collision: two signals share both install_scope AND repo across tenants —
+    // tenant must still be the outer filter (program spec §4.6 hardening 3).
+    const sharedInstallScope = "shared-install-scope";
+    const sharedRepo = "/shared/repo/path";
+    const collidingSignal = (teamId: "team_a" | "team_b", id: string): Signal => ({
+      id, v: 1, installScope: sharedInstallScope, kind: "gate", producer: "quality-gate",
+      outcome: "pass", model: "qwen3-coder", repo: sharedRepo, step: null, detail: null,
+      sessionId: null, scope: null, ts: "2026-07-21T00:00:00Z", createdAt: "2026-07-21T00:00:00Z",
+    });
+    await fixture.signalStore.insert("team_a", collidingSignal("team_a", "collide-a"));
+    await fixture.signalStore.insert("team_b", collidingSignal("team_b", "collide-b"));
+
+    const aColliding = await fixture.signalStore.listForAggregation("team_a", { installScope: sharedInstallScope, repo: sharedRepo });
+    expect(aColliding.map((s) => s.id)).toEqual(["collide-a"]);
+    const bColliding = await fixture.signalStore.listForAggregation("team_b", { installScope: sharedInstallScope, repo: sharedRepo });
+    expect(bColliding.map((s) => s.id)).toEqual(["collide-b"]);
+
+    const block = await buildFailureModeBlock("team_a", fixture.signalStore, { installScope: "team_a", repo: A.repo });
+    expect(block).toBe("");
+  });
 
   it.todo(
     "case 7: ingest attribution — a session pushed via A's source token is recallable by A, invisible to B; a " +
