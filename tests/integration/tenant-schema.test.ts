@@ -53,4 +53,26 @@ describe("tenancy schema (sqlite 034)", () => {
     expect(() => db.prepare("INSERT INTO team_tokens (token_hash, team_id) VALUES ('h1','team_local')").run()).toThrow();
     expect(() => db.prepare("INSERT INTO team_tokens (token_hash, team_id) VALUES ('h2','nope')").run()).toThrow();
   });
+
+  it("allows the same entity canonical under two tenants after re-key", () => {
+    db.prepare("INSERT OR IGNORE INTO teams (id, name) VALUES ('team_b', 'B')").run();
+    db.prepare("INSERT INTO entities (canonical, type, status) VALUES ('acme-api', 'candidate', 'candidate')").run();
+    db.prepare("INSERT INTO entities (tenant_id, canonical, type, status) VALUES ('team_b', 'acme-api', 'candidate', 'candidate')").run();
+    const rows = db.prepare("SELECT tenant_id FROM entities WHERE canonical = 'acme-api' ORDER BY tenant_id").all() as Array<{ tenant_id: string }>;
+    expect(rows.map((r) => r.tenant_id)).toEqual(["team_b", "team_local"]);
+  });
+
+  it("still rejects a duplicate canonical within one tenant", () => {
+    expect(() =>
+      db.prepare("INSERT INTO entities (canonical, type, status) VALUES ('acme-api', 'candidate', 'candidate')").run(),
+    ).toThrow();
+  });
+
+  it("cascades variant deletion per-tenant only", () => {
+    db.prepare("INSERT INTO entity_variants (variant, canonical) VALUES ('Acme-API', 'acme-api')").run();
+    db.prepare("INSERT INTO entity_variants (tenant_id, variant, canonical) VALUES ('team_b', 'Acme-API', 'acme-api')").run();
+    db.prepare("DELETE FROM entities WHERE tenant_id = 'team_b' AND canonical = 'acme-api'").run();
+    const left = db.prepare("SELECT tenant_id FROM entity_variants WHERE variant = 'Acme-API'").all() as Array<{ tenant_id: string }>;
+    expect(left.map((r) => r.tenant_id)).toEqual(["team_local"]);
+  });
 });
