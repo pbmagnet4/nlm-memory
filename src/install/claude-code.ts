@@ -91,7 +91,7 @@ export interface HookInstallResult {
 /**
  * `nlm hook install` bakes `process.execPath` into every hook command
  * (~/.claude/settings.json). nvm users who later `nvm install`/`nvm use` a
- * different node version silently break every hook — Claude Code doesn't
+ * different node version silently break every hook - Claude Code doesn't
  * surface hook subprocess stderr, so the failure is invisible. Detect the
  * nvm path shape so the installer can warn instead. (#151)
  */
