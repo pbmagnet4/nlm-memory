@@ -28,6 +28,7 @@ export interface DisconnectWindsurfReport {
 
 export async function connectWindsurf(
   registry: SourceRegistryPort,
+  tenantId: string,
   opts: ConnectWindsurfOptions = {},
 ): Promise<ConnectWindsurfReport> {
   const userDir = opts.userDir ?? defaultUserDir();
@@ -37,16 +38,16 @@ export async function connectWindsurf(
     return { userDir, dirExists, action: "dry-run" };
   }
 
-  const existing = await registry.getByName("Windsurf");
+  const existing = await registry.getByName(tenantId, "Windsurf");
   if (existing) {
     if (existing.enabled && existing.pathOrUrl === userDir) {
       return { userDir, dirExists, action: "already-active" };
     }
-    await registry.update(existing.id, { enabled: true, pathOrUrl: userDir });
+    await registry.update(tenantId, existing.id, { enabled: true, pathOrUrl: userDir });
     return { userDir, dirExists, action: "enabled" };
   }
 
-  await registry.insert({
+  await registry.insert(tenantId, {
     kind: "windsurf",
     name: "Windsurf",
     pathOrUrl: userDir,
@@ -58,11 +59,12 @@ export async function connectWindsurf(
 
 export async function disconnectWindsurf(
   registry: SourceRegistryPort,
+  tenantId: string,
   opts: { dryRun?: boolean } = {},
 ): Promise<DisconnectWindsurfReport> {
   if (opts.dryRun) return { action: "dry-run" };
-  const existing = await registry.getByName("Windsurf");
+  const existing = await registry.getByName(tenantId, "Windsurf");
   if (!existing) return { action: "not-found" };
-  await registry.update(existing.id, { enabled: false });
+  await registry.update(tenantId, existing.id, { enabled: false });
   return { action: "disabled" };
 }

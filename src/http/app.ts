@@ -1277,7 +1277,7 @@ function registerClassifierRoutes(app: Hono, deps: HttpDeps): void {
 function registerSourceRoutes(app: Hono, deps: HttpDeps): void {
   app.get("/api/sources", async (c) => {
     if (!deps.sources) return c.json({ sources: [] });
-    return c.json({ sources: await deps.sources.list() });
+    return c.json({ sources: await deps.sources.list(DEFAULT_TEAM_ID) });
   });
 
   app.post("/api/sources", async (c) => {
@@ -1285,10 +1285,10 @@ function registerSourceRoutes(app: Hono, deps: HttpDeps): void {
     const body = (await c.req.json().catch(() => null)) as Partial<SourceInsert> | null;
     const parsed = parseSourceInsert(body);
     if (!parsed) return c.json({ error: "invalid source payload" }, 400);
-    if (await deps.sources.getByName(parsed.name)) {
+    if (await deps.sources.getByName(DEFAULT_TEAM_ID, parsed.name)) {
       return c.json({ error: `source named '${parsed.name}' already exists` }, 409);
     }
-    return c.json(await deps.sources.insert(parsed), 201);
+    return c.json(await deps.sources.insert(DEFAULT_TEAM_ID, parsed), 201);
   });
 
   app.patch("/api/sources/:id", async (c) => {
@@ -1298,7 +1298,7 @@ function registerSourceRoutes(app: Hono, deps: HttpDeps): void {
     const body = (await c.req.json().catch(() => null)) as Partial<SourceUpdate> | null;
     const patch = parseSourceUpdate(body);
     if (!patch) return c.json({ error: "invalid patch payload" }, 400);
-    const updated = await deps.sources.update(id, patch);
+    const updated = await deps.sources.update(DEFAULT_TEAM_ID, id, patch);
     if (!updated) return c.json({ error: `source ${id} not found` }, 404);
     return c.json(updated);
   });
@@ -1307,7 +1307,7 @@ function registerSourceRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.sources) return c.json({ error: "sources registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    const ok = await deps.sources.delete(id);
+    const ok = await deps.sources.delete(DEFAULT_TEAM_ID, id);
     if (!ok) return c.json({ error: `source ${id} not found` }, 404);
     return c.json({ deleted: id });
   });
@@ -1316,7 +1316,7 @@ function registerSourceRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.sources) return c.json({ error: "sources registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    const token = await deps.sources.regenerateToken(id);
+    const token = await deps.sources.regenerateToken(DEFAULT_TEAM_ID, id);
     if (!token) return c.json({ error: "regenerate-token only applies to webhook sources" }, 400);
     return c.json({ token });
   });
@@ -1372,7 +1372,7 @@ function registerIngestRoute(app: Hono, deps: HttpDeps): void {
 function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
   app.get("/api/providers", async (c) => {
     if (!deps.providers) return c.json({ providers: [] });
-    return c.json({ providers: await deps.providers.list() });
+    return c.json({ providers: await deps.providers.list(DEFAULT_TEAM_ID) });
   });
 
   app.post("/api/providers", async (c) => {
@@ -1380,10 +1380,10 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
     const body = (await c.req.json().catch(() => null)) as Partial<ProviderInsert> | null;
     const parsed = parseProviderInsert(body);
     if (!parsed) return c.json({ error: "invalid provider payload" }, 400);
-    if (await deps.providers.getByName(parsed.name)) {
+    if (await deps.providers.getByName(DEFAULT_TEAM_ID, parsed.name)) {
       return c.json({ error: `provider named '${parsed.name}' already exists` }, 409);
     }
-    return c.json(await deps.providers.insert(parsed), 201);
+    return c.json(await deps.providers.insert(DEFAULT_TEAM_ID, parsed), 201);
   });
 
   app.patch("/api/providers/:id", async (c) => {
@@ -1393,7 +1393,7 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
     const body = (await c.req.json().catch(() => null)) as Partial<ProviderUpdate> | null;
     const patch = parseProviderUpdate(body);
     if (!patch) return c.json({ error: "invalid patch payload" }, 400);
-    const updated = await deps.providers.update(id, patch);
+    const updated = await deps.providers.update(DEFAULT_TEAM_ID, id, patch);
     if (!updated) return c.json({ error: `provider ${id} not found` }, 404);
     return c.json(updated);
   });
@@ -1402,7 +1402,7 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.providers) return c.json({ error: "providers registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    const ok = await deps.providers.delete(id);
+    const ok = await deps.providers.delete(DEFAULT_TEAM_ID, id);
     if (!ok) return c.json({ error: `provider ${id} not found` }, 404);
     return c.json({ deleted: id });
   });
@@ -1411,9 +1411,9 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.providers) return c.json({ error: "providers registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    const provider = await deps.providers.get(id);
+    const provider = await deps.providers.get(DEFAULT_TEAM_ID, id);
     if (!provider) return c.json({ error: `provider ${id} not found` }, 404);
-    const key = await deps.providers.getSecret(id);
+    const key = await deps.providers.getSecret(DEFAULT_TEAM_ID, id);
     try {
       const models = await listModels(provider, { apiKey: key });
       return c.json({ models });
@@ -1427,9 +1427,9 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.providers) return c.json({ error: "providers registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    const provider = await deps.providers.get(id);
+    const provider = await deps.providers.get(DEFAULT_TEAM_ID, id);
     if (!provider) return c.json({ error: `provider ${id} not found` }, 404);
-    const key = await deps.providers.getSecret(id);
+    const key = await deps.providers.getSecret(DEFAULT_TEAM_ID, id);
     const startedAt = Date.now();
     try {
       const models = await listModels(provider, { apiKey: key });

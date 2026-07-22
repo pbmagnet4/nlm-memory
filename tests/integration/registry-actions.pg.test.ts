@@ -29,8 +29,10 @@ import { createApp } from "../../src/http/app.js";
 import { RecallService } from "../../src/core/recall/recall-service.js";
 import type { Hono } from "hono";
 import { FixedEmbedder } from "../fixtures/llm-stubs.js";
+import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
+const T = DEFAULT_TEAM_ID;
 const MIGRATIONS_DIR = join(
   fileURLToPath(new URL(".", import.meta.url)),
   "../../migrations/pg",
@@ -62,19 +64,19 @@ describe.skipIf(!PG_TEST_URL)("PgSourceRegistry (PG)", () => {
   });
 
   it("getByName resolves an inserted source and is null for unknown names", async () => {
-    const inserted = await registry.insert({
+    const inserted = await registry.insert(T, {
       kind: "jsonl-generic",
       name: "Custom Logs",
       pathOrUrl: "/tmp/logs",
       runtimeLabel: "custom/1.0",
     });
-    const found = await registry.getByName("Custom Logs");
+    const found = await registry.getByName(T, "Custom Logs");
     expect(found?.id).toBe(inserted.id);
-    expect(await registry.getByName("Nonexistent")).toBeNull();
+    expect(await registry.getByName(T, "Nonexistent")).toBeNull();
   });
 
   it("findByToken resolves a webhook source by its token", async () => {
-    const wh = await registry.insert({
+    const wh = await registry.insert(T, {
       kind: "webhook",
       name: "Hook A",
       runtimeLabel: "webhook/1.0",
@@ -88,23 +90,23 @@ describe.skipIf(!PG_TEST_URL)("PgSourceRegistry (PG)", () => {
   });
 
   it("regenerateToken issues a new token only for webhook sources", async () => {
-    const wh = await registry.insert({
+    const wh = await registry.insert(T, {
       kind: "webhook",
       name: "Hook B",
       runtimeLabel: "webhook/1.0",
     });
     const first = wh.token!;
-    const second = (await registry.regenerateToken(wh.id))!;
+    const second = (await registry.regenerateToken(T, wh.id))!;
     expect(second).not.toBe(first);
     expect(await registry.findByToken(first)).toBeNull();
     expect((await registry.findByToken(second))?.id).toBe(wh.id);
 
-    const jsonl = await registry.insert({
+    const jsonl = await registry.insert(T, {
       kind: "jsonl-generic",
       name: "Not A Hook",
       runtimeLabel: "custom/1.0",
     });
-    expect(await registry.regenerateToken(jsonl.id)).toBeNull();
+    expect(await registry.regenerateToken(T, jsonl.id)).toBeNull();
   });
 });
 
@@ -129,16 +131,16 @@ describe.skipIf(!PG_TEST_URL)("PgProviderRegistry (PG)", () => {
   });
 
   it("getByName resolves an inserted provider and redacts the key", async () => {
-    const inserted = await registry.insert({
+    const inserted = await registry.insert(T, {
       kind: "openai",
       name: "My OpenAI",
       apiKey: "sk-secret",
     });
-    const found = await registry.getByName("My OpenAI");
+    const found = await registry.getByName(T, "My OpenAI");
     expect(found?.id).toBe(inserted.id);
     expect(found?.apiKey).toBeNull();
     expect(found?.hasApiKey).toBe(true);
-    expect(await registry.getByName("Nonexistent")).toBeNull();
+    expect(await registry.getByName(T, "Nonexistent")).toBeNull();
   });
 });
 

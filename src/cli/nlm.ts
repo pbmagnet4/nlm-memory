@@ -303,14 +303,14 @@ async function reconcileEmbeddingLanes(
   }
 }
 
-async function buildAdapters(sources: SourceRegistryPort): Promise<TranscriptAdapter[]> {
+async function buildAdapters(sources: SourceRegistryPort, tenantId: string): Promise<TranscriptAdapter[]> {
   // Sources table is the source of truth. Each enabled row maps to one
   // adapter via adapterFromSource(). Detection still gates registration —
   // a row pointing at a missing dir won't poll. NLM_ADAPTERS keeps working
   // as a name-based filter for forcing a subset during dev.
   const explicit = process.env["NLM_ADAPTERS"];
   const allowed = explicit ? new Set(explicit.split(",").map((s) => s.trim())) : null;
-  const rows = await sources.list();
+  const rows = await sources.list(tenantId);
   const out: TranscriptAdapter[] = [];
   for (const row of rows) {
     if (!row.enabled) continue;
@@ -353,12 +353,12 @@ async function buildStack() {
   const signals = storage.signals;
   const scope = installScope();
   const sources = storage.sources;
-  await sources.seedDefaults();
+  await sources.seedDefaults(DEFAULT_TEAM_ID);
   const providers = storage.providers;
   // Provider seeding is SQLite-only: it bridges from the local DEEPSEEK_API_KEY
   // env, which is wrong for a hosted multi-tenant PG. PgProviderRegistry has no
   // seedDefaults (not on ProviderRegistryPort), so this narrows to the SQLite case.
-  if (providers instanceof ProviderRegistry) await providers.seedDefaults();
+  if (providers instanceof ProviderRegistry) await providers.seedDefaults(DEFAULT_TEAM_ID);
   // Recall only uses embed(). Default embedder is local Ollama; NLM_EMBED_*
   // can point it at any OpenAI-compatible endpoint. Classifier is wired
   // separately for Phase D ingest.
@@ -675,7 +675,7 @@ program
     console.error("  memo sweep: dormant cleanup every 5m (threshold 24h)");
 
     if (opts.scheduler !== false) {
-      const adapters = await buildAdapters(sources);
+      const adapters = await buildAdapters(sources, DEFAULT_TEAM_ID);
       if (adapters.length === 0) {
         console.error("  scheduler: no adapters detected (set NLM_ADAPTERS to force-enable)");
       } else {
@@ -1315,7 +1315,7 @@ program
         await stack.storage.close();
         process.exit(1);
       }
-      const adapters = await buildAdapters(stack.sources);
+      const adapters = await buildAdapters(stack.sources, DEFAULT_TEAM_ID);
       const r = await reclassifyOversized(
         {
           db: stack.storage.rawDb(),
@@ -2079,7 +2079,7 @@ connect
     const storage = SqliteStorage.create({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     try {
-      const report = await connectCursor(storage.sources, {
+      const report = await connectCursor(storage.sources, DEFAULT_TEAM_ID, {
         ...(opts.dbPath ? { dbPath: opts.dbPath as string } : {}),
         dryRun: Boolean(opts.dryRun),
       });
@@ -2110,7 +2110,7 @@ connect
     const storage = SqliteStorage.create({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     try {
-      const report = await connectWindsurf(storage.sources, {
+      const report = await connectWindsurf(storage.sources, DEFAULT_TEAM_ID, {
         ...(opts.userDir ? { userDir: opts.userDir as string } : {}),
         dryRun: Boolean(opts.dryRun),
       });
@@ -2277,7 +2277,7 @@ disconnect
     const storage = SqliteStorage.create({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     try {
-      const report = await disconnectCursor(storage.sources, { dryRun: Boolean(opts.dryRun) });
+      const report = await disconnectCursor(storage.sources, DEFAULT_TEAM_ID, { dryRun: Boolean(opts.dryRun) });
       if (opts.dryRun) {
         console.error("nlm disconnect cursor (dry run): disable Cursor source in registry");
         if (opts.withRules) console.error("  also remove ./.cursor/rules/nlm-recall.mdc");
@@ -2304,7 +2304,7 @@ disconnect
     const storage = SqliteStorage.create({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     try {
-      const report = await disconnectWindsurf(storage.sources, { dryRun: Boolean(opts.dryRun) });
+      const report = await disconnectWindsurf(storage.sources, DEFAULT_TEAM_ID, { dryRun: Boolean(opts.dryRun) });
       if (opts.dryRun) {
         console.error("nlm disconnect windsurf (dry run): disable Windsurf source in registry");
         if (opts.withRules) console.error("  also strip rules nudge from ~/.codeium/windsurf/memories/global_rules.md");

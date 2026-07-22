@@ -21,6 +21,7 @@ import type { Session } from "../../src/shared/types.js";
 import { makeFact } from "../fixtures/facts.js";
 import { makeSession } from "../fixtures/sessions.js";
 import { FixedEmbedder, StubClassifier, StubEmbedder } from "../fixtures/llm-stubs.js";
+import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 
@@ -1387,7 +1388,7 @@ describe("HTTP adapter: POST /api/ingest classifier provenance wiring", () => {
     // alongside the classifier itself. This test catches the bug where those fields
     // are omitted and every ingested session writes NULL provenance.
 
-    const webhookSource = await storage.sources.insert({
+    const webhookSource = await storage.sources.insert(DEFAULT_TEAM_ID, {
       kind: "webhook",
       name: "test-hook",
       runtimeLabel: "hermes",

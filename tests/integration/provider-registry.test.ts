@@ -9,8 +9,10 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import type { ProviderRegistry } from "../../src/core/providers/provider-registry.js";
+import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
+const T = DEFAULT_TEAM_ID;
 
 describe("ProviderRegistry", () => {
   let tmp: string;
@@ -38,8 +40,8 @@ describe("ProviderRegistry", () => {
 
   it("seedDefaults inserts Ollama always, DeepSeek with key when present", async () => {
     process.env["DEEPSEEK_API_KEY"] = "sk-test-abc";
-    await registry.seedDefaults();
-    const rows = await registry.list();
+    await registry.seedDefaults(T);
+    const rows = await registry.list(T);
     expect(rows.map((r) => r.kind)).toEqual(["ollama", "deepseek"]);
     const deepseek = rows.find((r) => r.kind === "deepseek");
     expect(deepseek?.enabled).toBe(true);
@@ -49,20 +51,20 @@ describe("ProviderRegistry", () => {
 
   it("seedDefaults disables DeepSeek when key is absent", async () => {
     delete process.env["DEEPSEEK_API_KEY"];
-    await registry.seedDefaults();
-    const deepseek = await registry.getByName("DeepSeek");
+    await registry.seedDefaults(T);
+    const deepseek = await registry.getByName(T, "DeepSeek");
     expect(deepseek?.enabled).toBe(false);
     expect(deepseek?.hasApiKey).toBe(false);
   });
 
   it("seedDefaults is idempotent", async () => {
-    await registry.seedDefaults();
-    await registry.seedDefaults();
-    expect((await registry.list()).length).toBe(2);
+    await registry.seedDefaults(T);
+    await registry.seedDefaults(T);
+    expect((await registry.list(T)).length).toBe(2);
   });
 
   it("inserts a custom provider with explicit base URL", async () => {
-    const row = await registry.insert({
+    const row = await registry.insert(T, {
       kind: "openai-compatible",
       name: "vLLM box",
       baseUrl: "http://192.0.2.1:8000/v1",
@@ -75,34 +77,42 @@ describe("ProviderRegistry", () => {
   });
 
   it("getSecret returns the unredacted key", async () => {
-    const row = await registry.insert({
+    const row = await registry.insert(T, {
       kind: "openai", name: "OpenAI prod", apiKey: "sk-real",
     });
-    expect(await registry.getSecret(row.id)).toBe("sk-real");
+    expect(await registry.getSecret(T, row.id)).toBe("sk-real");
   });
 
   it("rejects duplicate names", async () => {
-    await registry.insert({ kind: "openai", name: "OpenAI", apiKey: "k" });
-    await expect(registry.insert({ kind: "openai", name: "OpenAI", apiKey: "k2" }))
+    await registry.insert(T, { kind: "openai", name: "OpenAI", apiKey: "k" });
+    await expect(registry.insert(T, { kind: "openai", name: "OpenAI", apiKey: "k2" }))
       .rejects.toThrow();
   });
 
   it("update patches only supplied fields", async () => {
-    const row = await registry.insert({ kind: "openai", name: "OAI", apiKey: "k1" });
-    const updated = await registry.update(row.id, { apiKey: "k2", enabled: false });
+    const row = await registry.insert(T, { kind: "openai", name: "OAI", apiKey: "k1" });
+    const updated = await registry.update(T, row.id, { apiKey: "k2", enabled: false });
     expect(updated?.enabled).toBe(false);
-    expect(await registry.getSecret(row.id)).toBe("k2");
+    expect(await registry.getSecret(T, row.id)).toBe("k2");
   });
 
   it("delete removes the row", async () => {
-    const row = await registry.insert({ kind: "openai", name: "Tmp", apiKey: "k" });
-    expect(await registry.delete(row.id)).toBe(true);
-    expect(await registry.get(row.id)).toBeNull();
+    const row = await registry.insert(T, { kind: "openai", name: "Tmp", apiKey: "k" });
+    expect(await registry.delete(T, row.id)).toBe(true);
+    expect(await registry.get(T, row.id)).toBeNull();
   });
 
   it("fills in default base URL and model when omitted", async () => {
-    const row = await registry.insert({ kind: "anthropic", name: "Claude", apiKey: "k" });
+    const row = await registry.insert(T, { kind: "anthropic", name: "Claude", apiKey: "k" });
     expect(row.baseUrl).toBe("https://api.anthropic.com");
     expect(row.defaultModel).toBe("claude-haiku-4-5-20251001");
+  });
+
+  it("tenant isolation: getSecret for a cross-tenant id returns not-found (null), not the key", async () => {
+    const other = "team_other";
+    const row = await registry.insert(T, { kind: "openai", name: "Isolated", apiKey: "sk-secret" });
+    expect(await registry.getSecret(other, row.id)).toBeNull();
+    expect(await registry.get(other, row.id)).toBeNull();
+    expect((await registry.list(other)).map((r) => r.id)).not.toContain(row.id);
   });
 });

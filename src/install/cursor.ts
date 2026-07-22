@@ -28,6 +28,7 @@ export interface DisconnectCursorReport {
 
 export async function connectCursor(
   registry: SourceRegistryPort,
+  tenantId: string,
   opts: ConnectCursorOptions = {},
 ): Promise<ConnectCursorReport> {
   const adapterDbPath = opts.dbPath ?? defaultDbPath();
@@ -37,16 +38,16 @@ export async function connectCursor(
     return { adapterDbPath, adapterExists, action: "dry-run" };
   }
 
-  const existing = await registry.getByName("Cursor");
+  const existing = await registry.getByName(tenantId, "Cursor");
   if (existing) {
     if (existing.enabled && existing.pathOrUrl === adapterDbPath) {
       return { adapterDbPath, adapterExists, action: "already-active" };
     }
-    await registry.update(existing.id, { enabled: true, pathOrUrl: adapterDbPath });
+    await registry.update(tenantId, existing.id, { enabled: true, pathOrUrl: adapterDbPath });
     return { adapterDbPath, adapterExists, action: "enabled" };
   }
 
-  await registry.insert({
+  await registry.insert(tenantId, {
     kind: "cursor",
     name: "Cursor",
     pathOrUrl: adapterDbPath,
@@ -58,11 +59,12 @@ export async function connectCursor(
 
 export async function disconnectCursor(
   registry: SourceRegistryPort,
+  tenantId: string,
   opts: { dryRun?: boolean } = {},
 ): Promise<DisconnectCursorReport> {
   if (opts.dryRun) return { action: "dry-run" };
-  const existing = await registry.getByName("Cursor");
+  const existing = await registry.getByName(tenantId, "Cursor");
   if (!existing) return { action: "not-found" };
-  await registry.update(existing.id, { enabled: false });
+  await registry.update(tenantId, existing.id, { enabled: false });
   return { action: "disabled" };
 }

@@ -11,9 +11,18 @@
  * `redact()` strips secrets on the way out — every HTTP response sends
  * redacted rows, with the key only retrievable via getSecret() inside the
  * daemon process.
+ *
+ * Tenancy (program spec §4, M2 plan Wave B5): `providers` is a STAMP table.
+ * Every method takes `tenantId` as its non-optional first parameter and
+ * routes its WHERE fragment through `tenantClause`; INSERTs stamp
+ * `tenant_id`. `getSecret` is the top-risk-3 surface (spec §4.5): a
+ * tenant-mismatched id returns the same not-found shape (`null`) as a
+ * missing row — no existence oracle, and no plaintext key crosses a tenant
+ * boundary via an id an attacker merely guessed.
  */
 
 import type Database from "better-sqlite3";
+import { tenantClause, tenantClausePg } from "@core/tenancy/tenant-clause.js";
 
 export type ProviderKind =
   | "deepseek"
@@ -25,6 +34,7 @@ export type ProviderKind =
 
 export interface ProviderRow {
   readonly id: number;
+  readonly tenantId: string;
   readonly kind: ProviderKind;
   readonly name: string;
   readonly baseUrl: string | null;
@@ -56,6 +66,7 @@ export interface ProviderUpdate {
 
 interface ProviderDbRow {
   id: number;
+  tenant_id: string;
   kind: string;
   name: string;
   base_url: string | null;
@@ -69,6 +80,7 @@ interface ProviderDbRow {
 function rowFromDb(r: ProviderDbRow, includeSecret: boolean): ProviderRow {
   return {
     id: r.id,
+    tenantId: r.tenant_id,
     kind: r.kind as ProviderKind,
     name: r.name,
     baseUrl: r.base_url,
@@ -109,53 +121,61 @@ const DEFAULT_MODELS: Record<ProviderKind, string | null> = {
  * operator's env would be wrong, so the PG adapter never seeds providers.
  */
 export interface ProviderRegistryPort {
-  list(): Promise<ProviderRow[]>;
-  get(id: number): Promise<ProviderRow | null>;
-  getByName(name: string): Promise<ProviderRow | null>;
-  getSecret(id: number): Promise<string | null>;
-  insert(input: ProviderInsert): Promise<ProviderRow>;
-  update(id: number, patch: ProviderUpdate): Promise<ProviderRow | null>;
-  delete(id: number): Promise<boolean>;
+  list(tenantId: string): Promise<ProviderRow[]>;
+  get(tenantId: string, id: number): Promise<ProviderRow | null>;
+  getByName(tenantId: string, name: string): Promise<ProviderRow | null>;
+  getSecret(tenantId: string, id: number): Promise<string | null>;
+  insert(tenantId: string, input: ProviderInsert): Promise<ProviderRow>;
+  update(tenantId: string, id: number, patch: ProviderUpdate): Promise<ProviderRow | null>;
+  delete(tenantId: string, id: number): Promise<boolean>;
 }
 
 export class ProviderRegistry implements ProviderRegistryPort {
   constructor(private readonly db: Database.Database) {}
 
-  async list(): Promise<ProviderRow[]> {
-    const rows = this.db.prepare<[], ProviderDbRow>(
-      `SELECT * FROM providers ORDER BY id ASC`,
-    ).all();
+  async list(tenantId: string): Promise<ProviderRow[]> {
+    const tc = tenantClause(tenantId);
+    const rows = this.db.prepare<unknown[], ProviderDbRow>(
+      `SELECT * FROM providers WHERE ${tc.sql} ORDER BY id ASC`,
+    ).all(tc.param);
     return rows.map((r) => rowFromDb(r, false));
   }
 
-  async get(id: number): Promise<ProviderRow | null> {
-    const row = this.db.prepare<[number], ProviderDbRow>(
-      `SELECT * FROM providers WHERE id = ?`,
-    ).get(id);
+  async get(tenantId: string, id: number): Promise<ProviderRow | null> {
+    const tc = tenantClause(tenantId);
+    const row = this.db.prepare<unknown[], ProviderDbRow>(
+      `SELECT * FROM providers WHERE id = ? AND ${tc.sql}`,
+    ).get(id, tc.param);
     return row ? rowFromDb(row, false) : null;
   }
 
-  async getByName(name: string): Promise<ProviderRow | null> {
-    const row = this.db.prepare<[string], ProviderDbRow>(
-      `SELECT * FROM providers WHERE name = ?`,
-    ).get(name);
+  async getByName(tenantId: string, name: string): Promise<ProviderRow | null> {
+    const tc = tenantClause(tenantId);
+    const row = this.db.prepare<unknown[], ProviderDbRow>(
+      `SELECT * FROM providers WHERE name = ? AND ${tc.sql}`,
+    ).get(name, tc.param);
     return row ? rowFromDb(row, false) : null;
   }
 
-  /** Returns the secret. Use only inside the daemon — never echo to HTTP. */
-  async getSecret(id: number): Promise<string | null> {
-    const row = this.db.prepare<[number], ProviderDbRow>(
-      `SELECT * FROM providers WHERE id = ?`,
-    ).get(id);
+  /**
+   * Returns the secret. Use only inside the daemon — never echo to HTTP.
+   * A tenant-mismatched id returns null, identical to a missing row (top
+   * risk 3, spec §4.5) — no existence oracle, no cross-tenant key leak.
+   */
+  async getSecret(tenantId: string, id: number): Promise<string | null> {
+    const tc = tenantClause(tenantId);
+    const row = this.db.prepare<unknown[], ProviderDbRow>(
+      `SELECT * FROM providers WHERE id = ? AND ${tc.sql}`,
+    ).get(id, tc.param);
     return row?.api_key ?? null;
   }
 
-  async insert(input: ProviderInsert): Promise<ProviderRow> {
+  async insert(tenantId: string, input: ProviderInsert): Promise<ProviderRow> {
     const baseUrl = input.baseUrl ?? DEFAULT_BASE_URLS[input.kind];
     const defaultModel = input.defaultModel ?? DEFAULT_MODELS[input.kind];
     const result = this.db.prepare(`
-      INSERT INTO providers (kind, name, base_url, api_key, default_model, enabled)
-      VALUES (@kind, @name, @base_url, @api_key, @default_model, @enabled)
+      INSERT INTO providers (kind, name, base_url, api_key, default_model, enabled, tenant_id)
+      VALUES (@kind, @name, @base_url, @api_key, @default_model, @enabled, @tenant_id)
     `).run({
       kind: input.kind,
       name: input.name,
@@ -163,29 +183,32 @@ export class ProviderRegistry implements ProviderRegistryPort {
       api_key: input.apiKey ?? null,
       default_model: defaultModel ?? null,
       enabled: input.enabled === false ? 0 : 1,
+      tenant_id: tenantId,
     });
     const id = Number(result.lastInsertRowid);
-    const row = await this.get(id);
+    const row = await this.get(tenantId, id);
     if (!row) throw new Error(`ProviderRegistry.insert: row ${id} not found after insert`);
     return row;
   }
 
-  async update(id: number, patch: ProviderUpdate): Promise<ProviderRow | null> {
+  async update(tenantId: string, id: number, patch: ProviderUpdate): Promise<ProviderRow | null> {
     const fields: string[] = [];
-    const params: Record<string, unknown> = { id };
-    if (patch.name !== undefined) { fields.push("name = @name"); params["name"] = patch.name; }
-    if (patch.baseUrl !== undefined) { fields.push("base_url = @url"); params["url"] = patch.baseUrl; }
-    if (patch.apiKey !== undefined) { fields.push("api_key = @key"); params["key"] = patch.apiKey; }
-    if (patch.defaultModel !== undefined) { fields.push("default_model = @m"); params["m"] = patch.defaultModel; }
-    if (patch.enabled !== undefined) { fields.push("enabled = @en"); params["en"] = patch.enabled ? 1 : 0; }
-    if (fields.length === 0) return this.get(id);
+    const params: unknown[] = [];
+    if (patch.name !== undefined) { fields.push("name = ?"); params.push(patch.name); }
+    if (patch.baseUrl !== undefined) { fields.push("base_url = ?"); params.push(patch.baseUrl); }
+    if (patch.apiKey !== undefined) { fields.push("api_key = ?"); params.push(patch.apiKey); }
+    if (patch.defaultModel !== undefined) { fields.push("default_model = ?"); params.push(patch.defaultModel); }
+    if (patch.enabled !== undefined) { fields.push("enabled = ?"); params.push(patch.enabled ? 1 : 0); }
+    if (fields.length === 0) return this.get(tenantId, id);
     fields.push("updated_at = datetime('now')");
-    this.db.prepare(`UPDATE providers SET ${fields.join(", ")} WHERE id = @id`).run(params);
-    return this.get(id);
+    const tc = tenantClause(tenantId);
+    this.db.prepare(`UPDATE providers SET ${fields.join(", ")} WHERE id = ? AND ${tc.sql}`).run(...params, id, tc.param);
+    return this.get(tenantId, id);
   }
 
-  async delete(id: number): Promise<boolean> {
-    const result = this.db.prepare(`DELETE FROM providers WHERE id = ?`).run(id);
+  async delete(tenantId: string, id: number): Promise<boolean> {
+    const tc = tenantClause(tenantId);
+    const result = this.db.prepare(`DELETE FROM providers WHERE id = ? AND ${tc.sql}`).run(id, tc.param);
     return result.changes > 0;
   }
 
@@ -195,18 +218,19 @@ export class ProviderRegistry implements ProviderRegistryPort {
    * forward; Ollama is always seeded since it needs no key. SQLite-only —
    * not on ProviderRegistryPort (see the port's doc comment).
    */
-  async seedDefaults(): Promise<void> {
-    const count = this.db.prepare<[], { c: number }>(`SELECT COUNT(*) AS c FROM providers`).get();
+  async seedDefaults(tenantId: string): Promise<void> {
+    const tc = tenantClause(tenantId);
+    const count = this.db.prepare<unknown[], { c: number }>(`SELECT COUNT(*) AS c FROM providers WHERE ${tc.sql}`).get(tc.param);
     if ((count?.c ?? 0) > 0) return;
 
-    await this.insert({
+    await this.insert(tenantId, {
       kind: "ollama",
       name: "Ollama (local)",
       baseUrl: process.env["NLM_OLLAMA_URL"] ?? "http://localhost:11434",
     });
 
     const deepseekKey = process.env["DEEPSEEK_API_KEY"];
-    await this.insert({
+    await this.insert(tenantId, {
       kind: "deepseek",
       name: "DeepSeek",
       apiKey: deepseekKey ?? null,
@@ -217,6 +241,23 @@ export class ProviderRegistry implements ProviderRegistryPort {
 
 import type { Pool } from "pg";
 
+interface PgProviderDbRow {
+  id: number; tenant_id: string; kind: ProviderKind; name: string; base_url: string | null;
+  api_key: string | null; default_model: string | null; enabled: boolean;
+  created_at: string; updated_at: string;
+}
+
+function pgRowToProvider(r: PgProviderDbRow): ProviderRow {
+  return {
+    id: r.id, tenantId: r.tenant_id, kind: r.kind, name: r.name, baseUrl: r.base_url,
+    apiKey: null, hasApiKey: r.api_key !== null && r.api_key.length > 0,
+    defaultModel: r.default_model, enabled: r.enabled,
+    createdAt: r.created_at, updatedAt: r.updated_at,
+  };
+}
+
+const PG_PROVIDER_COLUMNS = `id, tenant_id, kind, name, base_url, api_key, default_model, enabled, created_at, updated_at`;
+
 /**
  * PgProviderRegistry — CRUD over `providers` for the PG storage path.
  * API mirrors ProviderRegistry exactly.
@@ -224,88 +265,63 @@ import type { Pool } from "pg";
 export class PgProviderRegistry implements ProviderRegistryPort {
   constructor(private readonly pool: Pool) {}
 
-  async list(): Promise<ProviderRow[]> {
-    const result = await this.pool.query<{
-      id: number; kind: ProviderKind; name: string; base_url: string | null;
-      api_key: string | null; default_model: string | null; enabled: boolean;
-      created_at: string; updated_at: string;
-    }>(
-      `SELECT id, kind, name, base_url, api_key, default_model, enabled, created_at, updated_at
-       FROM providers ORDER BY id`,
+  async list(tenantId: string): Promise<ProviderRow[]> {
+    const tc = tenantClausePg(tenantId, 1);
+    const result = await this.pool.query<PgProviderDbRow>(
+      `SELECT ${PG_PROVIDER_COLUMNS} FROM providers WHERE ${tc.sql} ORDER BY id`,
+      [tc.param],
     );
-    return result.rows.map((r) => ({
-      id: r.id, kind: r.kind, name: r.name, baseUrl: r.base_url,
-      apiKey: null, hasApiKey: r.api_key !== null && r.api_key.length > 0,
-      defaultModel: r.default_model, enabled: r.enabled,
-      createdAt: r.created_at, updatedAt: r.updated_at,
-    }));
+    return result.rows.map(pgRowToProvider);
   }
 
-  async get(id: number): Promise<ProviderRow | null> {
-    const result = await this.pool.query<{
-      id: number; kind: ProviderKind; name: string; base_url: string | null;
-      api_key: string | null; default_model: string | null; enabled: boolean;
-      created_at: string; updated_at: string;
-    }>(
-      `SELECT id, kind, name, base_url, api_key, default_model, enabled, created_at, updated_at
-       FROM providers WHERE id = $1`,
-      [id],
+  async get(tenantId: string, id: number): Promise<ProviderRow | null> {
+    const tc = tenantClausePg(tenantId, 2);
+    const result = await this.pool.query<PgProviderDbRow>(
+      `SELECT ${PG_PROVIDER_COLUMNS} FROM providers WHERE id = $1 AND ${tc.sql}`,
+      [id, tc.param],
     );
-    if (!result.rows[0]) return null;
-    const r = result.rows[0];
-    return {
-      id: r.id, kind: r.kind, name: r.name, baseUrl: r.base_url,
-      apiKey: null, hasApiKey: r.api_key !== null && r.api_key.length > 0,
-      defaultModel: r.default_model, enabled: r.enabled,
-      createdAt: r.created_at, updatedAt: r.updated_at,
-    };
+    return result.rows[0] ? pgRowToProvider(result.rows[0]) : null;
   }
 
-  async getByName(name: string): Promise<ProviderRow | null> {
-    const result = await this.pool.query<{
-      id: number; kind: ProviderKind; name: string; base_url: string | null;
-      api_key: string | null; default_model: string | null; enabled: boolean;
-      created_at: string; updated_at: string;
-    }>(
-      `SELECT id, kind, name, base_url, api_key, default_model, enabled, created_at, updated_at
-       FROM providers WHERE name = $1`,
-      [name],
+  async getByName(tenantId: string, name: string): Promise<ProviderRow | null> {
+    const tc = tenantClausePg(tenantId, 2);
+    const result = await this.pool.query<PgProviderDbRow>(
+      `SELECT ${PG_PROVIDER_COLUMNS} FROM providers WHERE name = $1 AND ${tc.sql}`,
+      [name, tc.param],
     );
-    if (!result.rows[0]) return null;
-    const r = result.rows[0];
-    return {
-      id: r.id, kind: r.kind, name: r.name, baseUrl: r.base_url,
-      apiKey: null, hasApiKey: r.api_key !== null && r.api_key.length > 0,
-      defaultModel: r.default_model, enabled: r.enabled,
-      createdAt: r.created_at, updatedAt: r.updated_at,
-    };
+    return result.rows[0] ? pgRowToProvider(result.rows[0]) : null;
   }
 
-  async getSecret(id: number): Promise<string | null> {
+  /**
+   * A tenant-mismatched id returns null, identical to a missing row (top
+   * risk 3, spec §4.5) — no existence oracle, no cross-tenant key leak.
+   */
+  async getSecret(tenantId: string, id: number): Promise<string | null> {
+    const tc = tenantClausePg(tenantId, 2);
     const result = await this.pool.query<{ api_key: string | null }>(
-      "SELECT api_key FROM providers WHERE id = $1", [id],
+      `SELECT api_key FROM providers WHERE id = $1 AND ${tc.sql}`, [id, tc.param],
     );
     return result.rows[0]?.api_key ?? null;
   }
 
-  async insert(input: ProviderInsert): Promise<ProviderRow> {
+  async insert(tenantId: string, input: ProviderInsert): Promise<ProviderRow> {
     const result = await this.pool.query<{ id: number; created_at: string; updated_at: string }>(
-      `INSERT INTO providers (kind, name, base_url, api_key, default_model, enabled)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO providers (kind, name, base_url, api_key, default_model, enabled, tenant_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING id, created_at, updated_at`,
-      [input.kind, input.name, input.baseUrl ?? null, input.apiKey ?? null, input.defaultModel ?? null, input.enabled ?? true],
+      [input.kind, input.name, input.baseUrl ?? null, input.apiKey ?? null, input.defaultModel ?? null, input.enabled ?? true, tenantId],
     );
     const row = result.rows[0];
     if (!row) throw new Error("PgProviderRegistry.insert: RETURNING yielded no row");
     return {
-      id: row.id, kind: input.kind, name: input.name, baseUrl: input.baseUrl ?? null,
+      id: row.id, tenantId, kind: input.kind, name: input.name, baseUrl: input.baseUrl ?? null,
       apiKey: null, hasApiKey: (input.apiKey ?? "").length > 0,
       defaultModel: input.defaultModel ?? null, enabled: input.enabled ?? true,
       createdAt: row.created_at, updatedAt: row.updated_at,
     };
   }
 
-  async update(id: number, patch: ProviderUpdate): Promise<ProviderRow | null> {
+  async update(tenantId: string, id: number, patch: ProviderUpdate): Promise<ProviderRow | null> {
     const sets: string[] = ["updated_at = NOW()"];
     const params: unknown[] = [];
     let idx = 1;
@@ -314,14 +330,17 @@ export class PgProviderRegistry implements ProviderRegistryPort {
     if (patch.apiKey !== undefined) { sets.push(`api_key = $${idx++}`); params.push(patch.apiKey); }
     if (patch.defaultModel !== undefined) { sets.push(`default_model = $${idx++}`); params.push(patch.defaultModel); }
     if (patch.enabled !== undefined) { sets.push(`enabled = $${idx++}`); params.push(patch.enabled); }
-    if (sets.length === 1) return this.get(id);
+    if (sets.length === 1) return this.get(tenantId, id);
     params.push(id);
-    await this.pool.query(`UPDATE providers SET ${sets.join(", ")} WHERE id = $${idx}`, params);
-    return this.get(id);
+    const tc = tenantClausePg(tenantId, idx + 1);
+    params.push(tc.param);
+    await this.pool.query(`UPDATE providers SET ${sets.join(", ")} WHERE id = $${idx} AND ${tc.sql}`, params);
+    return this.get(tenantId, id);
   }
 
-  async delete(id: number): Promise<boolean> {
-    const result = await this.pool.query("DELETE FROM providers WHERE id = $1", [id]);
+  async delete(tenantId: string, id: number): Promise<boolean> {
+    const tc = tenantClausePg(tenantId, 2);
+    const result = await this.pool.query(`DELETE FROM providers WHERE id = $1 AND ${tc.sql}`, [id, tc.param]);
     return (result.rowCount ?? 0) > 0;
   }
 }

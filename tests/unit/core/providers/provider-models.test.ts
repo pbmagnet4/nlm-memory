@@ -12,7 +12,7 @@ import type { ProviderRow } from "../../../../src/core/providers/provider-regist
 
 function row(overrides: Partial<ProviderRow>): ProviderRow {
   return {
-    id: 1, kind: "ollama", name: "test", baseUrl: "http://localhost:11434",
+    id: 1, tenantId: "team_local", kind: "ollama", name: "test", baseUrl: "http://localhost:11434",
     apiKey: null, hasApiKey: false, defaultModel: null, enabled: true,
     createdAt: "", updatedAt: "",
     ...overrides,
