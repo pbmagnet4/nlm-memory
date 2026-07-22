@@ -596,7 +596,16 @@ function renderMarkdown(
     }
     lines.push("");
     lines.push(
-      `Fact-injection vs session-pointer rows: session-pointer=${report.factVsSessionRows.sessionPointerRows}, fact-injection=${report.factVsSessionRows.factInjectionRows} (the hook log never records fact ids in \`wouldInject\` — facts are rendered into the live block but not logged — so this bucket is always 0 for historical replay; reported as a known limitation, not a result).`,
+      `Fact-injection vs session-pointer rows: session-pointer=${report.factVsSessionRows.sessionPointerRows}, fact-injection=${report.factVsSessionRows.factInjectionRows}.`,
+    );
+    lines.push("");
+    lines.push("## Limitations (pre-run-declared)");
+    lines.push("");
+    lines.push(
+      "- Replayed prompts are the hook log's 200-char `promptPreview`, not the full prompt. Both arms see the identical truncated prompt, so the comparison remains internally valid, but long-prompt behavior is under-represented.",
+    );
+    lines.push(
+      "- The fact-injection bucket is structurally empty: the hook log records only session ids in `wouldInject` (facts are rendered into the live block but never logged), so the facts-vs-sessions split reads fact-injection=0 for historical replay — a coverage limitation, not a result.",
     );
   }
 
