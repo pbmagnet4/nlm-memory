@@ -60,7 +60,7 @@ import {
   repairCodex,
   pluginScriptsDir,
 } from "../install/codex.js";
-import { connectClaudeCode, disconnectClaudeCode, installClaudeCodeHooks, mcpConfigPath } from "../install/claude-code.js";
+import { connectClaudeCode, disconnectClaudeCode, installClaudeCodeHooks, mcpConfigPath, nvmPinnedHookWarning } from "../install/claude-code.js";
 import { evaluateInstallHealth, evaluateModelHealth, evaluateRecallSmoke } from "../install/health.js";
 import type { HealthCheck, InstallProbe } from "../install/health.js";
 import { codexConfigPath } from "../install/codex.js";
@@ -1900,6 +1900,8 @@ hook
     console.error("  Session-end hook cleans up ~/.nlm/hook-state/<session>.json on session close.");
     console.error("  To run silently for calibration (no injection): set NLM_HOOK_MODE=shadow in the command.");
     console.error("  To remove: nlm hook uninstall");
+    const nvmWarning = nvmPinnedHookWarning(process.execPath, homedir());
+    if (nvmWarning) console.error(`nlm: ${nvmWarning}`);
   });
 
 hook
@@ -2016,6 +2018,8 @@ connect
         process.exit(1);
       }
       console.error(`nlm: ${result.count} hooks installed → ${path}`);
+      const nvmWarning = nvmPinnedHookWarning(process.execPath, homedir());
+      if (nvmWarning) console.error(`nlm: ${nvmWarning}`);
     }
   });
 

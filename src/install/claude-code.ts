@@ -88,6 +88,26 @@ export interface HookInstallResult {
   readonly errorMessage?: string;
 }
 
+/**
+ * `nlm hook install` bakes `process.execPath` into every hook command
+ * (~/.claude/settings.json). nvm users who later `nvm install`/`nvm use` a
+ * different node version silently break every hook — Claude Code doesn't
+ * surface hook subprocess stderr, so the failure is invisible. Detect the
+ * nvm path shape so the installer can warn instead. (#151)
+ */
+export function detectNvmPinnedVersion(execPath: string, homeDir: string): string | null {
+  const prefix = `${homeDir}/.nvm/versions/node/`;
+  if (!execPath.startsWith(prefix)) return null;
+  const version = execPath.slice(prefix.length).split("/")[0];
+  return version || null;
+}
+
+export function nvmPinnedHookWarning(execPath: string, homeDir: string): string | null {
+  const version = detectNvmPinnedVersion(execPath, homeDir);
+  if (!version) return null;
+  return `hooks pin node ${version}; after an nvm upgrade re-run: nlm hook install`;
+}
+
 export function installClaudeCodeHooks(opts: HookInstallOptions): HookInstallResult {
   const installed: HookSpec[] = [];
   for (const spec of opts.hooks) {
