@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -153,6 +153,26 @@ describe("sqlite outcome adapters", () => {
       writeFileSync(pairsPath, JSON.stringify({ oops: "not an array" }));
       const deps = await buildSqliteOutcomeDeps(storage.rawDb(), { citationLogPath, reDerivationPairsPath: pairsPath });
       expect(deps.reDerivationPairs).toEqual([]);
+    });
+
+    it("discards a pairs cache older than 72h (monitor presumed dead)", async () => {
+      const pairsPath = join(tmp, "re-derivation-pairs.json");
+      const pairs = [{ a: "s1", b: "s2", sharedEntities: ["pgvector"], jaccard: 0.8 }];
+      writeFileSync(pairsPath, JSON.stringify(pairs));
+      const staleSec = (Date.now() - 73 * 60 * 60 * 1000) / 1000;
+      utimesSync(pairsPath, staleSec, staleSec);
+      const deps = await buildSqliteOutcomeDeps(storage.rawDb(), { citationLogPath, reDerivationPairsPath: pairsPath });
+      expect(deps.reDerivationPairs).toEqual([]);
+    });
+
+    it("keeps a pairs cache younger than 72h", async () => {
+      const pairsPath = join(tmp, "re-derivation-pairs.json");
+      const pairs = [{ a: "s1", b: "s2", sharedEntities: ["pgvector"], jaccard: 0.8 }];
+      writeFileSync(pairsPath, JSON.stringify(pairs));
+      const freshSec = (Date.now() - 71 * 60 * 60 * 1000) / 1000;
+      utimesSync(pairsPath, freshSec, freshSec);
+      const deps = await buildSqliteOutcomeDeps(storage.rawDb(), { citationLogPath, reDerivationPairsPath: pairsPath });
+      expect(deps.reDerivationPairs).toEqual(pairs);
     });
   });
 

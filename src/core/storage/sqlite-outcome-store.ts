@@ -25,15 +25,16 @@
  * N+1 query per session for entities/decisions, then an O(n^2) pairwise
  * jaccard scan. That blows the ~2s digest budget and would add
  * multi-second latency to every `get_session` call - fine for a background
- * cron, not for a request path. The monitor overwrites the cache every 24h
- * cycle, so a read here is at most ~24h stale - well inside the tolerance
- * of a 14-day-window verdict. Missing or corrupt file (first boot before
- * the monitor's first run, a read racing a concurrent write, etc.) falls
- * back to `[]`: sessions that would have landed in `re-derived-later` fall
- * back to `unobserved`, which stays honest rather than silently wrong.
+ * cron, not for a request path. The cache is fresh (~24h stale at worst)
+ * while the 24h monitor runs; that is an assumption, not a guarantee, so a
+ * cache older than 72h (monitor presumed dead) is discarded. Missing,
+ * corrupt, or stale file (first boot before the monitor's first run, a
+ * stopped monitor, etc.) falls back to `[]`: sessions that would have
+ * landed in `re-derived-later` fall back to `unobserved`, which stays
+ * honest rather than silently wrong.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
@@ -57,8 +58,15 @@ const RELEVANT_EDGE_KINDS = "('supersedes','replaces','continues')";
 
 const DEFAULT_REDERIVATION_PAIRS_PATH = join(homedir(), ".nlm", "re-derivation-pairs.json");
 
+// 3x the corpus monitor's 24h refresh interval. A healthy monitor overwrites
+// the cache daily, so a file this old means the monitor has stopped and the
+// pairs can no longer be trusted as fresh - discard rather than serve stale
+// verdicts indefinitely.
+const REDERIVATION_PAIRS_MAX_AGE_MS = 72 * 60 * 60 * 1000;
+
 function loadCachedReDerivationPairs(pairsPath: string): ReadonlyArray<ReDerivationPair> {
   try {
+    if (Date.now() - statSync(pairsPath).mtimeMs > REDERIVATION_PAIRS_MAX_AGE_MS) return [];
     return parseReDerivationPairsFile(readFileSync(pairsPath, "utf8"));
   } catch {
     return [];

@@ -28,7 +28,7 @@
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { homedir } from "node:os";
-import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, copyFileSync, realpathSync, appendFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, copyFileSync, realpathSync, appendFileSync, renameSync } from "node:fs";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { Command } from "commander";
 import pkg from "../../package.json" with { type: "json" };
@@ -185,8 +185,8 @@ export function shouldAppendTrend(lastLineTs: string | null, now: number): boole
  * (#405) that `@core/storage/sqlite-outcome-store.js` reads instead of
  * recomputing the same O(n^2) scan inline. Called every 24h corpus-monitor
  * cycle (not gated by `shouldAppendTrend`, which only paces the separate
- * append-only trend log) so the cache is never more than ~24h stale.
- * Exported for direct testing and smoke runs against a corpus copy.
+ * append-only trend log) so the cache stays ~24h fresh while the monitor
+ * runs. Exported for direct testing and smoke runs against a corpus copy.
  */
 export async function persistReDerivationPairs(
   rawDb: Parameters<typeof sqliteReDerivationDeps>[0],
@@ -195,7 +195,12 @@ export async function persistReDerivationPairs(
 ): Promise<Awaited<ReturnType<typeof computeReDerivationRate>>> {
   const deps = sqliteReDerivationDeps(rawDb);
   const report = await computeReDerivationRate(deps, windowDays);
-  writeFileSync(pairsPath, JSON.stringify(report.pairs), "utf8");
+  // Write-temp-then-rename: the outcome adapters read this file on every
+  // get_session, so a crash mid-write must never leave truncated JSON at
+  // the final path. rename is atomic within the same directory.
+  const tmpPath = `${pairsPath}.tmp-${process.pid}-${Date.now()}`;
+  writeFileSync(tmpPath, JSON.stringify(report.pairs), "utf8");
+  renameSync(tmpPath, pairsPath);
   return report;
 }
 
