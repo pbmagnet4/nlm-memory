@@ -49,4 +49,37 @@ describe.skipIf(!PG_TEST_URL)("tenancy schema (pg 034)", () => {
     const rows = await pool.query("SELECT tenant_id FROM entities WHERE canonical = 'acme-api'");
     expect(rows.rowCount).toBe(2);
   });
+
+  // M4 (pg 035): sources.name / providers.name re-keyed from a bare
+  // UNIQUE(name) constraint to UNIQUE(tenant_id, name).
+  it("sources/providers.name uniqueness is (tenant_id, name), not a bare UNIQUE(name)", async () => {
+    await pool.query("INSERT INTO teams (id, name) VALUES ('team_c', 'C') ON CONFLICT DO NOTHING");
+    await pool.query(
+      "INSERT INTO sources (kind, name, runtime_label, tenant_id) VALUES ('webhook', 'shared-source-pg', 'webhook/1', 'team_local')",
+    );
+    await expect(
+      pool.query(
+        "INSERT INTO sources (kind, name, runtime_label, tenant_id) VALUES ('webhook', 'shared-source-pg', 'webhook/1', 'team_c')",
+      ),
+    ).resolves.not.toThrow();
+    await expect(
+      pool.query(
+        "INSERT INTO sources (kind, name, runtime_label, tenant_id) VALUES ('webhook', 'shared-source-pg', 'webhook/1', 'team_local')",
+      ),
+    ).rejects.toThrow();
+
+    await pool.query(
+      "INSERT INTO providers (kind, name, tenant_id) VALUES ('openai', 'shared-provider-pg', 'team_local')",
+    );
+    await expect(
+      pool.query(
+        "INSERT INTO providers (kind, name, tenant_id) VALUES ('openai', 'shared-provider-pg', 'team_c')",
+      ),
+    ).resolves.not.toThrow();
+    await expect(
+      pool.query(
+        "INSERT INTO providers (kind, name, tenant_id) VALUES ('openai', 'shared-provider-pg', 'team_local')",
+      ),
+    ).rejects.toThrow();
+  });
 });

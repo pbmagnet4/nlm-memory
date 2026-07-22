@@ -89,6 +89,16 @@ describe("ProviderRegistry", () => {
       .rejects.toThrow();
   });
 
+  // M4: name uniqueness is (tenant_id, name), not a bare UNIQUE(name) — two
+  // teams can register the exact same provider name without colliding.
+  it("allows the same provider name under two different tenants (M4 composite uniqueness)", async () => {
+    const mine = await registry.insert(T, { kind: "openai", name: "Shared Provider", apiKey: "k1" });
+    const theirs = await registry.insert("team_other", { kind: "openai", name: "Shared Provider", apiKey: "k2" });
+    expect(mine.id).not.toBe(theirs.id);
+    expect(await registry.getByName(T, "Shared Provider")).toMatchObject({ id: mine.id });
+    expect(await registry.getByName("team_other", "Shared Provider")).toMatchObject({ id: theirs.id });
+  });
+
   it("update patches only supplied fields", async () => {
     const row = await registry.insert(T, { kind: "openai", name: "OAI", apiKey: "k1" });
     const updated = await registry.update(T, row.id, { apiKey: "k2", enabled: false });

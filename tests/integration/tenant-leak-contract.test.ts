@@ -33,7 +33,8 @@ import { buildFailureModeBlock } from "../../src/core/signals/failure-mode-recal
 import { getSessionHandler } from "../../src/mcp/server.js";
 import { createApp } from "../../src/http/app.js";
 import { RecallService } from "../../src/core/recall/recall-service.js";
-import { FixedEmbedder } from "../fixtures/llm-stubs.js";
+import { FixedEmbedder, StubClassifier, StubEmbedder } from "../fixtures/llm-stubs.js";
+import { SourceRegistry } from "../../src/core/sources/source-registry.js";
 import { TeamTokenStore } from "../../src/core/tenancy/team-token-store.js";
 import { hashTeamToken } from "../../src/core/tenancy/team-auth.js";
 import type { Signal } from "../../src/shared/types.js";
@@ -282,10 +283,69 @@ describe("tenant leak-test contract (spec §6, sqlite lane)", () => {
     expect(block).toBe("");
   });
 
-  it.todo(
-    "case 7: ingest attribution — a session pushed via A's source token is recallable by A, invisible to B; a " +
-      "revoked token's push is rejected",
-  );
+  // Case 7 (M4, spec §3/§8). A webhook source registered under team_b's
+  // tenantId; POST /api/ingest resolves the source by its own token
+  // (independent of the general gate's team_tokens auth) and stamps the
+  // ingested session with the source's own tenant_id. Disabled/invalid
+  // source tokens are rejected before any write.
+  it("case 7: ingest attribution — a session pushed via A's source token is recallable by A, invisible to B; a " +
+      "revoked token's push is rejected", async () => {
+    const sources = new SourceRegistry(fixture.db);
+    const bSource = await sources.insert("team_b", { kind: "webhook", name: "b-webhook", runtimeLabel: "webhook/1" });
+    const token = bSource.token!;
+
+    const app = createApp({
+      recall: { search: async () => ({ query: "", mode: "keyword" as const, limit: 0, total: 0, results: [] }) } as never,
+      store: fixture.sessionStore,
+      sources,
+      ingest: {
+        classifier: new StubClassifier(),
+        embedder: new StubEmbedder(),
+        store: fixture.sessionStore,
+      },
+    });
+
+    const res = await app.request("/api/ingest", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify({ id: "wh_case7_session", text: "case 7 ingest body", startedAt: "2026-07-22T00:00:00Z" }),
+    });
+    expect(res.status).toBe(202);
+
+    const deadline = Date.now() + 3000;
+    let session = null;
+    while (Date.now() < deadline) {
+      session = await fixture.sessionStore.getById("team_b", "wh_case7_session");
+      if (session) break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(session).not.toBeNull();
+    expect(await fixture.sessionStore.getById("team_a", "wh_case7_session")).toBeNull();
+
+    // A regenerated (revoked) token no longer authenticates the source.
+    const oldToken = token;
+    await sources.regenerateToken("team_b", bSource.id);
+    const resRevoked = await app.request("/api/ingest", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${oldToken}` },
+      body: JSON.stringify({ id: "wh_case7_revoked", text: "should not ingest", startedAt: "2026-07-22T00:01:00Z" }),
+    });
+    expect(resRevoked.status).toBe(401);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(await fixture.sessionStore.getById("team_b", "wh_case7_revoked")).toBeNull();
+
+    // A disabled source's (still-valid) token is rejected with no write.
+    await sources.update("team_b", bSource.id, { enabled: false });
+    const disabledToken = await sources.regenerateToken("team_b", bSource.id);
+    const resDisabled = await app.request("/api/ingest", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${disabledToken}` },
+      body: JSON.stringify({ id: "wh_case7_disabled", text: "should not ingest", startedAt: "2026-07-22T00:02:00Z" }),
+    });
+    expect(resDisabled.status).toBe(403);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(await fixture.sessionStore.getById("team_b", "wh_case7_disabled")).toBeNull();
+  });
 
   // Case 8 (M3, spec §3). NLM_HOSTED=1 exercises the strict branch (no
   // ungated fallback) so a bad/absent token really does 401 rather than

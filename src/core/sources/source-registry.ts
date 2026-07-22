@@ -487,7 +487,7 @@ export class PgSourceRegistry implements SourceRegistryPort {
       await this.pool.query(
         `INSERT INTO sources (kind, name, path_or_url, runtime_label, parse_config, enabled, tenant_id)
          VALUES ($1, $2, $3, $4, '{}', TRUE, $5)
-         ON CONFLICT (name) DO NOTHING`,
+         ON CONFLICT (tenant_id, name) DO NOTHING`,
         [p.kind, p.name, p.path_or_url, p.runtime_label, tenantId],
       );
     }

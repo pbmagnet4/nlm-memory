@@ -76,3 +76,52 @@ describe("tenancy schema (sqlite 034)", () => {
     expect(left.map((r) => r.tenant_id)).toEqual(["team_local"]);
   });
 });
+
+describe("tenancy name-uniqueness re-key (sqlite 036, M4)", () => {
+  let dir: string;
+  let db: Database.Database;
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "nlm-tenant-rekey-"));
+    db = new Database(join(dir, "t.sqlite"));
+    db.pragma("foreign_keys = ON");
+    db.pragma("journal_mode = WAL");
+    sqliteVec.load(db);
+    runMigrations(db, MIGRATIONS);
+  });
+  afterAll(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
+
+  it("sources/providers.name is no longer a bare UNIQUE column — same name allowed under two tenants", () => {
+    db.prepare("INSERT OR IGNORE INTO teams (id, name) VALUES ('team_b', 'B')").run();
+    db.prepare(
+      "INSERT INTO sources (kind, name, runtime_label, tenant_id) VALUES ('webhook', 'shared-source', 'webhook/1', 'team_local')",
+    ).run();
+    expect(() =>
+      db.prepare(
+        "INSERT INTO sources (kind, name, runtime_label, tenant_id) VALUES ('webhook', 'shared-source', 'webhook/1', 'team_b')",
+      ).run(),
+    ).not.toThrow();
+
+    db.prepare(
+      "INSERT INTO providers (kind, name, tenant_id) VALUES ('openai', 'shared-provider', 'team_local')",
+    ).run();
+    expect(() =>
+      db.prepare(
+        "INSERT INTO providers (kind, name, tenant_id) VALUES ('openai', 'shared-provider', 'team_b')",
+      ).run(),
+    ).not.toThrow();
+  });
+
+  it("still rejects a duplicate name within one tenant", () => {
+    expect(() =>
+      db.prepare(
+        "INSERT INTO sources (kind, name, runtime_label, tenant_id) VALUES ('webhook', 'shared-source', 'webhook/1', 'team_local')",
+      ).run(),
+    ).toThrow();
+    expect(() =>
+      db.prepare(
+        "INSERT INTO providers (kind, name, tenant_id) VALUES ('openai', 'shared-provider', 'team_local')",
+      ).run(),
+    ).toThrow();
+  });
+});

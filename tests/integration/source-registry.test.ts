@@ -50,6 +50,19 @@ describe("SourceRegistry", () => {
     expect((await registry.list(T)).length).toBe(9);
   });
 
+  // M4: seedDefaults(DEFAULT_TEAM_ID) is exactly what nlm.ts's buildStack()
+  // calls at boot — every seeded preset row must land under the default
+  // team's tenant_id, not some other value the DEFAULT constant could drift
+  // from. Checked via raw SQL rather than through the tenant-scoped
+  // registry API so the assertion can't pass by construction.
+  it("seedDefaults stamps every preset row with tenant_id = DEFAULT_TEAM_ID", async () => {
+    await registry.seedDefaults(T);
+    const raw = storage.rawDb()
+      .prepare("SELECT DISTINCT tenant_id FROM sources")
+      .all() as Array<{ tenant_id: string }>;
+    expect(raw.map((r) => r.tenant_id)).toEqual([T]);
+  });
+
   it("inserts a custom JSONL source and round-trips parse config", async () => {
     const inserted = await registry.insert(T, {
       kind: "jsonl-generic",
@@ -67,6 +80,16 @@ describe("SourceRegistry", () => {
     await registry.insert(T, { kind: "webhook", name: "Push", runtimeLabel: "push/1" });
     await expect(registry.insert(T, { kind: "webhook", name: "Push", runtimeLabel: "push/2" }))
       .rejects.toThrow();
+  });
+
+  // M4: name uniqueness is (tenant_id, name), not a bare UNIQUE(name) — two
+  // teams can register the exact same source name without colliding.
+  it("allows the same source name under two different tenants (M4 composite uniqueness)", async () => {
+    const mine = await registry.insert(T, { kind: "webhook", name: "Shared Name", runtimeLabel: "push/1" });
+    const theirs = await registry.insert("team_other", { kind: "webhook", name: "Shared Name", runtimeLabel: "push/1" });
+    expect(mine.id).not.toBe(theirs.id);
+    expect(await registry.getByName(T, "Shared Name")).toMatchObject({ id: mine.id });
+    expect(await registry.getByName("team_other", "Shared Name")).toMatchObject({ id: theirs.id });
   });
 
   it("update patches only the supplied fields", async () => {
