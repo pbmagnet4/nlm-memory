@@ -61,7 +61,7 @@ describe("supersedeFactHandler", () => {
 
   it("calls retire(fact_id) and returns marked=true", async () => {
     const factStore = makeStubFactStore();
-    const result = await supersedeFactHandler(makeDeps(factStore), {
+    const result = await supersedeFactHandler(makeDeps(factStore), "team_local", {
       fact_id: "fact_abc123",
       reason: "outdated decision",
     });
@@ -78,7 +78,7 @@ describe("supersedeFactHandler", () => {
 
   it("omits reason from response when not provided", async () => {
     const factStore = makeStubFactStore();
-    const result = await supersedeFactHandler(makeDeps(factStore), { fact_id: "fact_xyz" });
+    const result = await supersedeFactHandler(makeDeps(factStore), "team_local", { fact_id: "fact_xyz" });
 
     expect(result.isError).toBeFalsy();
     const body = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
@@ -87,13 +87,13 @@ describe("supersedeFactHandler", () => {
 
   it("returns an error when fact_id is missing or too short", async () => {
     const factStore = makeStubFactStore();
-    const result = await supersedeFactHandler(makeDeps(factStore), { fact_id: "" });
+    const result = await supersedeFactHandler(makeDeps(factStore), "team_local", { fact_id: "" });
 
     expect(result.isError).toBe(true);
   });
 
   it("returns an error when factStore is absent", async () => {
-    const result = await supersedeFactHandler(makeDeps(undefined), { fact_id: "fact_abc" });
+    const result = await supersedeFactHandler(makeDeps(undefined), "team_local", { fact_id: "fact_abc" });
 
     expect(result.isError).toBe(true);
     expect(result.content[0]!.text).toContain("fact store not available");
@@ -101,7 +101,7 @@ describe("supersedeFactHandler", () => {
 
   it("surfaces factStore errors as MCP error responses", async () => {
     const factStore = makeStubFactStore(() => Promise.reject(new Error("Fact not found")));
-    const result = await supersedeFactHandler(makeDeps(factStore), { fact_id: "fact_missing" });
+    const result = await supersedeFactHandler(makeDeps(factStore), "team_local", { fact_id: "fact_missing" });
 
     expect(result.isError).toBe(true);
     expect(result.content[0]!.text).toContain("Fact not found");

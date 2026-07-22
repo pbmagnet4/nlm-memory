@@ -22,7 +22,7 @@ describe("citeSessionHandler", () => {
   });
 
   it("returns logged:true for a valid id", async () => {
-    const result = await citeSessionHandler({ id: "cc_sub_abc123def456" });
+    const result = await citeSessionHandler("team_local", { id: "cc_sub_abc123def456" });
     expect(result.isError).toBeFalsy();
     const parsed = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
     expect(parsed["logged"]).toBe(true);
@@ -30,18 +30,18 @@ describe("citeSessionHandler", () => {
   });
 
   it("returns an error for an id that is too short", async () => {
-    const result = await citeSessionHandler({ id: "short" });
+    const result = await citeSessionHandler("team_local", { id: "short" });
     expect(result.isError).toBe(true);
     expect(result.content[0]!.text).toContain("Error");
   });
 
   it("returns an error for an empty id", async () => {
-    const result = await citeSessionHandler({ id: "" });
+    const result = await citeSessionHandler("team_local", { id: "" });
     expect(result.isError).toBe(true);
   });
 
   it("accepts optional conversation_id and reason without error", async () => {
-    const result = await citeSessionHandler({
+    const result = await citeSessionHandler("team_local", {
       id: "cc_sub_abc123def456",
       conversation_id: "conv_test_001",
       reason: "Used to confirm FTS5 choice.",

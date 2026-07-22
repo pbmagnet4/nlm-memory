@@ -81,7 +81,7 @@ describe("supersede_fact end-to-end retirement (NLM #326)", () => {
       store: {} as McpDeps["store"],
       factStore: storage.facts,
     };
-    const res = await supersedeFactHandler(deps, { fact_id: "fact_bad", reason: "feedback-loop noise" });
+    const res = await supersedeFactHandler(deps, "team_local", { fact_id: "fact_bad", reason: "feedback-loop noise" });
     expect(res.isError).toBeFalsy();
 
     const after = await recall.search("team_local", { subject: "acme-app", mode: "keyword" });

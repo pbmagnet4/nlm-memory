@@ -45,7 +45,7 @@ const BASE: McpDeps = {
 };
 
 async function toolNames(deps: McpDeps): Promise<string[]> {
-  const server = createMcpServer(deps);
+  const server = createMcpServer(deps, "team_local");
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
   const client = new Client({ name: "test", version: "0" });

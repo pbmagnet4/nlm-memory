@@ -57,7 +57,7 @@ describe("MCP recall handlers write telemetry", () => {
       },
     } as unknown as McpDeps;
 
-    await recallSessionsHandler(deps, { query: "pgvector", mode: "keyword", limit: 10 });
+    await recallSessionsHandler(deps, "team_local", { query: "pgvector", mode: "keyword", limit: 10 });
 
     const entry = JSON.parse(await waitForLine(process.env["NLM_QUERY_LOG"] as string));
     expect(entry.source).toBe("mcp");
@@ -83,7 +83,7 @@ describe("MCP recall handlers write telemetry", () => {
       },
     } as unknown as McpDeps;
 
-    await recallSessionsHandler(deps, { query: "pgvector", mode: "keyword", limit: 10 }, "claude-code");
+    await recallSessionsHandler(deps, "team_local", { query: "pgvector", mode: "keyword", limit: 10 }, "claude-code");
 
     const entry = JSON.parse(await waitForLine(process.env["NLM_QUERY_LOG"] as string));
     expect(entry.source).toBe("mcp");
@@ -101,7 +101,7 @@ describe("MCP recall handlers write telemetry", () => {
       },
     } as unknown as McpDeps;
 
-    await recallFactsHandler(deps, { query: "routing", mode: "keyword", limit: 10 });
+    await recallFactsHandler(deps, "team_local", { query: "routing", mode: "keyword", limit: 10 });
 
     const entry = JSON.parse(await waitForLine(process.env["NLM_FACT_QUERY_LOG"] as string));
     expect(entry.source).toBe("mcp");
@@ -119,7 +119,7 @@ describe("MCP recall handlers write telemetry", () => {
       },
     } as unknown as McpDeps;
 
-    await recallFactsHandler(deps, { query: "routing", mode: "keyword", limit: 10 }, "claude-code");
+    await recallFactsHandler(deps, "team_local", { query: "routing", mode: "keyword", limit: 10 }, "claude-code");
 
     const entry = JSON.parse(await waitForLine(process.env["NLM_FACT_QUERY_LOG"] as string));
     expect(entry.source).toBe("mcp");
@@ -162,7 +162,7 @@ describe("MCP recall handlers log resolved conversation_id", () => {
       },
     } as unknown as McpDeps;
 
-    await recallSessionsHandler(deps, { query, mode: "keyword", limit: 10 });
+    await recallSessionsHandler(deps, "team_local", { query, mode: "keyword", limit: 10 });
 
     const entry = JSON.parse(await waitForLine(process.env["NLM_QUERY_LOG"] as string));
     expect(entry.conversation_id).toBe("conv-target");
@@ -175,7 +175,7 @@ describe("MCP recall handlers log resolved conversation_id", () => {
       },
     } as unknown as McpDeps;
 
-    await recallSessionsHandler(deps, { query: "hono middleware routing", mode: "keyword", limit: 10 });
+    await recallSessionsHandler(deps, "team_local", { query: "hono middleware routing", mode: "keyword", limit: 10 });
 
     const entry = JSON.parse(await waitForLine(process.env["NLM_QUERY_LOG"] as string));
     expect(entry.conversation_id).toBeUndefined();
@@ -196,7 +196,7 @@ describe("MCP recall handlers log resolved conversation_id", () => {
       },
     } as unknown as McpDeps;
 
-    await recallFactsHandler(deps, { query, mode: "keyword", limit: 10 });
+    await recallFactsHandler(deps, "team_local", { query, mode: "keyword", limit: 10 });
 
     const entry = JSON.parse(await waitForLine(process.env["NLM_FACT_QUERY_LOG"] as string));
     expect(entry.conversation_id).toBe("conv-facts");
@@ -209,7 +209,7 @@ describe("MCP recall handlers log resolved conversation_id", () => {
       },
     } as unknown as McpDeps;
 
-    await recallFactsHandler(deps, { query: "duckdb schema table", mode: "keyword", limit: 10 });
+    await recallFactsHandler(deps, "team_local", { query: "duckdb schema table", mode: "keyword", limit: 10 });
 
     const entry = JSON.parse(await waitForLine(process.env["NLM_FACT_QUERY_LOG"] as string));
     expect(entry.conversation_id).toBeUndefined();
@@ -227,7 +227,7 @@ describe("MCP recall handlers log resolved conversation_id", () => {
       },
     } as unknown as McpDeps;
 
-    await recallFactsHandler(deps, { query, mode: "hybrid", limit: 5 });
+    await recallFactsHandler(deps, "team_local", { query, mode: "hybrid", limit: 5 });
 
     const raw = await waitForLine(process.env["NLM_FACT_QUERY_LOG"] as string);
     const entry = JSON.parse(raw) as Record<string, unknown>;

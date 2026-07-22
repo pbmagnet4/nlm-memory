@@ -105,6 +105,7 @@ describe("MCP adapter", () => {
   it("recall_sessions returns the keyword hit", async () => {
     const result = await recallSessionsHandler(
       { recall, store },
+      "team_local",
       { query: "pgvector", mode: "keyword" },
     );
     expect(result.isError).toBeUndefined();
@@ -114,7 +115,9 @@ describe("MCP adapter", () => {
   });
 
   it("recall_sessions defaults to keyword mode + 10-item limit", async () => {
-    const result = await recallSessionsHandler({ recall, store }, { query: "hono" });
+    const result = await recallSessionsHandler(
+      { recall, store },
+      "team_local", { query: "hono" });
     const body = parsePayload(result) as { mode: string; limit: number };
     expect(body.mode).toBe("keyword");
     expect(body.limit).toBe(10);
@@ -123,6 +126,7 @@ describe("MCP adapter", () => {
   it("recall_sessions threads entity + kind filters into RecallService", async () => {
     const result = await recallSessionsHandler(
       { recall, store },
+      "team_local",
       { query: "pgvector", entity: "NLM", kind: "open" },
     );
     const body = parsePayload(result) as {
@@ -141,6 +145,7 @@ describe("MCP adapter", () => {
     await store.markSuperseded("team_local", "sess_b", "sess_a");
     const result = await recallSessionsHandler(
       { recall, store },
+      "team_local",
       { query: "pgvector", mode: "keyword" },
     );
     const body = parsePayload(result) as {
@@ -153,7 +158,9 @@ describe("MCP adapter", () => {
   });
 
   it("get_session returns the full session for a known id", async () => {
-    const result = await getSessionHandler({ recall, store }, { id: "sess_a" });
+    const result = await getSessionHandler(
+      { recall, store },
+      "team_local", { id: "sess_a" });
     expect(result.isError).toBeUndefined();
     const body = parsePayload(result) as { id: string; entities: string[] };
     expect(body.id).toBe("sess_a");
@@ -162,8 +169,12 @@ describe("MCP adapter", () => {
 
   it("get_session includes supersedence links when an edge exists", async () => {
     store.insertEdgeForTest("sess_a", "sess_b", "supersedes");
-    const newer = await getSessionHandler({ recall, store }, { id: "sess_a" });
-    const older = await getSessionHandler({ recall, store }, { id: "sess_b" });
+    const newer = await getSessionHandler(
+      { recall, store },
+      "team_local", { id: "sess_a" });
+    const older = await getSessionHandler(
+      { recall, store },
+      "team_local", { id: "sess_b" });
     type SupersedesEntry = { id: string; label: string; summary: string };
     type SupersededBy = { id: string; label: string; summary: string } | null;
     const newerBody = parsePayload(newer) as { supersedes: SupersedesEntry[]; supersededBy: SupersededBy };
@@ -181,6 +192,7 @@ describe("MCP adapter", () => {
   it("get_session returns an error tool result on missing id", async () => {
     const result = await getSessionHandler(
       { recall, store },
+      "team_local",
       { id: "does_not_exist" },
     );
     expect(result.isError).toBe(true);
@@ -188,7 +200,9 @@ describe("MCP adapter", () => {
   });
 
   it("get_session omits outcome when outcomeDb is not wired", async () => {
-    const result = await getSessionHandler({ recall, store }, { id: "sess_a" });
+    const result = await getSessionHandler(
+      { recall, store },
+      "team_local", { id: "sess_a" });
     const body = parsePayload(result) as Record<string, unknown>;
     expect("outcome" in body).toBe(false);
   });
@@ -196,6 +210,7 @@ describe("MCP adapter", () => {
   it("get_session attaches a Tier-B outcome verdict when outcomeDb is wired (#352 phase 2)", async () => {
     const result = await getSessionHandler(
       { recall, store, outcomeDb: storage.rawDb() },
+      "team_local",
       { id: "sess_a" },
     );
     expect(result.isError).toBeUndefined();
@@ -210,6 +225,7 @@ describe("MCP adapter", () => {
     await store.markSuperseded("team_local", "sess_b", "sess_a");
     const result = await getSessionHandler(
       { recall, store, outcomeDb: storage.rawDb() },
+      "team_local",
       { id: "sess_b" },
     );
     const body = parsePayload(result) as { outcome: { verdict: string } };
@@ -224,6 +240,7 @@ describe("MCP adapter", () => {
     } as unknown as import("better-sqlite3").Database;
     const result = await getSessionHandler(
       { recall, store, outcomeDb: throwingDb },
+      "team_local",
       { id: "sess_a" },
     );
     expect(result.isError).toBeUndefined();
@@ -233,7 +250,7 @@ describe("MCP adapter", () => {
   });
 
   it("createMcpServer registers both tools without throwing", () => {
-    const server = createMcpServer({ recall, store });
+    const server = createMcpServer({ recall, store }, "team_local");
     expect(server).toBeDefined();
   });
 
@@ -249,6 +266,7 @@ describe("MCP adapter", () => {
     it("flips predecessor status and inserts a supersedes edge", async () => {
       const result = await markSupersededHandler(
         { recall, store },
+        "team_local",
         { predecessor_id: "sess_a", successor_id: "sess_b", reason: "newer plan replaces it" },
       );
       expect(result.isError).toBeUndefined();
@@ -257,7 +275,9 @@ describe("MCP adapter", () => {
       expect(body.predecessor_id).toBe("sess_a");
 
       // get_session on the predecessor now shows supersededBy linked to sess_b
-      const older = await getSessionHandler({ recall, store }, { id: "sess_a" });
+      const older = await getSessionHandler(
+        { recall, store },
+        "team_local", { id: "sess_a" });
       const olderBody = parsePayload(older) as {
         status: string;
         supersededBy: { id: string } | null;
@@ -269,16 +289,20 @@ describe("MCP adapter", () => {
     it("is idempotent — re-marking the same pair stays clean", async () => {
       await markSupersededHandler(
         { recall, store },
+        "team_local",
         { predecessor_id: "sess_a", successor_id: "sess_b" },
       );
       const second = await markSupersededHandler(
         { recall, store },
+        "team_local",
         { predecessor_id: "sess_a", successor_id: "sess_b" },
       );
       expect(second.isError).toBeUndefined();
 
       // sess_b now reports exactly one supersedes link, not two
-      const newer = await getSessionHandler({ recall, store }, { id: "sess_b" });
+      const newer = await getSessionHandler(
+        { recall, store },
+        "team_local", { id: "sess_b" });
       const newerBody = parsePayload(newer) as { supersedes: { id: string }[] };
       expect(newerBody.supersedes).toHaveLength(1);
     });
@@ -286,6 +310,7 @@ describe("MCP adapter", () => {
     it("errors when predecessor id is unknown", async () => {
       const result = await markSupersededHandler(
         { recall, store },
+        "team_local",
         { predecessor_id: "ghost", successor_id: "sess_b" },
       );
       expect(result.isError).toBe(true);
@@ -295,6 +320,7 @@ describe("MCP adapter", () => {
     it("errors when successor id is unknown", async () => {
       const result = await markSupersededHandler(
         { recall, store },
+        "team_local",
         { predecessor_id: "sess_a", successor_id: "ghost" },
       );
       expect(result.isError).toBe(true);
@@ -304,6 +330,7 @@ describe("MCP adapter", () => {
     it("errors when predecessor equals successor", async () => {
       const result = await markSupersededHandler(
         { recall, store },
+        "team_local",
         { predecessor_id: "sess_a", successor_id: "sess_a" },
       );
       expect(result.isError).toBe(true);
@@ -324,24 +351,32 @@ describe("MCP adapter", () => {
 
       await markSupersededHandler(
         { recall, store },
+        "team_local",
         { predecessor_id: "sess_a", successor_id: "sess_b" },
       );
       await markSupersededHandler(
         { recall, store },
+        "team_local",
         { predecessor_id: "sess_a", successor_id: "sess_c" },
       );
 
-      const olderRes = await getSessionHandler({ recall, store }, { id: "sess_a" });
+      const olderRes = await getSessionHandler(
+        { recall, store },
+        "team_local", { id: "sess_a" });
       const olderBody = parsePayload(olderRes) as { supersededBy: { id: string } | null };
       expect(olderBody.supersededBy?.id).toBe("sess_c");
 
       // The original successor (sess_b) must no longer claim to supersede
       // sess_a — that edge was replaced, not augmented.
-      const bRes = await getSessionHandler({ recall, store }, { id: "sess_b" });
+      const bRes = await getSessionHandler(
+        { recall, store },
+        "team_local", { id: "sess_b" });
       const bBody = parsePayload(bRes) as { supersedes: { id: string }[] };
       expect(bBody.supersedes).toEqual([]);
 
-      const cRes = await getSessionHandler({ recall, store }, { id: "sess_c" });
+      const cRes = await getSessionHandler(
+        { recall, store },
+        "team_local", { id: "sess_c" });
       const cBody = parsePayload(cRes) as { supersedes: { id: string }[] };
       expect(cBody.supersedes).toHaveLength(1);
       expect(cBody.supersedes[0]?.id).toBe("sess_a");
@@ -364,7 +399,9 @@ describe("MCP adapter", () => {
         }) + "\n",
         "utf8",
       );
-      const result = await getSessionHandler({ recall, store }, { id: "sess_a" });
+      const result = await getSessionHandler(
+        { recall, store },
+        "team_local", { id: "sess_a" });
       type EnrichedSupersededBy = {
         id: string;
         label: string;
@@ -381,7 +418,9 @@ describe("MCP adapter", () => {
     it("get_session has reason undefined on supersededBy when log has no matching entry", async () => {
       // Insert edge directly (bypasses log — simulates pre-feature supersedence)
       store.insertEdgeForTest("sess_b", "sess_a", "supersedes");
-      const result = await getSessionHandler({ recall, store }, { id: "sess_a" });
+      const result = await getSessionHandler(
+        { recall, store },
+        "team_local", { id: "sess_a" });
       type EnrichedSupersededBy = { id: string; reason?: string; recordedBy?: string } | null;
       const body = parsePayload(result) as { supersededBy: EnrichedSupersededBy };
       expect(body.supersededBy).not.toBeNull();
@@ -391,9 +430,50 @@ describe("MCP adapter", () => {
 
     it("get_session on a non-superseded session has supersededBy null", async () => {
       // sess_b has not been superseded
-      const result = await getSessionHandler({ recall, store }, { id: "sess_b" });
+      const result = await getSessionHandler(
+        { recall, store },
+        "team_local", { id: "sess_b" });
       const body = parsePayload(result) as { supersededBy: null };
       expect(body.supersededBy).toBeNull();
+    });
+
+    it("fences the supersedence-log reason when supersededBy resolves to a cross-tenant session (spec §4.6 hardening 2)", async () => {
+      // session_edges is not itself tenant-scoped, so a predecessor's
+      // supersededBy edge can point at another tenant's session id — this
+      // simulates that exactly. getByIds("team_local", ...) must fail to
+      // resolve the cross-tenant successor, and the enrichment must then
+      // surface neither its label/summary NOR the log's reason/recordedBy.
+      store.insertSessionForTest(makeSession({ id: "sess_other_tenant", label: "other tenant's session" }), "team_b");
+      // insertEdgeForTest(from, to) records from supersedes to, so
+      // sess_a.supersededBy resolves to sess_other_tenant.
+      store.insertEdgeForTest("sess_other_tenant", "sess_a", "supersedes");
+      const logPath = join(tmp, "supersedence-log.jsonl");
+      await writeFile(
+        logPath,
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          predecessor_id: "sess_a",
+          successor_id: "sess_other_tenant",
+          reason: "cross-tenant leak probe",
+          source: "mcp",
+        }) + "\n",
+        "utf8",
+      );
+      const result = await getSessionHandler({ recall, store }, "team_local", { id: "sess_a" });
+      type EnrichedSupersededBy = {
+        id: string;
+        label: string;
+        summary: string;
+        reason?: string;
+        recordedBy?: string;
+      } | null;
+      const body = parsePayload(result) as { supersededBy: EnrichedSupersededBy };
+      expect(body.supersededBy).not.toBeNull();
+      expect(body.supersededBy?.id).toBe("sess_other_tenant");
+      expect(body.supersededBy?.label).toBe("");
+      expect(body.supersededBy?.summary).toBe("");
+      expect(body.supersededBy?.reason).toBeUndefined();
+      expect(body.supersededBy?.recordedBy).toBeUndefined();
     });
   });
 
@@ -431,6 +511,7 @@ describe("MCP adapter", () => {
     it("recall_facts returns the current fact for an exact subject+predicate", async () => {
       const result = await recallFactsHandler(
         { recall, store, factRecall, factStore },
+        "team_local",
         { subject: "nlm-memory-ts", predicate: "framework" },
       );
       expect(result.isError).toBeUndefined();
@@ -446,6 +527,7 @@ describe("MCP adapter", () => {
     it("recall_facts returns an error tool result when factRecall is missing", async () => {
       const result = await recallFactsHandler(
         { recall, store },
+        "team_local",
         { subject: "x" },
       );
       expect(result.isError).toBe(true);
@@ -467,6 +549,7 @@ describe("MCP adapter", () => {
 
       const result = await getFactHistoryHandler(
         { recall, store, factRecall, factStore },
+        "team_local",
         { subject: "nlm-memory-ts", predicate: "framework" },
       );
       const body = parsePayload(result) as {
@@ -477,7 +560,7 @@ describe("MCP adapter", () => {
     });
 
     it("createMcpServer registers fact tools when factRecall + factStore wired", () => {
-      const server = createMcpServer({ recall, store, factRecall, factStore });
+      const server = createMcpServer({ recall, store, factRecall, factStore }, "team_local");
       expect(server).toBeDefined();
     });
   });

@@ -46,7 +46,6 @@ import type {
 } from "@shared/types.js";
 import { SIGNAL_OUTCOMES } from "@shared/types.js";
 import type Database from "better-sqlite3";
-import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 
 const CHARACTER_LIMIT = 25_000;
 const DEFAULT_LIMIT = 10;
@@ -170,6 +169,7 @@ export function mcpRuntimeFromClient(
 
 export async function recallSessionsHandler(
   deps: McpDeps,
+  tenantId: string,
   input: Partial<RecallToolInput>,
   runtime: string | null = null,
 ): Promise<ToolResult> {
@@ -188,7 +188,7 @@ export async function recallSessionsHandler(
       ...(input.kind !== undefined ? { kind: input.kind } : {}),
       ...(input.workstream !== undefined ? { workstream: input.workstream } : {}),
     };
-    const result = await deps.recall.search(DEFAULT_TEAM_ID, query);
+    const result = await deps.recall.search(tenantId, query);
     const conversationId = resolveConversationByQuery(input.query ?? "") ?? undefined;
     // Telemetry — the MCP path is the real agent-usage path; without this it
     // is invisible to query_log.jsonl and the Recall page. Fire-and-forget,
@@ -213,6 +213,7 @@ export async function recallSessionsHandler(
 
 export async function workSummaryHandler(
   deps: McpDeps,
+  tenantId: string,
   input: { date?: string | undefined },
 ): Promise<ToolResult> {
   if (!deps.workDigest) {
@@ -220,7 +221,7 @@ export async function workSummaryHandler(
   }
   try {
     const date = input.date ?? localToday();
-    const digest = await buildWorkDigest(deps.workDigest, DEFAULT_TEAM_ID, date);
+    const digest = await buildWorkDigest(deps.workDigest, tenantId, date);
     return okText(composeWorkDigest(digest));
   } catch (e) {
     return err(e);
@@ -229,6 +230,7 @@ export async function workSummaryHandler(
 
 export async function recallWorkstreamHandler(
   deps: McpDeps,
+  tenantId: string,
   input: { idOrLabel?: string },
   runtime: string | null = null,
 ): Promise<ToolResult> {
@@ -239,11 +241,11 @@ export async function recallWorkstreamHandler(
     const conversationId = resolveConversationByQuery(idOrLabel) ?? undefined;
     const ws = deps.workstreams.store;
     const found =
-      (await ws.getById(DEFAULT_TEAM_ID, idOrLabel)) ?? (await ws.findByNormalizedLabel(DEFAULT_TEAM_ID, normalizeLabel(idOrLabel)));
+      (await ws.getById(tenantId, idOrLabel)) ?? (await ws.findByNormalizedLabel(tenantId, normalizeLabel(idOrLabel)));
     if (!found) return okText(`No workstream matches "${idOrLabel}".`);
     const view = await rollupWorkstream(
       { workstreams: deps.workstreams.store, sessions: deps.workstreams.sessions, facts: deps.workstreams.facts, exemplars: deps.workstreams.exemplars },
-      DEFAULT_TEAM_ID,
+      tenantId,
       found.id,
     );
     if (!view) return okText(`No workstream matches "${idOrLabel}".`);
@@ -282,6 +284,7 @@ async function resolveWorkstream(
 
 export async function renameWorkstreamHandler(
   deps: McpDeps,
+  tenantId: string,
   input: { idOrLabel?: string; label?: string },
 ): Promise<ToolResult> {
   if (!deps.workstreams) return okText("rename_workstream is not available in this deployment.");
@@ -290,13 +293,13 @@ export async function renameWorkstreamHandler(
     const label = (input.label ?? "").trim();
     if (!idOrLabel || !label) return okText("Provide the workstream (id or label) and the new label.");
     const ws = deps.workstreams.store;
-    const target = await resolveWorkstream(ws, DEFAULT_TEAM_ID, idOrLabel);
+    const target = await resolveWorkstream(ws, tenantId, idOrLabel);
     if (!target) return okText(`No workstream matches "${idOrLabel}".`);
-    const collision = await ws.findByNormalizedLabel(DEFAULT_TEAM_ID, normalizeLabel(label));
+    const collision = await ws.findByNormalizedLabel(tenantId, normalizeLabel(label));
     if (collision && collision.id !== target.id) {
       return okText(`Label "${label}" is already used by workstream "${collision.label}" (${collision.id}).`);
     }
-    await ws.setLabel(DEFAULT_TEAM_ID, target.id, label);
+    await ws.setLabel(tenantId, target.id, label);
     return okText(`Renamed workstream ${target.id}: "${target.label}" -> "${label}".`);
   } catch (e) {
     return err(e);
@@ -305,15 +308,16 @@ export async function renameWorkstreamHandler(
 
 export async function retireWorkstreamHandler(
   deps: McpDeps,
+  tenantId: string,
   input: { idOrLabel?: string },
 ): Promise<ToolResult> {
   if (!deps.workstreams) return okText("retire_workstream is not available in this deployment.");
   try {
     const idOrLabel = (input.idOrLabel ?? "").trim();
     if (!idOrLabel) return okText("Provide a workstream id or label.");
-    const target = await resolveWorkstream(deps.workstreams.store, DEFAULT_TEAM_ID, idOrLabel);
+    const target = await resolveWorkstream(deps.workstreams.store, tenantId, idOrLabel);
     if (!target) return okText(`No workstream matches "${idOrLabel}".`);
-    await deps.workstreams.store.setStatus(DEFAULT_TEAM_ID, target.id, "retired");
+    await deps.workstreams.store.setStatus(tenantId, target.id, "retired");
     return okText(`Retired workstream "${target.label}" (${target.id}).`);
   } catch (e) {
     return err(e);
@@ -322,6 +326,7 @@ export async function retireWorkstreamHandler(
 
 export async function mergeWorkstreamsHandler(
   deps: McpDeps,
+  tenantId: string,
   input: { from?: string; into?: string },
 ): Promise<ToolResult> {
   if (!deps.workstreams) return okText("merge_workstreams is not available in this deployment.");
@@ -330,12 +335,12 @@ export async function mergeWorkstreamsHandler(
     const intoArg = (input.into ?? "").trim();
     if (!fromArg || !intoArg) return okText("Provide both `from` and `into` (workstream id or label).");
     const ws = deps.workstreams.store;
-    const from = await resolveWorkstream(ws, DEFAULT_TEAM_ID, fromArg);
-    const into = await resolveWorkstream(ws, DEFAULT_TEAM_ID, intoArg);
+    const from = await resolveWorkstream(ws, tenantId, fromArg);
+    const into = await resolveWorkstream(ws, tenantId, intoArg);
     if (!from) return okText(`No workstream matches "${fromArg}".`);
     if (!into) return okText(`No workstream matches "${intoArg}".`);
     if (from.id === into.id) return okText(`"${fromArg}" and "${intoArg}" resolve to the same workstream — nothing to merge.`);
-    await ws.merge(DEFAULT_TEAM_ID, from.id, into.id);
+    await ws.merge(tenantId, from.id, into.id);
     return okText(`Merged "${from.label}" (${from.id}) into "${into.label}" (${into.id}).`);
   } catch (e) {
     return err(e);
@@ -344,6 +349,7 @@ export async function mergeWorkstreamsHandler(
 
 export async function rebindSessionHandler(
   deps: McpDeps,
+  tenantId: string,
   input: { sessionId?: string; workstream?: string },
 ): Promise<ToolResult> {
   if (!deps.workstreams) return okText("rebind_session is not available in this deployment.");
@@ -351,9 +357,9 @@ export async function rebindSessionHandler(
     const sessionId = (input.sessionId ?? "").trim();
     const wsArg = (input.workstream ?? "").trim();
     if (!sessionId || !wsArg) return okText("Provide both a sessionId and a workstream (id or label).");
-    const ws = await resolveWorkstream(deps.workstreams.store, DEFAULT_TEAM_ID, wsArg);
+    const ws = await resolveWorkstream(deps.workstreams.store, tenantId, wsArg);
     if (!ws) return okText(`No workstream matches "${wsArg}".`);
-    await deps.store.setWorkstreamBinding(DEFAULT_TEAM_ID, sessionId, ws.id, "operator", null);
+    await deps.store.setWorkstreamBinding(tenantId, sessionId, ws.id, "operator", null);
     return okText(`Rebound session ${sessionId} -> workstream "${ws.label}" (${ws.id}).`);
   } catch (e) {
     return err(e);
@@ -370,10 +376,11 @@ function localToday(): string {
 
 export async function getSessionHandler(
   deps: McpDeps,
+  tenantId: string,
   input: { id: string },
 ): Promise<ToolResult> {
   try {
-    const session = await deps.store.getById(DEFAULT_TEAM_ID, input.id);
+    const session = await deps.store.getById(tenantId, input.id);
     if (!session) {
       return err(new Error(`session ${input.id} not found`));
     }
@@ -384,7 +391,7 @@ export async function getSessionHandler(
       ...(session.supersededBy ? [session.supersededBy] : []),
     ];
     const linked =
-      linkedIds.length > 0 ? await deps.store.getByIds(DEFAULT_TEAM_ID, linkedIds) : [];
+      linkedIds.length > 0 ? await deps.store.getByIds(tenantId, linkedIds) : [];
     const byId = new Map(linked.map((s) => [s.id, s]));
 
     // Load supersedence log once so we can join reason + recordedBy onto supersededBy
@@ -397,15 +404,21 @@ export async function getSessionHandler(
       const s = byId.get(id);
       return s ? { id, label: s.label, summary: s.summary } : { id, label: "", summary: "" };
     });
+    // Supersedence-enrichment fencing (program spec §4.6 hardening 2): the
+    // shared supersedence-log.jsonl is not itself tenant-partitioned, so a
+    // log entry's `reason`/`recordedBy` may only surface for a successor id
+    // that resolved through the tenant-filtered getByIds above (`byId`). An
+    // unresolved id (cross-tenant, or genuinely missing) contributes nothing
+    // — not even its reason — same as the by-id not-found shape (case 4).
     const supersededBy = session.supersededBy
       ? (() => {
           const s = byId.get(session.supersededBy);
+          if (!s) return { id: session.supersededBy, label: "", summary: "" };
           const logEntry = supersedenceMap.get(session.id);
-          const base = s
-            ? { id: session.supersededBy, label: s.label, summary: s.summary }
-            : { id: session.supersededBy, label: "", summary: "" };
           return {
-            ...base,
+            id: session.supersededBy,
+            label: s.label,
+            summary: s.summary,
             reason: logEntry?.reason,
             recordedBy: logEntry?.source,
           };
@@ -418,7 +431,7 @@ export async function getSessionHandler(
     let outcome;
     if (deps.outcomeDb) {
       try {
-        outcome = await deriveOutcome(DEFAULT_TEAM_ID, session.id, await buildSqliteOutcomeDeps(deps.outcomeDb));
+        outcome = await deriveOutcome(tenantId, session.id, await buildSqliteOutcomeDeps(deps.outcomeDb));
       } catch {
         outcome = undefined;
       }
@@ -443,6 +456,7 @@ export interface RecallFactsInput {
 
 export async function recallFactsHandler(
   deps: McpDeps,
+  tenantId: string,
   input: Partial<RecallFactsInput>,
   runtime: string | null = null,
 ): Promise<ToolResult> {
@@ -464,7 +478,7 @@ export async function recallFactsHandler(
         ? { minConfidence: input.minConfidence }
         : {}),
     };
-    const result = await deps.factRecall.search(DEFAULT_TEAM_ID, query);
+    const result = await deps.factRecall.search(tenantId, query);
     const conversationId = resolveConversationByQuery(input.query ?? "") ?? undefined;
     // Telemetry — see recallSessionsHandler. Fire-and-forget.
     void logFactQuery({
@@ -488,13 +502,14 @@ export async function recallFactsHandler(
 
 export async function getFactHistoryHandler(
   deps: McpDeps,
+  tenantId: string,
   input: { subject: string; predicate: string | undefined },
 ): Promise<ToolResult> {
   if (!deps.factStore) {
     return err(new Error("fact store not wired in this deployment"));
   }
   try {
-    const chains = await deps.factStore.getHistory(DEFAULT_TEAM_ID, input.subject, input.predicate);
+    const chains = await deps.factStore.getHistory(tenantId, input.subject, input.predicate);
     return ok({ subject: input.subject, predicate: input.predicate ?? null, chains });
   } catch (e) {
     return err(e);
@@ -677,13 +692,14 @@ export interface MarkSupersededInput {
 
 export async function markSupersededHandler(
   deps: McpDeps,
+  tenantId: string,
   input: MarkSupersededInput,
 ): Promise<ToolResult> {
   if (!input.predecessor_id || !input.successor_id) {
     return err(new Error("predecessor_id and successor_id are required"));
   }
   try {
-    await deps.store.markSuperseded(DEFAULT_TEAM_ID, input.predecessor_id, input.successor_id);
+    await deps.store.markSuperseded(tenantId, input.predecessor_id, input.successor_id);
     void appendSupersedence({
       predecessorId: input.predecessor_id,
       successorId: input.successor_id,
@@ -730,6 +746,7 @@ export interface SupersedeFactInput {
 
 export async function supersedeFactHandler(
   deps: McpDeps,
+  tenantId: string,
   input: SupersedeFactInput,
 ): Promise<ToolResult> {
   if (!input.fact_id || input.fact_id.length < 4) {
@@ -739,7 +756,7 @@ export async function supersedeFactHandler(
     return err(new Error("fact store not available"));
   }
   try {
-    await deps.factStore.retire(DEFAULT_TEAM_ID, input.fact_id);
+    await deps.factStore.retire(tenantId, input.fact_id);
     void appendFactSupersedence({
       factId: input.fact_id,
       source: "mcp",
@@ -756,6 +773,11 @@ export async function supersedeFactHandler(
 }
 
 export async function citeSessionHandler(
+  // Accepted for signature uniformity with the other 16 tool handlers
+  // (program spec §4.1); unused today because citation-log.jsonl is
+  // M6-scoped shared file state, not yet tenant-attributed (M2 disposition:
+  // M6-FILTER). C3 gates this tool under NLM_HOSTED before the file write.
+  _tenantId: string,
   input: CiteSessionInput,
 ): Promise<ToolResult> {
   if (!input.id || input.id.length < MIN_CITE_ID_LEN) {
@@ -804,6 +826,7 @@ export interface ReportOutcomeInput {
 
 export async function reportOutcomeHandler(
   deps: McpDeps,
+  tenantId: string,
   input: ReportOutcomeInput,
 ): Promise<ToolResult> {
   if (!input.session_id && !input.correlation_key) {
@@ -830,8 +853,8 @@ export async function reportOutcomeHandler(
       },
       deps.installScope,
     );
-    signal = await stampSignalScope(signal, DEFAULT_TEAM_ID, { sessionScopeReader: deps.sessionScopeReader });
-    await deps.signalStore.insert(DEFAULT_TEAM_ID, signal);
+    signal = await stampSignalScope(signal, tenantId, { sessionScopeReader: deps.sessionScopeReader });
+    await deps.signalStore.insert(tenantId, signal);
     return ok({ recorded: true, id: signal.id, outcome: signal.outcome });
   } catch (e) {
     return err(e);
@@ -840,20 +863,21 @@ export async function reportOutcomeHandler(
 
 export async function listMergeSuggestionsHandler(
   deps: McpDeps,
+  tenantId: string,
   input: { minScore: number | undefined },
 ): Promise<ToolResult> {
   if (!deps.workstreams) return okText("list_merge_suggestions is not available in this deployment.");
   try {
     const minScore = typeof input.minScore === "number" ? input.minScore : 0.5;
-    const all = (await deps.workstreams.store.listAll(DEFAULT_TEAM_ID)).filter((w) => w.status === "active");
+    const all = (await deps.workstreams.store.listAll(tenantId)).filter((w) => w.status === "active");
     if (all.length < 2) return okText("Not enough active workstreams to suggest merges.");
     const ids = all.map((w) => w.id);
-    const entMap = await deps.workstreams.store.entitiesFor(DEFAULT_TEAM_ID, ids);
+    const entMap = await deps.workstreams.store.entitiesFor(tenantId, ids);
     const items = await Promise.all(
       all.map(async (w) => ({
         id: w.id, label: w.label,
         entities: entMap.get(w.id) ?? [],
-        sessionIds: await deps.workstreams!.sessions.listSessionIdsByWorkstreams(DEFAULT_TEAM_ID, [w.id]),
+        sessionIds: await deps.workstreams!.sessions.listSessionIdsByWorkstreams(tenantId, [w.id]),
       })),
     );
     const suggestions = suggestMerges(items, minScore);
@@ -869,7 +893,15 @@ export async function listMergeSuggestionsHandler(
   }
 }
 
-export function createMcpServer(deps: McpDeps): McpServer {
+/**
+ * The composition root for the MCP surface (program spec §4.6 "M2 threading
+ * semantics until M3"): `tenantId` is required here, not defaulted, and
+ * every tool handler below receives it explicitly rather than reading a
+ * module-level constant. Callers (stdio in src/cli/nlm.ts, the HTTP /mcp
+ * mount in src/http/app.ts) pass DEFAULT_TEAM_ID until M3 replaces it with
+ * the token-resolved team.
+ */
+export function createMcpServer(deps: McpDeps, tenantId: string): McpServer {
   const server = new McpServer({
     name: SERVER_NAME,
     version: SERVER_VERSION,
@@ -925,6 +957,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
     async (args) =>
       recallSessionsHandler(
         deps,
+        tenantId,
         args,
         mcpRuntimeFromClient(server.server.getClientVersion()),
       ) as never,
@@ -945,7 +978,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
         openWorldHint: true,
       },
     },
-    async (args) => getSessionHandler(deps, args) as never,
+    async (args) => getSessionHandler(deps, tenantId, args) as never,
   );
 
   if (deps.factRecall && deps.factStore) {
@@ -1003,6 +1036,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
       async (args) =>
         recallFactsHandler(
           deps,
+          tenantId,
           args,
           mcpRuntimeFromClient(server.server.getClientVersion()),
         ) as never,
@@ -1027,7 +1061,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
           openWorldHint: true,
         },
       },
-      async (args) => getFactHistoryHandler(deps, args) as never,
+      async (args) => getFactHistoryHandler(deps, tenantId, args) as never,
     );
 
     server.registerTool(
@@ -1052,7 +1086,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
           openWorldHint: false,
         },
       },
-      async (args) => supersedeFactHandler(deps, args) as never,
+      async (args) => supersedeFactHandler(deps, tenantId, args) as never,
     );
   }
 
@@ -1079,7 +1113,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
         openWorldHint: false,
       },
     },
-    async (args) => citeSessionHandler(args) as never,
+    async (args) => citeSessionHandler(tenantId, args) as never,
   );
 
   if (deps.signalStore && deps.installScope !== undefined) {
@@ -1116,7 +1150,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
           openWorldHint: false,
         },
       },
-      async (args) => reportOutcomeHandler(deps, args) as never,
+      async (args) => reportOutcomeHandler(deps, tenantId, args) as never,
     );
   }
 
@@ -1146,7 +1180,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
         openWorldHint: false,
       },
     },
-    async (args) => markSupersededHandler(deps, args) as never,
+    async (args) => markSupersededHandler(deps, tenantId, args) as never,
   );
 
   server.registerTool(
@@ -1164,7 +1198,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (args) => workSummaryHandler(deps, args) as never,
+    async (args) => workSummaryHandler(deps, tenantId, args) as never,
   );
 
   server.registerTool(
@@ -1178,7 +1212,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (args) => recallWorkstreamHandler(deps, args, mcpRuntimeFromClient(server.server.getClientVersion())) as never,
+    async (args) => recallWorkstreamHandler(deps, tenantId, args, mcpRuntimeFromClient(server.server.getClientVersion())) as never,
   );
 
   server.registerTool(
@@ -1193,7 +1227,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (args) => rebindSessionHandler(deps, args) as never,
+    async (args) => rebindSessionHandler(deps, tenantId, args) as never,
   );
 
   server.registerTool(
@@ -1208,7 +1242,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
-    async (args) => mergeWorkstreamsHandler(deps, args) as never,
+    async (args) => mergeWorkstreamsHandler(deps, tenantId, args) as never,
   );
 
   server.registerTool(
@@ -1223,7 +1257,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (args) => renameWorkstreamHandler(deps, args) as never,
+    async (args) => renameWorkstreamHandler(deps, tenantId, args) as never,
   );
 
   server.registerTool(
@@ -1235,7 +1269,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
       inputSchema: { idOrLabel: z.string().describe("Workstream id or label.") },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (args) => retireWorkstreamHandler(deps, args) as never,
+    async (args) => retireWorkstreamHandler(deps, tenantId, args) as never,
   );
 
   server.registerTool(
@@ -1247,7 +1281,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
       inputSchema: { minScore: z.number().optional().describe("Minimum similarity score 0..1 (default 0.5).") },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (args) => listMergeSuggestionsHandler(deps, args) as never,
+    async (args) => listMergeSuggestionsHandler(deps, tenantId, args) as never,
   );
 
   if (
@@ -1298,7 +1332,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
       },
       async (args) => {
         const result = await recallCode(
-          DEFAULT_TEAM_ID,
+          tenantId,
           {
             query: args.query,
             installScope,
@@ -1352,7 +1386,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
         if (patch.retired === undefined && patch.outcome === undefined) {
           return { content: [{ type: "text", text: JSON.stringify({ error: "provide retire and/or outcome" }) }] } as never;
         }
-        const res = await exemplarStore.setVerdict(DEFAULT_TEAM_ID, a.exemplar_id, patch, "human");
+        const res = await exemplarStore.setVerdict(tenantId, a.exemplar_id, patch, "human");
         return { content: [{ type: "text", text: JSON.stringify({ exemplar_id: a.exemplar_id, status: res.status }) }] } as never;
       },
     );

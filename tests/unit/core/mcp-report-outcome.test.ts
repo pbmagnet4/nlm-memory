@@ -48,7 +48,7 @@ describe("reportOutcomeHandler", () => {
   });
 
   it("writes a signals row correlated to session_id", async () => {
-    const result = await reportOutcomeHandler(makeDeps(store, "install-test"), {
+    const result = await reportOutcomeHandler(makeDeps(store, "install-test"), "team_local", {
       session_id: "sess_abc123",
       outcome: "pass",
       source_of_record: "ci:github-actions",
@@ -69,7 +69,7 @@ describe("reportOutcomeHandler", () => {
   });
 
   it("writes a signals row correlated only by correlation_key, preserving it in detail", async () => {
-    const result = await reportOutcomeHandler(makeDeps(store, "install-test"), {
+    const result = await reportOutcomeHandler(makeDeps(store, "install-test"), "team_local", {
       correlation_key: "n8n-run-9981",
       outcome: "fail",
       source_of_record: "n8n:deploy-workflow",
@@ -87,7 +87,7 @@ describe("reportOutcomeHandler", () => {
   });
 
   it("passes an optional detail object through alongside the contract fields", async () => {
-    await reportOutcomeHandler(makeDeps(store, "install-test"), {
+    await reportOutcomeHandler(makeDeps(store, "install-test"), "team_local", {
       session_id: "sess_def456",
       outcome: "fix",
       source_of_record: "hook:post-tool-use",
@@ -103,7 +103,7 @@ describe("reportOutcomeHandler", () => {
   });
 
   it("rejects when neither session_id nor correlation_key is provided", async () => {
-    const result = await reportOutcomeHandler(makeDeps(store, "install-test"), {
+    const result = await reportOutcomeHandler(makeDeps(store, "install-test"), "team_local", {
       outcome: "pass",
       source_of_record: "ci:github-actions",
     });
@@ -113,7 +113,7 @@ describe("reportOutcomeHandler", () => {
   });
 
   it("rejects a missing source_of_record", async () => {
-    const result = await reportOutcomeHandler(makeDeps(store, "install-test"), {
+    const result = await reportOutcomeHandler(makeDeps(store, "install-test"), "team_local", {
       session_id: "sess_abc123",
       outcome: "pass",
       source_of_record: "",
@@ -124,7 +124,7 @@ describe("reportOutcomeHandler", () => {
   });
 
   it("rejects an outcome string outside pass|fail|fix|exhausted with a message listing valid values", async () => {
-    const result = await reportOutcomeHandler(makeDeps(store, "install-test"), {
+    const result = await reportOutcomeHandler(makeDeps(store, "install-test"), "team_local", {
       session_id: "sess_abc123",
       outcome: "bogus",
       source_of_record: "ci:github-actions",
@@ -139,7 +139,7 @@ describe("reportOutcomeHandler", () => {
   });
 
   it("returns an error when the signal store is not wired", async () => {
-    const result = await reportOutcomeHandler(makeDeps(undefined, "install-test"), {
+    const result = await reportOutcomeHandler(makeDeps(undefined, "install-test"), "team_local", {
       session_id: "sess_abc123",
       outcome: "pass",
       source_of_record: "ci:github-actions",
@@ -150,7 +150,7 @@ describe("reportOutcomeHandler", () => {
   });
 
   it("returns an error when installScope is not wired", async () => {
-    const result = await reportOutcomeHandler(makeDeps(store, undefined), {
+    const result = await reportOutcomeHandler(makeDeps(store, undefined), "team_local", {
       session_id: "sess_abc123",
       outcome: "pass",
       source_of_record: "ci:github-actions",
@@ -184,7 +184,7 @@ describe("reportOutcomeHandler scope parity with POST /api/signal", () => {
   });
 
   it("a session-correlated tool write carries the same scope the HTTP path stamps", async () => {
-    await reportOutcomeHandler(makeDeps(store, "install-test", scopeReader), {
+    await reportOutcomeHandler(makeDeps(store, "install-test", scopeReader), "team_local", {
       session_id: "sess_scoped",
       outcome: "pass",
       source_of_record: "ci:github-actions",
@@ -212,7 +212,7 @@ describe("reportOutcomeHandler scope parity with POST /api/signal", () => {
   });
 
   it("a session with global scope stamps null, matching the HTTP path", async () => {
-    await reportOutcomeHandler(makeDeps(store, "install-test", scopeReader), {
+    await reportOutcomeHandler(makeDeps(store, "install-test", scopeReader), "team_local", {
       session_id: "sess_global",
       outcome: "fail",
       source_of_record: "ci:github-actions",
@@ -222,7 +222,7 @@ describe("reportOutcomeHandler scope parity with POST /api/signal", () => {
 
   it("leaves scope null when NLM_SCOPE_STAMP is unset", async () => {
     delete process.env["NLM_SCOPE_STAMP"];
-    await reportOutcomeHandler(makeDeps(store, "install-test", scopeReader), {
+    await reportOutcomeHandler(makeDeps(store, "install-test", scopeReader), "team_local", {
       session_id: "sess_scoped",
       outcome: "pass",
       source_of_record: "ci:github-actions",

@@ -4,13 +4,13 @@ import { recallSessionsHandler, recallFactsHandler, mcpRuntimeFromClient } from 
 describe("MCP recall default modes", () => {
   it("recall_sessions defaults to keyword when mode is omitted", async () => {
     const search = vi.fn().mockResolvedValue({ total: 0, results: [] });
-    await recallSessionsHandler({ recall: { search } } as never, { query: "x" });
+    await recallSessionsHandler({ recall: { search } } as never, "team_local", { query: "x" });
     expect(search).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ mode: "keyword" }));
   });
 
   it("recall_facts defaults to hybrid when mode is omitted", async () => {
     const search = vi.fn().mockResolvedValue({ total: 0, results: [] });
-    await recallFactsHandler({ factRecall: { search } } as never, { query: "x" });
+    await recallFactsHandler({ factRecall: { search } } as never, "team_local", { query: "x" });
     expect(search).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ mode: "hybrid" }));
   });
 });

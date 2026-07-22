@@ -602,7 +602,9 @@ function registerMcpRoute(app: Hono, deps: HttpDeps): void {
     // No sessionIdGenerator = stateless mode: no session ID in responses,
     // no session validation. Correct for per-request agent calls.
     const transport = new WebStandardStreamableHTTPServerTransport({});
-    const server = createMcpServer(capturedMcpDeps);
+    // Bearer-token gated above; the token doesn't resolve a tenant until M3
+    // (program spec §3), so DEFAULT_TEAM_ID is the composition-root value here too.
+    const server = createMcpServer(capturedMcpDeps, DEFAULT_TEAM_ID);
     await server.connect(transport);
     return transport.handleRequest(c.req.raw);
   });

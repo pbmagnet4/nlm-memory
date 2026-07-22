@@ -25,17 +25,17 @@ function deps() {
 describe("recall_workstream handler", () => {
   it("resolves by label and returns the rolled-up view", async () => {
     await storage.workstreams.create("team_local", { id: "ws_1", label: "NLM", scope: null });
-    const r = await recallWorkstreamHandler(deps(), { idOrLabel: "NLM" });
+    const r = await recallWorkstreamHandler(deps(), "team_local", { idOrLabel: "NLM" });
     expect(r.isError).not.toBe(true);
     expect(r.content[0]!.text).toContain("NLM");
   });
   it("returns a graceful not-found message for an unknown workstream", async () => {
-    const r = await recallWorkstreamHandler(deps(), { idOrLabel: "Nonexistent" });
+    const r = await recallWorkstreamHandler(deps(), "team_local", { idOrLabel: "Nonexistent" });
     expect(r.isError).not.toBe(true);
     expect(r.content[0]!.text.toLowerCase()).toContain("no workstream");
   });
   it("returns an unavailable message when workstreams deps are not wired", async () => {
-    const r = await recallWorkstreamHandler({ recall: {}, store: storage.sessions } as any, { idOrLabel: "NLM" });
+    const r = await recallWorkstreamHandler({ recall: {}, store: storage.sessions } as any, "team_local", { idOrLabel: "NLM" });
     expect(r.content[0]!.text.toLowerCase()).toContain("not available");
   });
 });

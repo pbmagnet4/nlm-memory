@@ -25,14 +25,14 @@ describe("workSummaryHandler", () => {
       },
     } as unknown as McpDeps;
 
-    const res = await workSummaryHandler(deps, { date: "2026-06-23" });
+    const res = await workSummaryHandler(deps, "team_local", { date: "2026-06-23" });
     const text = (res.content?.[0] as { text: string }).text;
     expect(text).toContain("DAILY WORK RECAP - 2026-06-23");
     expect(text).toContain("nlm");
   });
 
   it("returns a clear message when work-digest is not wired", async () => {
-    const res = await workSummaryHandler({} as McpDeps, { date: "2026-06-23" });
+    const res = await workSummaryHandler({} as McpDeps, "team_local", { date: "2026-06-23" });
     const text = (res.content?.[0] as { text: string }).text;
     expect(text.toLowerCase()).toContain("not available");
   });

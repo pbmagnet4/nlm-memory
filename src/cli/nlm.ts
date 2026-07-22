@@ -775,6 +775,7 @@ program
     try {
       const r = await recallWorkstreamHandler(
         { recall: {} as never, store, workstreams: { store: storage.workstreams, sessions: store, facts: storage.facts, exemplars: storage.exemplars } } as never,
+        DEFAULT_TEAM_ID,
         { idOrLabel },
       );
       process.stdout.write(r.content[0]!.text + "\n");
@@ -793,6 +794,7 @@ program
     try {
       const r = await rebindSessionHandler(
         { recall: {} as never, store, workstreams: { store: storage.workstreams, sessions: store, facts: storage.facts, exemplars: storage.exemplars } } as never,
+        DEFAULT_TEAM_ID,
         { sessionId, workstream },
       );
       process.stdout.write(r.content[0]!.text + "\n");
@@ -811,6 +813,7 @@ program
     try {
       const r = await mergeWorkstreamsHandler(
         { recall: {} as never, store, workstreams: { store: storage.workstreams, sessions: store, facts: storage.facts, exemplars: storage.exemplars } } as never,
+        DEFAULT_TEAM_ID,
         { from, into },
       );
       process.stdout.write(r.content[0]!.text + "\n");
@@ -829,6 +832,7 @@ program
     try {
       const r = await renameWorkstreamHandler(
         { recall: {} as never, store, workstreams: { store: storage.workstreams, sessions: store, facts: storage.facts, exemplars: storage.exemplars } } as never,
+        DEFAULT_TEAM_ID,
         { idOrLabel, label },
       );
       process.stdout.write(r.content[0]!.text + "\n");
@@ -846,6 +850,7 @@ program
     try {
       const r = await retireWorkstreamHandler(
         { recall: {} as never, store, workstreams: { store: storage.workstreams, sessions: store, facts: storage.facts, exemplars: storage.exemplars } } as never,
+        DEFAULT_TEAM_ID,
         { idOrLabel },
       );
       process.stdout.write(r.content[0]!.text + "\n");
@@ -869,6 +874,7 @@ program
     try {
       const r = await listMergeSuggestionsHandler(
         { recall: {} as never, store, workstreams: { store: storage.workstreams, sessions: store, facts: storage.facts, exemplars: storage.exemplars } } as never,
+        DEFAULT_TEAM_ID,
         { minScore },
       );
       process.stdout.write(r.content[0]!.text + "\n");
@@ -1440,22 +1446,27 @@ program
   .description("Run as an MCP stdio server (for ~/.mcp.json)")
   .action(async () => {
     const { recall, store, facts, factRecall, storage, scope, signals } = await buildStack();
-    const server = createMcpServer({
-      recall,
-      store,
-      factStore: facts,
-      factRecall,
-      exemplarStore: storage.exemplars,
-      codeEmbedder: buildCodeEmbedder(),
-      installScope: scope,
-      signalStore: signals,
-      sessionScopeReader: store,
-      workDigest: { store, topicProvider: loadTopicProvider(), workstreams: storage.workstreams, ...workDigestEnv() },
-      workstreams: { store: storage.workstreams, sessions: store, facts: facts, exemplars: storage.exemplars },
-      // Tier-B outcome rollup (#352 phase 2) only has a SQLite adapter today;
-      // PgStorage deployments skip get_session's `outcome` field until parity lands.
-      ...(storage instanceof SqliteStorage ? { outcomeDb: storage.rawDb() } : {}),
-    });
+    const server = createMcpServer(
+      {
+        recall,
+        store,
+        factStore: facts,
+        factRecall,
+        exemplarStore: storage.exemplars,
+        codeEmbedder: buildCodeEmbedder(),
+        installScope: scope,
+        signalStore: signals,
+        sessionScopeReader: store,
+        workDigest: { store, topicProvider: loadTopicProvider(), workstreams: storage.workstreams, ...workDigestEnv() },
+        workstreams: { store: storage.workstreams, sessions: store, facts: facts, exemplars: storage.exemplars },
+        // Tier-B outcome rollup (#352 phase 2) only has a SQLite adapter today;
+        // PgStorage deployments skip get_session's `outcome` field until parity lands.
+        ...(storage instanceof SqliteStorage ? { outcomeDb: storage.rawDb() } : {}),
+      },
+      // stdio MCP transport carries no bearer token — it is local-mode only
+      // by construction (program spec §3), bound to the default team.
+      DEFAULT_TEAM_ID,
+    );
     const transport = new StdioServerTransport();
     await server.connect(transport);
   });
