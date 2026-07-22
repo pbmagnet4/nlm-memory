@@ -11,8 +11,11 @@
  * this absence must be reported, not papered over: a green run of this
  * file's *sibling* sqlite suite does NOT mean the pg lane passed.
  *
- * Case 10 (concurrent tenants) is explicitly out of scope here — it requires
- * M7's per-file pg schema isolation harness, not this shared-schema fixture.
+ * Case 10 (concurrent tenants) runs here on the pg-test-schema helper's
+ * per-file isolated schema (M7): team_a and team_b share that one schema
+ * (row-level tenancy, matching the real hosted topology), and the test
+ * interleaves concurrent Promise.all batches of reads and writes across
+ * both tenants against the one live pg instance.
  * Cases 7, 8, 12 mirror the sqlite file's it.todo (M3/M4/M6 surfaces).
  */
 import { afterEach, describe, expect, it } from "vitest";
@@ -21,11 +24,13 @@ import { rollupWorkstream } from "../../src/core/workstream/rollup.js";
 import { buildWorkDigest } from "../../src/core/work-digest/build-work-digest.js";
 import { buildFailureModeBlock } from "../../src/core/signals/failure-mode-recall.js";
 import { getSessionHandler } from "../../src/mcp/server.js";
-import type { Signal } from "../../src/shared/types.js";
+import type { Fact, Signal } from "../../src/shared/types.js";
+import { usePgTestSchema } from "../helpers/pg-test-schema.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
 
 describe.skipIf(!PG_TEST_URL)("tenant leak-test contract (spec §6, pg lane)", () => {
+  const pgUrl = usePgTestSchema(PG_TEST_URL, import.meta.url);
   let fixture: SeededTenantCorpusPg;
 
   afterEach(async () => {
@@ -33,7 +38,7 @@ describe.skipIf(!PG_TEST_URL)("tenant leak-test contract (spec §6, pg lane)", (
   });
 
   async function seed(): Promise<SeededTenantCorpusPg> {
-    fixture = await seedTenantCorpusPg(PG_TEST_URL!);
+    fixture = await seedTenantCorpusPg(pgUrl());
     return fixture;
   }
 
@@ -185,10 +190,53 @@ describe.skipIf(!PG_TEST_URL)("tenant leak-test contract (spec §6, pg lane)", (
       "bad/absent token gets 401 with no corpus read",
   );
 
-  it.todo(
-    "case 10: concurrent tenants (pg) — interleaved A and B reads/writes on one pg instance never bleed " +
-      "(requires M7's isolated per-file pg schema harness; this file's shared-schema fixture is serial)",
-  );
+  it("case 10: concurrent tenants (pg) — interleaved A and B reads/writes on one pg instance never bleed", async () => {
+    await seed();
+    const { A, B } = fixture.ids;
+
+    const concurrentFact = (teamId: "team_a" | "team_b", n: number): Fact => ({
+      id: `fact-${teamId}-concurrent-${n}`,
+      kind: "attribute",
+      subject: `${teamId}-concurrent-subject-${n}`,
+      predicate: "uses",
+      value: `${teamId} concurrent value ${n}`,
+      sourceSessionId: teamId === "team_a" ? A.sessionIds[0] : B.sessionIds[0],
+      sourceQuote: null,
+      createdAt: "2026-07-22T00:00:00Z",
+      supersededBy: null,
+      confidence: 0.9,
+    });
+
+    const ROUNDS = 5;
+    for (let round = 0; round < ROUNDS; round++) {
+      const [, , aFacts, bFacts, aSessions, bSessions] = await Promise.all([
+        fixture.factStore.insert("team_a", concurrentFact("team_a", round)),
+        fixture.factStore.insert("team_b", concurrentFact("team_b", round)),
+        fixture.factStore.listForRecall("team_a", {}),
+        fixture.factStore.listForRecall("team_b", {}),
+        fixture.sessionStore.getByIds("team_a", [...A.sessionIds, ...B.sessionIds]),
+        fixture.sessionStore.getByIds("team_b", [...A.sessionIds, ...B.sessionIds]),
+      ]);
+
+      expect(aFacts.some((f) => f.id.startsWith("fact-team_b"))).toBe(false);
+      expect(bFacts.some((f) => f.id.startsWith("fact-team_a"))).toBe(false);
+      expect(aSessions.map((s) => s.id)).toEqual(expect.arrayContaining([...A.sessionIds]));
+      expect(aSessions.some((s) => (B.sessionIds as readonly string[]).includes(s.id))).toBe(false);
+      expect(bSessions.map((s) => s.id)).toEqual(expect.arrayContaining([...B.sessionIds]));
+      expect(bSessions.some((s) => (A.sessionIds as readonly string[]).includes(s.id))).toBe(false);
+    }
+
+    // Settled-state check: every concurrently-inserted fact landed under its
+    // own tenant only, across the whole interleaved run.
+    const finalA = await fixture.factStore.listForRecall("team_a", {});
+    const finalB = await fixture.factStore.listForRecall("team_b", {});
+    for (let round = 0; round < ROUNDS; round++) {
+      expect(finalA.map((f) => f.id)).toContain(`fact-team_a-concurrent-${round}`);
+      expect(finalB.map((f) => f.id)).toContain(`fact-team_b-concurrent-${round}`);
+    }
+    expect(finalA.some((f) => f.id.startsWith("fact-team_b"))).toBe(false);
+    expect(finalB.some((f) => f.id.startsWith("fact-team_a"))).toBe(false);
+  });
 
   it.todo(
     "case 12: state isolation (M6) — per-conversation memo state and query/citation/miss logs never mix tenants; " +
