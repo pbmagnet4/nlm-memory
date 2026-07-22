@@ -138,7 +138,7 @@ describe("MCP adapter", () => {
   it("recall_sessions includes superseded hits with status + supersededBy (#303)", async () => {
     // Supersede sess_b ("pgvector") by sess_a. recall_sessions defaults to
     // includeSuperseded, so the overturned session must still surface, badged.
-    await store.markSuperseded("sess_b", "sess_a");
+    await store.markSuperseded("team_local", "sess_b", "sess_a");
     const result = await recallSessionsHandler(
       { recall, store },
       { query: "pgvector", mode: "keyword" },
@@ -207,7 +207,7 @@ describe("MCP adapter", () => {
   });
 
   it("get_session's wired outcome verdict reflects supersedence, matching deriveOutcome's precedence", async () => {
-    await store.markSuperseded("sess_b", "sess_a");
+    await store.markSuperseded("team_local", "sess_b", "sess_a");
     const result = await getSessionHandler(
       { recall, store, outcomeDb: storage.rawDb() },
       { id: "sess_b" },
@@ -407,7 +407,7 @@ describe("MCP adapter", () => {
         factStore,
         llm: new FixedEmbedder(unit([1, 0, 0])),
       });
-      await factStore.insertMany([
+      await factStore.insertMany("team_local", [
         makeFact({
           id: "f_hono",
           subject: "nlm-memory-ts",
@@ -452,7 +452,7 @@ describe("MCP adapter", () => {
     });
 
     it("get_fact_history returns chains ordered newest → oldest", async () => {
-      await factStore.insertMany([
+      await factStore.insertMany("team_local", [
         makeFact({
           id: "f_old",
           subject: "nlm-memory-ts",
@@ -463,7 +463,7 @@ describe("MCP adapter", () => {
           sourceSessionId: "sess_a",
         }),
       ]);
-      await factStore.markSuperseded("f_old", "f_hono");
+      await factStore.markSuperseded("team_local", "f_old", "f_hono");
 
       const result = await getFactHistoryHandler(
         { recall, store, factRecall, factStore },

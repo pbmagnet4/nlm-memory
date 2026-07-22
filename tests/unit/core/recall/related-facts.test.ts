@@ -50,7 +50,7 @@ class ScriptedFactStore implements FactStore {
   async getById() { return null; }
   async getByIds() { return []; }
   async findCurrent() { return null; }
-  async list(query: FactQuery) {
+  async list(_tenantId: string, query: FactQuery) {
     return this.bySubject.get(query.subject) ?? [];
   }
   async listBySession() { return []; }
@@ -63,6 +63,7 @@ class ScriptedFactStore implements FactStore {
   async semanticSearch() { return []; }
   async getHistory(): Promise<ReadonlyArray<FactHistoryChain>> { return []; }
   async corroborationCounts(
+    _tenantId: string,
     triples: ReadonlyArray<{ subject: string; predicate: string; value: string }>,
   ): Promise<Map<string, number>> {
     const out = new Map<string, number>();
@@ -88,12 +89,12 @@ describe("pickRelatedFacts (Spec G.2)", () => {
 
   it("returns empty when no hits", async () => {
     const store = new ScriptedFactStore(new Map(), new Map());
-    expect(await pickRelatedFacts([], store)).toEqual([]);
+    expect(await pickRelatedFacts("team_local", [], store)).toEqual([]);
   });
 
   it("returns empty when hits have no entities", async () => {
     const store = new ScriptedFactStore(new Map(), new Map());
-    expect(await pickRelatedFacts([hit("a", [])], store)).toEqual([]);
+    expect(await pickRelatedFacts("team_local", [hit("a", [])], store)).toEqual([]);
   });
 
   it("returns top facts about top-hit entities by corroboration", async () => {
@@ -108,7 +109,7 @@ describe("pickRelatedFacts (Spec G.2)", () => {
       ["beacon framework hono", 3],
     ]);
     const store = new ScriptedFactStore(facts, corr);
-    const result = await pickRelatedFacts([hit("a", ["beacon"])], store);
+    const result = await pickRelatedFacts("team_local", [hit("a", ["beacon"])], store);
     expect(result).toEqual([
       { subject: "beacon", predicate: "uses", value: "duckdb", corroborationCount: 8 },
       { subject: "beacon", predicate: "framework", value: "hono", corroborationCount: 3 },
@@ -121,7 +122,7 @@ describe("pickRelatedFacts (Spec G.2)", () => {
     ]);
     const corr = new Map([["x y v_solo", 1]]);
     const store = new ScriptedFactStore(facts, corr);
-    const result = await pickRelatedFacts([hit("a", ["x"])], store, { minCorroboration: 2 });
+    const result = await pickRelatedFacts("team_local", [hit("a", ["x"])], store, { minCorroboration: 2 });
     expect(result).toEqual([]);
   });
 
@@ -131,7 +132,7 @@ describe("pickRelatedFacts (Spec G.2)", () => {
     ]);
     const corr = new Map([["x y v", 5]]);
     const store = new ScriptedFactStore(facts, corr);
-    const result = await pickRelatedFacts([hit("a", ["x"])], store);
+    const result = await pickRelatedFacts("team_local", [hit("a", ["x"])], store);
     expect(result).toEqual([]);
   });
 
@@ -146,7 +147,7 @@ describe("pickRelatedFacts (Spec G.2)", () => {
       ["x uses new", 10],
     ]);
     const store = new ScriptedFactStore(facts, corr);
-    const result = await pickRelatedFacts([hit("a", ["x"])], store);
+    const result = await pickRelatedFacts("team_local", [hit("a", ["x"])], store);
     expect(result).toHaveLength(1);
     expect(result[0]!.value).toBe("new");
   });
@@ -165,7 +166,7 @@ describe("pickRelatedFacts (Spec G.2)", () => {
       ["x p3 v3", 3],
     ]);
     const store = new ScriptedFactStore(facts, corr);
-    const result = await pickRelatedFacts([hit("a", ["x"])], store, { limit: 2 });
+    const result = await pickRelatedFacts("team_local", [hit("a", ["x"])], store, { limit: 2 });
     expect(result).toHaveLength(2);
   });
 
@@ -188,7 +189,7 @@ describe("pickRelatedFacts (Spec G.2)", () => {
       async getHistory(): Promise<ReadonlyArray<FactHistoryChain>> { return []; }
       async corroborationCounts() { return new Map<string, number>(); }
     }
-    const result = await pickRelatedFacts([hit("a", ["x"])], new FailingStore());
+    const result = await pickRelatedFacts("team_local", [hit("a", ["x"])], new FailingStore());
     expect(result).toEqual([]);
   });
 
@@ -202,7 +203,7 @@ describe("pickRelatedFacts (Spec G.2)", () => {
       ["b p vb", 5],
     ]);
     const store = new ScriptedFactStore(facts, corr);
-    const result = await pickRelatedFacts(
+    const result = await pickRelatedFacts("team_local", 
       [hit("h1", ["a"]), hit("h2", ["b"])],
       store,
     );

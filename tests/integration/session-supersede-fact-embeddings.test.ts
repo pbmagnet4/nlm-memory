@@ -79,18 +79,18 @@ describe("session markSuperseded cascade -- embedding cleanup (sqlite)", () => {
       value: "Express",
       sourceSessionId: "sess_a",
     });
-    await sessions.insertSession(makeRecord({ id: "sess_a" }), null, null, {
+    await sessions.insertSession( "team_local",makeRecord({ id: "sess_a" }), null, null, {
       factStore,
       facts: [fA],
     });
-    await factStore.upsertEmbedding("f_a", new Float32Array(768).fill(0.1));
+    await factStore.upsertEmbedding("team_local", "f_a", new Float32Array(768).fill(0.1));
     expect(embeddingExists("f_a")).toBe(true);
 
     // Session B: fact (svc, framework) = Hono, active.
     // Insert the session row via insertSession (not insertSessionForTest), then
     // insert the fact directly to avoid triggering ingest-time supersedence so
     // f_a still has its embedding when markSuperseded is called.
-    await sessions.insertSession(makeRecord({ id: "sess_b" }));
+    await sessions.insertSession("team_local", makeRecord({ id: "sess_b" }));
     const fB = makeFact({
       id: "f_b",
       subject: "svc",
@@ -98,15 +98,15 @@ describe("session markSuperseded cascade -- embedding cleanup (sqlite)", () => {
       value: "Hono",
       sourceSessionId: "sess_b",
     });
-    await factStore.insert(fB);
+    await factStore.insert("team_local", fB);
 
     // f_a must still be active and embedded at this point.
-    expect((await factStore.getById("f_a"))?.supersededBy).toBeNull();
+    expect((await factStore.getById("team_local", "f_a"))?.supersededBy).toBeNull();
     expect(embeddingExists("f_a")).toBe(true);
 
-    await sessions.markSuperseded("sess_a", "sess_b");
+    await sessions.markSuperseded("team_local", "sess_a", "sess_b");
 
-    expect((await factStore.getById("f_a"))?.supersededBy).toBe("f_b");
+    expect((await factStore.getById("team_local", "f_a"))?.supersededBy).toBe("f_b");
     expect(embeddingExists("f_a")).toBe(false);
   });
 
@@ -119,14 +119,14 @@ describe("session markSuperseded cascade -- embedding cleanup (sqlite)", () => {
       value: "Express",
       sourceSessionId: "sess_a",
     });
-    await sessions.insertSession(makeRecord({ id: "sess_a" }), null, null, {
+    await sessions.insertSession( "team_local",makeRecord({ id: "sess_a" }), null, null, {
       factStore,
       facts: [fA],
     });
-    await factStore.upsertEmbedding("f_a", new Float32Array(768).fill(0.1));
+    await factStore.upsertEmbedding("team_local", "f_a", new Float32Array(768).fill(0.1));
 
     // Session B: fact with a DIFFERENT predicate -- no (svc, framework) match.
-    await sessions.insertSession(makeRecord({ id: "sess_b" }));
+    await sessions.insertSession("team_local", makeRecord({ id: "sess_b" }));
     const fB = makeFact({
       id: "f_b",
       subject: "svc",
@@ -134,12 +134,12 @@ describe("session markSuperseded cascade -- embedding cleanup (sqlite)", () => {
       value: ":3940",
       sourceSessionId: "sess_b",
     });
-    await factStore.insert(fB);
+    await factStore.insert("team_local", fB);
 
-    await sessions.markSuperseded("sess_a", "sess_b");
+    await sessions.markSuperseded("team_local", "sess_a", "sess_b");
 
     // f_a has no matching successor so it must remain active with its embedding.
-    expect((await factStore.getById("f_a"))?.supersededBy).toBeNull();
+    expect((await factStore.getById("team_local", "f_a"))?.supersededBy).toBeNull();
     expect(embeddingExists("f_a")).toBe(true);
   });
 
@@ -159,7 +159,7 @@ describe("session markSuperseded cascade -- embedding cleanup (sqlite)", () => {
       sourceSessionId: "sess_dup",
     });
     const embedder = new StubEmbedder();
-    await sessions.insertSession(makeRecord({ id: "sess_dup" }), embedder, null, {
+    await sessions.insertSession( "team_local",makeRecord({ id: "sess_dup" }), embedder, null, {
       factStore,
       facts: [fLoser, fWinner],
     });

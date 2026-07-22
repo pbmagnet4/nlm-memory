@@ -76,7 +76,7 @@ describe.skipIf(!PG_TEST_URL)("pg scope stamping parity", () => {
 
   it("insertSession stores the stamped scope and facts inherit it", async () => {
     const fact = makeFact({ id: "f_scope", subject: "db", predicate: "backend", value: "pg", sourceSessionId: "sess_scoped" });
-    await storage.sessions.insertSession(makeRecord("sess_scoped", "client-a"), null, null, {
+    await storage.sessions.insertSession( "team_local",makeRecord("sess_scoped", "client-a"), null, null, {
       factStore: storage.facts,
       facts: [fact],
     });
@@ -89,7 +89,7 @@ describe.skipIf(!PG_TEST_URL)("pg scope stamping parity", () => {
 
   it("insertSession with null scope leaves session and fact scope NULL", async () => {
     const fact = makeFact({ id: "f_null", subject: "db", predicate: "backend", value: "pg", sourceSessionId: "sess_null" });
-    await storage.sessions.insertSession(makeRecord("sess_null", null), null, null, {
+    await storage.sessions.insertSession( "team_local",makeRecord("sess_null", null), null, null, {
       factStore: storage.facts,
       facts: [fact],
     });
@@ -101,21 +101,21 @@ describe.skipIf(!PG_TEST_URL)("pg scope stamping parity", () => {
   });
 
   it("getSessionScopeById reads back the stored scope", async () => {
-    await storage.sessions.insertSession(makeRecord("sess_read", "client-b"));
-    expect(await storage.sessions.getSessionScopeById("sess_read")).toBe("client-b");
-    expect(await storage.sessions.getSessionScopeById("sess_missing")).toBeNull();
+    await storage.sessions.insertSession("team_local", makeRecord("sess_read", "client-b"));
+    expect(await storage.sessions.getSessionScopeById("team_local", "sess_read")).toBe("client-b");
+    expect(await storage.sessions.getSessionScopeById("team_local", "sess_missing")).toBeNull();
   });
 
   it("re-ingest with a non-null scope updates the stored scope", async () => {
-    await storage.sessions.insertSession(makeRecord("sess_upd", null));
-    await storage.sessions.insertSession(makeRecord("sess_upd", "client-a"));
+    await storage.sessions.insertSession("team_local", makeRecord("sess_upd", null));
+    await storage.sessions.insertSession("team_local", makeRecord("sess_upd", "client-a"));
     const sess = (await pool.query("SELECT scope FROM sessions WHERE id = 'sess_upd'")).rows[0];
     expect(sess.scope).toBe("client-a");
   });
 
   it("re-ingest with null scope does not overwrite a previously stamped non-null scope (Fix A)", async () => {
-    await storage.sessions.insertSession(makeRecord("sess_guard", "client-a"));
-    await storage.sessions.insertSession(makeRecord("sess_guard", null));
+    await storage.sessions.insertSession("team_local", makeRecord("sess_guard", "client-a"));
+    await storage.sessions.insertSession("team_local", makeRecord("sess_guard", null));
     const sess = (await pool.query("SELECT scope FROM sessions WHERE id = 'sess_guard'")).rows[0];
     expect(sess.scope).toBe("client-a");
   });

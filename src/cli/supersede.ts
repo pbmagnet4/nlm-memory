@@ -23,6 +23,7 @@ import { OllamaClient } from "../llm/ollama-client.js";
 import { appendSupersedence } from "../core/storage/supersedence-log.js";
 import type { RecallService as RecallServiceType } from "../core/recall/recall-service.js";
 import type { SessionStore } from "@ports/session-store.js";
+import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 
 export interface SupersedeOptions {
   readonly predecessor?: string | undefined;
@@ -143,7 +144,7 @@ export async function executeSupersede(
   }
 
   try {
-    await deps.store.markSuperseded(predecessor.session.id, successor.session.id);
+    await deps.store.markSuperseded(DEFAULT_TEAM_ID, predecessor.session.id, successor.session.id);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     deps.io.warn(`Failed to mark supersedence: ${msg}`);
@@ -175,7 +176,7 @@ async function resolveSession(
   role: "predecessor" | "successor",
 ): Promise<ResolveOutcome> {
   if (argValue) {
-    const session = await deps.store.getById(argValue);
+    const session = await deps.store.getById(DEFAULT_TEAM_ID, argValue);
     if (!session) {
       deps.io.warn(`Session ${argValue} not found.`);
       return { kind: "cancelled", reason: "unknown-id" };
@@ -198,7 +199,7 @@ async function resolveSession(
     return { kind: "cancelled", reason: "empty-query" };
   }
 
-  const result = await deps.recall.search({
+  const result = await deps.recall.search(DEFAULT_TEAM_ID, {
     query,
     mode: "hybrid",
     limit: CANDIDATE_LIMIT,
@@ -208,7 +209,7 @@ async function resolveSession(
     return { kind: "cancelled", reason: "no-matches" };
   }
 
-  const enriched = await deps.store.getByIds(result.results.map((r) => r.id));
+  const enriched = await deps.store.getByIds(DEFAULT_TEAM_ID, result.results.map((r) => r.id));
   const runtimeById = new Map(enriched.map((s) => [s.id, s.runtime]));
   const candidates: SessionCandidate[] = result.results.map((r) => ({
     id: r.id,
@@ -231,7 +232,7 @@ async function readExistingSupersededBy(
   store: SessionStore,
   predecessorId: string,
 ): Promise<string | null> {
-  const session = await store.getById(predecessorId);
+  const session = await store.getById(DEFAULT_TEAM_ID, predecessorId);
   return session?.supersededBy ?? null;
 }
 
@@ -239,7 +240,7 @@ async function resolveCandidateById(
   store: SessionStore,
   id: string,
 ): Promise<SessionCandidate> {
-  const session = await store.getById(id);
+  const session = await store.getById(DEFAULT_TEAM_ID, id);
   if (!session) {
     return { id, label: "(unknown)", startedAt: null, runtime: "" };
   }

@@ -102,9 +102,9 @@ function runCycleContract(backend: Backend): void {
         await (storage.sessions as SeedableSessions).insertSessionForTest(makeSession(id));
       }
       // B supersedes A → edge (B, A).
-      await storage.sessions.markSuperseded("A", "B");
+      await storage.sessions.markSuperseded("team_local", "A", "B");
       // A supersedes B would close the loop.
-      await expect(storage.sessions.markSuperseded("B", "A")).rejects.toThrow(
+      await expect(storage.sessions.markSuperseded("team_local", "B", "A")).rejects.toThrow(
         /supersedence cycle/,
       );
     });
@@ -114,10 +114,10 @@ function runCycleContract(backend: Backend): void {
         await (storage.sessions as SeedableSessions).insertSessionForTest(makeSession(id));
       }
       // A supersedes B, B supersedes C.
-      await storage.sessions.markSuperseded("B", "A");
-      await storage.sessions.markSuperseded("C", "B");
+      await storage.sessions.markSuperseded("team_local", "B", "A");
+      await storage.sessions.markSuperseded("team_local", "C", "B");
       // C supersedes A would close A->B->C->A.
-      await expect(storage.sessions.markSuperseded("A", "C")).rejects.toThrow(
+      await expect(storage.sessions.markSuperseded("team_local", "A", "C")).rejects.toThrow(
         /supersedence cycle/,
       );
     });
@@ -126,16 +126,16 @@ function runCycleContract(backend: Backend): void {
       for (const id of ["A", "B", "C", "D"]) {
         await (storage.sessions as SeedableSessions).insertSessionForTest(makeSession(id));
       }
-      await storage.sessions.markSuperseded("B", "A");
-      await storage.sessions.markSuperseded("C", "B");
+      await storage.sessions.markSuperseded("team_local", "B", "A");
+      await storage.sessions.markSuperseded("team_local", "C", "B");
       await expect(
-        storage.sessions.markSuperseded("D", "C"),
+        storage.sessions.markSuperseded("team_local", "D", "C"),
       ).resolves.toBeUndefined();
     });
 
     it("rejects self-supersede", async () => {
       await (storage.sessions as SeedableSessions).insertSessionForTest(makeSession("A"));
-      await expect(storage.sessions.markSuperseded("A", "A")).rejects.toThrow(
+      await expect(storage.sessions.markSuperseded("team_local", "A", "A")).rejects.toThrow(
         /cannot supersede itself/,
       );
     });

@@ -59,6 +59,7 @@ export function selectOversizedFailures(
 
 export async function reclassifyOversized(
   deps: ReclassifyDeps,
+  tenantId: string,
   opts: ReclassifyOptions = {},
 ): Promise<ReclassifyResult> {
   const log = deps.log ?? ((m: string) => console.error(m));
@@ -146,7 +147,7 @@ export async function reclassifyOversized(
     const extracted = extractFacts(classification, chunk.id, chunk.startedAt);
 
     try {
-      await deps.store.insertSession(record, deps.embedder, null, {
+      await deps.store.insertSession(tenantId, record, deps.embedder, null, {
         factStore: deps.factStore,
         facts: extracted,
       });

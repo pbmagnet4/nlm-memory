@@ -71,11 +71,11 @@ describe.skipIf(!PG_TEST_URL)("keywordSearch OR semantics parity (pg)", () => {
 
   it("partial-match multi-term query returns the session (OR semantics, matching sqlite)", async () => {
     const store = storage.sessions;
-    await store.insertSession(
+    await store.insertSession("team_local", 
       makeRecord("kw_parity_1", "discussion about pgvector index performance"),
     );
 
-    const results = await store.keywordSearch("pgvector kubernetes deployment", 10);
+    const results = await store.keywordSearch("team_local", "pgvector kubernetes deployment", 10);
     const ids = results.map((r) => r.sessionId);
 
     expect(ids).toContain("kw_parity_1");
@@ -84,27 +84,27 @@ describe.skipIf(!PG_TEST_URL)("keywordSearch OR semantics parity (pg)", () => {
 
   it("no indexable tokens returns empty", async () => {
     const store = storage.sessions;
-    await store.insertSession(makeRecord("kw_parity_2", "some content here"));
+    await store.insertSession("team_local", makeRecord("kw_parity_2", "some content here"));
 
-    const results = await store.keywordSearch("---", 10);
+    const results = await store.keywordSearch("team_local", "---", 10);
     expect(results).toEqual([]);
   });
 
   it("all-stopword query returns empty without throwing", async () => {
     const store = storage.sessions;
-    await store.insertSession(makeRecord("kw_parity_3", "test content about something"));
+    await store.insertSession("team_local", makeRecord("kw_parity_3", "test content about something"));
 
-    const results = await store.keywordSearch("the and is", 10);
+    const results = await store.keywordSearch("team_local", "the and is", 10);
     expect(results).toEqual([]);
   });
 
   it("multi-term OR behavior returns session when any term matches", async () => {
     const store = storage.sessions;
-    await store.insertSession(
+    await store.insertSession("team_local", 
       makeRecord("kw_parity_4", "discussion about pgvector and kubernetes"),
     );
 
-    const results = await store.keywordSearch("pgvector kubernetes deployment", 10);
+    const results = await store.keywordSearch("team_local", "pgvector kubernetes deployment", 10);
     const ids = results.map((r) => r.sessionId);
 
     expect(ids).toContain("kw_parity_4");

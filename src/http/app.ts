@@ -114,6 +114,7 @@ import { laneHealthSnapshot } from "@core/health/embedding-lane-state.js";
 import { inflightSnapshot } from "@core/health/embed-inflight.js";
 import { corpusSnapshot } from "@core/health/corpus-state.js";
 import { DEFAULT_NLM_PORT } from "../shared/net.js";
+import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 
 const HERMES_RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 
@@ -665,7 +666,7 @@ function registerRecallRoutes(app: Hono, deps: HttpDeps): void {
       ...(withExemplars ? { withRelatedExemplars: true } : {}),
       ...(includeSuperseded !== undefined ? { includeSuperseded } : {}),
     };
-    const result = await deps.recall.search(query);
+    const result = await deps.recall.search(DEFAULT_TEAM_ID, query);
 
     // Fire-and-forget telemetry — never blocks the response.
     void logQuery(
@@ -853,7 +854,7 @@ function registerHermesAgentHookRoutes(app: Hono, deps: HttpDeps): void {
       return c.json({ context: null });
     }
     try {
-      const result = await deps.recall.search({
+      const result = await deps.recall.search(DEFAULT_TEAM_ID, {
         query: userMessage,
         mode: "keyword",
         limit: 5,
@@ -991,7 +992,7 @@ function registerFactRoutes(app: Hono, deps: HttpDeps): void {
       ...(kind !== undefined ? { kind: kind as FactKind } : {}),
       ...(minConfidence !== undefined ? { minConfidence } : {}),
     };
-    const result = await deps.factRecall.search(query);
+    const result = await deps.factRecall.search(DEFAULT_TEAM_ID, query);
 
     const source = c.req.header("x-recall-source") ?? "http";
     const runtime = c.req.header("x-recall-runtime") ?? null;
@@ -1027,7 +1028,7 @@ function registerFactRoutes(app: Hono, deps: HttpDeps): void {
       return c.json({ error: "subject is required" }, 400);
     }
     const predicate = c.req.query("predicate");
-    const chains = await deps.factStore.getHistory(subject, predicate);
+    const chains = await deps.factStore.getHistory(DEFAULT_TEAM_ID, subject, predicate);
     return c.json({ subject, predicate: predicate ?? null, chains });
   });
 
@@ -1049,13 +1050,13 @@ function registerLiveRoutes(app: Hono, deps: HttpDeps): void {
   app.get("/api/live/recent-writes", (c) => {
     if (!deps.liveStore) return c.json({ writes: [] });
     const limit = parseLimit(c.req.query("limit"), 50, 200);
-    return c.json({ writes: deps.liveStore.recentWrites(limit) });
+    return c.json({ writes: deps.liveStore.recentWrites(DEFAULT_TEAM_ID, limit) });
   });
 
   app.get("/api/live/recent-markers", (c) => {
     if (!deps.liveStore) return c.json({ markers: [] });
     const limit = parseLimit(c.req.query("limit"), 50, 200);
-    return c.json({ markers: deps.liveStore.recentMarkers(limit) });
+    return c.json({ markers: deps.liveStore.recentMarkers(DEFAULT_TEAM_ID, limit) });
   });
 }
 
@@ -1356,7 +1357,7 @@ function registerIngestRoute(app: Hono, deps: HttpDeps): void {
     };
 
     const ingest = deps.ingest;
-    void ingestSession(input, ingest).catch((e) => {
+    void ingestSession(input, ingest, DEFAULT_TEAM_ID).catch((e) => {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`[ingest] background failure for ${id}: ${msg}`);
     });
@@ -1447,7 +1448,7 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
 function registerSessionRoute(app: Hono, deps: HttpDeps): void {
   app.get("/api/session/:id", async (c) => {
     const id = c.req.param("id");
-    const session = await deps.store.getById(id);
+    const session = await deps.store.getById(DEFAULT_TEAM_ID, id);
     if (!session) {
       return c.json({ error: `session ${id} not found` }, 404);
     }
@@ -1478,7 +1479,7 @@ function registerSessionRoute(app: Hono, deps: HttpDeps): void {
       return c.json({ error: "reason must be a string if provided" }, 400);
     }
     try {
-      await deps.store.markSuperseded(predecessorId, successorId);
+      await deps.store.markSuperseded(DEFAULT_TEAM_ID, predecessorId, successorId);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       const status =
@@ -1648,7 +1649,7 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
       return c.json({ error: e instanceof Error ? e.message : "invalid signal" }, 400);
     }
     const rawBody = body as Record<string, unknown>;
-    signal = await stampSignalScope(signal, {
+    signal = await stampSignalScope(signal, DEFAULT_TEAM_ID, {
       repoPath: typeof rawBody["repo_path"] === "string" ? rawBody["repo_path"] : null,
       sessionScopeReader: deps.sessionScopeReader,
     });

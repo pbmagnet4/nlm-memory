@@ -36,21 +36,21 @@ class InMemoryStore implements SessionStore {
     this.listCalls += 1;
     return this.sessions;
   }
-  async getById(id: string): Promise<Session | null> {
+  async getById(_tenantId: string, id: string): Promise<Session | null> {
     return this.sessions.find((s) => s.id === id) ?? null;
   }
-  async getByIds(ids: ReadonlyArray<string>): Promise<ReadonlyArray<Session>> {
+  async getByIds(_tenantId: string, ids: ReadonlyArray<string>): Promise<ReadonlyArray<Session>> {
     this.getByIdsCalls += 1;
     return this.sessions.filter((s) => ids.includes(s.id));
   }
   async semanticSearch(): Promise<ReadonlyArray<SemanticNeighbor>> {
     return this.neighbors;
   }
-  async keywordSearch(_q: string, _l: number, opts?: SearchOptions): Promise<ReadonlyArray<KeywordNeighbor>> {
+  async keywordSearch(_tenantId: string, _q: string, _l: number, opts?: SearchOptions): Promise<ReadonlyArray<KeywordNeighbor>> {
     this.lastKeywordOpts = opts;
     return this.keywordHits;
   }
-  async resolveSuccessors(ids: ReadonlyArray<string>): Promise<Map<string, string>> {
+  async resolveSuccessors(_tenantId: string, ids: ReadonlyArray<string>): Promise<Map<string, string>> {
     const out = new Map<string, string>();
     for (const id of ids) {
       const s = this.sessions.find((x) => x.id === id);
@@ -96,7 +96,7 @@ describe("RecallService.search", () => {
       store: new InMemoryStore(corpus),
       llm: new StubEmbedder(),
     });
-    const result = await svc.search({ query: "" });
+    const result = await svc.search("team_local", { query: "" });
     expect(result.total).toBe(0);
     expect(result.results).toEqual([]);
   });
@@ -107,7 +107,7 @@ describe("RecallService.search", () => {
       { sessionId: "a", score: 2.1 },
     ]);
     const svc = new RecallService({ store, llm: new StubEmbedder() });
-    const result = await svc.search({ query: "pgvector", mode: "keyword" });
+    const result = await svc.search("team_local", { query: "pgvector", mode: "keyword" });
     expect(result.results.map((r) => r.id)).toEqual(["b", "a"]);
     expect(result.results[0]?.matchScore).toBe(9.2);
   });
@@ -125,7 +125,7 @@ describe("RecallService.search", () => {
       { sessionId: "dec", score: 9.2 }, // 9.2 * 1.13 = 10.396 > 10.0
     ]);
     const svc = new RecallService({ store, llm: new StubEmbedder() });
-    const result = await svc.search({ query: "pgvector qdrant", mode: "keyword" });
+    const result = await svc.search("team_local", { query: "pgvector qdrant", mode: "keyword" });
     expect(result.results.map((r) => r.id)).toEqual(["dec", "raw"]);
   });
 
@@ -141,14 +141,14 @@ describe("RecallService.search", () => {
       { sessionId: "weak", score: 10.0 }, // 10 * 1.15 = 11.5 < 20.0
     ]);
     const svc = new RecallService({ store, llm: new StubEmbedder() });
-    const result = await svc.search({ query: "pgvector qdrant", mode: "keyword" });
+    const result = await svc.search("team_local", { query: "pgvector qdrant", mode: "keyword" });
     expect(result.results.map((r) => r.id)).toEqual(["strong", "weak"]);
   });
 
   it("keyword mode populates matchedIn from the resolved session", async () => {
     const store = new InMemoryStore(corpus, [], [{ sessionId: "b", score: 5 }]);
     const svc = new RecallService({ store, llm: new StubEmbedder() });
-    const result = await svc.search({ query: "pgvector", mode: "keyword" });
+    const result = await svc.search("team_local", { query: "pgvector", mode: "keyword" });
     expect(result.results[0]?.matchedIn).toEqual(["label"]);
   });
 
@@ -158,7 +158,7 @@ describe("RecallService.search", () => {
       { sessionId: "c", score: 4 },
     ]);
     const svc = new RecallService({ store, llm: new StubEmbedder() });
-    const result = await svc.search({ query: "session", mode: "keyword", entity: "NLM" });
+    const result = await svc.search("team_local", { query: "session", mode: "keyword", entity: "NLM" });
     expect(result.results.every((r) => r.entities.includes("NLM"))).toBe(true);
     expect(result.results.map((r) => r.id)).not.toContain("c");
   });
@@ -168,7 +168,7 @@ describe("RecallService.search", () => {
       store: new InMemoryStore(corpus),
       llm: new StubEmbedder(true),
     });
-    const result = await svc.search({ query: "anything", mode: "semantic" });
+    const result = await svc.search("team_local", { query: "anything", mode: "semantic" });
     expect(result.modeUnavailable).toBe("ollama_unreachable");
     expect(result.results).toEqual([]);
   });
@@ -176,7 +176,7 @@ describe("RecallService.search", () => {
   it("hybrid mode degrades to keyword scores when semantic is unavailable", async () => {
     const store = new InMemoryStore(corpus, [], [{ sessionId: "b", score: 7 }]);
     const svc = new RecallService({ store, llm: new StubEmbedder(true) });
-    const result = await svc.search({ query: "pgvector", mode: "hybrid" });
+    const result = await svc.search("team_local", { query: "pgvector", mode: "hybrid" });
     expect(result.modeUnavailable).toBe("ollama_unreachable");
     expect(result.results).toHaveLength(1);
     expect(result.results[0]?.id).toBe("b");
@@ -185,7 +185,7 @@ describe("RecallService.search", () => {
   it("semantic mode reports cosine similarity computed from L2 distance of unit vectors", async () => {
     const store = new InMemoryStore(corpus, [{ sessionId: "a", distance: 0 }]);
     const svc = new RecallService({ store, llm: new StubEmbedder() });
-    const result = await svc.search({ query: "anything", mode: "semantic" });
+    const result = await svc.search("team_local", { query: "anything", mode: "semantic" });
     expect(result.results[0]?.matchScore).toBe(1);
   });
 
@@ -196,7 +196,7 @@ describe("RecallService.search", () => {
       [{ sessionId: "b", score: 9.2 }],
     );
     const svc = new RecallService({ store, llm: new StubEmbedder() });
-    const result = await svc.search({ query: "pgvector", mode: "hybrid" });
+    const result = await svc.search("team_local", { query: "pgvector", mode: "hybrid" });
     const top = result.results[0];
     expect(top?.id).toBe("b");
     // Sole keyword hit normalizes to 1.0 → upper-band score 0.5 + 0.5 = 1.0
@@ -221,7 +221,7 @@ describe("RecallService.search", () => {
       ],
     );
     const svc = new RecallService({ store, llm: new StubEmbedder() });
-    const result = await svc.search({ query: "pgvector", mode: "hybrid" });
+    const result = await svc.search("team_local", { query: "pgvector", mode: "hybrid" });
     expect(result.results[0]?.id).toBe("a"); // keyword winner leads
     expect(result.results[0]?.matchScore).toBeCloseTo(1, 2); // norm 1.0 → 0.5 + 0.5
     expect(result.results[1]?.id).toBe("b");
@@ -234,9 +234,9 @@ describe("RecallService.search", () => {
   it("clamps limit to MAX_LIMIT (100) and at least 1", async () => {
     const store = new InMemoryStore(corpus, [], [{ sessionId: "b", score: 5 }]);
     const svc = new RecallService({ store, llm: new StubEmbedder() });
-    const big = await svc.search({ query: "session", mode: "keyword", limit: 9999 });
+    const big = await svc.search("team_local", { query: "session", mode: "keyword", limit: 9999 });
     expect(big.limit).toBe(100);
-    const small = await svc.search({ query: "session", mode: "keyword", limit: 0 });
+    const small = await svc.search("team_local", { query: "session", mode: "keyword", limit: 0 });
     expect(small.limit).toBe(1);
   });
 
@@ -258,7 +258,7 @@ describe("RecallService.search", () => {
       [{ sessionId: "old", score: 10 }, { sessionId: "fresh", score: 10 }],
     );
     const svc = new RecallService({ store, llm: new StubEmbedder() });
-    const result = await svc.search({ query: "session", mode: "keyword" });
+    const result = await svc.search("team_local", { query: "session", mode: "keyword" });
     expect(result.results.map((r) => r.id)).toEqual(["fresh", "old"]);
     expect(result.results[0]!.matchScore).toBeGreaterThan(result.results[1]!.matchScore);
   });
@@ -272,7 +272,7 @@ describe("RecallService.search", () => {
       { sessionId: "s42", score: 8 },
     ]);
     const svc = new RecallService({ store, llm: new StubEmbedder() });
-    const result = await svc.search({ query: "anything", mode: "keyword" });
+    const result = await svc.search("team_local", { query: "anything", mode: "keyword" });
     expect(result.results.map((r) => r.id)).toEqual(["s7", "s42"]);
     expect(store.listCalls).toBe(0);
     expect(store.getByIdsCalls).toBe(1);
@@ -293,7 +293,7 @@ describe("RecallService.search", () => {
         { sessionId: "act", score: 5 },
       ]);
       const svc = new RecallService({ store, llm: new StubEmbedder() });
-      const result = await svc.search({ query: "pgvector", mode: "keyword", includeSuperseded: true });
+      const result = await svc.search("team_local", { query: "pgvector", mode: "keyword", includeSuperseded: true });
       expect(result.results.map((r) => r.id)).toEqual(["act", "sup"]);
       const sup = result.results.find((r) => r.id === "sup")!;
       const act = result.results.find((r) => r.id === "act")!;
@@ -311,7 +311,7 @@ describe("RecallService.search", () => {
         { sessionId: "act", score: 5 },
       ]);
       const svc = new RecallService({ store, llm: new StubEmbedder() });
-      const result = await svc.search({ query: "pgvector", mode: "keyword", includeSuperseded: true });
+      const result = await svc.search("team_local", { query: "pgvector", mode: "keyword", includeSuperseded: true });
       const sup = result.results.find((r) => r.id === "sup")!;
       const act = result.results.find((r) => r.id === "act")!;
       expect(sup.supersededBy).toBe("act");
@@ -344,7 +344,7 @@ describe("RecallService.search", () => {
         { sessionId: "s5", score: 4 },  // weaker successor
       ]);
       const svc = new RecallService({ store, llm: new StubEmbedder() });
-      const result = await svc.search({ query: "pgvector qdrant", mode: "keyword", includeSuperseded: true });
+      const result = await svc.search("team_local", { query: "pgvector qdrant", mode: "keyword", includeSuperseded: true });
       const ids = result.results.map((r) => r.id);
       expect(ids).toContain("s2");
       const s2 = result.results.find((r) => r.id === "s2")!;
@@ -368,7 +368,7 @@ describe("RecallService.search", () => {
         llm: new StubEmbedder(),
         resolveWorkstreamMembers: async () => ["ws_a"],
       });
-      await svc.search({ query: "hono", mode: "keyword", workstream: "Project A" });
+      await svc.search("team_local", { query: "hono", mode: "keyword", workstream: "Project A" });
       expect(store.lastKeywordOpts?.workstreamIds).toEqual(["ws_a"]);
     });
 
@@ -379,7 +379,7 @@ describe("RecallService.search", () => {
         llm: new StubEmbedder(),
         resolveWorkstreamMembers: async () => [],
       });
-      const result = await svc.search({ query: "hono", mode: "keyword", workstream: "Ghost" });
+      const result = await svc.search("team_local", { query: "hono", mode: "keyword", workstream: "Ghost" });
       expect(result.results).toEqual([]);
       expect(store.lastKeywordOpts).toBeUndefined();
     });
@@ -387,7 +387,7 @@ describe("RecallService.search", () => {
     it("unfiltered query does not set workstreamIds on the search leg", async () => {
       const store = new InMemoryStore(corpus, [], [{ sessionId: "a", score: 5 }]);
       const svc = new RecallService({ store, llm: new StubEmbedder() });
-      await svc.search({ query: "hono", mode: "keyword" });
+      await svc.search("team_local", { query: "hono", mode: "keyword" });
       expect(store.lastKeywordOpts?.workstreamIds).toBeUndefined();
     });
   });
@@ -401,7 +401,7 @@ describe("RecallService.search", () => {
         store: new InMemoryStore(corpus),
         llm: new StubEmbedder(),
       });
-      const result = await svc.search({ query: "anything", mode: "semantic" });
+      const result = await svc.search("team_local", { query: "anything", mode: "semantic" });
       expect(result.modeUnavailable).toBe("ollama_unreachable");
       expect(result.results).toEqual([]);
     });
@@ -410,7 +410,7 @@ describe("RecallService.search", () => {
       setLaneHealth("prose", "stale");
       const store = new InMemoryStore(corpus, [], [{ sessionId: "b", score: 7 }]);
       const svc = new RecallService({ store, llm: new StubEmbedder() });
-      const result = await svc.search({ query: "pgvector", mode: "hybrid" });
+      const result = await svc.search("team_local", { query: "pgvector", mode: "hybrid" });
       expect(result.modeUnavailable).toBe("ollama_unreachable");
       expect(result.results).toHaveLength(1);
       expect(result.results[0]?.id).toBe("b");
@@ -420,7 +420,7 @@ describe("RecallService.search", () => {
       setLaneHealth("prose", "ok");
       const store = new InMemoryStore(corpus, [{ sessionId: "a", distance: 0 }]);
       const svc = new RecallService({ store, llm: new StubEmbedder() });
-      const result = await svc.search({ query: "anything", mode: "semantic" });
+      const result = await svc.search("team_local", { query: "anything", mode: "semantic" });
       expect(result.modeUnavailable).toBeUndefined();
       expect(result.results).toHaveLength(1);
     });
@@ -428,7 +428,7 @@ describe("RecallService.search", () => {
     it("unknown prose lane proceeds normally through semantic embed", async () => {
       const store = new InMemoryStore(corpus, [{ sessionId: "a", distance: 0 }]);
       const svc = new RecallService({ store, llm: new StubEmbedder() });
-      const result = await svc.search({ query: "anything", mode: "semantic" });
+      const result = await svc.search("team_local", { query: "anything", mode: "semantic" });
       expect(result.modeUnavailable).toBeUndefined();
       expect(result.results).toHaveLength(1);
     });
@@ -447,7 +447,7 @@ describe("RecallService.search", () => {
       const store = new InMemoryStore(corpus, [], [{ sessionId: "b", score: 7 }]);
       const svc = new RecallService({ store, llm: stub });
 
-      const searchPromise = svc.search({ query: "pgvector", mode: "hybrid" });
+      const searchPromise = svc.search("team_local", { query: "pgvector", mode: "hybrid" });
       await vi.advanceTimersByTimeAsync(2001);
       const result = await searchPromise;
 
@@ -473,7 +473,7 @@ describe("RecallService.search", () => {
       const store = new InMemoryStore(corpus, [], [{ sessionId: "b", score: 7 }]);
       const svc = new RecallService({ store, llm: hangingClient });
 
-      const searchPromise = svc.search({ query: "test", mode: "hybrid" });
+      const searchPromise = svc.search("team_local", { query: "test", mode: "hybrid" });
       await vi.advanceTimersByTimeAsync(2001);
       await searchPromise;
 
@@ -487,7 +487,7 @@ describe("RecallService.search", () => {
       const stub = new StubEmbedder();
       const store = new InMemoryStore(corpus, [], [{ sessionId: "b", score: 7 }]);
       const svc = new RecallService({ store, llm: stub });
-      const result = await svc.search({ query: "pgvector", mode: "hybrid" });
+      const result = await svc.search("team_local", { query: "pgvector", mode: "hybrid" });
 
       expect(result.modeUnavailable).toBe("ollama_unreachable");
       expect(stub.calls).toBe(0);
@@ -502,14 +502,14 @@ describe("RecallService.search", () => {
 
       const stub = new StubEmbedder();
       const store1 = new InMemoryStore(corpus, [], [{ sessionId: "b", score: 7 }]);
-      const shed = await new RecallService({ store: store1, llm: stub }).search({ query: "x", mode: "semantic" });
+      const shed = await new RecallService({ store: store1, llm: stub }).search("team_local", { query: "x", mode: "semantic" });
       expect(shed.modeUnavailable).toBe("ollama_unreachable");
       expect(stub.calls).toBe(0);
 
       release();
 
       const store2 = new InMemoryStore(corpus, [{ sessionId: "a", distance: 0 }]);
-      const ok = await new RecallService({ store: store2, llm: new StubEmbedder() }).search({ query: "x", mode: "semantic" });
+      const ok = await new RecallService({ store: store2, llm: new StubEmbedder() }).search("team_local", { query: "x", mode: "semantic" });
       expect(ok.modeUnavailable).toBeUndefined();
       expect(ok.results).toHaveLength(1);
 

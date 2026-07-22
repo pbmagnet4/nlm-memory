@@ -43,7 +43,7 @@ describe("rebind_session handler", () => {
     await storage.workstreams.create({ id: "ws_1", label: "NLM", scope: null });
     const r = await rebindSessionHandler(deps(), { sessionId: "s1", workstream: "NLM" });
     expect(r.isError).not.toBe(true);
-    const ids = await storage.sessions.getWorkstreamIds(["s1"]);
+    const ids = await storage.sessions.getWorkstreamIds("team_local", ["s1"]);
     expect(ids.get("s1")).toBe("ws_1");
   });
 

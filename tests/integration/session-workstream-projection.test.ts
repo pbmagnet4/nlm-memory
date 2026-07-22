@@ -25,9 +25,9 @@ describe("listByDateRange surfaces workstream_id", () => {
     storage.sessions.insertSessionForTest(makeSession({ id: "s1", startedAt: "2026-06-24T10:00:00.000Z" }));
     storage.sessions.insertSessionForTest(makeSession({ id: "s2", startedAt: "2026-06-24T11:00:00.000Z" }));
     await storage.workstreams.create({ id: "ws_1", label: "NLM", scope: null });
-    await storage.sessions.setWorkstreamBinding("s1", "ws_1", "classifier", 0.9);
+    await storage.sessions.setWorkstreamBinding("team_local", "s1", "ws_1", "classifier", 0.9);
 
-    const rows = await storage.sessions.listByDateRange("2026-06-24T00:00:00.000Z", "2026-06-25T00:00:00.000Z");
+    const rows = await storage.sessions.listByDateRange("team_local", "2026-06-24T00:00:00.000Z", "2026-06-25T00:00:00.000Z");
     const byId = new Map(rows.map((r) => [r.id, r]));
     expect(byId.get("s1")!.workstreamId).toBe("ws_1");
     expect(byId.get("s2")!.workstreamId ?? null).toBeNull();

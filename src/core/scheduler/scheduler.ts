@@ -48,6 +48,7 @@ import { parseWorkTopics, aliasToLabelMap } from "@core/workstream/work-topics.j
 import { deriveScope } from "@core/scope/derive-scope.js";
 import { loadAliasMap } from "@core/scope/alias-map.js";
 import { scopeStampEnabled } from "@core/scope/stamp-flag.js";
+import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 
 function bindWorkstreamsEnabled(): boolean {
   return process.env["NLM_WORKSTREAM_BIND"] === "true";
@@ -111,6 +112,9 @@ function markIntegrityCheckRan(now: number): void {
 
 export interface SchedulerOptions {
   readonly store: SqliteSessionStore | PgSessionStore;
+  /** Tenant every ingested session/fact is stamped with. Defaults to
+   *  DEFAULT_TEAM_ID (M2 threading semantics — see tenant-clause.ts). */
+  readonly tenantId?: string;
   readonly adapters: ReadonlyArray<TranscriptAdapter>;
   readonly classifier: LLMClient;
   readonly embedder?: LLMClient | null;
@@ -154,7 +158,8 @@ export interface TickReport {
 }
 
 export class ScanScheduler {
-  private readonly opts: Required<Omit<SchedulerOptions, "embedder" | "factStore" | "signalStore" | "installScope" | "exemplarStore" | "codeEmbedder" | "workstreams" | "classifierDescriptor">> & {
+  private readonly opts: Required<Omit<SchedulerOptions, "embedder" | "factStore" | "signalStore" | "installScope" | "exemplarStore" | "codeEmbedder" | "workstreams" | "classifierDescriptor" | "tenantId">> & {
+    readonly tenantId: string;
     readonly embedder: LLMClient | null;
     readonly factStore: SqliteFactStore | PgFactStore | null;
     readonly signalStore: SignalStore | null;
@@ -171,6 +176,7 @@ export class ScanScheduler {
   constructor(opts: SchedulerOptions) {
     this.opts = {
       store: opts.store,
+      tenantId: opts.tenantId ?? DEFAULT_TEAM_ID,
       adapters: opts.adapters,
       classifier: opts.classifier,
       embedder: opts.embedder ?? null,
@@ -346,10 +352,10 @@ export class ScanScheduler {
           // factStore cast below is sound — TS just can't correlate the two
           // union members across a single call site.
           if (store instanceof PgSessionStore) {
-            await store.insertSession(record, this.opts.embedder, supersedesArg,
+            await store.insertSession(this.opts.tenantId, record, this.opts.embedder, supersedesArg,
               this.opts.factStore ? { factStore: this.opts.factStore as PgFactStore, facts } : null);
           } else {
-            await store.insertSession(record, this.opts.embedder, supersedesArg,
+            await store.insertSession(this.opts.tenantId, record, this.opts.embedder, supersedesArg,
               this.opts.factStore ? { factStore: this.opts.factStore as SqliteFactStore, facts } : null);
           }
           if (_pgPool) {
@@ -367,6 +373,7 @@ export class ScanScheduler {
                 aliasToLabel: this.aliasToLabel,
                 log: this.opts.logger,
               },
+              this.opts.tenantId,
               {
                 sessionId: chunk.id,
                 label: classification.label,

@@ -87,11 +87,10 @@ describe("Fix A — post-hoc supersedence cascades to facts", () => {
       sourceSessionId: "sess_A",
       createdAt: "2026-05-18T10:00:00Z",
     });
-    await store.insertSession(
+    await store.insertSession( "team_local",
       makeRecord({ id: "sess_A", startedAt: "2026-05-18T10:00:00Z" }),
       null, null,
-      { factStore, facts: [factA] },
-    );
+      { factStore, facts: [factA] });
 
     const factB = fact({
       id: "f_B",
@@ -103,18 +102,18 @@ describe("Fix A — post-hoc supersedence cascades to facts", () => {
     });
     // Insert sess_B WITHOUT the factSink-based supersedence path — seed facts
     // directly so we can verify the post-hoc path independently.
-    await store.insertSession(
+    await store.insertSession("team_local", 
       makeRecord({ id: "sess_B", startedAt: "2026-05-19T10:00:00Z" }),
     );
-    await factStore.insert(factB);
+    await factStore.insert("team_local", factB);
 
     // Before markSuperseded, fact A is still current.
-    expect((await factStore.getById("f_A"))?.supersededBy).toBeNull();
+    expect((await factStore.getById("team_local", "f_A"))?.supersededBy).toBeNull();
 
-    await store.markSuperseded("sess_A", "sess_B");
+    await store.markSuperseded("team_local", "sess_A", "sess_B");
 
-    const fetchedA = await factStore.getById("f_A");
-    const fetchedB = await factStore.getById("f_B");
+    const fetchedA = await factStore.getById("team_local", "f_A");
+    const fetchedB = await factStore.getById("team_local", "f_B");
     expect(fetchedA?.supersededBy).toBe("f_B");
     expect(fetchedB?.supersededBy).toBeNull();
   });
@@ -128,20 +127,19 @@ describe("Fix A — post-hoc supersedence cascades to facts", () => {
       sourceSessionId: "sess_A",
       createdAt: "2026-05-18T10:00:00Z",
     });
-    await store.insertSession(
+    await store.insertSession( "team_local",
       makeRecord({ id: "sess_A", startedAt: "2026-05-18T10:00:00Z" }),
       null, null,
-      { factStore, facts: [factA] },
-    );
+      { factStore, facts: [factA] });
 
     // sess_B has no fact for (nlm-memory-ts, framework)
-    await store.insertSession(
+    await store.insertSession("team_local", 
       makeRecord({ id: "sess_B", startedAt: "2026-05-19T10:00:00Z" }),
     );
 
-    await store.markSuperseded("sess_A", "sess_B");
+    await store.markSuperseded("team_local", "sess_A", "sess_B");
 
-    const fetchedA = await factStore.getById("f_A");
+    const fetchedA = await factStore.getById("team_local", "f_A");
     expect(fetchedA?.supersededBy).toBeNull();
   });
 
@@ -154,11 +152,10 @@ describe("Fix A — post-hoc supersedence cascades to facts", () => {
       sourceSessionId: "sess_A",
       createdAt: "2026-05-18T10:00:00Z",
     });
-    await store.insertSession(
+    await store.insertSession( "team_local",
       makeRecord({ id: "sess_A", startedAt: "2026-05-18T10:00:00Z" }),
       null, null,
-      { factStore, facts: [factA] },
-    );
+      { factStore, facts: [factA] });
 
     const factB = fact({
       id: "f_B",
@@ -168,19 +165,19 @@ describe("Fix A — post-hoc supersedence cascades to facts", () => {
       sourceSessionId: "sess_B",
       createdAt: "2026-05-19T10:00:00Z",
     });
-    await store.insertSession(
+    await store.insertSession("team_local", 
       makeRecord({ id: "sess_B", startedAt: "2026-05-19T10:00:00Z" }),
     );
-    await factStore.insert(factB);
+    await factStore.insert("team_local", factB);
 
-    await store.markSuperseded("sess_A", "sess_B");
+    await store.markSuperseded("team_local", "sess_A", "sess_B");
 
     // Default list (no includeSuperseded) should only return the current fact.
-    const current = await factStore.list({ subject: "nlm-memory-ts", predicate: "framework" });
+    const current = await factStore.list("team_local", { subject: "nlm-memory-ts", predicate: "framework" });
     expect(current.map((f) => f.id)).toEqual(["f_B"]);
 
     // With includeSuperseded both appear.
-    const all = await factStore.list({
+    const all = await factStore.list("team_local", {
       subject: "nlm-memory-ts",
       predicate: "framework",
       includeSuperseded: true,
@@ -190,7 +187,7 @@ describe("Fix A — post-hoc supersedence cascades to facts", () => {
 
   it("partial overlap: only facts with a matching (subject, predicate) in successor get linked", async () => {
     // Session A has two facts; successor only covers one of them.
-    await store.insertSession(
+    await store.insertSession( "team_local",
       makeRecord({ id: "sess_A", startedAt: "2026-05-18T10:00:00Z" }),
       null, null,
       {
@@ -199,21 +196,20 @@ describe("Fix A — post-hoc supersedence cascades to facts", () => {
           fact({ id: "f_A1", subject: "proj", predicate: "framework", value: "Fastify", sourceSessionId: "sess_A", createdAt: "2026-05-18T10:00:00Z" }),
           fact({ id: "f_A2", subject: "proj", predicate: "endpoint", value: ":8080", sourceSessionId: "sess_A", createdAt: "2026-05-18T10:00:00Z" }),
         ],
-      },
-    );
+      });
 
     // sess_B only replaces the framework fact, not the endpoint fact.
-    await store.insertSession(
+    await store.insertSession("team_local", 
       makeRecord({ id: "sess_B", startedAt: "2026-05-19T10:00:00Z" }),
     );
     const factB = fact({ id: "f_B1", subject: "proj", predicate: "framework", value: "Hono", sourceSessionId: "sess_B", createdAt: "2026-05-19T10:00:00Z" });
-    await factStore.insert(factB);
+    await factStore.insert("team_local", factB);
 
-    await store.markSuperseded("sess_A", "sess_B");
+    await store.markSuperseded("team_local", "sess_A", "sess_B");
 
     // framework fact was replaced → linked
-    expect((await factStore.getById("f_A1"))?.supersededBy).toBe("f_B1");
+    expect((await factStore.getById("team_local", "f_A1"))?.supersededBy).toBe("f_B1");
     // endpoint fact has no successor → stays current
-    expect((await factStore.getById("f_A2"))?.supersededBy).toBeNull();
+    expect((await factStore.getById("team_local", "f_A2"))?.supersededBy).toBeNull();
   });
 });

@@ -91,17 +91,17 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore search with supersedence", () => {
       await store.insertSessionForTest(newSession);
 
       // Mark old as superseded
-      await store.markSuperseded("s_old_kw", "s_new_kw");
+      await store.markSuperseded("team_local", "s_old_kw", "s_new_kw");
 
       // Search for term unique to old session
-      const results = await store.keywordSearch("elasticsearch", 10);
+      const results = await store.keywordSearch("team_local", "elasticsearch", 10);
       const sessionIds = results.map((r) => r.sessionId);
 
       expect(sessionIds).not.toContain("s_old_kw");
       expect(sessionIds).not.toContain("s_new_kw"); // search term not in new session
 
       // Search for term in new session
-      const newResults = await store.keywordSearch("opensearch", 10);
+      const newResults = await store.keywordSearch("team_local", "opensearch", 10);
       const newIds = newResults.map((r) => r.sessionId);
 
       expect(newIds).toContain("s_new_kw");
@@ -150,12 +150,12 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore search with supersedence", () => {
       );
 
       // Mark old as superseded
-      await store.markSuperseded("s_old_sem", "s_new_sem");
+      await store.markSuperseded("team_local", "s_old_sem", "s_new_sem");
 
       // Query with a similar vector
       const queryVec = new Float32Array(768);
       queryVec[0] = 1;
-      const results = await store.semanticSearch(queryVec, 10);
+      const results = await store.semanticSearch("team_local", queryVec, 10);
       const sessionIds = results.map((r) => r.sessionId);
 
       expect(sessionIds).toContain("s_new_sem");
@@ -178,8 +178,8 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore search with supersedence", () => {
 
     it("mechanical re-ingest writes a 'replaces' edge + 'replaced' predecessor status", async () => {
       const store = storage.sessions;
-      await store.insertSession(makeRecord("p_v1", "/t/grown.jsonl"));
-      await store.insertSession(makeRecord("p_v2", "/t/grown.jsonl"), null, {
+      await store.insertSession("team_local", makeRecord("p_v1", "/t/grown.jsonl"));
+      await store.insertSession( "team_local",makeRecord("p_v2", "/t/grown.jsonl"), null, {
         priorSessionId: "p_v1",
         kind: "replaces",
       });
@@ -191,9 +191,9 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore search with supersedence", () => {
 
     it("markSuperseded keeps 'supersedes' / 'superseded' unchanged", async () => {
       const store = storage.sessions;
-      await store.insertSession(makeRecord("p_old", "/t/a.jsonl"));
-      await store.insertSession(makeRecord("p_new", "/t/b.jsonl"));
-      await store.markSuperseded("p_old", "p_new");
+      await store.insertSession("team_local", makeRecord("p_old", "/t/a.jsonl"));
+      await store.insertSession("team_local", makeRecord("p_new", "/t/b.jsonl"));
+      await store.markSuperseded("team_local", "p_old", "p_new");
 
       expect(await statusOf("p_old")).toBe("superseded");
       expect(await edgeKind("p_new", "p_old")).toBe("supersedes");
@@ -211,7 +211,7 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore search with supersedence", () => {
         makeSession({ id: "p_kw_rep", label: "kafka reparse", body: "kafka reparsed", status: "replaced" }),
       );
 
-      const hits = await store.keywordSearch("kafka", 10);
+      const hits = await store.keywordSearch("team_local", "kafka", 10);
       const ids = hits.map((h) => h.sessionId);
       expect(ids).toContain("p_kw_active");
       expect(ids).not.toContain("p_kw_sup");
@@ -231,12 +231,12 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore search with supersedence", () => {
       await store.insertSessionForTest(
         makeSession({ id: "i_kw_rep", label: "redis cache", body: "redis reparsed", status: "replaced" }),
       );
-      await store.markSuperseded("i_kw_old", "i_kw_new");
+      await store.markSuperseded("team_local", "i_kw_old", "i_kw_new");
 
-      const excluded = (await store.keywordSearch("redis", 10)).map((h) => h.sessionId);
+      const excluded = (await store.keywordSearch("team_local", "redis", 10)).map((h) => h.sessionId);
       expect(excluded).not.toContain("i_kw_old");
 
-      const included = (await store.keywordSearch("redis", 10, { includeSuperseded: true })).map(
+      const included = (await store.keywordSearch( "team_local","redis", 10, { includeSuperseded: true })).map(
         (h) => h.sessionId,
       );
       expect(included).toContain("i_kw_old");
@@ -264,14 +264,14 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore search with supersedence", () => {
         "INSERT INTO session_embedding_chunks (session_id, chunk_idx, embedding) VALUES ($1, 0, $2::vector)",
         ["i_sem_rep", vec(1, 0.05)],
       );
-      await store.markSuperseded("i_sem_old", "i_sem_new");
+      await store.markSuperseded("team_local", "i_sem_old", "i_sem_new");
 
       const q = new Float32Array(768);
       q[0] = 1;
-      const excluded = (await store.semanticSearch(q, 10)).map((r) => r.sessionId);
+      const excluded = (await store.semanticSearch("team_local", q, 10)).map((r) => r.sessionId);
       expect(excluded).not.toContain("i_sem_old");
 
-      const included = (await store.semanticSearch(q, 10, { includeSuperseded: true })).map(
+      const included = (await store.semanticSearch( "team_local",q, 10, { includeSuperseded: true })).map(
         (r) => r.sessionId,
       );
       expect(included).toContain("i_sem_old");
@@ -283,9 +283,9 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore search with supersedence", () => {
       const store = storage.sessions;
       await store.insertSessionForTest(makeSession({ id: "i_rs_old", label: "old" }));
       await store.insertSessionForTest(makeSession({ id: "i_rs_new", label: "new" }));
-      await store.markSuperseded("i_rs_old", "i_rs_new");
+      await store.markSuperseded("team_local", "i_rs_old", "i_rs_new");
 
-      const map = await store.resolveSuccessors(["i_rs_old", "i_rs_new"]);
+      const map = await store.resolveSuccessors("team_local", ["i_rs_old", "i_rs_new"]);
       expect(map.get("i_rs_old")).toBe("i_rs_new");
       expect(map.has("i_rs_new")).toBe(false);
     });
@@ -295,7 +295,7 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore search with supersedence", () => {
     it("keywordSearch returns empty for empty workstreamIds", async () => {
       const store = storage.sessions;
       await store.insertSessionForTest(makeSession({ id: "ws_kw_a", label: "kafka pipeline", body: "kafka active" }));
-      const results = await store.keywordSearch("kafka", 10, { workstreamIds: [] });
+      const results = await store.keywordSearch( "team_local","kafka", 10, { workstreamIds: [] });
       expect(results).toHaveLength(0);
     });
 
@@ -312,7 +312,7 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore search with supersedence", () => {
       await pool.query("UPDATE sessions SET workstream_id = 'ws_p1' WHERE id = 'ws_kw_in'");
       await pool.query("UPDATE sessions SET workstream_id = 'ws_p2' WHERE id = 'ws_kw_out'");
 
-      const results = await store.keywordSearch("kafka", 10, { workstreamIds: ["ws_p1"] });
+      const results = await store.keywordSearch( "team_local","kafka", 10, { workstreamIds: ["ws_p1"] });
       const ids = results.map((r) => r.sessionId);
       expect(ids).toContain("ws_kw_in");
       expect(ids).not.toContain("ws_kw_out");
@@ -329,7 +329,7 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore search with supersedence", () => {
       );
       const q = new Float32Array(768);
       q[0] = 1;
-      const results = await store.semanticSearch(q, 10, { workstreamIds: [] });
+      const results = await store.semanticSearch( "team_local",q, 10, { workstreamIds: [] });
       expect(results).toHaveLength(0);
     });
 
@@ -360,7 +360,7 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore search with supersedence", () => {
 
       const q = new Float32Array(768);
       q[0] = 1;
-      const results = await store.semanticSearch(q, 10, { workstreamIds: ["ws_q1"] });
+      const results = await store.semanticSearch( "team_local",q, 10, { workstreamIds: ["ws_q1"] });
       const ids = results.map((r) => r.sessionId);
       expect(ids).toContain("ws_sem_in");
       expect(ids).not.toContain("ws_sem_out");

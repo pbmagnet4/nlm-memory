@@ -55,50 +55,50 @@ describe.skipIf(!PG_TEST_URL)("agent_persona / parent_session_id provenance: PG"
   beforeEach(async () => { await pool.query(TRUNCATE_SQL); });
 
   it("round-trips persona + parent on fresh insert", async () => {
-    await storage.sessions.insertSession(record({
+    await storage.sessions.insertSession("team_local", record({
       id: "persona_pg_1",
       agentPersona: "code-reviewer",
       parentSessionId: "parent-abc",
     }));
 
-    const sess = await storage.sessions.getById("persona_pg_1");
+    const sess = await storage.sessions.getById("team_local", "persona_pg_1");
     expect(sess?.agentPersona).toBe("code-reviewer");
     expect(sess?.parentSessionId).toBe("parent-abc");
   });
 
   it("fresh insert without persona/parent writes NULLs", async () => {
-    await storage.sessions.insertSession(record({ id: "persona_pg_2" }));
+    await storage.sessions.insertSession("team_local", record({ id: "persona_pg_2" }));
 
-    const sess = await storage.sessions.getById("persona_pg_2");
+    const sess = await storage.sessions.getById("team_local", "persona_pg_2");
     expect(sess?.agentPersona).toBeNull();
     expect(sess?.parentSessionId).toBeNull();
   });
 
   it("upsert with a new non-null value overwrites", async () => {
-    await storage.sessions.insertSession(record({
+    await storage.sessions.insertSession("team_local", record({
       id: "persona_pg_3",
       agentPersona: "orchestrator",
     }));
-    await storage.sessions.insertSession(record({
+    await storage.sessions.insertSession("team_local", record({
       id: "persona_pg_3",
       agentPersona: "code-reviewer",
       parentSessionId: "parent-xyz",
     }));
 
-    const sess = await storage.sessions.getById("persona_pg_3");
+    const sess = await storage.sessions.getById("team_local", "persona_pg_3");
     expect(sess?.agentPersona).toBe("code-reviewer");
     expect(sess?.parentSessionId).toBe("parent-xyz");
   });
 
   it("upsert omitting the fields preserves the prior stamp (COALESCE)", async () => {
-    await storage.sessions.insertSession(record({
+    await storage.sessions.insertSession("team_local", record({
       id: "persona_pg_4",
       agentPersona: "code-reviewer",
       parentSessionId: "parent-abc",
     }));
-    await storage.sessions.insertSession(record({ id: "persona_pg_4", label: "Re-classified label" }));
+    await storage.sessions.insertSession("team_local", record({ id: "persona_pg_4", label: "Re-classified label" }));
 
-    const sess = await storage.sessions.getById("persona_pg_4");
+    const sess = await storage.sessions.getById("team_local", "persona_pg_4");
     expect(sess?.label).toBe("Re-classified label");
     expect(sess?.agentPersona).toBe("code-reviewer");
     expect(sess?.parentSessionId).toBe("parent-abc");
@@ -108,58 +108,58 @@ describe.skipIf(!PG_TEST_URL)("agent_persona / parent_session_id provenance: PG"
   // insert/upsert/COALESCE contract as agent_persona/parent_session_id above.
 
   it("round-trips primary_model/total_tokens/skill on fresh insert", async () => {
-    await storage.sessions.insertSession(record({
+    await storage.sessions.insertSession("team_local", record({
       id: "transcript_pg_1",
       primaryModel: "claude-opus-4-7",
       totalTokens: 1234,
       skill: "code-review",
     }));
 
-    const sess = await storage.sessions.getById("transcript_pg_1");
+    const sess = await storage.sessions.getById("team_local", "transcript_pg_1");
     expect(sess?.primaryModel).toBe("claude-opus-4-7");
     expect(sess?.totalTokens).toBe(1234);
     expect(sess?.skill).toBe("code-review");
   });
 
   it("fresh insert without them writes NULLs", async () => {
-    await storage.sessions.insertSession(record({ id: "transcript_pg_2" }));
+    await storage.sessions.insertSession("team_local", record({ id: "transcript_pg_2" }));
 
-    const sess = await storage.sessions.getById("transcript_pg_2");
+    const sess = await storage.sessions.getById("team_local", "transcript_pg_2");
     expect(sess?.primaryModel).toBeNull();
     expect(sess?.totalTokens).toBeNull();
     expect(sess?.skill).toBeNull();
   });
 
   it("upsert with new non-null values overwrites", async () => {
-    await storage.sessions.insertSession(record({
+    await storage.sessions.insertSession("team_local", record({
       id: "transcript_pg_3",
       primaryModel: "claude-sonnet-4-5",
       totalTokens: 100,
       skill: "old-skill",
     }));
-    await storage.sessions.insertSession(record({
+    await storage.sessions.insertSession("team_local", record({
       id: "transcript_pg_3",
       primaryModel: "claude-opus-4-7",
       totalTokens: 500,
       skill: "new-skill",
     }));
 
-    const sess = await storage.sessions.getById("transcript_pg_3");
+    const sess = await storage.sessions.getById("team_local", "transcript_pg_3");
     expect(sess?.primaryModel).toBe("claude-opus-4-7");
     expect(sess?.totalTokens).toBe(500);
     expect(sess?.skill).toBe("new-skill");
   });
 
   it("upsert omitting the fields preserves the prior stamp (COALESCE)", async () => {
-    await storage.sessions.insertSession(record({
+    await storage.sessions.insertSession("team_local", record({
       id: "transcript_pg_4",
       primaryModel: "claude-opus-4-7",
       totalTokens: 999,
       skill: "code-review",
     }));
-    await storage.sessions.insertSession(record({ id: "transcript_pg_4", label: "Re-classified label" }));
+    await storage.sessions.insertSession("team_local", record({ id: "transcript_pg_4", label: "Re-classified label" }));
 
-    const sess = await storage.sessions.getById("transcript_pg_4");
+    const sess = await storage.sessions.getById("team_local", "transcript_pg_4");
     expect(sess?.label).toBe("Re-classified label");
     expect(sess?.primaryModel).toBe("claude-opus-4-7");
     expect(sess?.totalTokens).toBe(999);

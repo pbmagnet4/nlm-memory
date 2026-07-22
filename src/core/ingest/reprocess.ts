@@ -179,6 +179,7 @@ export function selectReprocessCandidates(
 
 export async function reprocess(
   deps: ReprocessDeps,
+  tenantId: string,
   opts: ReprocessOptions = {},
 ): Promise<ReprocessReport> {
   const { db, store, factStore, embedder, classifier, classifierDescriptor } = deps;
@@ -359,7 +360,7 @@ export async function reprocess(
       const factSinkArg = belowFloor
         ? null
         : { factStore, facts: extractFacts(classification, sid, row.started_at) };
-      await store.insertSession(record, embedder, null, factSinkArg);
+      await store.insertSession(tenantId, record, embedder, null, factSinkArg);
       done.add(sid);
       succeeded++;
       processed++;

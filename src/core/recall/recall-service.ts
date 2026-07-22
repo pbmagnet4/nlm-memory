@@ -92,7 +92,7 @@ export class RecallService {
 
   constructor(private readonly deps: RecallServiceDeps) {}
 
-  async search(input: RecallQuery): Promise<RecallResult> {
+  async search(tenantId: string, input: RecallQuery): Promise<RecallResult> {
     const mode: RecallMode = input.mode ?? "keyword";
     const limit = clampLimit(input.limit);
     const entity = input.entity ?? null;
@@ -148,7 +148,7 @@ export class RecallService {
 
     const kwNeighbors: ReadonlyArray<KeywordNeighbor> =
       (mode === "keyword" || mode === "hybrid") && keywordQuery
-        ? await this.deps.store.keywordSearch(keywordQuery, limit * KEYWORD_OVERFETCH, searchOpts)
+        ? await this.deps.store.keywordSearch(tenantId, keywordQuery, limit * KEYWORD_OVERFETCH, searchOpts)
         : [];
 
     let semNeighbors: ReadonlyArray<SemanticNeighbor> = [];
@@ -173,6 +173,7 @@ export class RecallService {
             deadline,
           ]);
           semNeighbors = await this.deps.store.semanticSearch(
+            tenantId,
             embedding.vector,
             limit * SEMANTIC_OVERFETCH,
             searchOpts,
@@ -198,7 +199,7 @@ export class RecallService {
     //    entity/kind filter is applied to the fetched hits; a filtered-out
     //    session is absent from byId and is skipped during resolution.
     const hitIds = uniqueIds(kwNeighbors, semNeighbors);
-    const hitSessions = await this.deps.store.getByIds(hitIds);
+    const hitSessions = await this.deps.store.getByIds(tenantId, hitIds);
     const filterArgs: { entity?: string; kind?: typeof input.kind } = {};
     if (input.entity !== undefined) filterArgs.entity = input.entity;
     if (input.kind !== undefined) filterArgs.kind = input.kind;
@@ -263,7 +264,7 @@ export class RecallService {
     //    silently no-op so recall never breaks because of fact lookup.
     //    (Note: citation boost in step 5 may have re-sorted results)
     if (input.withRelatedFacts === true && this.deps.factStore && isFactInjectionEnabled()) {
-      const relatedFacts = await pickRelatedFacts(result.results, this.deps.factStore);
+      const relatedFacts = await pickRelatedFacts(tenantId, result.results, this.deps.factStore);
       if (relatedFacts.length > 0) {
         result = { ...result, relatedFacts };
       }
@@ -316,7 +317,7 @@ export class RecallService {
       .filter((r) => r.status === "superseded")
       .map((r) => r.id);
     if (supersededIds.length > 0) {
-      const successors = await this.deps.store.resolveSuccessors(supersededIds);
+      const successors = await this.deps.store.resolveSuccessors(tenantId, supersededIds);
       result = {
         ...result,
         results: result.results.map((r) =>

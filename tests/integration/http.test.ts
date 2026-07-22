@@ -277,7 +277,7 @@ describe("HTTP adapter", () => {
     // sess_b is "pgvector migration plan"; sess_a is "Hono router setup".
     // Supersede sess_b by sess_a so a pgvector query has a superseded best hit.
     beforeEach(async () => {
-      await store.markSuperseded("sess_b", "sess_a");
+      await store.markSuperseded("team_local", "sess_b", "sess_a");
     });
 
     it("default (no param) excludes superseded — hook-path strict exclusion preserved", async () => {
@@ -605,7 +605,7 @@ describe("HTTP adapter — fact recall", () => {
     store = storage.sessions;
     store.insertSessionForTest(makeSession({ id: "sess_p" }));
     factStore = storage.facts;
-    await factStore.insertMany([
+    await factStore.insertMany("team_local", [
       makeFact({
         id: "f_hono", subject: "nlm-memory-ts", predicate: "framework",
         value: "Hono", confidence: 0.9, sourceSessionId: "sess_p",
@@ -745,7 +745,7 @@ describe("HTTP adapter — Spec G.2 fact injection contract", () => {
       open: [],
     });
 
-    await factStore.insertMany([
+    await factStore.insertMany("team_local", [
       makeFact({ id: "f_g2_1", subject: "beacon", predicate: "uses", value: "duckdb", confidence: 0.9, sourceSessionId: "sess_g2_a" }),
       makeFact({ id: "f_g2_2", subject: "beacon", predicate: "uses", value: "duckdb", confidence: 0.9, sourceSessionId: "sess_g2_b" }),
       makeFact({ id: "f_g2_3", subject: "beacon", predicate: "framework", value: "hono", confidence: 0.9, sourceSessionId: "sess_g2_a" }),
@@ -1325,7 +1325,7 @@ describe("GET /api/recall/facts empty hint", () => {
   it("omits hint field when facts exist", async () => {
     const factStore = storage.facts as SqliteFactStore;
     // Insert a fact
-    await factStore.insert({
+    await factStore.insert("team_local", {
       id: "fact_test",
       kind: "decision",
       subject: "TestEntity",
@@ -1432,7 +1432,7 @@ describe("HTTP adapter: POST /api/ingest classifier provenance wiring", () => {
     const deadline = Date.now() + 3000;
     let sess = null;
     while (Date.now() < deadline) {
-      sess = await storage.sessions.getById("wh_prov_test");
+      sess = await storage.sessions.getById("team_local", "wh_prov_test");
       if (sess) break;
       await new Promise((r) => setTimeout(r, 20));
     }

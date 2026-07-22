@@ -8,7 +8,7 @@ import { SqliteStorage } from "../../../../src/core/storage/sqlite-storage.js";
 const MIGRATIONS_DIR = resolve(__dirname, "../../../../migrations");
 
 async function insert(storage: SqliteStorage, id: string, startedAt: string, endedAt: string | null) {
-  await storage.sessions.insertSession({
+  await storage.sessions.insertSession("team_local", {
     id, runtime: "claude-code", runtimeSessionId: id, startedAt, endedAt,
     durationMin: null, label: id, summary: "", body: "", status: "closed",
     transcriptKind: "claude-code-jsonl", transcriptPath: `/tmp/${id}.jsonl`,
@@ -37,7 +37,7 @@ describe("SqliteSessionStore.listByDateRange", () => {
     await insert(storage, "spanning", "2026-06-22T23:00:00.000Z", "2026-06-23T01:00:00.000Z");
     await insert(storage, "open_old", "2026-06-20T10:00:00.000Z", null);
 
-    const got = await storage.sessions.listByDateRange(
+    const got = await storage.sessions.listByDateRange("team_local", 
       "2026-06-23T00:00:00.000Z",
       "2026-06-24T00:00:00.000Z",
     );

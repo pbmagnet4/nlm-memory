@@ -54,7 +54,7 @@ function fakeSignalStore(): SignalStore & { rows: Signal[] } {
   };
 }
 
-function signalApp(signalStore: SignalStore, sessionScopeReader?: { getSessionScopeById(id: string): Promise<string | null> }) {
+function signalApp(signalStore: SignalStore, sessionScopeReader?: { getSessionScopeById(tenantId: string, id: string): Promise<string | null> }) {
   return createApp({
     recall: { search: async () => ({ query: "", mode: "keyword", limit: 0, total: 0, results: [] }) } as never,
     store: {} as never,
@@ -209,8 +209,8 @@ describe("scope stamping (NLM_SCOPE_STAMP flag)", () => {
     }
 
     it("re-ingest with null scope does not overwrite a previously stamped non-null scope", async () => {
-      await storage.sessions.insertSession(makeRecord("scope-guard-sess-050", "client-a"));
-      await storage.sessions.insertSession(makeRecord("scope-guard-sess-050", null));
+      await storage.sessions.insertSession("team_local", makeRecord("scope-guard-sess-050", "client-a"));
+      await storage.sessions.insertSession("team_local", makeRecord("scope-guard-sess-050", null));
 
       readDb((db) => {
         const sess = db.prepare<[string], { scope: string | null }>("SELECT scope FROM sessions WHERE id = ?").get("scope-guard-sess-050");
@@ -219,8 +219,8 @@ describe("scope stamping (NLM_SCOPE_STAMP flag)", () => {
     });
 
     it("re-ingest with a non-null scope updates the stored scope", async () => {
-      await storage.sessions.insertSession(makeRecord("scope-guard-sess-051", "client-a"));
-      await storage.sessions.insertSession(makeRecord("scope-guard-sess-051", "client-b"));
+      await storage.sessions.insertSession("team_local", makeRecord("scope-guard-sess-051", "client-a"));
+      await storage.sessions.insertSession("team_local", makeRecord("scope-guard-sess-051", "client-b"));
 
       readDb((db) => {
         const sess = db.prepare<[string], { scope: string | null }>("SELECT scope FROM sessions WHERE id = ?").get("scope-guard-sess-051");
@@ -555,7 +555,7 @@ describe("scope stamping (NLM_SCOPE_STAMP flag)", () => {
     it("inherits scope from the session via sessionScopeReader when repo_path is absent", async () => {
       process.env["NLM_SCOPE_STAMP"] = "1";
       const store = fakeSignalStore();
-      const reader = { getSessionScopeById: async (_id: string) => "client-a" };
+      const reader = { getSessionScopeById: async (_tenantId: string, _id: string) => "client-a" };
       const res = await postSignal(signalApp(store, reader), {
         repo: "proj", session: "sess_1",
       });
@@ -583,7 +583,7 @@ describe("scope stamping (NLM_SCOPE_STAMP flag)", () => {
     it("stamps NULL when the inherited session scope is global (signals never take global)", async () => {
       process.env["NLM_SCOPE_STAMP"] = "1";
       const store = fakeSignalStore();
-      const reader = { getSessionScopeById: async (_id: string) => "global" };
+      const reader = { getSessionScopeById: async (_tenantId: string, _id: string) => "global" };
       const res = await postSignal(signalApp(store, reader), {
         repo: "proj", session: "sess_g",
       });

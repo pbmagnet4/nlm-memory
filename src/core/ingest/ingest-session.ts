@@ -64,7 +64,7 @@ export function deriveSessionId(runtime: string, startedAt: string, text: string
   return `webhook_${hash}`;
 }
 
-export async function ingestSession(input: IngestInput, deps: IngestDeps): Promise<IngestResult> {
+export async function ingestSession(input: IngestInput, deps: IngestDeps, tenantId: string): Promise<IngestResult> {
   const startedAt = input.startedAt ?? new Date().toISOString();
   const id = input.id ?? deriveSessionId(input.runtime, startedAt, input.text);
   const log = deps.log ?? ((m: string) => console.error(m));
@@ -138,10 +138,10 @@ export async function ingestSession(input: IngestInput, deps: IngestDeps): Promi
   // Store + factStore come from the same backend (see buildStack); the cast
   // is sound — TS can't correlate the two union members at one call site.
   if (deps.store instanceof PgSessionStore) {
-    await deps.store.insertSession(record, deps.embedder, null,
+    await deps.store.insertSession(tenantId, record, deps.embedder, null,
       deps.factStore ? { factStore: deps.factStore as PgFactStore, facts } : null);
   } else {
-    await deps.store.insertSession(record, deps.embedder, null,
+    await deps.store.insertSession(tenantId, record, deps.embedder, null,
       deps.factStore ? { factStore: deps.factStore as SqliteFactStore, facts } : null);
   }
   return { id, status: "ingested", latencyMs: Date.now() - t0, confidence: classification.confidence };

@@ -79,22 +79,22 @@ describe("entity-link replace on re-ingest (SQLite)", () => {
   });
 
   it("fresh ingest links all entities and sets session_count=1", async () => {
-    await store.insertSession(makeRecord("sess_1", ["Alpha", "Beta"]));
+    await store.insertSession("team_local", makeRecord("sess_1", ["Alpha", "Beta"]));
     expect(entityLinks(store, "sess_1")).toEqual(["Alpha", "Beta"]);
     expect(entityCount(store, "Alpha")).toBe(1);
     expect(entityCount(store, "Beta")).toBe(1);
   });
 
   it("re-ingest replaces entity links: removed entity loses link, new entity gains link", async () => {
-    await store.insertSession(makeRecord("sess_1", ["Alpha", "Beta"]));
-    await store.insertSession(makeRecord("sess_1", ["Beta", "Gamma"]));
+    await store.insertSession("team_local", makeRecord("sess_1", ["Alpha", "Beta"]));
+    await store.insertSession("team_local", makeRecord("sess_1", ["Beta", "Gamma"]));
 
     expect(entityLinks(store, "sess_1")).toEqual(["Beta", "Gamma"]);
   });
 
   it("session_count is exact after re-ingest: removed=0, retained=1, added=1", async () => {
-    await store.insertSession(makeRecord("sess_1", ["Alpha", "Beta"]));
-    await store.insertSession(makeRecord("sess_1", ["Beta", "Gamma"]));
+    await store.insertSession("team_local", makeRecord("sess_1", ["Alpha", "Beta"]));
+    await store.insertSession("team_local", makeRecord("sess_1", ["Beta", "Gamma"]));
 
     expect(entityCount(store, "Alpha")).toBe(0);
     expect(entityCount(store, "Beta")).toBe(1);
@@ -102,9 +102,9 @@ describe("entity-link replace on re-ingest (SQLite)", () => {
   });
 
   it("repeated re-ingest is idempotent: third call produces same counts", async () => {
-    await store.insertSession(makeRecord("sess_1", ["Alpha", "Beta"]));
-    await store.insertSession(makeRecord("sess_1", ["Beta", "Gamma"]));
-    await store.insertSession(makeRecord("sess_1", ["Beta", "Gamma"]));
+    await store.insertSession("team_local", makeRecord("sess_1", ["Alpha", "Beta"]));
+    await store.insertSession("team_local", makeRecord("sess_1", ["Beta", "Gamma"]));
+    await store.insertSession("team_local", makeRecord("sess_1", ["Beta", "Gamma"]));
 
     expect(entityLinks(store, "sess_1")).toEqual(["Beta", "Gamma"]);
     expect(entityCount(store, "Alpha")).toBe(0);
@@ -113,15 +113,15 @@ describe("entity-link replace on re-ingest (SQLite)", () => {
   });
 
   it("session_count reflects truth across multiple sessions", async () => {
-    await store.insertSession(makeRecord("sess_1", ["Alpha", "Beta"]));
-    await store.insertSession(makeRecord("sess_2", ["Beta", "Gamma"]));
+    await store.insertSession("team_local", makeRecord("sess_1", ["Alpha", "Beta"]));
+    await store.insertSession("team_local", makeRecord("sess_2", ["Beta", "Gamma"]));
 
     expect(entityCount(store, "Alpha")).toBe(1);
     expect(entityCount(store, "Beta")).toBe(2);
     expect(entityCount(store, "Gamma")).toBe(1);
 
     // Re-ingest sess_1 dropping Alpha: Beta stays in both sessions, count stays 2
-    await store.insertSession(makeRecord("sess_1", ["Beta"]));
+    await store.insertSession("team_local", makeRecord("sess_1", ["Beta"]));
 
     expect(entityCount(store, "Alpha")).toBe(0);
     expect(entityCount(store, "Beta")).toBe(2);
@@ -129,8 +129,8 @@ describe("entity-link replace on re-ingest (SQLite)", () => {
   });
 
   it("orphaned entity row is retained (not deleted) when session_count reaches 0", async () => {
-    await store.insertSession(makeRecord("sess_1", ["Alpha", "Beta"]));
-    await store.insertSession(makeRecord("sess_1", ["Beta"]));
+    await store.insertSession("team_local", makeRecord("sess_1", ["Alpha", "Beta"]));
+    await store.insertSession("team_local", makeRecord("sess_1", ["Beta"]));
 
     const row = store
       .rawDb()

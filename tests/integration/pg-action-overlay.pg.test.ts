@@ -68,7 +68,7 @@ describe.skipIf(!PG_TEST_URL)("pg session reads apply the action overlay", () =>
       { kind: "resolve_open", subjectType: "open_question", subjectId: oqId },
     ]);
 
-    const [readBack] = await storage.sessions.getByIds([session.id]);
+    const [readBack] = await storage.sessions.getByIds("team_local", [session.id]);
     expect(readBack!.open).toHaveLength(0);
   });
 
@@ -87,7 +87,7 @@ describe.skipIf(!PG_TEST_URL)("pg session reads apply the action overlay", () =>
       },
     ]);
 
-    const [readBack] = await storage.sessions.getByIds([session.id]);
+    const [readBack] = await storage.sessions.getByIds("team_local", [session.id]);
     expect(readBack!.open).toHaveLength(0);
     expect(readBack!.decisions).toContain("Use PostgreSQL");
   });
@@ -101,7 +101,7 @@ describe.skipIf(!PG_TEST_URL)("pg session reads apply the action overlay", () =>
       { kind: "retire_entity", subjectType: "entity", subjectId: entity },
     ]);
 
-    const [readBack] = await storage.sessions.getByIds([session.id]);
+    const [readBack] = await storage.sessions.getByIds("team_local", [session.id]);
     expect(readBack!.entities).toEqual([entity]);
   });
 
@@ -113,7 +113,7 @@ describe.skipIf(!PG_TEST_URL)("pg session reads apply the action overlay", () =>
     });
     await storage.sessions.insertSessionForTest(session);
 
-    const [readBack] = await storage.sessions.getByIds([session.id]);
+    const [readBack] = await storage.sessions.getByIds("team_local", [session.id]);
     expect(readBack!.open).toEqual(["Is this working?"]);
     expect(readBack!.entities).toEqual(["NLM"]);
   });
@@ -123,13 +123,13 @@ describe.skipIf(!PG_TEST_URL)("pg session reads apply the action overlay", () =>
     const session = makeSession({ id: "sess_pg_cache_live", open: [openText] });
     await storage.sessions.insertSessionForTest(session);
 
-    await storage.sessions.getByIds([session.id]); // populate cache
+    await storage.sessions.getByIds("team_local", [session.id]); // populate cache
     const oqId = openQuestionId(session.id, openText);
     await writeActionPg(pool, { kind: "resolve_open", subjectType: "open_question", subjectId: oqId });
-    const stale = await storage.sessions.getByIds([session.id]);
+    const stale = await storage.sessions.getByIds("team_local", [session.id]);
     expect(stale[0]?.open?.some((q) => q === openText)).toBe(true); // cache still active
     storage.sessions.invalidateOverlayCache();
-    const fresh = await storage.sessions.getByIds([session.id]);
+    const fresh = await storage.sessions.getByIds("team_local", [session.id]);
     expect(fresh[0]?.open?.some((q) => q === openText)).toBe(false);
   });
 
@@ -153,14 +153,14 @@ describe.skipIf(!PG_TEST_URL)("pg session reads apply the action overlay", () =>
         transcriptPath,
       });
       await storage.sessions.insertSessionForTest(session);
-      const [readBack] = await storage.sessions.getByIds([session.id]);
+      const [readBack] = await storage.sessions.getByIds("team_local", [session.id]);
       expect(readBack!.status).toBe("active");
     });
 
     it("reads status as closed when transcript_path is null", async () => {
       const session = makeSession({ id: "sess_live_null_path", status: "closed", transcriptPath: null });
       await storage.sessions.insertSessionForTest(session);
-      const [readBack] = await storage.sessions.getByIds([session.id]);
+      const [readBack] = await storage.sessions.getByIds("team_local", [session.id]);
       expect(readBack!.status).toBe("closed");
     });
   });

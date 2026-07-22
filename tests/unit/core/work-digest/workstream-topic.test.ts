@@ -29,7 +29,7 @@ it("attributes a bound session to its (merge-resolved) workstream label", async 
     ] },
     readTimestamps: () => [Date.parse("2026-06-24T10:00:00Z"), Date.parse("2026-06-24T10:30:00Z")],
   };
-  const d = await buildWorkDigest(deps, "2026-06-24");
+  const d = await buildWorkDigest( deps, "team_local", "2026-06-24");
   expect(d.byTopic.map((t) => t.topic)).toContain("NLM"); // resolved through merged_into
 });
 
@@ -45,7 +45,7 @@ it("exposes the resolved workstream_id on the topic's meta (telemetry seam §11)
     ] },
     readTimestamps: () => [Date.parse("2026-06-24T10:00:00Z"), Date.parse("2026-06-24T10:30:00Z")],
   };
-  const d = await buildWorkDigest(deps, "2026-06-24");
+  const d = await buildWorkDigest( deps, "team_local", "2026-06-24");
   const nlm = d.byTopic.find((t) => t.topic === "NLM");
   expect(nlm?.meta?.["workstream_id"]).toBe("ws_new"); // survivor id, not ws_old
 });

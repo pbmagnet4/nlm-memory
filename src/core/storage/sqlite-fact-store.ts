@@ -14,6 +14,15 @@
  *   B.3 — listForRecall (pre-filter for FactRecallService), semanticSearch,
  *         getHistory (supersedence chain inspection)
  *   B.4 — auto-supersedence on (subject, predicate) collision (deferred)
+ *
+ * Tenancy (program spec §4, M2 plan Wave B): every method takes `tenantId`
+ * as its non-optional first parameter. `facts` is a STAMP table; every
+ * SELECT/UPDATE/DELETE routes its WHERE fragment through `tenantClause`,
+ * and INSERTs stamp `tenant_id` explicitly. `fact_embeddings` carries no
+ * tenant_id (DERIVE-VIA-FK, keyed by fact_id) — `semanticSearch`'s KNN scan
+ * has no tenant awareness of its own, so callers (FactRecallService) resolve
+ * neighbor ids back through the tenant-filtered `getByIds`/`getById` before
+ * trusting them (program spec §4.3, vector-path rule).
  */
 
 type NeighborRow = { fact_id: string; distance: number };
@@ -27,6 +36,7 @@ import type {
 } from "@ports/fact-store.js";
 import type { Fact, FactHistoryChain, FactKind } from "@shared/types.js";
 import { batchWinners } from "./fact-batch.js";
+import { tenantClause } from "@core/tenancy/tenant-clause.js";
 
 type FactRow = {
   id: string;
@@ -41,6 +51,7 @@ type FactRow = {
   confidence: number;
   retired_at?: string | null;
   scope: string | null;
+  tenant_id?: string;
 };
 
 export class SqliteFactStore implements FactStore {
@@ -53,63 +64,67 @@ export class SqliteFactStore implements FactStore {
 
   private cachedInsertStmt: Database.Statement<FactRow> | undefined;
 
-  async insert(fact: Fact): Promise<void> {
-    this.insertStmt().run(this.toRow(fact));
+  async insert(tenantId: string, fact: Fact): Promise<void> {
+    this.insertStmt().run(this.toRow(fact, null, tenantId));
   }
 
-  async insertMany(facts: ReadonlyArray<Fact>): Promise<void> {
+  async insertMany(tenantId: string, facts: ReadonlyArray<Fact>): Promise<void> {
     if (facts.length === 0) return;
     const stmt = this.insertStmt();
     const txn = this.db.transaction((rows: ReadonlyArray<FactRow>) => {
       for (const row of rows) stmt.run(row);
     });
-    txn(facts.map((f) => this.toRow(f)));
+    txn(facts.map((f) => this.toRow(f, null, tenantId)));
   }
 
-  async getById(id: string): Promise<Fact | null> {
-    const row = this.db
-      .prepare<[string], FactRow>(
-        `SELECT id, kind, subject, predicate, value, source_session_id,
-                source_quote, created_at, superseded_by, confidence, retired_at
-         FROM facts WHERE id = ?`,
-      )
-      .get(id);
-    return row ? this.rowToFact(row) : null;
-  }
-
-  async getByIds(ids: ReadonlyArray<string>): Promise<ReadonlyArray<Fact>> {
-    if (ids.length === 0) return [];
-    const placeholders = ids.map(() => "?").join(",");
-    const rows = this.db
-      .prepare<string[], FactRow>(
-        `SELECT id, kind, subject, predicate, value, source_session_id,
-                source_quote, created_at, superseded_by, confidence, retired_at
-         FROM facts WHERE id IN (${placeholders})`,
-      )
-      .all(...ids);
-    return rows.map((r) => this.rowToFact(r));
-  }
-
-  async findCurrent(subject: string, predicate: string): Promise<Fact | null> {
+  async getById(tenantId: string, id: string): Promise<Fact | null> {
+    const tc = tenantClause(tenantId);
     const row = this.db
       .prepare<[string, string], FactRow>(
         `SELECT id, kind, subject, predicate, value, source_session_id,
                 source_quote, created_at, superseded_by, confidence, retired_at
-         FROM facts
-         WHERE subject = ? AND predicate = ? AND superseded_by IS NULL AND retired_at IS NULL
-         ORDER BY created_at DESC
-         LIMIT 1`,
+         FROM facts WHERE id = ? AND ${tc.sql}`,
       )
-      .get(subject, predicate);
+      .get(id, tc.param);
     return row ? this.rowToFact(row) : null;
   }
 
-  async list(query: FactQuery): Promise<ReadonlyArray<Fact>> {
+  async getByIds(tenantId: string, ids: ReadonlyArray<string>): Promise<ReadonlyArray<Fact>> {
+    if (ids.length === 0) return [];
+    const placeholders = ids.map(() => "?").join(",");
+    const tc = tenantClause(tenantId);
+    const rows = this.db
+      .prepare<unknown[], FactRow>(
+        `SELECT id, kind, subject, predicate, value, source_session_id,
+                source_quote, created_at, superseded_by, confidence, retired_at
+         FROM facts WHERE id IN (${placeholders}) AND ${tc.sql}`,
+      )
+      .all(...ids, tc.param);
+    return rows.map((r) => this.rowToFact(r));
+  }
+
+  async findCurrent(tenantId: string, subject: string, predicate: string): Promise<Fact | null> {
+    const tc = tenantClause(tenantId);
+    const row = this.db
+      .prepare<[string, string, string], FactRow>(
+        `SELECT id, kind, subject, predicate, value, source_session_id,
+                source_quote, created_at, superseded_by, confidence, retired_at
+         FROM facts
+         WHERE subject = ? AND predicate = ? AND superseded_by IS NULL AND retired_at IS NULL AND ${tc.sql}
+         ORDER BY created_at DESC
+         LIMIT 1`,
+      )
+      .get(subject, predicate, tc.param);
+    return row ? this.rowToFact(row) : null;
+  }
+
+  async list(tenantId: string, query: FactQuery): Promise<ReadonlyArray<Fact>> {
     const limit = Math.max(1, Math.trunc(query.limit ?? 50));
     const includeSuperseded = query.includeSuperseded === true;
 
-    const where: string[] = ["subject = ?"];
-    const params: Array<string | number> = [query.subject];
+    const tc = tenantClause(tenantId);
+    const where: string[] = ["subject = ?", tc.sql];
+    const params: Array<string | number> = [query.subject, tc.param];
     if (query.predicate !== undefined) {
       where.push("predicate = ?");
       params.push(query.predicate);
@@ -133,36 +148,39 @@ export class SqliteFactStore implements FactStore {
     return rows.map((r) => this.rowToFact(r));
   }
 
-  async listBySession(sessionId: string): Promise<ReadonlyArray<Fact>> {
+  async listBySession(tenantId: string, sessionId: string): Promise<ReadonlyArray<Fact>> {
+    const tc = tenantClause(tenantId);
     const rows = this.db
-      .prepare<[string], FactRow>(
+      .prepare<[string, string], FactRow>(
         `SELECT id, kind, subject, predicate, value, source_session_id,
                 source_quote, created_at, superseded_by, confidence, retired_at
          FROM facts
-         WHERE source_session_id = ?
+         WHERE source_session_id = ? AND ${tc.sql}
          ORDER BY created_at ASC`,
       )
-      .all(sessionId);
+      .all(sessionId, tc.param);
     return rows.map((r) => this.rowToFact(r));
   }
 
-  async listBySessions(sessionIds: ReadonlyArray<string>, opts?: { includeSuperseded?: boolean }): Promise<ReadonlyArray<Fact>> {
+  async listBySessions(tenantId: string, sessionIds: ReadonlyArray<string>, opts?: { includeSuperseded?: boolean }): Promise<ReadonlyArray<Fact>> {
     if (sessionIds.length === 0) return [];
     const ph = sessionIds.map(() => "?").join(",");
     const filter = opts?.includeSuperseded === true ? "" : " AND superseded_by IS NULL AND retired_at IS NULL";
+    const tc = tenantClause(tenantId);
     const rows = this.db
-      .prepare<string[], FactRow>(
+      .prepare<unknown[], FactRow>(
         `SELECT id, kind, subject, predicate, value, source_session_id,
                 source_quote, created_at, superseded_by, confidence, retired_at
-         FROM facts WHERE source_session_id IN (${ph})${filter} ORDER BY created_at ASC`,
+         FROM facts WHERE source_session_id IN (${ph}) AND ${tc.sql}${filter} ORDER BY created_at ASC`,
       )
-      .all(...sessionIds);
+      .all(...sessionIds, tc.param);
     return rows.map((r) => this.rowToFact(r));
   }
 
-  async listForRecall(filter: FactListFilter): Promise<ReadonlyArray<Fact>> {
-    const where: string[] = [];
-    const params: Array<string | number> = [];
+  async listForRecall(tenantId: string, filter: FactListFilter): Promise<ReadonlyArray<Fact>> {
+    const tc = tenantClause(tenantId);
+    const where: string[] = [tc.sql];
+    const params: Array<string | number> = [tc.param];
     if (filter.subject !== undefined) {
       where.push("subject = ?");
       params.push(filter.subject);
@@ -189,7 +207,7 @@ export class SqliteFactStore implements FactStore {
       SELECT id, kind, subject, predicate, value, source_session_id,
              source_quote, created_at, superseded_by, confidence, retired_at
       FROM facts
-      ${where.length > 0 ? "WHERE " + where.join(" AND ") : ""}
+      WHERE ${where.join(" AND ")}
       ORDER BY created_at DESC
       LIMIT ?
     `;
@@ -200,6 +218,7 @@ export class SqliteFactStore implements FactStore {
   }
 
   async semanticSearch(
+    tenantId: string,
     queryVector: Float32Array,
     limit: number,
   ): Promise<ReadonlyArray<FactSemanticNeighbor>> {
@@ -209,6 +228,12 @@ export class SqliteFactStore implements FactStore {
       queryVector.byteOffset,
       queryVector.byteLength,
     );
+    // fact_embeddings carries no tenant_id (DERIVE-VIA-FK) — the KNN scan
+    // returns neighbors from the whole corpus. Re-resolve candidate ids
+    // against the tenant-filtered `facts` table before returning, per the
+    // vector-path rule (program spec §4.3): a neighbor whose fact doesn't
+    // resolve within the caller's tenant is dropped, not down-ranked.
+    const overfetchK = k * 4;
     const rows = this.db
       .prepare<[Buffer, number], NeighborRow>(`
         SELECT fact_id, distance
@@ -217,28 +242,43 @@ export class SqliteFactStore implements FactStore {
           AND k = ?
         ORDER BY distance
       `)
-      .all(blob, k);
-    return rows.map((r) => ({ factId: r.fact_id, distance: r.distance }));
+      .all(blob, overfetchK);
+    if (rows.length === 0) return [];
+    const candidateIds = [...new Set(rows.map((r) => r.fact_id))];
+    const placeholders = candidateIds.map(() => "?").join(",");
+    const tc = tenantClause(tenantId);
+    const resolvedRows = this.db
+      .prepare<unknown[], { id: string }>(
+        `SELECT id FROM facts WHERE id IN (${placeholders}) AND ${tc.sql}`,
+      )
+      .all(...candidateIds, tc.param);
+    const resolved = new Set(resolvedRows.map((r) => r.id));
+    return rows
+      .filter((r) => resolved.has(r.fact_id))
+      .slice(0, k)
+      .map((r) => ({ factId: r.fact_id, distance: r.distance }));
   }
 
   async getHistory(
+    tenantId: string,
     subject: string,
     predicate?: string,
   ): Promise<ReadonlyArray<FactHistoryChain>> {
+    const tc = tenantClause(tenantId);
     const sql = predicate
       ? `SELECT id, kind, subject, predicate, value, source_session_id,
                 source_quote, created_at, superseded_by, confidence
          FROM facts
-         WHERE subject = ? AND predicate = ?
+         WHERE subject = ? AND predicate = ? AND ${tc.sql}
          ORDER BY predicate ASC, created_at DESC`
       : `SELECT id, kind, subject, predicate, value, source_session_id,
                 source_quote, created_at, superseded_by, confidence
          FROM facts
-         WHERE subject = ?
+         WHERE subject = ? AND ${tc.sql}
          ORDER BY predicate ASC, created_at DESC`;
     const rows = predicate
-      ? this.db.prepare<[string, string], FactRow>(sql).all(subject, predicate)
-      : this.db.prepare<[string], FactRow>(sql).all(subject);
+      ? this.db.prepare<[string, string, string], FactRow>(sql).all(subject, predicate, tc.param)
+      : this.db.prepare<[string, string], FactRow>(sql).all(subject, tc.param);
 
     const byPred = new Map<string, Fact[]>();
     for (const r of rows) {
@@ -255,6 +295,7 @@ export class SqliteFactStore implements FactStore {
   }
 
   async corroborationCounts(
+    tenantId: string,
     triples: ReadonlyArray<{
       readonly subject: string;
       readonly predicate: string;
@@ -273,6 +314,7 @@ export class SqliteFactStore implements FactStore {
     for (const t of triples) {
       args.push(t.subject, t.predicate, t.value);
     }
+    const corrTc = tenantClause(tenantId, "f.tenant_id");
     const sql = `
       WITH q(subject, predicate, value) AS (VALUES ${placeholders})
       SELECT q.subject, q.predicate, q.value,
@@ -282,6 +324,7 @@ export class SqliteFactStore implements FactStore {
         ON f.subject = q.subject
        AND f.predicate = q.predicate
        AND f.value = q.value
+       AND ${corrTc.sql}
       GROUP BY q.subject, q.predicate, q.value
     `;
     type Row = {
@@ -290,7 +333,7 @@ export class SqliteFactStore implements FactStore {
       value: string;
       session_count: number;
     };
-    const rows = this.db.prepare<unknown[], Row>(sql).all(...args);
+    const rows = this.db.prepare<unknown[], Row>(sql).all(...args, corrTc.param);
     for (const r of rows) {
       out.set(`${r.subject} ${r.predicate} ${r.value}`, r.session_count);
     }
@@ -300,9 +343,16 @@ export class SqliteFactStore implements FactStore {
   /**
    * Insert (or replace) the embedding row for a fact. Best-effort: callers
    * trap embedder errors so an unreachable Ollama doesn't roll back ingest.
-   * vec0 doesn't UPDATE, so this is a DELETE+INSERT pair.
+   * vec0 doesn't UPDATE, so this is a DELETE+INSERT pair. Guarded by a
+   * tenant-scoped existence check — writing an embedding for a fact outside
+   * the caller's tenant is a no-op, not a fallthrough write.
    */
-  async upsertEmbedding(factId: string, vector: Float32Array): Promise<void> {
+  async upsertEmbedding(tenantId: string, factId: string, vector: Float32Array): Promise<void> {
+    const tc = tenantClause(tenantId);
+    const owned = this.db
+      .prepare<[string, string], { id: string }>(`SELECT id FROM facts WHERE id = ? AND ${tc.sql}`)
+      .get(factId, tc.param);
+    if (!owned) return;
     const blob = Buffer.from(vector.buffer, vector.byteOffset, vector.byteLength);
     this.db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ?").run(factId);
     this.db
@@ -310,24 +360,27 @@ export class SqliteFactStore implements FactStore {
       .run(factId, blob);
   }
 
-  async markSuperseded(oldId: string, newId: string | null): Promise<void> {
+  async markSuperseded(tenantId: string, oldId: string, newId: string | null): Promise<void> {
     if (newId !== null && oldId === newId) {
       throw new Error("A fact cannot supersede itself");
     }
     const txn = this.db.transaction(() => {
+      const oldTc = tenantClause(tenantId);
       const old = this.db
-        .prepare<[string], { id: string }>("SELECT id FROM facts WHERE id = ?")
-        .get(oldId);
+        .prepare<unknown[], { id: string }>(`SELECT id FROM facts WHERE id = ? AND ${oldTc.sql}`)
+        .get(oldId, oldTc.param);
       if (!old) throw new Error(`Fact ${oldId} not found`);
       if (newId !== null) {
+        const newTc = tenantClause(tenantId);
         const next = this.db
-          .prepare<[string], { id: string }>("SELECT id FROM facts WHERE id = ?")
-          .get(newId);
+          .prepare<unknown[], { id: string }>(`SELECT id FROM facts WHERE id = ? AND ${newTc.sql}`)
+          .get(newId, newTc.param);
         if (!next) throw new Error(`Fact ${newId} not found`);
       }
+      const updateTc = tenantClause(tenantId);
       this.db
-        .prepare("UPDATE facts SET superseded_by = ? WHERE id = ?")
-        .run(newId, oldId);
+        .prepare(`UPDATE facts SET superseded_by = ? WHERE id = ? AND ${updateTc.sql}`)
+        .run(newId, oldId, updateTc.param);
       // A superseded fact is recall-ineligible, so its embedding must leave the
       // ANN index (matching retire()'s behavior) — otherwise it consumes
       // k-nearest slots and silently reduces effective recall (NLM #351).
@@ -338,25 +391,28 @@ export class SqliteFactStore implements FactStore {
     txn();
   }
 
-  async retire(factId: string): Promise<void> {
+  async retire(tenantId: string, factId: string): Promise<void> {
     const txn = this.db.transaction(() => {
+      const rowTc = tenantClause(tenantId);
       const row = this.db
-        .prepare<[string], { id: string }>("SELECT id FROM facts WHERE id = ?")
-        .get(factId);
+        .prepare<unknown[], { id: string }>(`SELECT id FROM facts WHERE id = ? AND ${rowTc.sql}`)
+        .get(factId, rowTc.param);
       if (!row) throw new Error(`Fact ${factId} not found`);
+      const updateTc = tenantClause(tenantId);
       this.db
-        .prepare("UPDATE facts SET retired_at = ? WHERE id = ?")
-        .run(new Date().toISOString(), factId);
+        .prepare(`UPDATE facts SET retired_at = ? WHERE id = ? AND ${updateTc.sql}`)
+        .run(new Date().toISOString(), factId, updateTc.param);
       this.db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ?").run(factId);
     });
     txn();
   }
 
   async ingestSessionFacts(
+    tenantId: string,
     sessionId: string,
     facts: ReadonlyArray<Fact>,
   ): Promise<void> {
-    this.ingestSessionFactsInTxn(sessionId, facts);
+    this.ingestSessionFactsInTxn(tenantId, sessionId, facts);
   }
 
   /**
@@ -369,30 +425,34 @@ export class SqliteFactStore implements FactStore {
    * originally landed only here and silently skipped the inlined copies — the
    * path production actually uses — leaving both bugs live in production.
    */
-  ingestSessionFactsInTxn(sessionId: string, facts: ReadonlyArray<Fact>, scope: string | null = null): void {
+  ingestSessionFactsInTxn(tenantId: string, sessionId: string, facts: ReadonlyArray<Fact>, scope: string | null = null): void {
     // Re-ingesting a session replaces its facts; drop the old facts' embeddings
     // too, or they orphan in the ANN index as ghosts (NLM #351).
+    const staleTc = tenantClause(tenantId);
     const stale = this.db
-      .prepare<[string], { id: string }>("SELECT id FROM facts WHERE source_session_id = ?")
-      .all(sessionId);
-    this.db.prepare("DELETE FROM facts WHERE source_session_id = ?").run(sessionId);
+      .prepare<unknown[], { id: string }>(`SELECT id FROM facts WHERE source_session_id = ? AND ${staleTc.sql}`)
+      .all(sessionId, staleTc.param);
+    const deleteStaleTc = tenantClause(tenantId);
+    this.db.prepare(`DELETE FROM facts WHERE source_session_id = ? AND ${deleteStaleTc.sql}`).run(sessionId, deleteStaleTc.param);
     const delStaleEmb = this.db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ?");
     for (const row of stale) delStaleEmb.run(row.id);
     if (facts.length === 0) return;
 
     const insertStmt = this.insertStmt();
-    for (const f of facts) insertStmt.run(this.toRow(f, scope));
+    for (const f of facts) insertStmt.run(this.toRow(f, scope, tenantId));
 
     // Collapse EVERY other active fact for this (subject, predicate) under the
     // new fact, not just the single most-recent prior. A single-prior loop
     // cannot restore the invariant once two priors are already active and
     // leaves the duplicate live forever. See NLM #301.
-    const findSupersededStmt = this.db.prepare<[string, string, string], { id: string }>(
-      `SELECT id FROM facts WHERE subject = ? AND predicate = ? AND superseded_by IS NULL AND id != ?`,
+    const findTc = tenantClause(tenantId);
+    const findSupersededStmt = this.db.prepare<unknown[], { id: string }>(
+      `SELECT id FROM facts WHERE subject = ? AND predicate = ? AND superseded_by IS NULL AND id != ? AND ${findTc.sql}`,
     );
+    const markTc = tenantClause(tenantId);
     const markSupersededStmt = this.db.prepare(
       `UPDATE facts SET superseded_by = ?
-       WHERE subject = ? AND predicate = ? AND superseded_by IS NULL AND id != ?`,
+       WHERE subject = ? AND predicate = ? AND superseded_by IS NULL AND id != ? AND ${markTc.sql}`,
     );
     const delEmbeddingStmt = this.db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ?");
     // Collapse ONCE per (subject, predicate), under a single winner. Running the
@@ -405,8 +465,8 @@ export class SqliteFactStore implements FactStore {
       // Capture which facts this collapse supersedes BEFORE the update, then
       // drop their embeddings — a superseded fact must not linger in the ANN
       // index (NLM #351). Same reason markSuperseded/retire delete embeddings.
-      const collapsed = findSupersededStmt.all(f.subject, f.predicate, f.id);
-      markSupersededStmt.run(f.id, f.subject, f.predicate, f.id);
+      const collapsed = findSupersededStmt.all(f.subject, f.predicate, f.id, tenantId);
+      markSupersededStmt.run(f.id, f.subject, f.predicate, f.id, tenantId);
       for (const row of collapsed) delEmbeddingStmt.run(row.id);
     }
   }
@@ -417,18 +477,18 @@ export class SqliteFactStore implements FactStore {
         INSERT INTO facts (
           id, kind, subject, predicate, value, source_session_id,
           source_quote, created_at, superseded_by, confidence, retired_at,
-          scope
+          scope, tenant_id
         ) VALUES (
           @id, @kind, @subject, @predicate, @value, @source_session_id,
           @source_quote, @created_at, @superseded_by, @confidence, @retired_at,
-          @scope
+          @scope, @tenant_id
         )
       `);
     }
     return this.cachedInsertStmt;
   }
 
-  private toRow(fact: Fact, scope: string | null = null): FactRow {
+  private toRow(fact: Fact, scope: string | null, tenantId: string): FactRow {
     return {
       id: fact.id,
       kind: fact.kind,
@@ -442,6 +502,7 @@ export class SqliteFactStore implements FactStore {
       confidence: fact.confidence,
       retired_at: fact.retiredAt ?? null,
       scope,
+      tenant_id: tenantId,
     };
   }
 

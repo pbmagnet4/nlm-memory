@@ -4,6 +4,11 @@
  * Constructor takes the Pool from PgStorage. Also exposes recentWrites()
  * and recentMarkers() for the /live HTTP endpoints, and insertSession() +
  * insertSessionForTest() for ingest and test seeding.
+ *
+ * Tenancy: mirrors SqliteSessionStore — every method takes `tenantId` as its
+ * non-optional first parameter and routes STAMP-table WHERE fragments
+ * through `tenantClausePg`. See that file's header comment for the full
+ * per-table rationale.
  */
 
 import type { Pool, PoolClient } from "pg";
@@ -23,6 +28,8 @@ import { batchWinners } from "./fact-batch.js";
 import { loadActionOverlayPg, openQuestionId } from "@core/actions/overlay.js";
 import type { ActionOverlay } from "@core/actions/overlay.js";
 import { liveSessionStatus } from "./live-status.js";
+import { tenantClausePg } from "@core/tenancy/tenant-clause.js";
+import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 
 type SessionRow = {
   id: string;
@@ -53,28 +60,36 @@ type SessionRow = {
  * whose distinct entity-set is identical to the new session's. Runs on the
  * ingest transaction's own client. Returns null when there is no entity-set or
  * no exact-set match, leaving the pair unlinked for the re_derivation_rate metric.
+ * Scoped to the same tenant as the new session.
  */
 async function findContinuesPredecessorPg(
   client: PoolClient,
+  tenantId: string,
   newId: string,
   rawEntities: ReadonlyArray<string>,
 ): Promise<string | null> {
   const entities = [...new Set(rawEntities.map((e) => e.trim()).filter(Boolean))];
   if (entities.length === 0) return null;
-  const placeholders = entities.map((_, i) => `$${i + 2}`).join(",");
+  const placeholders = entities.map((_, i) => `$${i + 3}`).join(",");
+  // session_entities rows are always written with the same tenant_id as their
+  // owning session (every write site stamps both together), so scoping the
+  // outer `sessions` row by tenant is sufficient — the join to
+  // session_entities is already transitively tenant-scoped via session_id.
+  const tc = tenantClausePg(tenantId, 2, "s.tenant_id");
   const res = await client.query<{ id: string }>(
     `SELECT s.id AS id
        FROM sessions s
        JOIN session_entities se ON se.session_id = s.id
       WHERE s.id != $1
+        AND ${tc.sql}
         AND se.entity_canonical IN (${placeholders})
       GROUP BY s.id
-     HAVING COUNT(DISTINCT se.entity_canonical) = $${entities.length + 2}
+     HAVING COUNT(DISTINCT se.entity_canonical) = $${entities.length + 3}
         AND COUNT(DISTINCT se.entity_canonical)
           = (SELECT COUNT(*) FROM session_entities x WHERE x.session_id = s.id)
       ORDER BY s.started_at DESC, s.id DESC
       LIMIT 1`,
-    [newId, ...entities, entities.length],
+    [newId, tc.param, ...entities, entities.length],
   );
   return res.rows[0]?.id ?? null;
 }
@@ -103,19 +118,20 @@ export class PgSessionStore implements SessionStore {
     return this.overlayCache;
   }
 
-  async getById(sessionId: string): Promise<Session | null> {
+  async getById(tenantId: string, sessionId: string): Promise<Session | null> {
+    const tc = tenantClausePg(tenantId, 2);
     const result = await this.pool.query<SessionRow>(
       `SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
               label, summary, status, transcript_kind, transcript_path, body,
               classifier_provider, classifier_model, classifier_confidence,
               agent_persona, parent_session_id,
               primary_model, total_tokens, skill
-       FROM sessions WHERE id = $1`,
-      [sessionId],
+       FROM sessions WHERE id = $1 AND ${tc.sql}`,
+      [sessionId, tc.param],
     );
     if (!result.rows[0]) return null;
     const [entitiesMap, markersMap, edgesMap, overlay] = await Promise.all([
-      this.loadEntities([sessionId]),
+      this.loadEntities(tenantId, [sessionId]),
       this.loadMarkers([sessionId]),
       this.loadEdges([sessionId]),
       this.overlay(),
@@ -124,38 +140,40 @@ export class PgSessionStore implements SessionStore {
     return rowToSession(result.rows[0], entitiesMap, markersMap, overlay, edges);
   }
 
-  async getByIds(ids: ReadonlyArray<string>): Promise<ReadonlyArray<Session>> {
+  async getByIds(tenantId: string, ids: ReadonlyArray<string>): Promise<ReadonlyArray<Session>> {
     if (ids.length === 0) return [];
     const placeholders = ids.map((_, i) => `$${i + 1}`).join(",");
+    const tc = tenantClausePg(tenantId, ids.length + 1);
     const result = await this.pool.query<Omit<SessionRow, "body">>(
       `SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
               label, summary, status, transcript_kind, transcript_path
-       FROM sessions WHERE id IN (${placeholders})`,
-      [...ids],
+       FROM sessions WHERE id IN (${placeholders}) AND ${tc.sql}`,
+      [...ids, tc.param],
     );
     if (result.rows.length === 0) return [];
     const foundIds = result.rows.map((r) => r.id);
     const [entitiesMap, markersMap, overlay] = await Promise.all([
-      this.loadEntities(foundIds),
+      this.loadEntities(tenantId, foundIds),
       this.loadMarkers(foundIds),
       this.overlay(),
     ]);
     return result.rows.map((r) => rowToSession({ ...r, body: null }, entitiesMap, markersMap, overlay));
   }
 
-  async listByDateRange(fromIso: string, toIso: string): Promise<ReadonlyArray<Session>> {
+  async listByDateRange(tenantId: string, fromIso: string, toIso: string): Promise<ReadonlyArray<Session>> {
+    const tc = tenantClausePg(tenantId, 3);
     const result = await this.pool.query<Omit<SessionRow, "body">>(
       `SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
               label, summary, status, transcript_kind, transcript_path, workstream_id
        FROM sessions
-       WHERE started_at < $1 AND (ended_at IS NULL OR ended_at >= $2)
+       WHERE started_at < $1 AND (ended_at IS NULL OR ended_at >= $2) AND ${tc.sql}
        ORDER BY started_at ASC`,
-      [toIso, fromIso],
+      [toIso, fromIso, tc.param],
     );
     if (result.rows.length === 0) return [];
     const ids = result.rows.map((r) => r.id);
     const [entitiesMap, markersMap, overlay] = await Promise.all([
-      this.loadEntities(ids),
+      this.loadEntities(tenantId, ids),
       this.loadMarkers(ids),
       this.overlay(),
     ]);
@@ -163,6 +181,7 @@ export class PgSessionStore implements SessionStore {
   }
 
   async semanticSearch(
+    tenantId: string,
     queryVector: Float32Array,
     limit: number,
     opts?: SearchOptions,
@@ -181,8 +200,13 @@ export class PgSessionStore implements SessionStore {
       params.push(wsIds);
       wsClause = `AND s.workstream_id = ANY($${params.length}::text[])`;
     }
+    // Tenant filter is applied in the id-resolution join against `sessions`
+    // (program spec §4.3, vector-path rule) — the `<->` KNN scan over
+    // session_embedding_chunks has no tenant column of its own.
+    const tc = tenantClausePg(tenantId, params.length + 1, "s.tenant_id");
+    params.push(tc.param);
+    const limitParam = `$${params.length + 1}`;
     params.push(k);
-    const limitParam = `$${params.length}`;
     const result = await this.pool.query<{
       session_id: string;
       distance: number;
@@ -191,7 +215,7 @@ export class PgSessionStore implements SessionStore {
       `SELECT sec.session_id, MIN(sec.embedding <-> $1::vector) AS distance, s.status
        FROM session_embedding_chunks sec
        JOIN sessions s ON s.id = sec.session_id
-       WHERE TRUE ${wsClause}
+       WHERE ${tc.sql} ${wsClause}
        GROUP BY sec.session_id, s.status
        HAVING ${statusFilter}
        ORDER BY distance
@@ -202,6 +226,7 @@ export class PgSessionStore implements SessionStore {
   }
 
   async keywordSearch(
+    tenantId: string,
     query: string,
     limit: number,
     opts?: SearchOptions,
@@ -222,6 +247,8 @@ export class PgSessionStore implements SessionStore {
       params.push(wsIds);
       wsClause = `AND workstream_id = ANY($${params.length}::text[])`;
     }
+    const tc = tenantClausePg(tenantId, params.length + 1);
+    params.push(tc.param);
     params.push(k);
     const limitParam = `$${params.length}`;
     const result = await this.pool.query<{ session_id: string; score: number }>(
@@ -231,6 +258,7 @@ export class PgSessionStore implements SessionStore {
        WHERE fts_vector @@ websearch_to_tsquery('english', $1)
          AND ${statusFilter}
          ${wsClause}
+         AND ${tc.sql}
        ORDER BY score DESC
        LIMIT ${limitParam}`,
       params,
@@ -238,44 +266,50 @@ export class PgSessionStore implements SessionStore {
     return result.rows.map((r) => ({ sessionId: r.session_id, score: r.score }));
   }
 
-  async resolveSuccessors(ids: ReadonlyArray<string>): Promise<Map<string, string>> {
+  async resolveSuccessors(tenantId: string, ids: ReadonlyArray<string>): Promise<Map<string, string>> {
     if (ids.length === 0) return new Map();
     const placeholders = ids.map((_, i) => `$${i + 1}`).join(",");
+    const tc = tenantClausePg(tenantId, ids.length + 1, "s.tenant_id");
     const result = await this.pool.query<{ from_session: string; to_session: string }>(
-      `SELECT from_session, to_session FROM session_edges
-       WHERE kind = 'supersedes' AND to_session IN (${placeholders})`,
-      [...ids],
+      `SELECT se.from_session, se.to_session
+       FROM session_edges se
+       JOIN sessions s ON s.id = se.to_session
+       WHERE se.kind = 'supersedes' AND se.to_session IN (${placeholders}) AND ${tc.sql}`,
+      [...ids, tc.param],
     );
     const out = new Map<string, string>();
     for (const r of result.rows) out.set(r.to_session, r.from_session);
     return out;
   }
 
-  async updateStatus(sessionId: string, status: SessionStatus): Promise<void> {
+  async updateStatus(tenantId: string, sessionId: string, status: SessionStatus): Promise<void> {
     if (status === "idle") {
       throw new Error("Cannot persist derived status 'idle' — only active/closed/superseded");
     }
+    const tc = tenantClausePg(tenantId, 3);
     await this.pool.query(
-      "UPDATE sessions SET status = $1, updated_at = NOW() WHERE id = $2",
-      [status, sessionId],
+      `UPDATE sessions SET status = $1, updated_at = NOW() WHERE id = $2 AND ${tc.sql}`,
+      [status, sessionId, tc.param],
     );
   }
 
-  async markSuperseded(predecessorId: string, successorId: string): Promise<void> {
+  async markSuperseded(tenantId: string, predecessorId: string, successorId: string): Promise<void> {
     if (predecessorId === successorId) {
       throw new Error("A session cannot supersede itself");
     }
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      const predExistsTc = tenantClausePg(tenantId, 2);
       const predExists = await client.query<{ c: string }>(
-        "SELECT COUNT(*) AS c FROM sessions WHERE id = $1", [predecessorId],
+        `SELECT COUNT(*) AS c FROM sessions WHERE id = $1 AND ${predExistsTc.sql}`, [predecessorId, predExistsTc.param],
       );
       if (Number(predExists.rows[0]?.c) === 0) {
         throw new Error(`predecessor session ${predecessorId} not found`);
       }
+      const succExistsTc = tenantClausePg(tenantId, 2);
       const succExists = await client.query<{ c: string }>(
-        "SELECT COUNT(*) AS c FROM sessions WHERE id = $1", [successorId],
+        `SELECT COUNT(*) AS c FROM sessions WHERE id = $1 AND ${succExistsTc.sql}`, [successorId, succExistsTc.param],
       );
       if (Number(succExists.rows[0]?.c) === 0) {
         throw new Error(`successor session ${successorId} not found`);
@@ -316,12 +350,16 @@ export class PgSessionStore implements SessionStore {
          ON CONFLICT DO NOTHING`,
         [successorId, predecessorId],
       );
+      const statusTc = tenantClausePg(tenantId, 2);
       await client.query(
-        "UPDATE sessions SET status = 'superseded', updated_at = NOW() WHERE id = $1",
-        [predecessorId],
+        `UPDATE sessions SET status = 'superseded', updated_at = NOW() WHERE id = $1 AND ${statusTc.sql}`,
+        [predecessorId, statusTc.param],
       );
 
-      // Cascade supersedence to facts in a single correlated UPDATE
+      // Cascade supersedence to facts in a single correlated UPDATE, scoped to
+      // the caller's tenant on both sides of the join.
+      const sTc = tenantClausePg(tenantId, 3, "s.tenant_id");
+      const pTc = tenantClausePg(tenantId, 3, "p.tenant_id");
       const cascadeSQL = `
         UPDATE facts AS p
         SET superseded_by = (
@@ -330,20 +368,23 @@ export class PgSessionStore implements SessionStore {
             AND s.subject = p.subject
             AND s.predicate = p.predicate
             AND s.superseded_by IS NULL
+            AND ${sTc.sql}
           LIMIT 1
         )
         WHERE p.source_session_id = $1
+          AND ${pTc.sql}
           AND EXISTS (
             SELECT 1 FROM facts s
             WHERE s.source_session_id = $2
               AND s.subject = p.subject
               AND s.predicate = p.predicate
               AND s.superseded_by IS NULL
+              AND ${sTc.sql}
           )
       `;
       const cascaded = await client.query<{ id: string }>(
         cascadeSQL + " RETURNING p.id",
-        [predecessorId, successorId],
+        [predecessorId, successorId, sTc.param],
       );
       const cascadedIds = cascaded.rows.map((r) => r.id);
       if (cascadedIds.length > 0) {
@@ -359,56 +400,64 @@ export class PgSessionStore implements SessionStore {
     }
   }
 
-  async getSessionScopeById(id: string): Promise<string | null> {
-    const r = await this.pool.query<{ scope: string | null }>("SELECT scope FROM sessions WHERE id = $1", [id]);
+  async getSessionScopeById(tenantId: string, id: string): Promise<string | null> {
+    const tc = tenantClausePg(tenantId, 2);
+    const r = await this.pool.query<{ scope: string | null }>(
+      `SELECT scope FROM sessions WHERE id = $1 AND ${tc.sql}`, [id, tc.param],
+    );
     return r.rows[0]?.scope ?? null;
   }
 
-  async setWorkstreamBinding(sessionId: string, workstreamId: string | null, source: import("@core/workstream/model.js").BindingSource | null, confidence: number | null): Promise<void> {
+  async setWorkstreamBinding(tenantId: string, sessionId: string, workstreamId: string | null, source: import("@core/workstream/model.js").BindingSource | null, confidence: number | null): Promise<void> {
+    const tc = tenantClausePg(tenantId, 5);
     await this.pool.query(
-      "UPDATE sessions SET workstream_id = $1, binding_source = $2, binding_confidence = $3, updated_at = NOW() WHERE id = $4",
-      [workstreamId, source, confidence, sessionId],
+      `UPDATE sessions SET workstream_id = $1, binding_source = $2, binding_confidence = $3, updated_at = NOW() WHERE id = $4 AND ${tc.sql}`,
+      [workstreamId, source, confidence, sessionId, tc.param],
     );
   }
 
-  async listSessionIdsByWorkstreams(workstreamIds: ReadonlyArray<string>): Promise<ReadonlyArray<string>> {
+  async listSessionIdsByWorkstreams(tenantId: string, workstreamIds: ReadonlyArray<string>): Promise<ReadonlyArray<string>> {
     if (workstreamIds.length === 0) return [];
     const ph = workstreamIds.map((_, i) => `$${i + 1}`).join(",");
+    const tc = tenantClausePg(tenantId, workstreamIds.length + 1);
     const r = await this.pool.query<{ id: string }>(
-      `SELECT id FROM sessions WHERE workstream_id IN (${ph}) ORDER BY started_at ASC`, [...workstreamIds],
+      `SELECT id FROM sessions WHERE workstream_id IN (${ph}) AND ${tc.sql} ORDER BY started_at ASC`, [...workstreamIds, tc.param],
     );
     return r.rows.map((row) => row.id);
   }
 
-  async getEntities(sessionId: string): Promise<ReadonlyArray<string>> {
-    return (await this.loadEntities([sessionId])).get(sessionId) ?? [];
+  async getEntities(tenantId: string, sessionId: string): Promise<ReadonlyArray<string>> {
+    return (await this.loadEntities(tenantId, [sessionId])).get(sessionId) ?? [];
   }
 
-  async getWorkstreamIds(sessionIds: ReadonlyArray<string>): Promise<Map<string, string | null>> {
+  async getWorkstreamIds(tenantId: string, sessionIds: ReadonlyArray<string>): Promise<Map<string, string | null>> {
     const out = new Map<string, string | null>();
     if (sessionIds.length === 0) return out;
     const ph = sessionIds.map((_, i) => `$${i + 1}`).join(",");
+    const tc = tenantClausePg(tenantId, sessionIds.length + 1);
     const result = await this.pool.query<{ id: string; workstream_id: string | null }>(
-      `SELECT id, workstream_id FROM sessions WHERE id IN (${ph})`, [...sessionIds],
+      `SELECT id, workstream_id FROM sessions WHERE id IN (${ph}) AND ${tc.sql}`, [...sessionIds, tc.param],
     );
     for (const r of result.rows) out.set(r.id, r.workstream_id);
     return out;
   }
 
-  async recentWrites(limit: number): Promise<RecentWrite[]> {
+  async recentWrites(tenantId: string, limit: number): Promise<RecentWrite[]> {
+    const tc = tenantClausePg(tenantId, 2);
     const result = await this.pool.query<Omit<RecentWrite, "entities">>(
       `SELECT id, runtime, label, summary, created_at AS "createdAt"
-       FROM sessions ORDER BY created_at DESC LIMIT $1`,
-      [limit],
+       FROM sessions WHERE ${tc.sql} ORDER BY created_at DESC LIMIT $1`,
+      [limit, tc.param],
     );
     if (result.rows.length === 0) return [];
     const ids = result.rows.map((r) => r.id);
+    const entTc = tenantClausePg(tenantId, 2);
     const entityResult = await this.pool.query<{ session_id: string; entity_canonical: string }>(
       `SELECT session_id, entity_canonical
        FROM session_entities
-       WHERE session_id = ANY($1)
+       WHERE session_id = ANY($1) AND ${entTc.sql}
        ORDER BY entity_canonical`,
-      [ids],
+      [ids, entTc.param],
     );
     const byId = new Map<string, string[]>();
     for (const e of entityResult.rows) {
@@ -419,19 +468,22 @@ export class PgSessionStore implements SessionStore {
     return result.rows.map((r) => ({ ...r, entities: byId.get(r.id) ?? [] }));
   }
 
-  async recentMarkers(limit: number): Promise<RecentMarker[]> {
+  async recentMarkers(tenantId: string, limit: number): Promise<RecentMarker[]> {
+    const tc = tenantClausePg(tenantId, 2, "s.tenant_id");
     const result = await this.pool.query<RecentMarker>(
       `SELECT m.session_id AS "sessionId", m.kind, m.text, s.label, s.created_at AS "createdAt"
        FROM markers m
        JOIN sessions s ON s.id = m.session_id
+       WHERE ${tc.sql}
        ORDER BY s.created_at DESC, m.position ASC
        LIMIT $1`,
-      [limit],
+      [limit, tc.param],
     );
     return result.rows;
   }
 
   async insertSession(
+    tenantId: string,
     record: IngestRecord,
     embedder: import("@ports/llm-client.js").LLMClient | null = null,
     supersedes: Supersedes | null = null,
@@ -447,8 +499,8 @@ export class PgSessionStore implements SessionStore {
            transcript_offset, transcript_length,
            classifier_provider, classifier_model, classifier_confidence,
            scope, agent_persona, parent_session_id,
-           primary_model, total_tokens, skill
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+           primary_model, total_tokens, skill, tenant_id
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
          ON CONFLICT (id) DO UPDATE SET
            ended_at = EXCLUDED.ended_at,
            duration_min = EXCLUDED.duration_min,
@@ -482,6 +534,7 @@ export class PgSessionStore implements SessionStore {
           record.primaryModel ?? null,
           record.totalTokens ?? null,
           record.skill ?? null,
+          tenantId,
         ],
       );
       await client.query("DELETE FROM markers WHERE session_id = $1", [record.id]);
@@ -504,37 +557,42 @@ export class PgSessionStore implements SessionStore {
       const rawNewEntities = [...new Set(record.entities.map((e) => e.trim()).filter(Boolean))];
       // Resolve each extracted entity through entity_variants so merged surface
       // forms bind to the canonical instead of resurrecting the retired source.
+      const variantTc = tenantClausePg(tenantId, 1);
       const variantRes = await client.query<{ variant: string; canonical: string }>(
-        `SELECT variant, canonical FROM entity_variants WHERE variant = ANY($1)`,
-        [rawNewEntities],
+        `SELECT variant, canonical FROM entity_variants WHERE ${variantTc.sql} AND variant = ANY($2)`,
+        [variantTc.param, rawNewEntities],
       );
       const variantMap = new Map(variantRes.rows.map((r) => [r.variant, r.canonical]));
       const newEntities = rawNewEntities.map((name) => variantMap.get(name) ?? name);
+      const oldTc = tenantClausePg(tenantId, 1);
       const oldRes = await client.query<{ entity_canonical: string }>(
-        "SELECT entity_canonical FROM session_entities WHERE session_id = $1",
-        [record.id],
+        `SELECT entity_canonical FROM session_entities WHERE ${oldTc.sql} AND session_id = $2`,
+        [oldTc.param, record.id],
       );
       const oldEntities = new Set(oldRes.rows.map((r) => r.entity_canonical));
 
-      await client.query("DELETE FROM session_entities WHERE session_id = $1", [record.id]);
+      const deleteTc = tenantClausePg(tenantId, 1);
+      await client.query(`DELETE FROM session_entities WHERE ${deleteTc.sql} AND session_id = $2`, [deleteTc.param, record.id]);
 
       for (const name of newEntities) {
+        const insertTc = tenantClausePg(tenantId, 1);
         await client.query(
-          `INSERT INTO entities (canonical, type, status, source, first_seen_session, last_seen_session, session_count)
-           VALUES ($1, 'candidate', 'candidate', 'auto-detected', $2, $2, 0)
-           ON CONFLICT (canonical) DO NOTHING`,
-          [name, record.id],
+          `INSERT INTO entities (tenant_id, canonical, type, status, source, first_seen_session, last_seen_session, session_count)
+           VALUES ($1, $2, 'candidate', 'candidate', 'auto-detected', $3, $3, 0)
+           ON CONFLICT (tenant_id, canonical) DO NOTHING`,
+          [insertTc.param, name, record.id],
         );
         // Update last_seen for entities newly added to this session; matches prior touch semantics.
         if (!oldEntities.has(name)) {
+          const touchTc = tenantClausePg(tenantId, 2);
           await client.query(
-            "UPDATE entities SET last_seen_session = $1, updated_at = NOW() WHERE canonical = $2",
-            [record.id, name],
+            `UPDATE entities SET last_seen_session = $1, updated_at = NOW() WHERE ${touchTc.sql} AND canonical = $3`,
+            [record.id, touchTc.param, name],
           );
         }
         await client.query(
-          "INSERT INTO session_entities (session_id, entity_canonical) VALUES ($1, $2)",
-          [record.id, name],
+          "INSERT INTO session_entities (tenant_id, session_id, entity_canonical) VALUES ($1, $2, $3)",
+          [tenantId, record.id, name],
         );
       }
 
@@ -542,9 +600,10 @@ export class PgSessionStore implements SessionStore {
       // counts reflect reality regardless of prior drift.
       const allTouched = [...new Set([...oldEntities, ...newEntities])];
       for (const name of allTouched) {
+        const recomputeTc = tenantClausePg(tenantId, 2);
         await client.query(
-          "UPDATE entities SET session_count = (SELECT COUNT(*) FROM session_entities WHERE entity_canonical = $1), updated_at = NOW() WHERE canonical = $1",
-          [name],
+          `UPDATE entities SET session_count = (SELECT COUNT(*) FROM session_entities WHERE ${recomputeTc.sql} AND entity_canonical = $1), updated_at = NOW() WHERE ${recomputeTc.sql} AND canonical = $1`,
+          [name, recomputeTc.param],
         );
       }
       if (supersedes && supersedes.priorSessionId !== record.id) {
@@ -554,12 +613,13 @@ export class PgSessionStore implements SessionStore {
            VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
           [record.id, supersedes.priorSessionId, supersedes.kind],
         );
+        const predStatusTc = tenantClausePg(tenantId, 3);
         await client.query(
-          "UPDATE sessions SET status = $1, updated_at = NOW() WHERE id = $2",
-          [predecessorStatus, supersedes.priorSessionId],
+          `UPDATE sessions SET status = $1, updated_at = NOW() WHERE id = $2 AND ${predStatusTc.sql}`,
+          [predecessorStatus, supersedes.priorSessionId, predStatusTc.param],
         );
       } else {
-        const priorId = await findContinuesPredecessorPg(client, record.id, record.entities);
+        const priorId = await findContinuesPredecessorPg(client, tenantId, record.id, record.entities);
         if (priorId !== null) {
           await client.query(
             `INSERT INTO session_edges (from_session, to_session, kind)
@@ -571,7 +631,7 @@ export class PgSessionStore implements SessionStore {
 
       // Atomic session+facts ingest on the session's own client. Single source of truth: pg-fact-ingest.ts.
       if (factSink !== null) {
-        await ingestSessionFactsOnClient(client, record.id, factSink.facts, record.scope);
+        await ingestSessionFactsOnClient(client, tenantId, record.id, factSink.facts, record.scope);
       }
 
       await client.query("COMMIT");
@@ -614,7 +674,7 @@ export class PgSessionStore implements SessionStore {
           if (!factText) continue;
           try {
             const { vector } = await embedder.embed(factText, "document");
-            await factSink.factStore.upsertEmbedding(fact.id, vector);
+            await factSink.factStore.upsertEmbedding(tenantId, fact.id, vector);
           } catch {
             // Tolerated; see comment above.
           }
@@ -623,26 +683,26 @@ export class PgSessionStore implements SessionStore {
     }
   }
 
-  async insertSessionForTest(session: Session): Promise<void> {
+  async insertSessionForTest(session: Session, tenantId: string = DEFAULT_TEAM_ID): Promise<void> {
     const status: SessionStatus = session.status === "idle" ? "active" : session.status;
     await this.pool.query(
       `INSERT INTO sessions (id, runtime, runtime_session_id, started_at, ended_at,
-         duration_min, label, summary, body, status, transcript_kind, transcript_path)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+         duration_min, label, summary, body, status, transcript_kind, transcript_path, tenant_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
       [
         session.id, session.runtime, session.runtimeSessionId, session.startedAt,
         session.endedAt, session.durationMin, session.label, session.summary,
-        session.body, status, session.transcriptKind, session.transcriptPath,
+        session.body, status, session.transcriptKind, session.transcriptPath, tenantId,
       ],
     );
     for (const e of session.entities) {
       await this.pool.query(
-        "INSERT INTO entities (canonical, type, status) VALUES ($1, 'candidate', 'active') ON CONFLICT DO NOTHING",
-        [e],
+        "INSERT INTO entities (tenant_id, canonical, type, status) VALUES ($1, $2, 'candidate', 'active') ON CONFLICT DO NOTHING",
+        [tenantId, e],
       );
       await this.pool.query(
-        "INSERT INTO session_entities (session_id, entity_canonical) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-        [session.id, e],
+        "INSERT INTO session_entities (tenant_id, session_id, entity_canonical) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+        [tenantId, session.id, e],
       );
     }
     for (let i = 0; i < session.decisions.length; i++) {
@@ -660,18 +720,25 @@ export class PgSessionStore implements SessionStore {
   }
 
   /** PG counterpart of SqliteSessionStore.listBackfillCandidates. */
-  async listBackfillCandidates(filter: BackfillCandidateFilter): Promise<BackfillCandidate[]> {
+  async listBackfillCandidates(tenantId: string, filter: BackfillCandidateFilter): Promise<BackfillCandidate[]> {
     const params: unknown[] = [filter.cutoff];
     let fromClause = "";
     if (filter.from) { params.push(filter.from); fromClause = `AND s.id > $${params.length}`; }
+    // facts.tenant_id is always stamped to match its source_session_id's
+    // session tenant (every write site stamps both together), so scoping by
+    // source_session_id = s.id against an already tenant-filtered `s` is
+    // sufficient without a redundant facts.tenant_id check.
     const existingFactsClause = filter.reprocess
       ? ""
       : "AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.source_session_id = s.id)";
+    const tc = tenantClausePg(tenantId, params.length + 1, "s.tenant_id");
+    params.push(tc.param);
     const result = await this.pool.query<{ id: string; started_at: string; body: string | null }>(
       `SELECT s.id, s.started_at, s.body FROM sessions s
        WHERE s.started_at < $1 AND s.body IS NOT NULL AND length(s.body) > 0
          ${existingFactsClause}
          ${fromClause}
+         AND ${tc.sql}
        ORDER BY s.started_at ASC, s.id ASC`,
       params,
     );
@@ -682,16 +749,17 @@ export class PgSessionStore implements SessionStore {
    *  for an EXISTING session row (deterministic supersedence + best-effort
    *  embeddings) in one transaction. Used by the fact backfill. */
   async insertFactsForSession(
+    tenantId: string,
     sessionId: string,
     factStore: PgFactStore,
     facts: ReadonlyArray<Fact>,
     embedder: import("@ports/llm-client.js").LLMClient | null = null,
   ): Promise<void> {
-    const sessionScope = await this.getSessionScopeById(sessionId);
+    const sessionScope = await this.getSessionScopeById(tenantId, sessionId);
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      await ingestSessionFactsOnClient(client, sessionId, facts, sessionScope);
+      await ingestSessionFactsOnClient(client, tenantId, sessionId, facts, sessionScope);
       await client.query("COMMIT");
     } catch (err) {
       await client.query("ROLLBACK");
@@ -705,7 +773,7 @@ export class PgSessionStore implements SessionStore {
         if (!factText) continue;
         try {
           const { vector } = await embedder.embed(factText, "document");
-          await factStore.upsertEmbedding(fact.id, vector);
+          await factStore.upsertEmbedding(tenantId, fact.id, vector);
         } catch {
           // Best-effort; a per-fact embed failure leaves the fact current but
           // semantically unreachable until a future re-ingest.
@@ -714,13 +782,14 @@ export class PgSessionStore implements SessionStore {
     }
   }
 
-  private async loadEntities(ids: ReadonlyArray<string>): Promise<Map<string, string[]>> {
+  private async loadEntities(tenantId: string, ids: ReadonlyArray<string>): Promise<Map<string, string[]>> {
     if (ids.length === 0) return new Map();
     const placeholders = ids.map((_, i) => `$${i + 1}`).join(",");
+    const tc = tenantClausePg(tenantId, ids.length + 1);
     const result = await this.pool.query<{ session_id: string; entity_canonical: string }>(
       `SELECT session_id, entity_canonical FROM session_entities
-       WHERE session_id IN (${placeholders}) ORDER BY session_id`,
-      [...ids],
+       WHERE session_id IN (${placeholders}) AND ${tc.sql} ORDER BY session_id`,
+      [...ids, tc.param],
     );
     const out = new Map<string, string[]>();
     for (const r of result.rows) {

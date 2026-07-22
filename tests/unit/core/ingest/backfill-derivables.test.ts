@@ -72,35 +72,32 @@ describe("backfillDerivables", () => {
     // 3 claude-code subagent rows (two with a resolvable parent, one whose
     // parent is the literal "unknown" placeholder quirk from Task 2 review
     // — all three still derive a non-null persona).
-    await store.insertSession(
+    await store.insertSession( "team_local",
       baseRecord({
         id: "sub_ok",
         runtimeSessionId: "orch-1/agent-abc",
         label: "[subagent Web Developer] did stuff",
       }),
-      embedder,
-    );
-    await store.insertSession(
+      embedder);
+    await store.insertSession( "team_local",
       baseRecord({
         id: "sub_unknown",
         runtimeSessionId: "unknown/agent-def",
         label: "[subagent Growth Strategist] did stuff",
       }),
-      embedder,
-    );
-    await store.insertSession(
+      embedder);
+    await store.insertSession( "team_local",
       baseRecord({
         id: "sub_ok2",
         runtimeSessionId: "orch-2/agent-ghi",
         label: "[subagent Content Director] did stuff",
       }),
-      embedder,
-    );
+      embedder);
     // 2 top-level claude-code rows (no slash in runtimeSessionId).
-    await store.insertSession(baseRecord({ id: "top_1", runtimeSessionId: "orch-1" }), embedder);
-    await store.insertSession(baseRecord({ id: "top_2", runtimeSessionId: "orch-2" }), embedder);
+    await store.insertSession( "team_local",baseRecord({ id: "top_1", runtimeSessionId: "orch-1" }), embedder);
+    await store.insertSession( "team_local",baseRecord({ id: "top_2", runtimeSessionId: "orch-2" }), embedder);
     // 1 already-stamped row (simulates a freshly-ingested row post-34968a8).
-    await store.insertSession(
+    await store.insertSession( "team_local",
       baseRecord({
         id: "already_stamped",
         runtime: "hermes",
@@ -108,8 +105,7 @@ describe("backfillDerivables", () => {
         agentPersona: "hermes",
         parentSessionId: null,
       }),
-      embedder,
-    );
+      embedder);
   }
 
   it("stamps NULL rows and leaves already-stamped rows alone", async () => {
@@ -171,7 +167,7 @@ describe("backfillDerivables", () => {
   });
 
   it("gives a hermes row persona = runtime name, parent null", async () => {
-    await store.insertSession(baseRecord({ id: "herm_1", runtime: "hermes", runtimeSessionId: "h-1" }), embedder);
+    await store.insertSession( "team_local",baseRecord({ id: "herm_1", runtime: "hermes", runtimeSessionId: "h-1" }), embedder);
     const db = store.rawDb();
 
     await backfillDerivables(db);
@@ -185,16 +181,15 @@ describe("backfillDerivables", () => {
   });
 
   it("strips the runtime version suffix before branching (runtime column is versioned in production, e.g. claude-code/1.0)", async () => {
-    await store.insertSession(
+    await store.insertSession( "team_local",
       baseRecord({
         id: "sub_versioned",
         runtime: "claude-code/1.0",
         runtimeSessionId: "orch-3/agent-xyz",
         label: "[subagent Systems Engineer] did stuff",
       }),
-      embedder,
-    );
-    await store.insertSession(baseRecord({ id: "herm_versioned", runtime: "hermes/1.0", runtimeSessionId: "h-2" }), embedder);
+      embedder);
+    await store.insertSession( "team_local",baseRecord({ id: "herm_versioned", runtime: "hermes/1.0", runtimeSessionId: "h-2" }), embedder);
     const db = store.rawDb();
 
     await backfillDerivables(db);
@@ -210,10 +205,9 @@ describe("backfillDerivables", () => {
   });
 
   it("a malformed subagent-shaped id (slash but no /agent- suffix) derives nulls and is counted as no-op, not updated", async () => {
-    await store.insertSession(
+    await store.insertSession( "team_local",
       baseRecord({ id: "sub_malformed", runtimeSessionId: "orch-1/weird-shape", label: "no subagent prefix here" }),
-      embedder,
-    );
+      embedder);
     const db = store.rawDb();
 
     const report = await backfillDerivables(db);
@@ -233,15 +227,14 @@ describe("backfillDerivables", () => {
     // classifier's generated title replaced chunk.label before the row
     // landed in sessions. Parent is still derivable from the id; persona
     // is genuinely lost.
-    await store.insertSession(
+    await store.insertSession( "team_local",
       baseRecord({
         id: "sub_prod",
         runtime: "claude-code/1.0",
         runtimeSessionId: "parent-1/agent-abc",
         label: "Directory exploration blocked by permissions",
       }),
-      embedder,
-    );
+      embedder);
     const db = store.rawDb();
 
     const report = await backfillDerivables(db);
@@ -257,15 +250,14 @@ describe("backfillDerivables", () => {
   });
 
   it("re-run over unrecoverable-persona rows reports updated=0 (bug: WHERE agent_persona IS NULL re-counted them as updated forever)", async () => {
-    await store.insertSession(
+    await store.insertSession( "team_local",
       baseRecord({
         id: "sub_unrecoverable",
         runtime: "claude-code/1.0",
         runtimeSessionId: "parent-1/agent-abc",
         label: "Classifier generated title, no subagent prefix",
       }),
-      embedder,
-    );
+      embedder);
     const db = store.rawDb();
 
     const first = await backfillDerivables(db);
@@ -316,10 +308,9 @@ describe("backfillDerivables --with-transcript-scan (#352 phase-2, Task 5)", () 
     const path = writeTranscript([
       { type: "assistant", message: { role: "assistant", model: "claude-opus-4-7", usage: { input_tokens: 10, output_tokens: 5 }, content: "hi" } },
     ]);
-    await store.insertSession(
+    await store.insertSession( "team_local",
       baseRecord({ id: "s1", runtimeSessionId: "orch-1", transcriptPath: path }),
-      embedder,
-    );
+      embedder);
     const db = store.rawDb();
 
     const report = await backfillDerivables(db);
@@ -337,10 +328,9 @@ describe("backfillDerivables --with-transcript-scan (#352 phase-2, Task 5)", () 
     const path = writeTranscript([
       { type: "assistant", message: { role: "assistant", model: "claude-opus-4-7", usage: { input_tokens: 10, output_tokens: 5 }, content: [{ type: "tool_use", name: "Skill", input: { skill: "code-review" } }] } },
     ]);
-    await store.insertSession(
+    await store.insertSession( "team_local",
       baseRecord({ id: "s2", runtimeSessionId: "orch-2", transcriptPath: path }),
-      embedder,
-    );
+      embedder);
     const db = store.rawDb();
 
     const report = await backfillDerivables(db, { withTranscriptScan: true });
@@ -358,15 +348,14 @@ describe("backfillDerivables --with-transcript-scan (#352 phase-2, Task 5)", () 
     const path = writeTranscript([
       { type: "assistant", message: { role: "assistant", model: "claude-sonnet-4-5", usage: { input_tokens: 3, output_tokens: 2 }, content: "hi" } },
     ]);
-    await store.insertSession(
+    await store.insertSession( "team_local",
       baseRecord({
         id: "s3",
         runtimeSessionId: "parent-1/agent-abc",
         label: "Classifier generated title, no subagent prefix",
         transcriptPath: path,
       }),
-      embedder,
-    );
+      embedder);
     const db = store.rawDb();
 
     const report = await backfillDerivables(db, { withTranscriptScan: true });
@@ -382,10 +371,9 @@ describe("backfillDerivables --with-transcript-scan (#352 phase-2, Task 5)", () 
   });
 
   it("a row with no transcript_path is skipped for scanning without error", async () => {
-    await store.insertSession(
+    await store.insertSession( "team_local",
       baseRecord({ id: "s4", runtimeSessionId: "orch-4", transcriptPath: null }),
-      embedder,
-    );
+      embedder);
     const db = store.rawDb();
 
     const report = await backfillDerivables(db, { withTranscriptScan: true });
@@ -403,7 +391,7 @@ describe("backfillDerivables --with-transcript-scan (#352 phase-2, Task 5)", () 
     ]);
     // Already persona-stamped (as an earlier flagless Task 3 run would leave
     // it) but never transcript-scanned.
-    await store.insertSession(
+    await store.insertSession( "team_local",
       baseRecord({
         id: "s_stamped",
         runtimeSessionId: "orch-6",
@@ -411,8 +399,7 @@ describe("backfillDerivables --with-transcript-scan (#352 phase-2, Task 5)", () 
         parentSessionId: null,
         transcriptPath: path,
       }),
-      embedder,
-    );
+      embedder);
     const db = store.rawDb();
     const readRow = () =>
       db
@@ -448,7 +435,7 @@ describe("backfillDerivables --with-transcript-scan (#352 phase-2, Task 5)", () 
   it("bug: all-null scans (missing transcript) counted as updated forever - must be skippedNoop on every run with no UPDATE fired", async () => {
     // Scan-candidate row: persona already stamped, scan columns NULL,
     // transcript_path points at a file that does not exist.
-    await store.insertSession(
+    await store.insertSession( "team_local",
       baseRecord({
         id: "s_missing",
         runtimeSessionId: "orch-7",
@@ -456,8 +443,7 @@ describe("backfillDerivables --with-transcript-scan (#352 phase-2, Task 5)", () 
         parentSessionId: null,
         transcriptPath: join(tmp, "rotated-away.jsonl"),
       }),
-      embedder,
-    );
+      embedder);
     const db = store.rawDb();
     const totalChanges = () =>
       (db.prepare("SELECT total_changes() AS c").get() as { c: number }).c;
@@ -485,7 +471,7 @@ describe("backfillDerivables --with-transcript-scan (#352 phase-2, Task 5)", () 
     const path = writeTranscript([
       { type: "assistant", message: { role: "assistant", model: "claude-opus-4-7", usage: { input_tokens: 10, output_tokens: 5 }, content: "hi" } },
     ]);
-    await store.insertSession(
+    await store.insertSession( "team_local",
       baseRecord({
         id: "s_churn",
         runtime: "claude-code/1.0",
@@ -493,8 +479,7 @@ describe("backfillDerivables --with-transcript-scan (#352 phase-2, Task 5)", () 
         label: "Classifier generated title, no subagent prefix",
         transcriptPath: path,
       }),
-      embedder,
-    );
+      embedder);
     const db = store.rawDb();
 
     const run1 = await backfillDerivables(db, { withTranscriptScan: true });
@@ -523,10 +508,9 @@ describe("backfillDerivables --with-transcript-scan (#352 phase-2, Task 5)", () 
     const goodPath = writeTranscript([
       { type: "assistant", message: { role: "assistant", model: "claude-opus-4-7", usage: { input_tokens: 1, output_tokens: 1 }, content: "hi" } },
     ]);
-    await store.insertSession(
+    await store.insertSession( "team_local",
       baseRecord({ id: "s5", runtimeSessionId: "orch-5", transcriptPath: goodPath }),
-      embedder,
-    );
+      embedder);
     const db = store.rawDb();
 
     // First run scans successfully and stamps primary_model + agent_persona.

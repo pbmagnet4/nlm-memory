@@ -46,6 +46,7 @@ import type {
 } from "@shared/types.js";
 import { SIGNAL_OUTCOMES } from "@shared/types.js";
 import type Database from "better-sqlite3";
+import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 
 const CHARACTER_LIMIT = 25_000;
 const DEFAULT_LIMIT = 10;
@@ -187,7 +188,7 @@ export async function recallSessionsHandler(
       ...(input.kind !== undefined ? { kind: input.kind } : {}),
       ...(input.workstream !== undefined ? { workstream: input.workstream } : {}),
     };
-    const result = await deps.recall.search(query);
+    const result = await deps.recall.search(DEFAULT_TEAM_ID, query);
     const conversationId = resolveConversationByQuery(input.query ?? "") ?? undefined;
     // Telemetry — the MCP path is the real agent-usage path; without this it
     // is invisible to query_log.jsonl and the Recall page. Fire-and-forget,
@@ -219,7 +220,7 @@ export async function workSummaryHandler(
   }
   try {
     const date = input.date ?? localToday();
-    const digest = await buildWorkDigest(deps.workDigest, date);
+    const digest = await buildWorkDigest(deps.workDigest, DEFAULT_TEAM_ID, date);
     return okText(composeWorkDigest(digest));
   } catch (e) {
     return err(e);
@@ -242,6 +243,7 @@ export async function recallWorkstreamHandler(
     if (!found) return okText(`No workstream matches "${idOrLabel}".`);
     const view = await rollupWorkstream(
       { workstreams: deps.workstreams.store, sessions: deps.workstreams.sessions, facts: deps.workstreams.facts, exemplars: deps.workstreams.exemplars },
+      DEFAULT_TEAM_ID,
       found.id,
     );
     if (!view) return okText(`No workstream matches "${idOrLabel}".`);
@@ -350,7 +352,7 @@ export async function rebindSessionHandler(
     if (!sessionId || !wsArg) return okText("Provide both a sessionId and a workstream (id or label).");
     const ws = await resolveWorkstream(deps.workstreams.store, wsArg);
     if (!ws) return okText(`No workstream matches "${wsArg}".`);
-    await deps.store.setWorkstreamBinding(sessionId, ws.id, "operator", null);
+    await deps.store.setWorkstreamBinding(DEFAULT_TEAM_ID, sessionId, ws.id, "operator", null);
     return okText(`Rebound session ${sessionId} -> workstream "${ws.label}" (${ws.id}).`);
   } catch (e) {
     return err(e);
@@ -370,7 +372,7 @@ export async function getSessionHandler(
   input: { id: string },
 ): Promise<ToolResult> {
   try {
-    const session = await deps.store.getById(input.id);
+    const session = await deps.store.getById(DEFAULT_TEAM_ID, input.id);
     if (!session) {
       return err(new Error(`session ${input.id} not found`));
     }
@@ -381,7 +383,7 @@ export async function getSessionHandler(
       ...(session.supersededBy ? [session.supersededBy] : []),
     ];
     const linked =
-      linkedIds.length > 0 ? await deps.store.getByIds(linkedIds) : [];
+      linkedIds.length > 0 ? await deps.store.getByIds(DEFAULT_TEAM_ID, linkedIds) : [];
     const byId = new Map(linked.map((s) => [s.id, s]));
 
     // Load supersedence log once so we can join reason + recordedBy onto supersededBy
@@ -461,7 +463,7 @@ export async function recallFactsHandler(
         ? { minConfidence: input.minConfidence }
         : {}),
     };
-    const result = await deps.factRecall.search(query);
+    const result = await deps.factRecall.search(DEFAULT_TEAM_ID, query);
     const conversationId = resolveConversationByQuery(input.query ?? "") ?? undefined;
     // Telemetry — see recallSessionsHandler. Fire-and-forget.
     void logFactQuery({
@@ -491,7 +493,7 @@ export async function getFactHistoryHandler(
     return err(new Error("fact store not wired in this deployment"));
   }
   try {
-    const chains = await deps.factStore.getHistory(input.subject, input.predicate);
+    const chains = await deps.factStore.getHistory(DEFAULT_TEAM_ID, input.subject, input.predicate);
     return ok({ subject: input.subject, predicate: input.predicate ?? null, chains });
   } catch (e) {
     return err(e);
@@ -680,7 +682,7 @@ export async function markSupersededHandler(
     return err(new Error("predecessor_id and successor_id are required"));
   }
   try {
-    await deps.store.markSuperseded(input.predecessor_id, input.successor_id);
+    await deps.store.markSuperseded(DEFAULT_TEAM_ID, input.predecessor_id, input.successor_id);
     void appendSupersedence({
       predecessorId: input.predecessor_id,
       successorId: input.successor_id,
@@ -736,7 +738,7 @@ export async function supersedeFactHandler(
     return err(new Error("fact store not available"));
   }
   try {
-    await deps.factStore.retire(input.fact_id);
+    await deps.factStore.retire(DEFAULT_TEAM_ID, input.fact_id);
     void appendFactSupersedence({
       factId: input.fact_id,
       source: "mcp",
@@ -827,7 +829,7 @@ export async function reportOutcomeHandler(
       },
       deps.installScope,
     );
-    signal = await stampSignalScope(signal, { sessionScopeReader: deps.sessionScopeReader });
+    signal = await stampSignalScope(signal, DEFAULT_TEAM_ID, { sessionScopeReader: deps.sessionScopeReader });
     await deps.signalStore.insert(signal);
     return ok({ recorded: true, id: signal.id, outcome: signal.outcome });
   } catch (e) {
@@ -850,7 +852,7 @@ export async function listMergeSuggestionsHandler(
       all.map(async (w) => ({
         id: w.id, label: w.label,
         entities: entMap.get(w.id) ?? [],
-        sessionIds: await deps.workstreams!.sessions.listSessionIdsByWorkstreams([w.id]),
+        sessionIds: await deps.workstreams!.sessions.listSessionIdsByWorkstreams(DEFAULT_TEAM_ID, [w.id]),
       })),
     );
     const suggestions = suggestMerges(items, minScore);

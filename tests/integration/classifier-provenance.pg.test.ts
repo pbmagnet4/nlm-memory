@@ -56,37 +56,37 @@ describe.skipIf(!PG_TEST_URL)("classifier provenance: PG", () => {
   beforeEach(async () => { await pool.query(TRUNCATE_SQL); });
 
   it("round-trips provenance on fresh insert", async () => {
-    await storage.sessions.insertSession(record({
+    await storage.sessions.insertSession("team_local", record({
       id: "prov_pg_1",
       classifier: { provider: "ollama", model: "deepseek-r1:7b", confidence: 0.85 },
     }));
 
-    const sess = await storage.sessions.getById("prov_pg_1");
+    const sess = await storage.sessions.getById("team_local", "prov_pg_1");
     expect(sess?.classifierProvider).toBe("ollama");
     expect(sess?.classifierModel).toBe("deepseek-r1:7b");
     expect(Number(sess?.classifierConfidence)).toBeCloseTo(0.85);
   });
 
   it("upsert overwrites provenance when re-ingested by a new model", async () => {
-    await storage.sessions.insertSession(record({
+    await storage.sessions.insertSession("team_local", record({
       id: "prov_pg_2",
       classifier: { provider: "ollama", model: "old-model", confidence: 0.7 },
     }));
-    await storage.sessions.insertSession(record({
+    await storage.sessions.insertSession("team_local", record({
       id: "prov_pg_2",
       classifier: { provider: "deepseek", model: "deepseek-chat", confidence: 0.95 },
     }));
 
-    const sess = await storage.sessions.getById("prov_pg_2");
+    const sess = await storage.sessions.getById("team_local", "prov_pg_2");
     expect(sess?.classifierProvider).toBe("deepseek");
     expect(sess?.classifierModel).toBe("deepseek-chat");
     expect(Number(sess?.classifierConfidence)).toBeCloseTo(0.95);
   });
 
   it("record without classifier field writes NULLs", async () => {
-    await storage.sessions.insertSession(record({ id: "prov_pg_3" }));
+    await storage.sessions.insertSession("team_local", record({ id: "prov_pg_3" }));
 
-    const sess = await storage.sessions.getById("prov_pg_3");
+    const sess = await storage.sessions.getById("team_local", "prov_pg_3");
     expect(sess?.classifierProvider).toBeNull();
     expect(sess?.classifierModel).toBeNull();
     expect(sess?.classifierConfidence).toBeNull();

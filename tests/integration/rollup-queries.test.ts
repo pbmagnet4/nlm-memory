@@ -25,18 +25,18 @@ describe("listBySessions", () => {
   it("returns current facts across multiple sessions, excluding superseded/retired", async () => {
     storage.sessions.insertSessionForTest(makeSession({ id: "s1" }));
     storage.sessions.insertSessionForTest(makeSession({ id: "s2" }));
-    await storage.facts.insertMany([
+    await storage.facts.insertMany("team_local", [
       fact("f1", "s1"),
       fact("f2", "s2"),
       fact("f3", "s1", { supersededBy: "f1" }),
       fact("f4", "s2", { retiredAt: "2026-06-24T01:00:00Z" }),
     ]);
-    const ids = (await storage.facts.listBySessions(["s1", "s2"])).map((f) => f.id);
+    const ids = (await storage.facts.listBySessions("team_local", ["s1", "s2"])).map((f) => f.id);
     expect(new Set(ids)).toEqual(new Set(["f1", "f2"]));
   });
 
   it("returns [] for empty input", async () => {
-    expect(await storage.facts.listBySessions([])).toEqual([]);
+    expect(await storage.facts.listBySessions("team_local", [])).toEqual([]);
     expect(await storage.exemplars.listBySessions([])).toEqual([]);
   });
 });

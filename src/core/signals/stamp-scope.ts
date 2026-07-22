@@ -15,11 +15,12 @@ import { scopeStampEnabled } from "@core/scope/stamp-flag.js";
 import type { Signal } from "@shared/types.js";
 
 export interface SessionScopeReader {
-  getSessionScopeById(id: string): Promise<string | null>;
+  getSessionScopeById(tenantId: string, id: string): Promise<string | null>;
 }
 
 export async function stampSignalScope(
   signal: Signal,
+  tenantId: string,
   opts: {
     readonly repoPath?: string | null;
     readonly sessionScopeReader?: SessionScopeReader | undefined;
@@ -31,7 +32,7 @@ export async function stampSignalScope(
     const derived = deriveScope(opts.repoPath, loadAliasMap());
     scope = derived === "global" ? null : derived;
   } else if (signal.sessionId && opts.sessionScopeReader) {
-    const inherited = await opts.sessionScopeReader.getSessionScopeById(signal.sessionId);
+    const inherited = await opts.sessionScopeReader.getSessionScopeById(tenantId, signal.sessionId);
     scope = inherited === "global" ? null : inherited;
   }
   return { ...signal, scope };

@@ -4,6 +4,11 @@
  * Implementations live in core/storage. Adapters and use cases depend on this
  * interface, never on better-sqlite3 directly. Swapping SQLite for Postgres
  * tomorrow means writing a new implementation; core/ does not change.
+ *
+ * Every method takes `tenantId` as its non-optional FIRST parameter (program
+ * spec §4.1, M2 plan Wave B). There is no default — the composition root
+ * supplies `DEFAULT_TEAM_ID` (src/core/tenancy/default-team.ts) until M3
+ * resolves the real tenant from the request's auth token.
  */
 
 import type { BindingSource } from "@core/workstream/model.js";
@@ -31,24 +36,26 @@ export interface SearchOptions {
 }
 
 export interface SessionStore {
-  getById(sessionId: string): Promise<Session | null>;
+  getById(tenantId: string, sessionId: string): Promise<Session | null>;
 
-  getByIds(ids: ReadonlyArray<string>): Promise<ReadonlyArray<Session>>;
+  getByIds(tenantId: string, ids: ReadonlyArray<string>): Promise<ReadonlyArray<Session>>;
 
   /**
    * Sessions whose lifespan [started_at, ended_at or open] overlaps the
    * half-open window [fromIso, toIso). Body is omitted (callers that need it
    * fetch by id). Ordered by started_at ascending. Used by the work-digest.
    */
-  listByDateRange(fromIso: string, toIso: string): Promise<ReadonlyArray<Session>>;
+  listByDateRange(tenantId: string, fromIso: string, toIso: string): Promise<ReadonlyArray<Session>>;
 
   semanticSearch(
+    tenantId: string,
     queryVector: Float32Array,
     limit: number,
     opts?: SearchOptions,
   ): Promise<ReadonlyArray<SemanticNeighbor>>;
 
   keywordSearch(
+    tenantId: string,
     query: string,
     limit: number,
     opts?: SearchOptions,
@@ -61,9 +68,9 @@ export interface SessionStore {
    * load session bodies. Used at recall result-assembly to badge superseded
    * hits with their successor.
    */
-  resolveSuccessors(ids: ReadonlyArray<string>): Promise<Map<string, string>>;
+  resolveSuccessors(tenantId: string, ids: ReadonlyArray<string>): Promise<Map<string, string>>;
 
-  updateStatus(sessionId: string, status: SessionStatus): Promise<void>;
+  updateStatus(tenantId: string, sessionId: string, status: SessionStatus): Promise<void>;
 
   /**
    * Mark `predecessorId` as superseded by `successorId`. Atomic:
@@ -71,13 +78,14 @@ export interface SessionStore {
    *   2. flips predecessor's `sessions.status` to `'superseded'`
    *
    * Idempotent — re-marking is a no-op. Throws if either session id is
-   * unknown. Used by the `mark_superseded` MCP tool and any future UI
-   * action that lets an operator retroactively retire a stale session.
+   * unknown (or belongs to a different tenant — same not-found shape). Used
+   * by the `mark_superseded` MCP tool and any future UI action that lets an
+   * operator retroactively retire a stale session.
    */
-  markSuperseded(predecessorId: string, successorId: string): Promise<void>;
+  markSuperseded(tenantId: string, predecessorId: string, successorId: string): Promise<void>;
 
-  setWorkstreamBinding(sessionId: string, workstreamId: string | null, source: BindingSource | null, confidence: number | null): Promise<void>;
-  listSessionIdsByWorkstreams(workstreamIds: ReadonlyArray<string>): Promise<ReadonlyArray<string>>;
-  getEntities(sessionId: string): Promise<ReadonlyArray<string>>;
-  getWorkstreamIds(sessionIds: ReadonlyArray<string>): Promise<Map<string, string | null>>;
+  setWorkstreamBinding(tenantId: string, sessionId: string, workstreamId: string | null, source: BindingSource | null, confidence: number | null): Promise<void>;
+  listSessionIdsByWorkstreams(tenantId: string, workstreamIds: ReadonlyArray<string>): Promise<ReadonlyArray<string>>;
+  getEntities(tenantId: string, sessionId: string): Promise<ReadonlyArray<string>>;
+  getWorkstreamIds(tenantId: string, sessionIds: ReadonlyArray<string>): Promise<Map<string, string | null>>;
 }

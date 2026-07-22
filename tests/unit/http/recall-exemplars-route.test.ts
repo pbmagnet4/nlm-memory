@@ -4,7 +4,7 @@ import type { RecallResult } from "../../../src/shared/types.js";
 
 function appWithRecall(captured: { query: unknown }) {
   const recall = {
-    search: async (q: { withRelatedExemplars?: boolean }) => {
+    search: async (_tenantId: string, q: { withRelatedExemplars?: boolean }) => {
       captured.query = q;
       const r: RecallResult = q.withRelatedExemplars
         ? {

@@ -67,65 +67,64 @@ describe("agent_persona / parent_session_id provenance: SQLite", () => {
   });
 
   it("round-trips persona + parent on fresh insert", async () => {
-    await store.insertSession(record({
+    await store.insertSession("team_local", record({
       id: "persona_1",
       agentPersona: "code-reviewer",
       parentSessionId: "parent-abc",
     }));
 
-    const sess = await store.getById("persona_1");
+    const sess = await store.getById("team_local", "persona_1");
     expect(sess?.agentPersona).toBe("code-reviewer");
     expect(sess?.parentSessionId).toBe("parent-abc");
   });
 
   it("fresh insert without persona/parent writes NULLs", async () => {
-    await store.insertSession(record({ id: "persona_2" }));
+    await store.insertSession("team_local", record({ id: "persona_2" }));
 
-    const sess = await store.getById("persona_2");
+    const sess = await store.getById("team_local", "persona_2");
     expect(sess?.agentPersona).toBeNull();
     expect(sess?.parentSessionId).toBeNull();
   });
 
   it("upsert with a new non-null value overwrites", async () => {
-    await store.insertSession(record({
+    await store.insertSession("team_local", record({
       id: "persona_3",
       agentPersona: "orchestrator",
     }));
-    await store.insertSession(record({
+    await store.insertSession("team_local", record({
       id: "persona_3",
       agentPersona: "code-reviewer",
       parentSessionId: "parent-xyz",
     }));
 
-    const sess = await store.getById("persona_3");
+    const sess = await store.getById("team_local", "persona_3");
     expect(sess?.agentPersona).toBe("code-reviewer");
     expect(sess?.parentSessionId).toBe("parent-xyz");
   });
 
   it("upsert omitting the fields preserves the prior stamp (COALESCE)", async () => {
-    await store.insertSession(record({
+    await store.insertSession("team_local", record({
       id: "persona_4",
       agentPersona: "code-reviewer",
       parentSessionId: "parent-abc",
     }));
     // Simulates reprocess.ts / reclassify-oversized.ts, which rebuild an
     // IngestRecord with no chunk to derive subagent lineage from.
-    await store.insertSession(record({ id: "persona_4", label: "Re-classified label" }));
+    await store.insertSession("team_local", record({ id: "persona_4", label: "Re-classified label" }));
 
-    const sess = await store.getById("persona_4");
+    const sess = await store.getById("team_local", "persona_4");
     expect(sess?.label).toBe("Re-classified label");
     expect(sess?.agentPersona).toBe("code-reviewer");
     expect(sess?.parentSessionId).toBe("parent-abc");
   });
 
   it("webhook ingest path stamps agent_persona = runtime name, parent = null", async () => {
-    const result = await ingestSession(
+    const result = await ingestSession( 
       { runtime: "hermes", text: "some webhook body", startedAt: "2026-06-01T10:00:00Z" },
-      { classifier: new StubWebhookClassifier(), embedder: new StubEmbedder(), store, log: () => {} },
-    );
+      { classifier: new StubWebhookClassifier(), embedder: new StubEmbedder(), store, log: () => {} }, "team_local");
     expect(result.status).toBe("ingested");
 
-    const sess = await store.getById(result.id);
+    const sess = await store.getById("team_local", result.id);
     expect(sess?.agentPersona).toBe("hermes");
     expect(sess?.parentSessionId).toBeNull();
   });
@@ -134,58 +133,58 @@ describe("agent_persona / parent_session_id provenance: SQLite", () => {
   // insert/upsert/COALESCE contract as agent_persona/parent_session_id above.
 
   it("round-trips primary_model/total_tokens/skill on fresh insert", async () => {
-    await store.insertSession(record({
+    await store.insertSession("team_local", record({
       id: "transcript_1",
       primaryModel: "claude-opus-4-7",
       totalTokens: 1234,
       skill: "code-review",
     }));
 
-    const sess = await store.getById("transcript_1");
+    const sess = await store.getById("team_local", "transcript_1");
     expect(sess?.primaryModel).toBe("claude-opus-4-7");
     expect(sess?.totalTokens).toBe(1234);
     expect(sess?.skill).toBe("code-review");
   });
 
   it("fresh insert without them writes NULLs", async () => {
-    await store.insertSession(record({ id: "transcript_2" }));
+    await store.insertSession("team_local", record({ id: "transcript_2" }));
 
-    const sess = await store.getById("transcript_2");
+    const sess = await store.getById("team_local", "transcript_2");
     expect(sess?.primaryModel).toBeNull();
     expect(sess?.totalTokens).toBeNull();
     expect(sess?.skill).toBeNull();
   });
 
   it("upsert with new non-null values overwrites", async () => {
-    await store.insertSession(record({
+    await store.insertSession("team_local", record({
       id: "transcript_3",
       primaryModel: "claude-sonnet-4-5",
       totalTokens: 100,
       skill: "old-skill",
     }));
-    await store.insertSession(record({
+    await store.insertSession("team_local", record({
       id: "transcript_3",
       primaryModel: "claude-opus-4-7",
       totalTokens: 500,
       skill: "new-skill",
     }));
 
-    const sess = await store.getById("transcript_3");
+    const sess = await store.getById("team_local", "transcript_3");
     expect(sess?.primaryModel).toBe("claude-opus-4-7");
     expect(sess?.totalTokens).toBe(500);
     expect(sess?.skill).toBe("new-skill");
   });
 
   it("upsert omitting the fields preserves the prior stamp (COALESCE)", async () => {
-    await store.insertSession(record({
+    await store.insertSession("team_local", record({
       id: "transcript_4",
       primaryModel: "claude-opus-4-7",
       totalTokens: 999,
       skill: "code-review",
     }));
-    await store.insertSession(record({ id: "transcript_4", label: "Re-classified label" }));
+    await store.insertSession("team_local", record({ id: "transcript_4", label: "Re-classified label" }));
 
-    const sess = await store.getById("transcript_4");
+    const sess = await store.getById("team_local", "transcript_4");
     expect(sess?.label).toBe("Re-classified label");
     expect(sess?.primaryModel).toBe("claude-opus-4-7");
     expect(sess?.totalTokens).toBe(999);

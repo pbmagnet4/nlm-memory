@@ -96,23 +96,22 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore.insertSession factSink (PG)", () =
 
   it("commits session + facts atomically", async () => {
     const f = fact({ id: "fact_a", value: "Hono", sourceSessionId: "sess_1" });
-    await storage.sessions.insertSession(
+    await storage.sessions.insertSession( "team_local",
       record({ id: "sess_1" }), null, null,
-      { factStore: storage.facts, facts: [f] },
-    );
+      { factStore: storage.facts, facts: [f] });
 
-    const session = await storage.sessions.getById("sess_1");
+    const session = await storage.sessions.getById("team_local", "sess_1");
     expect(session?.id).toBe("sess_1");
-    const current = await storage.facts.findCurrent("ProjectAtlas", "framework");
+    const current = await storage.facts.findCurrent("team_local", "ProjectAtlas", "framework");
     expect(current?.value).toBe("Hono");
     expect(current?.id).toBe("fact_a");
   });
 
   it("wires a 'continues' edge to a prior session with the same entity-set", async () => {
-    await storage.sessions.insertSession(
+    await storage.sessions.insertSession("team_local", 
       record({ id: "cont_a", startedAt: "2026-05-19T10:00:00Z", entities: ["ProjectAtlas"] }),
     );
-    await storage.sessions.insertSession(
+    await storage.sessions.insertSession("team_local", 
       record({ id: "cont_b", startedAt: "2026-05-20T10:00:00Z", entities: ["ProjectAtlas"] }),
     );
 
@@ -125,10 +124,10 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore.insertSession factSink (PG)", () =
   });
 
   it("does not wire a 'continues' edge when entity-sets differ", async () => {
-    await storage.sessions.insertSession(
+    await storage.sessions.insertSession("team_local", 
       record({ id: "diff_a", startedAt: "2026-05-19T10:00:00Z", entities: ["ProjectAtlas"] }),
     );
-    await storage.sessions.insertSession(
+    await storage.sessions.insertSession("team_local", 
       record({ id: "diff_b", startedAt: "2026-05-20T10:00:00Z", entities: ["OtherTopic"] }),
     );
 
@@ -139,29 +138,26 @@ describe.skipIf(!PG_TEST_URL)("PgSessionStore.insertSession factSink (PG)", () =
   });
 
   it("re-ingest with a new value supersedes the prior fact", async () => {
-    await storage.sessions.insertSession(
+    await storage.sessions.insertSession( "team_local",
       record({ id: "sess_1" }), null, null,
-      { factStore: storage.facts, facts: [fact({ id: "fact_a", value: "Express", sourceSessionId: "sess_1" })] },
-    );
-    await storage.sessions.insertSession(
+      { factStore: storage.facts, facts: [fact({ id: "fact_a", value: "Express", sourceSessionId: "sess_1" })] });
+    await storage.sessions.insertSession( "team_local",
       record({ id: "sess_2" }), null, null,
-      { factStore: storage.facts, facts: [fact({ id: "fact_b", value: "Hono", sourceSessionId: "sess_2" })] },
-    );
+      { factStore: storage.facts, facts: [fact({ id: "fact_b", value: "Hono", sourceSessionId: "sess_2" })] });
 
-    const current = await storage.facts.findCurrent("ProjectAtlas", "framework");
+    const current = await storage.facts.findCurrent("team_local", "ProjectAtlas", "framework");
     expect(current?.value).toBe("Hono");
     expect(current?.id).toBe("fact_b");
-    const prior = await storage.facts.getById("fact_a");
+    const prior = await storage.facts.getById("team_local", "fact_a");
     expect(prior?.supersededBy).toBe("fact_b");
   });
 
   it("factSink intra-batch duplicate (subject,predicate) does not create a mutual supersedence cycle", async () => {
     const fa = fact({ id: "dup_a", value: "Express", sourceSessionId: "dup_sess" });
     const fb = fact({ id: "dup_b", value: "Hono", sourceSessionId: "dup_sess" });
-    await storage.sessions.insertSession(
+    await storage.sessions.insertSession( "team_local",
       record({ id: "dup_sess" }), null, null,
-      { factStore: storage.facts, facts: [fa, fb] },
-    );
+      { factStore: storage.facts, facts: [fa, fb] });
     const rows = (await pool.query<{ id: string; superseded_by: string | null }>(
       "SELECT id, superseded_by FROM facts WHERE subject = 'ProjectAtlas' ORDER BY id",
     )).rows;
@@ -254,9 +250,9 @@ describe.skipIf(!PG_TEST_URL)("ScanScheduler tick over PG", () => {
     const report = await scheduler.tick();
     expect(report.inserted).toBe(1);
 
-    const session = await storage.sessions.getById("sess_tick_1");
+    const session = await storage.sessions.getById("team_local", "sess_tick_1");
     expect(session?.label).toBe("Stub label");
-    const current = await storage.facts.findCurrent("ProjectAtlas", "framework");
+    const current = await storage.facts.findCurrent("team_local", "ProjectAtlas", "framework");
     expect(current?.value).toBe("Hono");
     expect(current?.sourceSessionId).toBe("sess_tick_1");
 
@@ -268,7 +264,7 @@ describe.skipIf(!PG_TEST_URL)("ScanScheduler tick over PG", () => {
   });
 });
 
-// Drives the webhook push path — ingestSession() — over PG. Proves the
+// Drives the webhook push path — ingestSession( "team_local") — over PG. Proves the
 // `deps.store instanceof PgSessionStore` branch in ingest-session.ts runs at
 // runtime and atomically persists session + facts (NLM #324).
 describe.skipIf(!PG_TEST_URL)("ingestSession webhook path over PG", () => {
@@ -284,7 +280,7 @@ describe.skipIf(!PG_TEST_URL)("ingestSession webhook path over PG", () => {
   beforeEach(async () => { await pool.query(TRUNCATE_SQL); });
 
   it("classifies, persists session + facts through the PgSessionStore branch", async () => {
-    const result = await ingestSession(
+    const result = await ingestSession( 
       {
         id: "webhook_pg_1",
         runtime: "webhook",
@@ -298,16 +294,15 @@ describe.skipIf(!PG_TEST_URL)("ingestSession webhook path over PG", () => {
         store: storage.sessions,
         factStore: storage.facts,
         log: () => {},
-      },
-    );
+      }, "team_local");
 
     expect(result.status).toBe("ingested");
     expect(result.id).toBe("webhook_pg_1");
 
-    const session = await storage.sessions.getById("webhook_pg_1");
+    const session = await storage.sessions.getById("team_local", "webhook_pg_1");
     expect(session?.label).toBe("Stub label");
     expect(session?.transcriptKind).toBe("webhook");
-    const current = await storage.facts.findCurrent("ProjectAtlas", "framework");
+    const current = await storage.facts.findCurrent("team_local", "ProjectAtlas", "framework");
     expect(current?.value).toBe("Hono");
     expect(current?.sourceSessionId).toBe("webhook_pg_1");
   });
@@ -322,12 +317,11 @@ describe.skipIf(!PG_TEST_URL)("ingestSession webhook path over PG", () => {
       }
     }
 
-    const result = await ingestSession(
+    const result = await ingestSession( 
       { id: "webhook_pg_low", runtime: "webhook", text: "noise", startedAt: "2026-05-19T10:00:00Z" },
-      { classifier: new LowConfidence(), embedder: new StubEmbedder(), store: storage.sessions, factStore: storage.facts, log: () => {} },
-    );
+      { classifier: new LowConfidence(), embedder: new StubEmbedder(), store: storage.sessions, factStore: storage.facts, log: () => {} }, "team_local");
 
     expect(result.status).toBe("low_confidence");
-    expect(await storage.sessions.getById("webhook_pg_low")).toBeNull();
+    expect(await storage.sessions.getById("team_local", "webhook_pg_low")).toBeNull();
   });
 });

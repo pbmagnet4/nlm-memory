@@ -69,7 +69,7 @@ describe("RecallService workstream filter (integration)", () => {
     // Bind s1 to workstream "NLM"
     const wsId = makeWorkstreamId();
     await wsStore.create({ id: wsId, label: "NLM", scope: null });
-    await store.setWorkstreamBinding(s1.id, wsId, "operator", 1.0);
+    await store.setWorkstreamBinding("team_local", s1.id, wsId, "operator", 1.0);
 
     const svc = new RecallService({
       store,
@@ -78,11 +78,11 @@ describe("RecallService workstream filter (integration)", () => {
     });
 
     // With workstream filter: only s1
-    const filtered = await svc.search({ query: "migration", workstream: "NLM" });
+    const filtered = await svc.search("team_local", { query: "migration", workstream: "NLM" });
     expect(filtered.results.map((r) => r.id)).toEqual(["sess_ws1"]);
 
     // Without filter: both
-    const unfiltered = await svc.search({ query: "migration" });
+    const unfiltered = await svc.search("team_local", { query: "migration" });
     const ids = unfiltered.results.map((r) => r.id).sort();
     expect(ids).toContain("sess_ws1");
     expect(ids).toContain("sess_ws2");
@@ -106,7 +106,7 @@ describe("RecallService workstream filter (integration)", () => {
     // session because it is not bound directly to survivorId.
     const s = makeSession({ id: "sess_chain", label: "NLM refactor session", summary: "refactor work" });
     store.insertSessionForTest(s);
-    await store.setWorkstreamBinding(s.id, ancestorId, "operator", 1.0);
+    await store.setWorkstreamBinding("team_local", s.id, ancestorId, "operator", 1.0);
 
     const svc = new RecallService({
       store,
@@ -116,11 +116,11 @@ describe("RecallService workstream filter (integration)", () => {
 
     // Searching by survivor label must return the ancestor-bound session because
     // the resolver expands to all workstreams whose merge chain ends at survivor.
-    const result = await svc.search({ query: "refactor", workstream: "NLM Core" });
+    const result = await svc.search("team_local", { query: "refactor", workstream: "NLM Core" });
     expect(result.results.map((r) => r.id)).toContain("sess_chain");
 
     // Searching by survivor id must also resolve through the merge chain.
-    const byId = await svc.search({ query: "refactor", workstream: survivorId });
+    const byId = await svc.search("team_local", { query: "refactor", workstream: survivorId });
     expect(byId.results.map((r) => r.id)).toContain("sess_chain");
   });
 });

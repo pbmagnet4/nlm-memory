@@ -80,22 +80,22 @@ describe.skipIf(!PG_TEST_URL)("entity-link replace on re-ingest (PG)", () => {
   });
 
   it("fresh ingest links all entities and sets session_count=1", async () => {
-    await storage.sessions.insertSession(makeRecord("sess_1", ["Alpha", "Beta"]));
+    await storage.sessions.insertSession("team_local", makeRecord("sess_1", ["Alpha", "Beta"]));
     expect(await entityLinks(pool, "sess_1")).toEqual(["Alpha", "Beta"]);
     expect(await entityCount(pool, "Alpha")).toBe(1);
     expect(await entityCount(pool, "Beta")).toBe(1);
   });
 
   it("re-ingest replaces entity links: removed entity loses link, new entity gains link", async () => {
-    await storage.sessions.insertSession(makeRecord("sess_1", ["Alpha", "Beta"]));
-    await storage.sessions.insertSession(makeRecord("sess_1", ["Beta", "Gamma"]));
+    await storage.sessions.insertSession("team_local", makeRecord("sess_1", ["Alpha", "Beta"]));
+    await storage.sessions.insertSession("team_local", makeRecord("sess_1", ["Beta", "Gamma"]));
 
     expect(await entityLinks(pool, "sess_1")).toEqual(["Beta", "Gamma"]);
   });
 
   it("session_count is exact after re-ingest: removed=0, retained=1, added=1", async () => {
-    await storage.sessions.insertSession(makeRecord("sess_1", ["Alpha", "Beta"]));
-    await storage.sessions.insertSession(makeRecord("sess_1", ["Beta", "Gamma"]));
+    await storage.sessions.insertSession("team_local", makeRecord("sess_1", ["Alpha", "Beta"]));
+    await storage.sessions.insertSession("team_local", makeRecord("sess_1", ["Beta", "Gamma"]));
 
     expect(await entityCount(pool, "Alpha")).toBe(0);
     expect(await entityCount(pool, "Beta")).toBe(1);
@@ -103,9 +103,9 @@ describe.skipIf(!PG_TEST_URL)("entity-link replace on re-ingest (PG)", () => {
   });
 
   it("repeated re-ingest is idempotent: third call produces same counts", async () => {
-    await storage.sessions.insertSession(makeRecord("sess_1", ["Alpha", "Beta"]));
-    await storage.sessions.insertSession(makeRecord("sess_1", ["Beta", "Gamma"]));
-    await storage.sessions.insertSession(makeRecord("sess_1", ["Beta", "Gamma"]));
+    await storage.sessions.insertSession("team_local", makeRecord("sess_1", ["Alpha", "Beta"]));
+    await storage.sessions.insertSession("team_local", makeRecord("sess_1", ["Beta", "Gamma"]));
+    await storage.sessions.insertSession("team_local", makeRecord("sess_1", ["Beta", "Gamma"]));
 
     expect(await entityLinks(pool, "sess_1")).toEqual(["Beta", "Gamma"]);
     expect(await entityCount(pool, "Alpha")).toBe(0);
@@ -114,14 +114,14 @@ describe.skipIf(!PG_TEST_URL)("entity-link replace on re-ingest (PG)", () => {
   });
 
   it("session_count reflects truth across multiple sessions", async () => {
-    await storage.sessions.insertSession(makeRecord("sess_1", ["Alpha", "Beta"]));
-    await storage.sessions.insertSession(makeRecord("sess_2", ["Beta", "Gamma"]));
+    await storage.sessions.insertSession("team_local", makeRecord("sess_1", ["Alpha", "Beta"]));
+    await storage.sessions.insertSession("team_local", makeRecord("sess_2", ["Beta", "Gamma"]));
 
     expect(await entityCount(pool, "Alpha")).toBe(1);
     expect(await entityCount(pool, "Beta")).toBe(2);
     expect(await entityCount(pool, "Gamma")).toBe(1);
 
-    await storage.sessions.insertSession(makeRecord("sess_1", ["Beta"]));
+    await storage.sessions.insertSession("team_local", makeRecord("sess_1", ["Beta"]));
 
     expect(await entityCount(pool, "Alpha")).toBe(0);
     expect(await entityCount(pool, "Beta")).toBe(2);
@@ -129,8 +129,8 @@ describe.skipIf(!PG_TEST_URL)("entity-link replace on re-ingest (PG)", () => {
   });
 
   it("orphaned entity row is retained (not deleted) when session_count reaches 0", async () => {
-    await storage.sessions.insertSession(makeRecord("sess_1", ["Alpha", "Beta"]));
-    await storage.sessions.insertSession(makeRecord("sess_1", ["Beta"]));
+    await storage.sessions.insertSession("team_local", makeRecord("sess_1", ["Alpha", "Beta"]));
+    await storage.sessions.insertSession("team_local", makeRecord("sess_1", ["Beta"]));
 
     const res = await pool.query<{ canonical: string; session_count: number }>(
       "SELECT canonical, session_count FROM entities WHERE canonical = $1",

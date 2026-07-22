@@ -56,17 +56,17 @@ describe("SqliteSessionStore include-superseded (#303)", () => {
       store.insertSessionForTest(
         makeSession({ id: "s_repl", label: "elasticsearch dump", body: "mechanical reingest", status: "replaced" }),
       );
-      await store.markSuperseded("s_old", "s_new");
+      await store.markSuperseded("team_local", "s_old", "s_new");
     });
 
     it("excludes superseded by default", async () => {
-      const ids = (await store.keywordSearch("elasticsearch", 10)).map((h) => h.sessionId);
+      const ids = (await store.keywordSearch("team_local", "elasticsearch", 10)).map((h) => h.sessionId);
       expect(ids).not.toContain("s_old");
       expect(ids).toContain("s_new");
     });
 
     it("includes superseded when opted in", async () => {
-      const ids = (await store.keywordSearch("elasticsearch", 10, { includeSuperseded: true })).map(
+      const ids = (await store.keywordSearch( "team_local","elasticsearch", 10, { includeSuperseded: true })).map(
         (h) => h.sessionId,
       );
       expect(ids).toContain("s_old");
@@ -74,7 +74,7 @@ describe("SqliteSessionStore include-superseded (#303)", () => {
     });
 
     it("never includes replaced, even when including superseded", async () => {
-      const ids = (await store.keywordSearch("elasticsearch", 10, { includeSuperseded: true })).map(
+      const ids = (await store.keywordSearch( "team_local","elasticsearch", 10, { includeSuperseded: true })).map(
         (h) => h.sessionId,
       );
       expect(ids).not.toContain("s_repl");
@@ -89,17 +89,17 @@ describe("SqliteSessionStore include-superseded (#303)", () => {
       store.insertEmbeddingForTest("s_old", unit([1, 0, 0]));
       store.insertEmbeddingForTest("s_new", unit([1, 0.1, 0]));
       store.insertEmbeddingForTest("s_repl", unit([1, 0.05, 0]));
-      await store.markSuperseded("s_old", "s_new");
+      await store.markSuperseded("team_local", "s_old", "s_new");
     });
 
     it("excludes superseded by default", async () => {
-      const ids = (await store.semanticSearch(unit([1, 0.05, 0]), 10)).map((r) => r.sessionId);
+      const ids = (await store.semanticSearch("team_local", unit([1, 0.05, 0]), 10)).map((r) => r.sessionId);
       expect(ids).not.toContain("s_old");
       expect(ids).toContain("s_new");
     });
 
     it("includes superseded when opted in", async () => {
-      const ids = (await store.semanticSearch(unit([1, 0.05, 0]), 10, { includeSuperseded: true })).map(
+      const ids = (await store.semanticSearch( "team_local",unit([1, 0.05, 0]), 10, { includeSuperseded: true })).map(
         (r) => r.sessionId,
       );
       expect(ids).toContain("s_old");
@@ -107,7 +107,7 @@ describe("SqliteSessionStore include-superseded (#303)", () => {
     });
 
     it("never includes replaced, even when including superseded", async () => {
-      const ids = (await store.semanticSearch(unit([1, 0.05, 0]), 10, { includeSuperseded: true })).map(
+      const ids = (await store.semanticSearch( "team_local",unit([1, 0.05, 0]), 10, { includeSuperseded: true })).map(
         (r) => r.sessionId,
       );
       expect(ids).not.toContain("s_repl");
@@ -119,16 +119,16 @@ describe("SqliteSessionStore include-superseded (#303)", () => {
       store.insertSessionForTest(makeSession({ id: "s_old", label: "old" }));
       store.insertSessionForTest(makeSession({ id: "s_new", label: "new" }));
       store.insertSessionForTest(makeSession({ id: "s_active", label: "active" }));
-      await store.markSuperseded("s_old", "s_new");
+      await store.markSuperseded("team_local", "s_old", "s_new");
 
-      const map = await store.resolveSuccessors(["s_old", "s_active", "s_new"]);
+      const map = await store.resolveSuccessors("team_local", ["s_old", "s_active", "s_new"]);
       expect(map.get("s_old")).toBe("s_new");
       expect(map.has("s_active")).toBe(false);
       expect(map.has("s_new")).toBe(false);
     });
 
     it("returns an empty map for an empty input", async () => {
-      const map = await store.resolveSuccessors([]);
+      const map = await store.resolveSuccessors("team_local", []);
       expect(map.size).toBe(0);
     });
   });

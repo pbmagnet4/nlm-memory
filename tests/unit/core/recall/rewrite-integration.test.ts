@@ -26,16 +26,16 @@ class CapturingStore implements SessionStore {
   async list() {
     return this.sessions;
   }
-  async getById(id: string) {
+  async getById(_tenantId: string, id: string) {
     return this.sessions.find((s) => s.id === id) ?? null;
   }
-  async getByIds(ids: ReadonlyArray<string>) {
+  async getByIds(_tenantId: string, ids: ReadonlyArray<string>) {
     return this.sessions.filter((s) => ids.includes(s.id));
   }
   async semanticSearch(): Promise<ReadonlyArray<SemanticNeighbor>> {
     return [];
   }
-  async keywordSearch(query: string): Promise<ReadonlyArray<KeywordNeighbor>> {
+  async keywordSearch(_tenantId: string, query: string): Promise<ReadonlyArray<KeywordNeighbor>> {
     this.keywordSearchCalls.push(query);
     return [{ sessionId: this.sessions[0]!.id, score: 5 }];
   }
@@ -78,7 +78,7 @@ describe("RecallService rewrite integration (Spec C)", () => {
       semanticQuery: "pgvector decision",
     });
     const svc = new RecallService({ store, llm });
-    await svc.search({ query: "that pgvector thing", mode: "keyword", rewrite: true });
+    await svc.search("team_local", { query: "that pgvector thing", mode: "keyword", rewrite: true });
     expect(llm.rewriteCalls).toBe(1);
     expect(store.keywordSearchCalls).toEqual(["pgvector"]);
   });
@@ -87,7 +87,7 @@ describe("RecallService rewrite integration (Spec C)", () => {
     const store = new CapturingStore(corpus);
     const llm = new RewritingLLM({ keywordQuery: "x", semanticQuery: "x" });
     const svc = new RecallService({ store, llm });
-    await svc.search({ query: "raw query", mode: "keyword", rewrite: false });
+    await svc.search("team_local", { query: "raw query", mode: "keyword", rewrite: false });
     expect(llm.rewriteCalls).toBe(0);
     expect(store.keywordSearchCalls).toEqual(["raw query"]);
   });
@@ -96,7 +96,7 @@ describe("RecallService rewrite integration (Spec C)", () => {
     const store = new CapturingStore(corpus);
     const llm = new RewritingLLM({ keywordQuery: "x", semanticQuery: "x" });
     const svc = new RecallService({ store, llm });
-    await svc.search({ query: "raw query", mode: "keyword" });
+    await svc.search("team_local", { query: "raw query", mode: "keyword" });
     expect(llm.rewriteCalls).toBe(0);
     expect(store.keywordSearchCalls).toEqual(["raw query"]);
   });
@@ -105,7 +105,7 @@ describe("RecallService rewrite integration (Spec C)", () => {
     const store = new CapturingStore(corpus);
     const llm = new RewritingLLM({ keywordQuery: "x", semanticQuery: "x" }, true);
     const svc = new RecallService({ store, llm });
-    const result = await svc.search({
+    const result = await svc.search("team_local", {
       query: "that pgvector thing",
       mode: "keyword",
       rewrite: true,
@@ -120,8 +120,8 @@ describe("RecallService rewrite integration (Spec C)", () => {
     const store = new CapturingStore(corpus);
     const llm = new RewritingLLM({ keywordQuery: "pgvector", semanticQuery: "pgvector" });
     const svc = new RecallService({ store, llm });
-    await svc.search({ query: "that pgvector thing", mode: "keyword", rewrite: true });
-    await svc.search({ query: "that pgvector thing", mode: "keyword", rewrite: true });
+    await svc.search("team_local", { query: "that pgvector thing", mode: "keyword", rewrite: true });
+    await svc.search("team_local", { query: "that pgvector thing", mode: "keyword", rewrite: true });
     expect(llm.rewriteCalls).toBe(1); // second call hit the cache
     expect(store.keywordSearchCalls).toEqual(["pgvector", "pgvector"]);
   });

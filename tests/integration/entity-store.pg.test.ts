@@ -169,7 +169,7 @@ describe.skipIf(!PG_TEST_URL)("ingest-side variant lookup (PgStorage)", () => {
       "INSERT INTO entity_variants (variant, canonical) VALUES ('old-spelling', 'canonical-ent')",
     );
 
-    await storage.sessions.insertSession({
+    await storage.sessions.insertSession("team_local", {
       id: "sess_new",
       runtime: "claude-code",
       runtimeSessionId: "sess_new",

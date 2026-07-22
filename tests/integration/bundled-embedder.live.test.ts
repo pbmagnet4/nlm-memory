@@ -116,28 +116,26 @@ describe.skipIf(!LIVE)("bundled embedder (live model)", () => {
     it(
       "returns the ingested session as the top semantic hit",
       async () => {
-        await storage.sessions.insertSession(
+        await storage.sessions.insertSession( "team_local",
           makeRecord({
             id: "s_bundled_target",
             label: "sqlite-vec KNN tuning",
             body: "Tuned the sqlite-vec KNN index for session recall: adjusted chunk overfetch, verified cosine distances, and benchmarked semantic search latency on the canonical corpus.",
           }),
-          client,
-        );
-        await storage.sessions.insertSession(
+          client);
+        await storage.sessions.insertSession( "team_local",
           makeRecord({
             id: "s_bundled_decoy",
             label: "garden planning",
             body: "Planned the spring vegetable garden: raised beds for tomatoes and peppers, drip irrigation layout, and a compost rotation schedule.",
           }),
-          client,
-        );
+          client);
 
         const { vector } = await client.embed(
           "tuning the sqlite-vec semantic search index",
           "query",
         );
-        const results = await storage.sessions.semanticSearch(vector, 5);
+        const results = await storage.sessions.semanticSearch("team_local", vector, 5);
         expect(results.length).toBeGreaterThan(0);
         expect(results[0]?.sessionId).toBe("s_bundled_target");
       },

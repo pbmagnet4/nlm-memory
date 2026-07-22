@@ -89,13 +89,12 @@ describe("reclassifyOversized", () => {
         embedder: fakeClassifier(result),
         classifier: fakeClassifier(result),
         adapters: [fakeAdapter(chunk)],
-      },
-      {},
-    );
+      }, "team_local",
+      {});
 
     expect(out.ingested).toBe(1);
 
-    const sess = await storage.sessions.getById("cc_big1");
+    const sess = await storage.sessions.getById("team_local", "cc_big1");
     expect(sess).not.toBeNull();
     expect(sess!.label).toBe("Big session");
 
@@ -155,13 +154,12 @@ describe("reclassifyOversized", () => {
         embedder: fakeClassifier(result),
         classifier: fakeClassifier(result),
         adapters: [fakeAdapter(chunk)],
-      },
-      { dryRun: true },
-    );
+      }, "team_local",
+      { dryRun: true });
 
     expect(out.attempted).toBe(1);
     expect(out.ingested).toBe(0);
-    expect(await storage.sessions.getById("cc_x")).toBeNull();
+    expect(await storage.sessions.getById("team_local", "cc_x")).toBeNull();
   });
 
   it("skips ingest but resets failure_count when confidence is below floor", async () => {
@@ -207,13 +205,12 @@ describe("reclassifyOversized", () => {
         embedder: fakeClassifier(result),
         classifier: fakeClassifier(result),
         adapters: [fakeAdapter(chunk)],
-      },
-      {},
-    );
+      }, "team_local",
+      {});
 
     expect(out.skippedLowConfidence).toBe(1);
     expect(out.ingested).toBe(0);
-    expect(await storage.sessions.getById("cc_low")).toBeNull();
+    expect(await storage.sessions.getById("team_local", "cc_low")).toBeNull();
 
     const row = db
       .prepare("SELECT failure_count FROM adapter_state WHERE source_path = ?")
@@ -301,18 +298,17 @@ describe("reclassifyOversized", () => {
         embedder: fakeClassifier(successResult),
         classifier: throwingClassifier,
         adapters: [adapter],
-      },
-      {},
-    );
+      }, "team_local",
+      {});
 
     // Row-level isolation: cc_iso1 genuinely fails (all chunks throw) → failed++,
     // but the batch continues and cc_iso2 ingests successfully.
     expect(out.failed).toBe(1);
     expect(out.ingested).toBe(1);
 
-    expect(await storage.sessions.getById("cc_iso1")).toBeNull();
+    expect(await storage.sessions.getById("team_local", "cc_iso1")).toBeNull();
 
-    const second = await storage.sessions.getById("cc_iso2");
+    const second = await storage.sessions.getById("team_local", "cc_iso2");
     expect(second).not.toBeNull();
     expect(second!.label).toBe("Isolated");
   });
@@ -370,13 +366,12 @@ describe("reclassifyOversized", () => {
         classifier: stubClassifier,
         classifierDescriptor: { provider: stubClassifier.provider, model: stubClassifier.model },
         adapters: [fakeAdapter(chunk)],
-      },
-      {},
-    );
+      }, "team_local",
+      {});
 
     expect(out.ingested).toBe(1);
 
-    const sess = await storage.sessions.getById("cc_prov1");
+    const sess = await storage.sessions.getById("team_local", "cc_prov1");
     expect(sess).not.toBeNull();
     expect(sess!.classifierProvider).toBe("ollama");
     expect(sess!.classifierModel).toBe("qwen3:4b-instruct");

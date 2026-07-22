@@ -13,7 +13,7 @@ export interface RollupDeps {
   readonly exemplars: Pick<CodeExemplarStore, "listBySessions">;
 }
 
-export async function rollupWorkstream(deps: RollupDeps, workstreamId: string): Promise<WorkstreamRollup | null> {
+export async function rollupWorkstream(deps: RollupDeps, tenantId: string, workstreamId: string): Promise<WorkstreamRollup | null> {
   const all = await deps.workstreams.listAll();
   const byId = new Map(all.map((w) => [w.id, { id: w.id, mergedInto: w.mergedInto }]));
   const survivorId = resolveWorkstreamId(workstreamId, byId);
@@ -21,9 +21,9 @@ export async function rollupWorkstream(deps: RollupDeps, workstreamId: string): 
   if (!workstream) return null;
 
   const memberIds = all.filter((w) => resolveWorkstreamId(w.id, byId) === survivorId).map((w) => w.id);
-  const sessionIds = await deps.sessions.listSessionIdsByWorkstreams(memberIds);
+  const sessionIds = await deps.sessions.listSessionIdsByWorkstreams(tenantId, memberIds);
   const [facts, exemplars] = await Promise.all([
-    deps.facts.listBySessions(sessionIds),
+    deps.facts.listBySessions(tenantId, sessionIds),
     deps.exemplars.listBySessions(sessionIds),
   ]);
   return { workstream, sessionIds, facts, exemplars };

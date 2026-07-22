@@ -45,21 +45,21 @@ describe("RecallService passive exemplar injection", () => {
   it("attaches relatedExemplars when flag on + opted in", async () => {
     process.env["NLM_CODE_EXEMPLARS_ENABLED"] = "1";
     const svc = new RecallService({ store, llm, exemplarStore: exemplarStore(), codeEmbedder, installScope: "scope" });
-    const res = await svc.search({ query: "throttle scroll handler", mode: "keyword", withRelatedExemplars: true });
+    const res = await svc.search("team_local", { query: "throttle scroll handler", mode: "keyword", withRelatedExemplars: true });
     expect(res.relatedExemplars).toBeDefined();
     expect(res.relatedExemplars!.map((e) => e.id)).toEqual(["ex1"]);
   });
 
   it("omits relatedExemplars when the flag is off", async () => {
     const svc = new RecallService({ store, llm, exemplarStore: exemplarStore(), codeEmbedder, installScope: "scope" });
-    const res = await svc.search({ query: "throttle", mode: "keyword", withRelatedExemplars: true });
+    const res = await svc.search("team_local", { query: "throttle", mode: "keyword", withRelatedExemplars: true });
     expect(res.relatedExemplars).toBeUndefined();
   });
 
   it("omits relatedExemplars when not opted in", async () => {
     process.env["NLM_CODE_EXEMPLARS_ENABLED"] = "1";
     const svc = new RecallService({ store, llm, exemplarStore: exemplarStore(), codeEmbedder, installScope: "scope" });
-    const res = await svc.search({ query: "throttle", mode: "keyword" });
+    const res = await svc.search("team_local", { query: "throttle", mode: "keyword" });
     expect(res.relatedExemplars).toBeUndefined();
   });
 });

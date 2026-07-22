@@ -28,7 +28,7 @@ describe("overlay cache invalidation (sqlite)", () => {
   });
 
   it("a resolve_open action becomes visible after invalidateOverlayCache", async () => {
-    const before = await storage.sessions.getByIds([SESSION_ID]);
+    const before = await storage.sessions.getByIds("team_local", [SESSION_ID]);
     expect(before[0]?.open?.some((q) => q === OPEN_TEXT)).toBe(true);
     writeAction(storage.sessions.rawDb(), {
       kind: "resolve_open",
@@ -36,37 +36,37 @@ describe("overlay cache invalidation (sqlite)", () => {
       subjectId: openQuestionId(SESSION_ID, OPEN_TEXT),
     });
     storage.sessions.invalidateOverlayCache();
-    const after = await storage.sessions.getByIds([SESSION_ID]);
+    const after = await storage.sessions.getByIds("team_local", [SESSION_ID]);
     expect(after[0]?.open?.some((q) => q === OPEN_TEXT)).toBe(false);
   });
 
   it("the cache is live: a write without invalidation stays hidden until invalidated", async () => {
-    await storage.sessions.getByIds([SESSION_ID]); // populate cache
+    await storage.sessions.getByIds("team_local", [SESSION_ID]); // populate cache
     writeAction(storage.sessions.rawDb(), {
       kind: "resolve_open",
       subjectType: "open_question",
       subjectId: openQuestionId(SESSION_ID, OPEN_TEXT),
     });
-    const stale = await storage.sessions.getByIds([SESSION_ID]);
+    const stale = await storage.sessions.getByIds("team_local", [SESSION_ID]);
     expect(stale[0]?.open?.some((q) => q === OPEN_TEXT)).toBe(true); // cache still active
     storage.sessions.invalidateOverlayCache();
-    const fresh = await storage.sessions.getByIds([SESSION_ID]);
+    const fresh = await storage.sessions.getByIds("team_local", [SESSION_ID]);
     expect(fresh[0]?.open?.some((q) => q === OPEN_TEXT)).toBe(false);
   });
 
   it("the cache expires after 30s without explicit invalidation (TTL backstop)", async () => {
     vi.useFakeTimers();
     try {
-      await storage.sessions.getByIds([SESSION_ID]); // populate cache
+      await storage.sessions.getByIds("team_local", [SESSION_ID]); // populate cache
       writeAction(storage.sessions.rawDb(), {
         kind: "resolve_open",
         subjectType: "open_question",
         subjectId: openQuestionId(SESSION_ID, OPEN_TEXT),
       });
-      const stale = await storage.sessions.getByIds([SESSION_ID]);
+      const stale = await storage.sessions.getByIds("team_local", [SESSION_ID]);
       expect(stale[0]?.open?.some((q) => q === OPEN_TEXT)).toBe(true);
       vi.advanceTimersByTime(31_000);
-      const fresh = await storage.sessions.getByIds([SESSION_ID]);
+      const fresh = await storage.sessions.getByIds("team_local", [SESSION_ID]);
       expect(fresh[0]?.open?.some((q) => q === OPEN_TEXT)).toBe(false);
     } finally {
       vi.useRealTimers();

@@ -147,7 +147,7 @@ describe("executeSupersede", () => {
     expect(result.successor).toBe("sess_new");
     expect(result.reason).toBe("swapped after benchmark");
 
-    const updated = await store.getById("sess_old");
+    const updated = await store.getById("team_local", "sess_old");
     expect(updated?.status).toBe("superseded");
     expect(updated?.supersededBy).toBe("sess_new");
   });
@@ -160,12 +160,12 @@ describe("executeSupersede", () => {
     );
     expect(result.kind).toBe("marked");
     expect(io.warn_lines).toEqual([]);
-    const updated = await store.getById("sess_old");
+    const updated = await store.getById("team_local", "sess_old");
     expect(updated?.supersededBy).toBe("sess_new");
   });
 
   it("returns noop on re-mark of an already-superseded pair without writing", async () => {
-    await store.markSuperseded("sess_old", "sess_new");
+    await store.markSuperseded("team_local", "sess_old", "sess_new");
     // Wrap the store so we can assert markSuperseded is not called a second
     // time — the noop branch must short-circuit before any write fires
     // (regression guard for B2 — ordering bug where the write always ran).
@@ -175,7 +175,7 @@ describe("executeSupersede", () => {
         if (prop === "markSuperseded") {
           return async (a: string, b: string) => {
             markCallCount += 1;
-            return target.markSuperseded(a, b);
+            return target.markSuperseded("team_local", a, b);
           };
         }
         return Reflect.get(target, prop, receiver);
@@ -199,7 +199,7 @@ describe("executeSupersede", () => {
       entities: ["pgvector"],
     });
     store.insertSessionForTest(middleSess);
-    await store.markSuperseded("sess_old", "sess_mid");
+    await store.markSuperseded("team_local", "sess_old", "sess_mid");
 
     const declining = makeIO({ confirmOverwriteAnswer: false });
     const declined = await executeSupersede(
@@ -214,7 +214,7 @@ describe("executeSupersede", () => {
     expect(declining.confirm_overwrite_calls[0]?.replacement).toBe("qdrant migration plan");
 
     // Store should still reflect the old link — overwrite was declined.
-    const stillOld = await store.getById("sess_old");
+    const stillOld = await store.getById("team_local", "sess_old");
     expect(stillOld?.supersededBy).toBe("sess_mid");
 
     // Now run again, this time approving the overwrite.
@@ -224,14 +224,14 @@ describe("executeSupersede", () => {
       { predecessor: "sess_old", successor: "sess_new" },
     );
     expect(approved.kind).toBe("marked");
-    const updated = await store.getById("sess_old");
+    const updated = await store.getById("team_local", "sess_old");
     expect(updated?.supersededBy).toBe("sess_new");
   });
 
   it("--yes suppresses the overwrite confirmation (escape hatch for scripted flows)", async () => {
     const middleSess = makeSession({ id: "sess_mid", label: "interim plan" });
     store.insertSessionForTest(middleSess);
-    await store.markSuperseded("sess_old", "sess_mid");
+    await store.markSuperseded("team_local", "sess_old", "sess_mid");
 
     const io = makeIO({ confirmOverwriteAnswer: false });
     const result = await executeSupersede(
@@ -288,7 +288,7 @@ describe("executeSupersede", () => {
     expect(result.kind).toBe("cancelled");
     if (result.kind !== "cancelled") return;
     expect(result.reason).toBe("user-declined-confirm");
-    const old = await store.getById("sess_old");
+    const old = await store.getById("team_local", "sess_old");
     expect(old?.status).not.toBe("superseded");
   });
 

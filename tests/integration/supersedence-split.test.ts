@@ -75,8 +75,8 @@ describe("supersedence split", () => {
       .get(from, to)?.kind;
 
   it("resume re-ingest under a new id → predecessor 'replaced', edge 'replaces'", async () => {
-    await store.insertSession(makeRecord("sess_v1"));
-    await store.insertSession(makeRecord("sess_v2"), null, {
+    await store.insertSession("team_local", makeRecord("sess_v1"));
+    await store.insertSession( "team_local",makeRecord("sess_v2"), null, {
       priorSessionId: "sess_v1",
       kind: "replaces",
     });
@@ -87,9 +87,9 @@ describe("supersedence split", () => {
   });
 
   it("markSuperseded leaves 'supersedes' / 'superseded' unchanged", async () => {
-    await store.insertSession(makeRecord("sess_old"));
-    await store.insertSession(makeRecord("sess_new"));
-    await store.markSuperseded("sess_old", "sess_new");
+    await store.insertSession("team_local", makeRecord("sess_old"));
+    await store.insertSession("team_local", makeRecord("sess_new"));
+    await store.markSuperseded("team_local", "sess_old", "sess_new");
 
     expect(statusOf("sess_old")).toBe("superseded");
     expect(statusOf("sess_new")).toBe("closed");
@@ -107,7 +107,7 @@ describe("supersedence split", () => {
       makeSession({ id: "s_replaced", label: "pgvector replaced", body: "pgvector reparsed", status: "replaced" }),
     );
 
-    const hits = await store.keywordSearch("pgvector", 10);
+    const hits = await store.keywordSearch("team_local", "pgvector", 10);
     const ids = hits.map((h) => h.sessionId);
     expect(ids).toContain("s_active");
     expect(ids).not.toContain("s_superseded");

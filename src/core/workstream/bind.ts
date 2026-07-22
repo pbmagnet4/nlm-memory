@@ -36,14 +36,14 @@ function scopeMatches(wsScope: string | null, sessionScope: string | null): bool
   return wsScope === sessionScope;
 }
 
-async function applyBinding(deps: BindDeps, input: BindInput, workstreamId: string): Promise<BindResult> {
-  await deps.sessions.setWorkstreamBinding(input.sessionId, workstreamId, deps.source ?? "classifier", null);
+async function applyBinding(deps: BindDeps, tenantId: string, input: BindInput, workstreamId: string): Promise<BindResult> {
+  await deps.sessions.setWorkstreamBinding(tenantId, input.sessionId, workstreamId, deps.source ?? "classifier", null);
   await deps.workstreams.upsertEntities(workstreamId, input.entities);
   await deps.workstreams.touchLastSession(workstreamId, input.startedAt);
   return { workstreamId };
 }
 
-export async function bindSessionToWorkstream(deps: BindDeps, input: BindInput): Promise<BindResult | null> {
+export async function bindSessionToWorkstream(deps: BindDeps, tenantId: string, input: BindInput): Promise<BindResult | null> {
   try {
     const all = await deps.workstreams.listAll();
     const content = `${input.label}\n${(input.body || input.summary).slice(0, NAMING_CONTENT_CHARS)}`;
@@ -54,12 +54,12 @@ export async function bindSessionToWorkstream(deps: BindDeps, input: BindInput):
       const decision = decideWorkstreamByName(named, scoped, deps.aliasToLabel);
 
       if (decision.kind === "bind") {
-        return applyBinding(deps, input, decision.workstreamId);
+        return applyBinding(deps, tenantId, input, decision.workstreamId);
       }
 
       if (named && named.trim()) {
         const ws = await deps.workstreams.create({ id: makeWorkstreamId(), label: named.trim(), scope: input.scope });
-        return applyBinding(deps, input, ws.id);
+        return applyBinding(deps, tenantId, input, ws.id);
       }
       return null;
     }
@@ -67,7 +67,7 @@ export async function bindSessionToWorkstream(deps: BindDeps, input: BindInput):
     const named = await deps.namer.nameWorkstream(content, all.map((w) => ({ label: w.label })));
     const decision = decideWorkstreamByName(named, all, deps.aliasToLabel);
     if (decision.kind === "abstain") return null;
-    return applyBinding(deps, input, decision.workstreamId);
+    return applyBinding(deps, tenantId, input, decision.workstreamId);
   } catch (e) {
     deps.log?.(`[workstream] bind failed for ${input.sessionId}: ${e instanceof Error ? e.message : String(e)}`);
     return null;

@@ -20,14 +20,14 @@ describe("session workstream binding", () => {
   it("sets and reads a session's workstream binding via list", async () => {
     storage.sessions.insertSessionForTest(makeSession({ id: "s1", entities: ["NLM", "Daemon"] }));
     await storage.workstreams.create({ id: "ws_1", label: "NLM", scope: null });
-    await storage.sessions.setWorkstreamBinding("s1", "ws_1", "classifier", 0.82);
-    const ids = await storage.sessions.listSessionIdsByWorkstreams(["ws_1"]);
+    await storage.sessions.setWorkstreamBinding("team_local", "s1", "ws_1", "classifier", 0.82);
+    const ids = await storage.sessions.listSessionIdsByWorkstreams("team_local", ["ws_1"]);
     expect(ids).toEqual(["s1"]);
   });
 
   it("getEntities returns the session's entities", async () => {
     storage.sessions.insertSessionForTest(makeSession({ id: "s1", entities: ["NLM", "Daemon"] }));
-    expect(new Set(await storage.sessions.getEntities("s1"))).toEqual(new Set(["NLM", "Daemon"]));
+    expect(new Set(await storage.sessions.getEntities("team_local", "s1"))).toEqual(new Set(["NLM", "Daemon"]));
   });
 
   it("listSessionIdsByWorkstreams unions multiple workstreams", async () => {
@@ -35,8 +35,8 @@ describe("session workstream binding", () => {
     storage.sessions.insertSessionForTest(makeSession({ id: "s2", entities: ["B"] }));
     await storage.workstreams.create({ id: "ws_1", label: "One", scope: null });
     await storage.workstreams.create({ id: "ws_2", label: "Two", scope: null });
-    await storage.sessions.setWorkstreamBinding("s1", "ws_1", "classifier", 0.9);
-    await storage.sessions.setWorkstreamBinding("s2", "ws_2", "classifier", 0.9);
-    expect(new Set(await storage.sessions.listSessionIdsByWorkstreams(["ws_1", "ws_2"]))).toEqual(new Set(["s1", "s2"]));
+    await storage.sessions.setWorkstreamBinding("team_local", "s1", "ws_1", "classifier", 0.9);
+    await storage.sessions.setWorkstreamBinding("team_local", "s2", "ws_2", "classifier", 0.9);
+    expect(new Set(await storage.sessions.listSessionIdsByWorkstreams("team_local", ["ws_1", "ws_2"]))).toEqual(new Set(["s1", "s2"]));
   });
 });

@@ -51,6 +51,7 @@ function readFloat(envKey: string, fallback: number): number {
 }
 
 export async function pickRelatedFacts(
+  tenantId: string,
   hits: ReadonlyArray<RecallHit>,
   factStore: FactStore,
   opts: PickRelatedFactsOptions = {},
@@ -77,7 +78,7 @@ export async function pickRelatedFacts(
     // 2. Fetch current facts per entity. Parallelize to keep latency bounded.
     const factLists = await Promise.all(
       entities.map((entity) =>
-        factStore.list({ subject: entity, includeSuperseded: false }),
+        factStore.list(tenantId, { subject: entity, includeSuperseded: false }),
       ),
     );
 
@@ -96,7 +97,7 @@ export async function pickRelatedFacts(
       predicate: f.predicate,
       value: f.value,
     }));
-    const counts = await factStore.corroborationCounts(triples);
+    const counts = await factStore.corroborationCounts(tenantId, triples);
 
     // 5. Build RelatedFact[], filter by minCorroboration, dedupe by
     //    (subject, predicate) — only the most-corroborated value per pair

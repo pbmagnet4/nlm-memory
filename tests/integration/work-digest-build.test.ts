@@ -27,15 +27,14 @@ describe("buildWorkDigest", () => {
       "/fake/a.jsonl": [m(0), m(10), m(30)], // 30 min, topic nlm
       "/fake/b.jsonl": [m(40), m(50)],       // 10 min, topic acme
     };
-    const digest = await buildWorkDigest(
+    const digest = await buildWorkDigest( 
       {
         store: { listByDateRange: async () => sessions },
         readTimestamps: (path) => timestamps[path] ?? [],
         idleThresholdMin: 35,
         deepBlockMin: 25,
-      },
-      "2026-06-23",
-    );
+      }, "team_local",
+      "2026-06-23");
 
     expect(digest.date).toBe("2026-06-23");
     expect(digest.activeMinutes).toBe(40);
@@ -50,10 +49,9 @@ describe("buildWorkDigest", () => {
   });
 
   it("returns a valid empty digest for a day with no activity", async () => {
-    const digest = await buildWorkDigest(
-      { store: { listByDateRange: async () => [] }, readTimestamps: () => [] },
-      "2026-06-23",
-    );
+    const digest = await buildWorkDigest( 
+      { store: { listByDateRange: async () => [] }, readTimestamps: () => [] }, "team_local",
+      "2026-06-23");
     expect(digest.activeMinutes).toBe(0);
     expect(digest.byTopic).toEqual([]);
     expect(digest.coverage.sessions).toBe(0);

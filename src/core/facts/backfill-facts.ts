@@ -101,6 +101,7 @@ function saveState(path: string, done: Set<string>): void {
 
 export async function backfillFacts(
   opts: BackfillFactsOptions,
+  tenantId: string,
 ): Promise<BackfillFactsReport> {
   const startedAtCutoff = new Date().toISOString();
   const statePath = opts.statePath ?? DEFAULT_STATE_PATH;
@@ -111,7 +112,7 @@ export async function backfillFacts(
   // transcript text). When reprocess=false, exclude sessions that already
   // have facts attributed to them. SQL lives in each adapter's
   // listBackfillCandidates so backfill is backend-agnostic.
-  const rows = await opts.store.listBackfillCandidates({
+  const rows = await opts.store.listBackfillCandidates(tenantId, {
     cutoff: startedAtCutoff,
     ...(opts.from ? { from: opts.from } : {}),
     reprocess: opts.reprocess ?? false,
@@ -199,9 +200,9 @@ export async function backfillFacts(
       // so the factStore cast is sound — TS just can't correlate the two union
       // members at one call site.
       if (opts.store instanceof PgSessionStore) {
-        await opts.store.insertFactsForSession(sid, opts.factStore as PgFactStore, facts, opts.embedder ?? null);
+        await opts.store.insertFactsForSession(tenantId, sid, opts.factStore as PgFactStore, facts, opts.embedder ?? null);
       } else {
-        await opts.store.insertFactsForSession(sid, opts.factStore as SqliteFactStore, facts, opts.embedder ?? null);
+        await opts.store.insertFactsForSession(tenantId, sid, opts.factStore as SqliteFactStore, facts, opts.embedder ?? null);
       }
     } catch (err) {
       storageFailures += 1;

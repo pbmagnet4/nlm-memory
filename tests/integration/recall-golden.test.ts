@@ -58,7 +58,7 @@ describe("golden recall regression gate", () => {
   for (const { query, expectTop3 } of GOLDEN_QUERIES) {
     it(`keyword recall surfaces "${expectTop3}" in the top 3 for "${query}"`, async () => {
       const svc = new RecallService({ store, llm: new UnreachableEmbedder() });
-      const result = await svc.search({ query, mode: "keyword", limit: 10 });
+      const result = await svc.search("team_local", { query, mode: "keyword", limit: 10 });
       const top3 = result.results.slice(0, 3).map((r) => r.id);
       expect(top3).toContain(expectTop3);
     });

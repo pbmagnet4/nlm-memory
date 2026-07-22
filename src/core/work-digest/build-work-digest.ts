@@ -26,7 +26,7 @@ function dayWindow(date: string): { fromMs: number; toMs: number; fromIso: strin
   return { fromMs: from.getTime(), toMs: to.getTime(), fromIso: from.toISOString(), toIso: to.toISOString() };
 }
 
-export async function buildWorkDigest(deps: BuildWorkDigestDeps, date: string): Promise<WorkDigest> {
+export async function buildWorkDigest(deps: BuildWorkDigestDeps, tenantId: string, date: string): Promise<WorkDigest> {
   const idleThresholdMin = deps.idleThresholdMin ?? 5;
   const deepBlockMin = deps.deepBlockMin ?? 25;
   const topicProvider = deps.topicProvider ?? defaultTopicProvider;
@@ -44,7 +44,7 @@ export async function buildWorkDigest(deps: BuildWorkDigestDeps, date: string): 
   }
 
   const { fromMs, toMs, fromIso, toIso } = dayWindow(date);
-  const sessions = await deps.store.listByDateRange(fromIso, toIso);
+  const sessions = await deps.store.listByDateRange(tenantId, fromIso, toIso);
 
   const activities: SessionActivity[] = [];
   const allSpans: Interval[] = [];

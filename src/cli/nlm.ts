@@ -79,6 +79,7 @@ import {
 } from "../install/rules-install.js";
 import { runSupersedeCommand } from "./supersede.js";
 import { runInitCommand } from "./init.js";
+import { DEFAULT_TEAM_ID } from "../core/tenancy/default-team.js";
 import { runScopeBackfill, formatBackfillResult } from "./scope-backfill.js";
 import { runScopeCoverage, formatCoverageResult } from "./scope-coverage.js";
 import { loadAliasMap } from "../core/scope/alias-map.js";
@@ -508,7 +509,7 @@ program
 
     setImmediate(() => {
       void recall
-        .search({ query: "warmup init", mode: "keyword", limit: 1 })
+        .search(DEFAULT_TEAM_ID, { query: "warmup init", mode: "keyword", limit: 1 })
         .then(() => markWarm("fts5"))
         .catch(() => {});
     });
@@ -737,7 +738,7 @@ program
   .action(async (query, opts) => {
     const { storage, recall } = await buildStack();
     try {
-      const result = await recall.search({
+      const result = await recall.search(DEFAULT_TEAM_ID, {
         query,
         mode: opts.mode,
         limit: opts.limit,
@@ -913,7 +914,11 @@ program
     const { runEval } = await import("../core/eval/run-eval.js");
     const { storage, recall } = await buildStack();
     try {
-      const report = await runEval({ recall }, queries, { mode: opts.mode, k: 5 });
+      const report = await runEval(
+        { recall: { search: (q) => recall.search(DEFAULT_TEAM_ID, q) } },
+        queries,
+        { mode: opts.mode, k: 5 },
+      );
       if (opts.json) {
         process.stdout.write(JSON.stringify(report, null, 2) + "\n");
         return;
@@ -1287,7 +1292,7 @@ program
               },
             }
           : {}),
-      });
+      }, DEFAULT_TEAM_ID);
       process.stdout.write(JSON.stringify(report, null, 2) + "\n");
     } finally {
       await storage.close();
@@ -1319,6 +1324,7 @@ program
           classifierDescriptor: { provider: stack.classifier.provider, model: stack.classifier.model },
           adapters,
         },
+        DEFAULT_TEAM_ID,
         { ...(opts.limit ? { limit: opts.limit } : {}), dryRun: Boolean(opts.dryRun) },
       );
       console.log(
@@ -1367,6 +1373,7 @@ program
           embeddingConfig: stack.storage.embeddingConfig,
           embedderDescriptor: { provider: embedderInfo.provider, model: embedderInfo.model },
         },
+        DEFAULT_TEAM_ID,
         {
           ...(opts.limit ? { limit: opts.limit } : {}),
           ...(opts.minConfidence !== undefined ? { minConfidence: opts.minConfidence } : {}),
@@ -2424,6 +2431,7 @@ program
     try {
       const digest = await buildWorkDigest(
         { store, topicProvider: loadTopicProvider(), workstreams: storage.workstreams, ...workDigestEnv() },
+        DEFAULT_TEAM_ID,
         date,
       );
       console.log(composeWorkDigest(digest));

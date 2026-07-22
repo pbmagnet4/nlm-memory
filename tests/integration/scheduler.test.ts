@@ -487,7 +487,7 @@ describe("ScanScheduler.tick", () => {
       .prepare<[], { session_id: string }>(
         "SELECT session_id FROM adapter_state WHERE adapter_name = 'claude-code'",
       ).get()!.session_id;
-    const facts = await factStore.listBySession(sessId);
+    const facts = await factStore.listBySession("team_local", sessId);
     expect(facts).toHaveLength(2);
     expect(facts.map((f) => `${f.subject}:${f.predicate}:${f.value}`).sort()).toEqual([
       "local-llm-host:endpoint:http://macpro:8080/v1",

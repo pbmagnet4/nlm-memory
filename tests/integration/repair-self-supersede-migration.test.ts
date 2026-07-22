@@ -67,10 +67,10 @@ describe("migration 018 — repair self-supersedence", () => {
 
   it("drops self-edges, restores self-superseded rows, keeps real supersedence", async () => {
     // damaged: self-loop edge + status flipped to 'superseded' by the bug
-    await store.insertSession(makeRecord("sess_damaged"));
+    await store.insertSession("team_local", makeRecord("sess_damaged"));
     // legit predecessor that a different session genuinely supersedes
-    await store.insertSession(makeRecord("sess_old"));
-    await store.insertSession(makeRecord("sess_new"));
+    await store.insertSession("team_local", makeRecord("sess_old"));
+    await store.insertSession("team_local", makeRecord("sess_new"));
 
     const db = store.rawDb();
     db.prepare(

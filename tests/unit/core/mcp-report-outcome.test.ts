@@ -166,7 +166,7 @@ describe("reportOutcomeHandler scope parity with POST /api/signal", () => {
   let store: ReturnType<typeof fakeStore>;
 
   const scopeReader: SessionScopeReader = {
-    async getSessionScopeById(id) {
+    async getSessionScopeById(_tenantId, id) {
       if (id === "sess_scoped") return "project-alpha";
       if (id === "sess_global") return "global";
       return null;

@@ -93,7 +93,7 @@ describe("RecallService against SqliteSessionStore (integration)", () => {
       store,
       llm: new FixedEmbedder(unit([1, 0, 0])),
     });
-    const result = await svc.search({ query: "pgvector", mode: "keyword" });
+    const result = await svc.search("team_local", { query: "pgvector", mode: "keyword" });
     expect(result.total).toBe(1);
     expect(result.results[0]?.id).toBe("sess_b");
     expect(result.results[0]?.matchedIn).toContain("label");
@@ -105,7 +105,7 @@ describe("RecallService against SqliteSessionStore (integration)", () => {
       store,
       llm: new FixedEmbedder(unit([1, 0, 0])),
     });
-    const result = await svc.search({
+    const result = await svc.search("team_local", {
       query: "anything",
       mode: "semantic",
       limit: 3,
@@ -120,7 +120,7 @@ describe("RecallService against SqliteSessionStore (integration)", () => {
       store,
       llm: new FixedEmbedder(unit([0, 1, 0])), // aligned with sess_b
     });
-    const result = await svc.search({ query: "pgvector", mode: "hybrid" });
+    const result = await svc.search("team_local", { query: "pgvector", mode: "hybrid" });
     const top = result.results[0];
     expect(top?.id).toBe("sess_b");
     expect(top?.keywordScore).toBe(1);
@@ -132,7 +132,7 @@ describe("RecallService against SqliteSessionStore (integration)", () => {
       store,
       llm: new FixedEmbedder(unit([1, 0, 0])),
     });
-    const result = await svc.search({
+    const result = await svc.search("team_local", {
       query: "scraper",
       mode: "keyword",
       entity: "NLM",
@@ -148,7 +148,7 @@ describe("RecallService against SqliteSessionStore (integration)", () => {
       migrationsDir: MIGRATIONS_DIR,
     });
     await reopened.init();
-    const all = await reopened.sessions.getByIds(["sess_a", "sess_b", "sess_c"]);
+    const all = await reopened.sessions.getByIds("team_local", ["sess_a", "sess_b", "sess_c"]);
     expect(all).toHaveLength(3);
     await reopened.close();
   });

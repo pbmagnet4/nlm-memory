@@ -40,21 +40,21 @@ describe("SqliteSessionStore.getByIds", () => {
   });
 
   it("returns only the requested sessions", async () => {
-    const got = await store.getByIds(["s1", "s3"]);
+    const got = await store.getByIds("team_local", ["s1", "s3"]);
     expect(got.map((s) => s.id).sort()).toEqual(["s1", "s3"]);
   });
 
   it("returns an empty array for an empty id list", async () => {
-    expect(await store.getByIds([])).toEqual([]);
+    expect(await store.getByIds("team_local", [])).toEqual([]);
   });
 
   it("ignores ids that do not exist", async () => {
-    const got = await store.getByIds(["s2", "missing"]);
+    const got = await store.getByIds("team_local", ["s2", "missing"]);
     expect(got.map((s) => s.id)).toEqual(["s2"]);
   });
 
   it("populates entities and markers but omits body (body is empty)", async () => {
-    const got = await store.getByIds(["s1"]);
+    const got = await store.getByIds("team_local", ["s1"]);
     const s1 = got[0];
     expect(s1?.entities).toEqual(["NLM"]);
     expect(s1?.decisions).toEqual(["d1"]);
@@ -86,20 +86,20 @@ describe("SqliteSessionStore.getById — supersedence edges", () => {
   });
 
   it("superseding session reports what it supersedes", async () => {
-    const s = await store.getById("new");
+    const s = await store.getById("team_local", "new");
     expect(s?.supersedes).toEqual(["old"]);
     expect(s?.supersededBy).toBeNull();
   });
 
   it("superseded session reports what superseded it", async () => {
-    const s = await store.getById("old");
+    const s = await store.getById("team_local", "old");
     expect(s?.supersededBy).toBe("new");
     expect(s?.supersedes).toEqual([]);
   });
 
   it("session with no edges has null supersededBy and empty supersedes", async () => {
     store.insertSessionForTest(makeSession({ id: "unrelated", label: "standalone" }));
-    const s = await store.getById("unrelated");
+    const s = await store.getById("team_local", "unrelated");
     expect(s?.supersededBy).toBeNull();
     expect(s?.supersedes).toEqual([]);
   });

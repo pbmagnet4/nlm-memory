@@ -22,11 +22,11 @@ describe("bindSessionToWorkstream", () => {
         touchLastSession: async () => {},
       },
       sessions: {
-        setWorkstreamBinding: async (s: string, w: string, src: string) => { set.push([s, w, src]); },
+        setWorkstreamBinding: async (_t: string, s: string, w: string, src: string) => { set.push([s, w, src]); },
       },
       aliasToLabel: new Map<string, string>(),
     } as unknown as BindDeps;
-    const r = await bindSessionToWorkstream(deps, baseInput);
+    const r = await bindSessionToWorkstream( deps, "team_local", baseInput);
     expect(r).toEqual({ workstreamId: "ws_nlm" });
     expect(set).toEqual([["s1", "ws_nlm", "classifier"]]);
   });
@@ -41,12 +41,12 @@ describe("bindSessionToWorkstream", () => {
         touchLastSession: async () => {},
       },
       sessions: {
-        setWorkstreamBinding: async (s: string, w: string, src: string) => { set.push([s, w, src]); },
+        setWorkstreamBinding: async (_t: string, s: string, w: string, src: string) => { set.push([s, w, src]); },
       },
       aliasToLabel: new Map<string, string>(),
       source: "backfill",
     } as unknown as BindDeps;
-    const r = await bindSessionToWorkstream(deps, baseInput);
+    const r = await bindSessionToWorkstream( deps, "team_local", baseInput);
     expect(r).toEqual({ workstreamId: "ws_nlm" });
     expect(set).toEqual([["s1", "ws_nlm", "backfill"]]);
   });
@@ -64,7 +64,7 @@ describe("bindSessionToWorkstream", () => {
       },
       aliasToLabel: new Map<string, string>(),
     } as unknown as BindDeps;
-    expect(await bindSessionToWorkstream(deps, { ...baseInput, sessionId: "s2", label: "Zephyr", summary: "s" })).toBeNull();
+    expect(await bindSessionToWorkstream( deps, "team_local", { ...baseInput, sessionId: "s2", label: "Zephyr", summary: "s" })).toBeNull();
   });
 
   it("resolves via alias map when classifier returns an alias", async () => {
@@ -78,11 +78,11 @@ describe("bindSessionToWorkstream", () => {
         touchLastSession: async () => {},
       },
       sessions: {
-        setWorkstreamBinding: async (s: string, w: string, src: string) => { set.push([s, w, src]); },
+        setWorkstreamBinding: async (_t: string, s: string, w: string, src: string) => { set.push([s, w, src]); },
       },
       aliasToLabel,
     } as unknown as BindDeps;
-    const r = await bindSessionToWorkstream(deps, { ...baseInput, sessionId: "s3", label: "acme work" });
+    const r = await bindSessionToWorkstream( deps, "team_local", { ...baseInput, sessionId: "s3", label: "acme work" });
     expect(r).toEqual({ workstreamId: "ws_acme" });
     expect(set[0]).toEqual(["s3", "ws_acme", "classifier"]);
   });
@@ -107,7 +107,7 @@ describe("bindSessionToWorkstream", () => {
       aliasToLabel: new Map<string, string>(),
     } as unknown as BindDeps;
     const bodyText = "full body transcript content for NLM session";
-    await bindSessionToWorkstream(deps, { ...baseInput, body: bodyText });
+    await bindSessionToWorkstream( deps, "team_local", { ...baseInput, body: bodyText });
     expect(capturedContent).toContain(bodyText);
     expect(capturedContent).not.toContain("built the scheduler");
   });
@@ -131,7 +131,7 @@ describe("bindSessionToWorkstream", () => {
       },
       aliasToLabel: new Map<string, string>(),
     } as unknown as BindDeps;
-    await bindSessionToWorkstream(deps, baseInput);
+    await bindSessionToWorkstream( deps, "team_local", baseInput);
     expect(capturedContent).toContain("built the scheduler");
   });
 
@@ -154,7 +154,7 @@ describe("bindSessionToWorkstream", () => {
       },
       aliasToLabel: new Map<string, string>(),
     } as unknown as BindDeps;
-    await bindSessionToWorkstream(deps, { ...baseInput, body: "" });
+    await bindSessionToWorkstream( deps, "team_local", { ...baseInput, body: "" });
     expect(capturedContent).toContain("built the scheduler");
   });
 
@@ -177,7 +177,7 @@ describe("bindSessionToWorkstream", () => {
       },
       aliasToLabel: new Map([["nlm-memory", "NLM"], ["nlm", "NLM"]]),
     } as unknown as BindDeps;
-    await bindSessionToWorkstream(deps, baseInput);
+    await bindSessionToWorkstream( deps, "team_local", baseInput);
     expect(capturedHints).toHaveLength(1);
     expect(capturedHints[0]).toEqual({ label: "NLM" });
   });
@@ -202,7 +202,7 @@ describe("bindSessionToWorkstream", () => {
       aliasToLabel: new Map<string, string>(),
     } as unknown as BindDeps;
     const longBody = "x".repeat(NAMING_CONTENT_CHARS + 1000);
-    await bindSessionToWorkstream(deps, { ...baseInput, body: longBody });
+    await bindSessionToWorkstream( deps, "team_local", { ...baseInput, body: longBody });
     // label + newline + body slice; total body portion should not exceed cap
     const bodyPortion = capturedContent.slice(capturedContent.indexOf("\n") + 1);
     expect(bodyPortion.length).toBe(NAMING_CONTENT_CHARS);
@@ -223,7 +223,7 @@ describe("bindSessionToWorkstream", () => {
       aliasToLabel: new Map<string, string>(),
       log: () => {},
     } as unknown as BindDeps;
-    expect(await bindSessionToWorkstream(deps, baseInput)).toBeNull();
+    expect(await bindSessionToWorkstream( deps, "team_local", baseInput)).toBeNull();
     expect(called).toEqual([]);
   });
 
@@ -256,7 +256,7 @@ describe("bindSessionToWorkstream", () => {
         sessions: { setWorkstreamBinding: async () => {} },
         aliasToLabel: new Map<string, string>(),
       } as unknown as BindDeps;
-      await bindSessionToWorkstream(deps, { ...baseInput, scope: "scope-a" });
+      await bindSessionToWorkstream( deps, "team_local", { ...baseInput, scope: "scope-a" });
       expect(capturedHints).toHaveLength(1);
       expect(capturedHints[0]).toEqual({ label: "scope-a-work" });
     });
@@ -283,7 +283,7 @@ describe("bindSessionToWorkstream", () => {
         sessions: { setWorkstreamBinding: async () => {} },
         aliasToLabel: new Map<string, string>(),
       } as unknown as BindDeps;
-      await bindSessionToWorkstream(deps, { ...baseInput, scope: "scope-a" });
+      await bindSessionToWorkstream( deps, "team_local", { ...baseInput, scope: "scope-a" });
       expect(capturedHints).toHaveLength(2);
       expect(capturedHints.map((h) => h.label).sort()).toEqual(["scope-a-work", "scope-b-work"]);
     });

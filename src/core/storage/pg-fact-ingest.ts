@@ -14,32 +14,36 @@
 import type { PoolClient } from "pg";
 import type { Fact } from "@shared/types.js";
 import { batchWinners } from "./fact-batch.js";
+import { tenantClausePg } from "@core/tenancy/tenant-clause.js";
 
 export async function ingestSessionFactsOnClient(
   client: PoolClient,
+  tenantId: string,
   sessionId: string,
   facts: ReadonlyArray<Fact>,
   scope: string | null = null,
 ): Promise<void> {
-  await client.query("DELETE FROM facts WHERE source_session_id = $1", [sessionId]);
+  const deleteTc = tenantClausePg(tenantId, 2);
+  await client.query(`DELETE FROM facts WHERE source_session_id = $1 AND ${deleteTc.sql}`, [sessionId, deleteTc.param]);
   if (facts.length === 0) return;
 
   for (const f of facts) {
     await client.query(
       `INSERT INTO facts (id, kind, subject, predicate, value, source_session_id,
-         source_quote, created_at, superseded_by, confidence, retired_at, scope)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+         source_quote, created_at, superseded_by, confidence, retired_at, scope, tenant_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
       [f.id, f.kind, f.subject, f.predicate, f.value, f.sourceSessionId,
-       f.sourceQuote, f.createdAt, f.supersededBy, f.confidence, f.retiredAt, scope],
+       f.sourceQuote, f.createdAt, f.supersededBy, f.confidence, f.retiredAt, scope, tenantId],
     );
   }
 
   for (const f of batchWinners(facts)) {
+    const collapseTc = tenantClausePg(tenantId, 4);
     const collapsed = await client.query<{ id: string }>(
       `UPDATE facts SET superseded_by = $1
-       WHERE subject = $2 AND predicate = $3 AND superseded_by IS NULL AND id != $1
+       WHERE subject = $2 AND predicate = $3 AND superseded_by IS NULL AND id != $1 AND ${collapseTc.sql}
        RETURNING id`,
-      [f.id, f.subject, f.predicate],
+      [f.id, f.subject, f.predicate, collapseTc.param],
     );
     const ids = collapsed.rows.map((r) => r.id);
     if (ids.length > 0) {

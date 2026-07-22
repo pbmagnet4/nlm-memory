@@ -349,8 +349,8 @@ describe("check-invariants (SQLite)", () => {
   describe("I5c — fact supersedence cycles", () => {
     it("detects a 2-cycle in facts.superseded_by", async () => {
       store.insertSessionForTest(makeSession({ id: "sessF" }));
-      await storage.facts.insert(makeFact({ id: "fa", subject: "s", predicate: "p", sourceSessionId: "sessF" }));
-      await storage.facts.insert(makeFact({ id: "fb", subject: "s", predicate: "q", sourceSessionId: "sessF" }));
+      await storage.facts.insert("team_local", makeFact({ id: "fa", subject: "s", predicate: "p", sourceSessionId: "sessF" }));
+      await storage.facts.insert("team_local", makeFact({ id: "fb", subject: "s", predicate: "q", sourceSessionId: "sessF" }));
       const db = store.rawDb();
       db.prepare("UPDATE facts SET superseded_by = 'fb' WHERE id = 'fa'").run();
       db.prepare("UPDATE facts SET superseded_by = 'fa' WHERE id = 'fb'").run();
@@ -360,8 +360,8 @@ describe("check-invariants (SQLite)", () => {
 
     it("does not flag a clean (acyclic) supersedence chain", async () => {
       store.insertSessionForTest(makeSession({ id: "sessG" }));
-      await storage.facts.insert(makeFact({ id: "g1", subject: "s", predicate: "p", sourceSessionId: "sessG" }));
-      await storage.facts.insert(makeFact({ id: "g2", subject: "s", predicate: "p", sourceSessionId: "sessG" }));
+      await storage.facts.insert("team_local", makeFact({ id: "g1", subject: "s", predicate: "p", sourceSessionId: "sessG" }));
+      await storage.facts.insert("team_local", makeFact({ id: "g2", subject: "s", predicate: "p", sourceSessionId: "sessG" }));
       // g1 superseded by g2 (normal), g2 active — no cycle.
       store.rawDb().prepare("UPDATE facts SET superseded_by = 'g2' WHERE id = 'g1'").run();
       expect(runChecksOnSqlite(store.rawDb()).some((v) => v.id === "I5c")).toBe(false);
