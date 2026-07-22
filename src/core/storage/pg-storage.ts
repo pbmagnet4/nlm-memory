@@ -20,6 +20,7 @@ import { PgWorkstreamStore } from "./pg-workstream-store.js";
 import { PgEmbeddingConfigStore } from "./pg-embedding-config.js";
 import { PgSourceRegistry } from "@core/sources/source-registry.js";
 import { PgProviderRegistry } from "@core/providers/provider-registry.js";
+import { PgTeamTokenStore } from "@core/tenancy/team-token-store.js";
 
 export interface PgStorageOptions {
   readonly connectionString: string;
@@ -36,6 +37,7 @@ export class PgStorage implements Storage {
   readonly embeddingConfig: PgEmbeddingConfigStore;
   readonly sources: PgSourceRegistry;
   readonly providers: PgProviderRegistry;
+  readonly teamTokens: PgTeamTokenStore;
   private readonly _pool: Pool;
   private readonly _migrationsDir: string;
 
@@ -51,6 +53,7 @@ export class PgStorage implements Storage {
     this.embeddingConfig = new PgEmbeddingConfigStore(pool);
     this.sources = new PgSourceRegistry(pool);
     this.providers = new PgProviderRegistry(pool);
+    this.teamTokens = new PgTeamTokenStore(pool);
   }
 
   static create(opts: PgStorageOptions): PgStorage {

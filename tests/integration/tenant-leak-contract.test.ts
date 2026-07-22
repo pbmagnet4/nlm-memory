@@ -12,11 +12,11 @@
  * buildWorkDigest, buildFailureModeBlock).
  *
  * Wave C1's surface threading + Wave C4's guard test complete cases 9 and 11
- * (below). Cases 7, 8, 12 stay `it.todo` — they exercise surfaces this
- * program's later milestones own: source-token ingest attribution/auth
- * (M3/M4) and M6 file-state isolation. A case that cannot pass yet is
- * `it.todo` with its exact case text — visibly red-by-design, never
- * deleted, never silently skipped.
+ * (below). M3 flips case 8 (token-swap auth) to a real assertion against the
+ * real HTTP app + TeamTokenStore. Case 7 (ingest attribution) is M4's job;
+ * case 12 (M6 file-state isolation) stays `it.todo` — a case that cannot
+ * pass yet is `it.todo` with its exact case text — visibly red-by-design,
+ * never deleted, never silently skipped.
  *
  * The pg twin (tenant-leak-contract.pg.test.ts, Wave C5) mirrors the sqlite
  * cases that have pg-reachable shapes; case 10 (concurrency) stays out of
@@ -32,6 +32,10 @@ import { buildWorkDigest } from "../../src/core/work-digest/build-work-digest.js
 import { buildFailureModeBlock } from "../../src/core/signals/failure-mode-recall.js";
 import { getSessionHandler } from "../../src/mcp/server.js";
 import { createApp } from "../../src/http/app.js";
+import { RecallService } from "../../src/core/recall/recall-service.js";
+import { FixedEmbedder } from "../fixtures/llm-stubs.js";
+import { TeamTokenStore } from "../../src/core/tenancy/team-token-store.js";
+import { hashTeamToken } from "../../src/core/tenancy/team-auth.js";
 import type { Signal } from "../../src/shared/types.js";
 
 const ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "../..");
@@ -283,10 +287,71 @@ describe("tenant leak-test contract (spec §6, sqlite lane)", () => {
       "revoked token's push is rejected",
   );
 
-  it.todo(
-    "case 8: token-swap — the same request body issued with A's then B's token returns disjoint result sets; a " +
-      "bad/absent token gets 401 with no corpus read",
-  );
+  // Case 8 (M3, spec §3). NLM_HOSTED=1 exercises the strict branch (no
+  // ungated fallback) so a bad/absent token really does 401 rather than
+  // silently resolving to the local default team. Seeds real team_a/team_b
+  // tokens via TeamTokenStore against the fixture's own db, issues the same
+  // GET /api/recall request with each token, and asserts disjoint result
+  // sets; a garbage or revoked token gets 401 with the recall service never
+  // invoked (asserted via a spy).
+  it("case 8: token-swap — the same request body issued with A's then B's token returns disjoint result sets; a " +
+      "bad/absent token gets 401 with no corpus read", async () => {
+    const prevHosted = process.env["NLM_HOSTED"];
+    process.env["NLM_HOSTED"] = "1";
+    try {
+      const teamTokens = new TeamTokenStore(fixture.db);
+      const tokenA = "token-team-a-case8";
+      const tokenB = "token-team-b-case8";
+      const tokenRevoked = "token-revoked-case8";
+      await teamTokens.insert(hashTeamToken(tokenA), "team_a");
+      await teamTokens.insert(hashTeamToken(tokenB), "team_b");
+      await teamTokens.insert(hashTeamToken(tokenRevoked), "team_a");
+      await teamTokens.revoke(hashTeamToken(tokenRevoked));
+
+      const { A, B } = fixture.ids;
+      const recall = new RecallService({ store: fixture.sessionStore, llm: new FixedEmbedder() });
+      const app = createApp({ recall, store: fixture.sessionStore, teamTokens });
+
+      const resA = await app.request("/api/recall?q=onboarding&mode=keyword", {
+        headers: { authorization: `Bearer ${tokenA}` },
+      });
+      expect(resA.status).toBe(200);
+      const idsA = ((await resA.json()) as { results: Array<{ id: string }> }).results.map((r) => r.id);
+      expect(idsA).toContain(A.sessionIds[0]);
+      expect(idsA).not.toContain(B.sessionIds[0]);
+
+      const resB = await app.request("/api/recall?q=onboarding&mode=keyword", {
+        headers: { authorization: `Bearer ${tokenB}` },
+      });
+      expect(resB.status).toBe(200);
+      const idsB = ((await resB.json()) as { results: Array<{ id: string }> }).results.map((r) => r.id);
+      expect(idsB).toContain(B.sessionIds[0]);
+      expect(idsB).not.toContain(A.sessionIds[0]);
+
+      let called = false;
+      const spyRecall = { search: async () => { called = true; return { query: "", mode: "keyword" as const, limit: 0, total: 0, results: [] }; } };
+      const spyApp = createApp({ recall: spyRecall as never, store: fixture.sessionStore, teamTokens });
+
+      const resBad = await spyApp.request("/api/recall?q=x&mode=keyword", {
+        headers: { authorization: "Bearer garbage-token-xyz" },
+      });
+      expect(resBad.status).toBe(401);
+      expect(called).toBe(false);
+
+      const resRevoked = await spyApp.request("/api/recall?q=x&mode=keyword", {
+        headers: { authorization: `Bearer ${tokenRevoked}` },
+      });
+      expect(resRevoked.status).toBe(401);
+      expect(called).toBe(false);
+
+      const resAbsent = await spyApp.request("/api/recall?q=x&mode=keyword");
+      expect(resAbsent.status).toBe(401);
+      expect(called).toBe(false);
+    } finally {
+      if (prevHosted === undefined) delete process.env["NLM_HOSTED"];
+      else process.env["NLM_HOSTED"] = prevHosted;
+    }
+  });
 
   // Case 9 (surface level, Wave C1/C2). Every MCP handler and HTTP route now
   // takes tenantId as an explicit parameter separate from the caller-

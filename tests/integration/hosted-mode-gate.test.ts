@@ -12,15 +12,18 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Hono } from "hono";
 import { RecallService } from "../../src/core/recall/recall-service.js";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import type { SqliteSessionStore } from "../../src/core/storage/sqlite-session-store.js";
 import { createApp } from "../../src/http/app.js";
+type AppInstance = ReturnType<typeof createApp>;
 import { createMcpServer, citeSessionHandler } from "../../src/mcp/server.js";
+import { hashTeamToken } from "../../src/core/tenancy/team-auth.js";
+import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
 import { FixedEmbedder } from "../fixtures/llm-stubs.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
+const TEST_TOKEN = "hosted-gate-test-token";
 
 function unit(values: number[]): Float32Array {
   const padded = new Float32Array(768);
@@ -53,10 +56,10 @@ const M6_FILTER_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
 
 const ALL_GATED_ROUTES = [...LOCAL_ROUTES, ...M6_FILTER_ROUTES];
 
-async function requestFor(app: Hono, route: { method: string; path: string }): Promise<Response> {
-  const init: RequestInit = { method: route.method };
+async function requestFor(app: AppInstance, route: { method: string; path: string }): Promise<Response> {
+  const init: RequestInit = { method: route.method, headers: { authorization: `Bearer ${TEST_TOKEN}` } };
   if (route.method === "POST") {
-    init.headers = { "content-type": "application/json" };
+    init.headers = { ...init.headers, "content-type": "application/json" };
     init.body = "{}";
   }
   return app.request(route.path, init);
@@ -66,7 +69,7 @@ describe("hosted-mode gate (spec §4.6, Wave C3)", () => {
   let tmp: string;
   let storage: SqliteStorage;
   let store: SqliteSessionStore;
-  let app: Hono;
+  let app: AppInstance;
   const prevHosted = process.env["NLM_HOSTED"];
 
   beforeEach(async () => {
@@ -74,8 +77,12 @@ describe("hosted-mode gate (spec §4.6, Wave C3)", () => {
     storage = SqliteStorage.create({ dbPath: join(tmp, "canonical.sqlite"), migrationsDir: MIGRATIONS_DIR });
     await storage.init();
     store = storage.sessions;
+    // A resolvable team token so requests survive the general /api/* gate
+    // (M3: hosted mode has no ungated fallback) and reach the disposition
+    // gate under test, exactly as they did before M3 tightened auth.
+    await storage.teamTokens.insert(hashTeamToken(TEST_TOKEN), DEFAULT_TEAM_ID);
     const recall = new RecallService({ store, llm: new FixedEmbedder(unit([0, 1, 0])) });
-    app = createApp({ recall, store, liveStore: store, dbPath: join(tmp, "canonical.sqlite") });
+    app = createApp({ recall, store, liveStore: store, dbPath: join(tmp, "canonical.sqlite"), teamTokens: storage.teamTokens });
   });
 
   afterEach(async () => {
@@ -109,11 +116,14 @@ describe("hosted-mode gate (spec §4.6, Wave C3)", () => {
     }
 
     it("does not gate an unrelated FILTER route (GET /api/recall)", async () => {
-      const res = await app.request("/api/recall?q=x&mode=keyword");
+      const res = await app.request("/api/recall?q=x&mode=keyword", {
+        headers: { authorization: `Bearer ${TEST_TOKEN}` },
+      });
       expect(res.status).toBe(200);
     });
 
     it("does not gate OOS routes (GET /api/health)", async () => {
+      // Health is unauthenticated in every mode (no token needed).
       const res = await app.request("/api/health");
       expect(res.status).toBe(200);
     });
@@ -127,6 +137,20 @@ describe("hosted-mode gate (spec §4.6, Wave C3)", () => {
     it("createMcpServer still registers cite_session under NLM_HOSTED (gate is inside the handler, not registration)", () => {
       const server = createMcpServer({ recall: { search: async () => ({ query: "", mode: "keyword", limit: 0, total: 0, results: [] }) } as never, store }, "team_local");
       expect(server).toBeDefined();
+    });
+
+    // M3 (spec §3): hosted mode has no ungated fallback — even a FILTER
+    // route (not disposition-gated at all) 401s without a resolvable token.
+    it("a FILTER route 401s with no token in hosted mode (no ungated fallback)", async () => {
+      const res = await app.request("/api/recall?q=x&mode=keyword");
+      expect(res.status).toBe(401);
+    });
+
+    it("a FILTER route 401s with a garbage token in hosted mode", async () => {
+      const res = await app.request("/api/recall?q=x&mode=keyword", {
+        headers: { authorization: "Bearer not-a-real-token" },
+      });
+      expect(res.status).toBe(401);
     });
   });
 

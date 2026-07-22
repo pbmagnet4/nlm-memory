@@ -26,8 +26,8 @@ import {
   writeActionsBatchPg,
 } from "../../src/core/actions/actions-log.js";
 import { createApp } from "../../src/http/app.js";
+type AppInstance = ReturnType<typeof createApp>;
 import { RecallService } from "../../src/core/recall/recall-service.js";
-import type { Hono } from "hono";
 import { FixedEmbedder } from "../fixtures/llm-stubs.js";
 import { makeSession } from "../fixtures/sessions.js";
 import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
@@ -240,7 +240,7 @@ describe.skipIf(!PG_TEST_URL)("PG actions-log", () => {
 describe.skipIf(!PG_TEST_URL)("data-management routes (PG backend)", () => {
   let storage: PgStorage;
   let store: PgSessionStore;
-  let app: Hono;
+  let app: AppInstance;
 
   beforeAll(async () => {
     // The backup/restore routes gate on NLM_MCP_TOKEN before the PG guard; clear

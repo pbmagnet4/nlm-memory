@@ -7,10 +7,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Hono } from "hono";
 import { RecallService } from "../../src/core/recall/recall-service.js";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { createApp } from "../../src/http/app.js";
+type AppInstance = ReturnType<typeof createApp>;
 import { FixedEmbedder } from "../fixtures/llm-stubs.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
@@ -18,7 +18,7 @@ const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 describe("POST /api/hook/pre-compact", () => {
   let tmp: string;
   let storage: SqliteStorage;
-  let app: Hono;
+  let app: AppInstance;
   let hookLogPath: string;
   let hookStateDir: string;
 

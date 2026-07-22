@@ -364,8 +364,14 @@ export async function runSetup(opts: SetupOptions): Promise<void> {
   ms.start("Running database migrations");
   try {
     const { SqliteStorage } = await import("../core/storage/sqlite-storage.js");
+    const { hashTeamToken } = await import("../core/tenancy/team-auth.js");
+    const { DEFAULT_TEAM_ID } = await import("../core/tenancy/default-team.js");
     const storage = SqliteStorage.create({ dbPath: opts.dbPath, migrationsDir: opts.migrationsDir });
     await storage.init();
+    // Local-mode continuity (program spec §3 M3): seed the just-minted
+    // NLM_MCP_TOKEN's hash so it authenticates via team_tokens from the
+    // first `nlm start`, not just after a later idempotent boot pass.
+    await storage.teamTokens.ensureActive(hashTeamToken(token), DEFAULT_TEAM_ID);
     await storage.close();
     ms.stop("Database ready");
   } catch (e) {

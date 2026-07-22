@@ -21,6 +21,7 @@ import { SqliteSignalStore } from "./sqlite-signal-store.js";
 import { SqliteWorkstreamStore } from "./sqlite-workstream-store.js";
 import { SourceRegistry } from "@core/sources/source-registry.js";
 import { ProviderRegistry } from "@core/providers/provider-registry.js";
+import { TeamTokenStore } from "@core/tenancy/team-token-store.js";
 
 export interface SqliteStorageOptions {
   readonly dbPath: string;
@@ -37,6 +38,7 @@ export class SqliteStorage implements Storage {
   readonly embeddingConfig: SqliteEmbeddingConfigStore;
   readonly sources: SourceRegistry;
   readonly providers: ProviderRegistry;
+  readonly teamTokens: TeamTokenStore;
 
   private constructor(
     sessions: SqliteSessionStore,
@@ -48,6 +50,7 @@ export class SqliteStorage implements Storage {
     embeddingConfig: SqliteEmbeddingConfigStore,
     sources: SourceRegistry,
     providers: ProviderRegistry,
+    teamTokens: TeamTokenStore,
   ) {
     this.sessions = sessions;
     this.facts = facts;
@@ -58,6 +61,7 @@ export class SqliteStorage implements Storage {
     this.embeddingConfig = embeddingConfig;
     this.sources = sources;
     this.providers = providers;
+    this.teamTokens = teamTokens;
   }
 
   static create(opts: SqliteStorageOptions): SqliteStorage {
@@ -71,7 +75,8 @@ export class SqliteStorage implements Storage {
     const embeddingConfig = new SqliteEmbeddingConfigStore(db);
     const sources = new SourceRegistry(db);
     const providers = new ProviderRegistry(db);
-    return new SqliteStorage(sessions, facts, signals, exemplars, workstreams, entities, embeddingConfig, sources, providers);
+    const teamTokens = new TeamTokenStore(db);
+    return new SqliteStorage(sessions, facts, signals, exemplars, workstreams, entities, embeddingConfig, sources, providers, teamTokens);
   }
 
   async init(): Promise<void> {

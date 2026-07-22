@@ -17,6 +17,7 @@ import type { WorkstreamStore } from "./workstream-store.js";
 // domain types live there); these are type-only imports.
 import type { SourceRegistryPort } from "@core/sources/source-registry.js";
 import type { ProviderRegistryPort } from "@core/providers/provider-registry.js";
+import type { TeamTokenStorePort } from "@core/tenancy/team-token-store.js";
 
 export interface Storage {
   readonly facts: FactStore;
@@ -29,6 +30,8 @@ export interface Storage {
   readonly sources: SourceRegistryPort;
   /** LLM-provider registry (ollama/deepseek/openai/…). */
   readonly providers: ProviderRegistryPort;
+  /** Bearer-token -> team resolution (the tenancy registry itself). */
+  readonly teamTokens: TeamTokenStorePort;
 
   /** Apply migrations / install extensions. Idempotent. */
   init(): Promise<void>;

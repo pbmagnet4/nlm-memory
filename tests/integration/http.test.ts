@@ -1,5 +1,5 @@
 /**
- * HTTP adapter integration. Exercises the Hono app via app.request() against
+ * HTTP adapter integration. Exercises the AppInstance app via app.request() against
  * a real SqliteSessionStore + RecallService. No network, no port binding.
  */
 
@@ -10,18 +10,19 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import pkg from "../../package.json" with { type: "json" };
 import { resetForTests, setCorpusSnapshot } from "../../src/core/health/corpus-state.js";
-import type { Hono } from "hono";
 import { RecallService } from "../../src/core/recall/recall-service.js";
 import { FactRecallService } from "../../src/core/recall-facts/fact-recall-service.js";
 import type { SqliteFactStore } from "../../src/core/storage/sqlite-fact-store.js";
 import type { SqliteSessionStore } from "../../src/core/storage/sqlite-session-store.js";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { createApp } from "../../src/http/app.js";
+type AppInstance = ReturnType<typeof createApp>;
 import type { Session } from "../../src/shared/types.js";
 import { makeFact } from "../fixtures/facts.js";
 import { makeSession } from "../fixtures/sessions.js";
 import { FixedEmbedder, StubClassifier, StubEmbedder } from "../fixtures/llm-stubs.js";
 import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
+import { hashTeamToken } from "../../src/core/tenancy/team-auth.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 
@@ -52,10 +53,10 @@ const seed: ReadonlyArray<{ session: Session; embedding: Float32Array }> = [
   {
     session: makeSession({
       id: "sess_a",
-      label: "Hono router setup",
-      summary: "Wired Hono routes to RecallService",
+      label: "AppInstance router setup",
+      summary: "Wired AppInstance routes to RecallService",
       entities: ["NLM"],
-      decisions: ["chose Hono"],
+      decisions: ["chose AppInstance"],
     }),
     embedding: unit([1, 0, 0]),
   },
@@ -74,7 +75,7 @@ describe("HTTP adapter", () => {
   let tmp: string;
   let storage: SqliteStorage;
   let store: SqliteSessionStore;
-  let app: Hono;
+  let app: AppInstance;
   let queryLogPath: string;
   let updateCheckCachePath: string;
 
@@ -275,7 +276,7 @@ describe("HTTP adapter", () => {
   });
 
   describe("include_superseded (#303)", () => {
-    // sess_b is "pgvector migration plan"; sess_a is "Hono router setup".
+    // sess_b is "pgvector migration plan"; sess_a is "AppInstance router setup".
     // Supersede sess_b by sess_a so a pgvector query has a superseded best hit.
     beforeEach(async () => {
       await store.markSuperseded("team_local", "sess_b", "sess_a");
@@ -493,7 +494,7 @@ describe("HTTP adapter", () => {
   it("GET /api/live/recent-writes awaits an async liveStore (pg-shaped) instead of serializing an unresolved Promise", async () => {
     // Regression for C2's carried fix: PgSessionStore.recentWrites/
     // recentMarkers are async, but the route handlers used to call them
-    // without await — under pg that returns a Promise, which Hono's c.json
+    // without await — under pg that returns a Promise, which AppInstance's c.json
     // serializes as `{}`, silently losing every write/marker. This fake
     // reproduces the pg-shaped (async) return without needing a real pg
     // connection.
@@ -537,7 +538,7 @@ describe("HTTP adapter — data management", () => {
   let dbPath: string;
   let storage: SqliteStorage;
   let store: SqliteSessionStore;
-  let app: Hono;
+  let app: AppInstance;
 
   beforeEach(async () => {
     tmp = mkdtempSync(join(tmpdir(), "nlm-http-data-"));
@@ -624,7 +625,7 @@ describe("HTTP adapter — fact recall", () => {
   let storage: SqliteStorage;
   let store: SqliteSessionStore;
   let factStore: SqliteFactStore;
-  let app: Hono;
+  let app: AppInstance;
   let factQueryLogPath: string;
 
   beforeEach(async () => {
@@ -640,7 +641,7 @@ describe("HTTP adapter — fact recall", () => {
     await factStore.insertMany("team_local", [
       makeFact({
         id: "f_hono", subject: "nlm-memory-ts", predicate: "framework",
-        value: "Hono", confidence: 0.9, sourceSessionId: "sess_p",
+        value: "AppInstance", confidence: 0.9, sourceSessionId: "sess_p",
       }),
       makeFact({
         id: "f_fastify", subject: "nlm-memory-ts", predicate: "framework",
@@ -668,7 +669,7 @@ describe("HTTP adapter — fact recall", () => {
     const body = (await res.json()) as { total: number; results: { id: string; value: string }[] };
     expect(body.total).toBe(1);
     expect(body.results[0]?.id).toBe("f_hono");
-    expect(body.results[0]?.value).toBe("Hono");
+    expect(body.results[0]?.value).toBe("AppInstance");
   });
 
   it("GET /api/recall/facts excludes superseded by default, includes with flag", async () => {
@@ -726,7 +727,7 @@ describe("HTTP adapter — fact recall", () => {
 describe("HTTP adapter — Spec G.2 fact injection contract", () => {
   let tmp: string;
   let storage: SqliteStorage;
-  let app: Hono;
+  let app: AppInstance;
 
   beforeEach(async () => {
     tmp = mkdtempSync(join(tmpdir(), "nlm-http-g2-"));
@@ -874,7 +875,7 @@ describe("HTTP adapter — Spec G.2 fact injection contract", () => {
 describe("HTTP local-only gate", () => {
   let tmp: string;
   let storage: SqliteStorage;
-  let app: Hono;
+  let app: AppInstance;
   let savedVitest: string | undefined;
   let savedNodeEnv: string | undefined;
   let savedToken: string | undefined;
@@ -896,8 +897,12 @@ describe("HTTP local-only gate", () => {
     delete process.env["NODE_ENV"];
     process.env["NLM_MCP_TOKEN"] = "test-token";
     process.env["NLM_UI_AUTH"] = "cookie";
+    // Mirrors nlm.ts's boot-time continuity (M3 §3): the general gate no
+    // longer compares a Bearer token against NLM_MCP_TOKEN directly, so the
+    // "valid Bearer" test below needs its hash seeded in team_tokens.
+    await storage.teamTokens.ensureActive(hashTeamToken("test-token"), DEFAULT_TEAM_ID);
     const recall = new RecallService({ store, llm: new FixedEmbedder(unit([1, 0, 0])) });
-    app = createApp({ recall, store, liveStore: store });
+    app = createApp({ recall, store, liveStore: store, teamTokens: storage.teamTokens });
   });
 
   afterEach(async () => {
@@ -973,7 +978,7 @@ describe("HTTP local-only gate", () => {
 describe("HTTP UI gate", () => {
   let tmp: string;
   let storage: SqliteStorage;
-  let app: Hono;
+  let app: AppInstance;
   let savedVitest: string | undefined;
   let savedNodeEnv: string | undefined;
   let savedToken: string | undefined;
@@ -996,8 +1001,11 @@ describe("HTTP UI gate", () => {
     delete process.env["NODE_ENV"];
     process.env["NLM_MCP_TOKEN"] = "test-token";
     process.env["NLM_UI_AUTH"] = "cookie";
+    // Mirrors nlm.ts's boot-time continuity (M3 §3): the bootstrap-nonce
+    // Bearer calls below resolve through team_tokens now, not a raw compare.
+    await storage.teamTokens.ensureActive(hashTeamToken("test-token"), DEFAULT_TEAM_ID);
     const recall = new RecallService({ store, llm: new FixedEmbedder(unit([1, 0, 0])) });
-    app = createApp({ recall, store, liveStore: store, uiDist });
+    app = createApp({ recall, store, liveStore: store, uiDist, teamTokens: storage.teamTokens });
   });
 
   afterEach(async () => {
@@ -1135,7 +1143,7 @@ describe("HTTP UI gate", () => {
 describe("HTTP gate — default off (NLM_UI_AUTH unset)", () => {
   let tmp: string;
   let storage: SqliteStorage;
-  let app: Hono;
+  let app: AppInstance;
   let savedVitest: string | undefined;
   let savedNodeEnv: string | undefined;
   let savedToken: string | undefined;
@@ -1202,7 +1210,7 @@ describe("HTTP gate — default off (NLM_UI_AUTH unset)", () => {
 describe("HTTP gate — misconfig (NLM_UI_AUTH=cookie without NLM_MCP_TOKEN)", () => {
   let tmp: string;
   let storage: SqliteStorage;
-  let app: Hono;
+  let app: AppInstance;
   let saved: Record<string, string | undefined> = {};
 
   beforeEach(async () => {
@@ -1242,7 +1250,7 @@ describe("HTTP gate — misconfig (NLM_UI_AUTH=cookie without NLM_MCP_TOKEN)", (
 describe("POST /api/citation/explicit", () => {
   let tmp: string;
   let storage: SqliteStorage;
-  let app: Hono;
+  let app: AppInstance;
 
   beforeEach(async () => {
     tmp = mkdtempSync(join(tmpdir(), "nlm-cite-"));

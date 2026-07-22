@@ -116,6 +116,8 @@ import { corpusSnapshot } from "@core/health/corpus-state.js";
 import { DEFAULT_NLM_PORT } from "../shared/net.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import { isHostedMode } from "@core/tenancy/hosted-mode.js";
+import { resolveTeamByToken } from "@core/tenancy/team-auth.js";
+import type { TeamTokenStorePort } from "@core/tenancy/team-token-store.js";
 
 const HERMES_RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 
@@ -148,10 +150,20 @@ export interface HttpDeps {
   /** Directory containing the built UI (dist/ui). When set, /ui/* serves the SPA. */
   readonly uiDist?: string;
   /**
-   * When provided, POST /mcp is mounted and token-gated with NLM_MCP_TOKEN.
-   * Omitting this keeps the route absent — no auth surface, no risk.
+   * When provided, POST /mcp is mounted and token-gated via team_tokens
+   * lookup (program spec §3 M3). Omitting this keeps the route absent — no
+   * auth surface, no risk.
    */
   readonly mcpDeps?: McpDeps;
+  /**
+   * Bearer-token -> team resolution (M3). Wired whenever the daemon's
+   * Storage exposes it (always, in practice — both SqliteStorage and
+   * PgStorage construct one). Optional here only so unit tests that build a
+   * bare-bones HttpDeps without a real Storage still compile; when absent,
+   * the general gate falls back to pre-M3 local-mode behavior (DEFAULT_TEAM_ID
+   * on loopback) and /mcp refuses to mount.
+   */
+  readonly teamTokens?: TeamTokenStorePort;
   /** Signal store - wire to enable POST /api/signal + GET /api/signals/*. */
   readonly signalStore?: SignalStore;
   /** Per-install scope stamped on every ingested signal. */
@@ -359,11 +371,25 @@ const VALID_MODES: ReadonlyArray<RecallMode> = ["keyword", "semantic", "hybrid"]
 const VALID_KINDS: ReadonlyArray<RecallKindFilter> = ["decision", "open"];
 const VALID_FACT_KINDS: ReadonlyArray<FactKind> = ["decision", "open", "attribute"];
 
-export function createApp(deps: HttpDeps): Hono {
-  const app = new Hono();
+/**
+ * Hono context Variables (program spec §3 M3): `installLocalOnlyMiddleware`
+ * resolves the request's tenant exactly once (host/origin checks, then
+ * hosted/local/cookie/token auth) and stashes it via `c.set("tenantId", …)`;
+ * every downstream route handler reads it back via `c.get("tenantId")`
+ * instead of the composition-time `DEFAULT_TEAM_ID` constant M2 used as a
+ * placeholder.
+ */
+export interface AppEnv {
+  readonly Variables: {
+    tenantId: string;
+  };
+}
+
+export function createApp(deps: HttpDeps): Hono<AppEnv> {
+  const app = new Hono<AppEnv>();
   const boundPort = process.env["NLM_PORT"] ? Number.parseInt(process.env["NLM_PORT"], 10) : Number.parseInt(DEFAULT_NLM_PORT, 10);
 
-  installLocalOnlyMiddleware(app, boundPort);
+  installLocalOnlyMiddleware(app, boundPort, deps);
   installHostedModeGate(app);
   registerHealthRoute(app, deps);
   registerMcpRoute(app, deps);
@@ -394,7 +420,7 @@ export function createApp(deps: HttpDeps): Hono {
   return app;
 }
 
-function registerNonceRoute(app: Hono, nonceStore: NonceStore): void {
+function registerNonceRoute(app: Hono<AppEnv>, nonceStore: NonceStore): void {
   // Bearer-protected via the existing /api/* gate. The CLI calls this
   // with NLM_MCP_TOKEN already in its env (autoloaded), gets a nonce,
   // then opens /ui/auth?nonce=<short-lived-single-use> in the browser.
@@ -421,26 +447,73 @@ function uiAuthMode(): "cookie" | "none" {
   return process.env["NLM_UI_AUTH"] === "cookie" ? "cookie" : "none";
 }
 
-function installLocalOnlyMiddleware(app: Hono, boundPort: number): void {
+/**
+ * Tenant resolution + auth for every /api/* request (program spec §3, M3).
+ * Host/Origin checks are network-position defenses and stay skippable under
+ * VITEST/NODE_ENV=test (in-process `app.request()` calls carry no real
+ * socket). Tenant resolution does NOT skip under that flag — the contract's
+ * token-swap case (spec §6 case 8) and any other test that wires a real
+ * `teamTokens` store must exercise the actual resolveTeamByToken path, not a
+ * bypass, so a garbage token really does 401 inside a `vitest` run.
+ *
+ * Resolution order:
+ *   1. Hosted mode (NLM_HOSTED=1): a resolvable Bearer token is mandatory.
+ *      No cookie fallback, no ungated fallback — absent/unresolvable token
+ *      is 401 before any corpus read, always.
+ *   2. Local mode, NLM_UI_AUTH unset ("none", the default): zero UX change
+ *      from pre-M3 — requests resolve to DEFAULT_TEAM_ID. A resolvable
+ *      Bearer token is still honored when presented (lets local multi-team
+ *      dev and in-process tests exercise real resolution), but nothing is
+ *      ever rejected in this mode — that's the point of leaving auth off.
+ *   3. Local mode, NLM_UI_AUTH=cookie: the existing HMAC session cookie
+ *      (still keyed off NLM_MCP_TOKEN directly — unchanged, local-only
+ *      concern) resolves to DEFAULT_TEAM_ID. A Bearer token resolves via
+ *      the same team_tokens lookup as every other transport instead of the
+ *      old exact-string compare; unresolved token or no credential is 401.
+ */
+function installLocalOnlyMiddleware(app: Hono<AppEnv>, boundPort: number, deps: HttpDeps): void {
   const skipLocalGate = !!process.env["VITEST"] || process.env["NODE_ENV"] === "test";
   const extras = parseAllowedOrigins(process.env["NLM_ALLOWED_ORIGINS"] ?? "");
   app.use("/api/*", async (c, next) => {
-    if (skipLocalGate) return next();
-    const host = c.req.header("host");
-    if (!isLoopbackHost(host, boundPort) && !extras.hosts.has(host?.toLowerCase() ?? "")) {
-      return c.json({ error: "host header not allowed" }, 403);
+    if (!skipLocalGate) {
+      const host = c.req.header("host");
+      if (!isLoopbackHost(host, boundPort) && !extras.hosts.has(host?.toLowerCase() ?? "")) {
+        return c.json({ error: "host header not allowed" }, 403);
+      }
     }
     if (c.req.path === "/api/health") {
       return next();
     }
-    const origin = c.req.header("origin");
-    if (origin !== undefined && !isLoopbackOrigin(origin, boundPort) && !extras.origins.has(origin.toLowerCase())) {
-      return c.json({ error: "origin not allowed" }, 403);
+    if (!skipLocalGate) {
+      const origin = c.req.header("origin");
+      if (origin !== undefined && !isLoopbackOrigin(origin, boundPort) && !extras.origins.has(origin.toLowerCase())) {
+        return c.json({ error: "origin not allowed" }, 403);
+      }
     }
-    if (uiAuthMode() === "none") {
-      // Auth disabled by user. Loopback Host + Origin checks already passed.
+
+    const auth = c.req.header("authorization") ?? "";
+    const match = /^Bearer\s+(\S+)$/i.exec(auth);
+    const presentedToken = match?.[1];
+
+    if (isHostedMode()) {
+      const resolved = deps.teamTokens ? await resolveTeamByToken(deps.teamTokens, presentedToken) : null;
+      if (!resolved) return c.json({ error: "unauthorized" }, 401);
+      c.set("tenantId", resolved.teamId);
       return next();
     }
+
+    if (uiAuthMode() === "none") {
+      // Auth disabled by user (or never configured). Loopback Host + Origin
+      // checks already passed. A resolvable token still wins when present;
+      // otherwise fall back to the single local operator team exactly as
+      // before M3 — this mode never rejects a request.
+      const resolved = presentedToken && deps.teamTokens
+        ? await resolveTeamByToken(deps.teamTokens, presentedToken)
+        : null;
+      c.set("tenantId", resolved ? resolved.teamId : DEFAULT_TEAM_ID);
+      return next();
+    }
+
     const token = process.env["NLM_MCP_TOKEN"];
     if (!token) {
       // Misconfig: NLM_UI_AUTH=cookie but no token to key the HMAC. Fail
@@ -449,21 +522,24 @@ function installLocalOnlyMiddleware(app: Hono, boundPort: number): void {
     }
     // UI session cookie (HMAC of the token, set by /ui/auth bootstrap).
     // Carries the browser's API calls and survives token-stable restarts.
+    // Local-only concern (program spec §3 M3): unchanged, always resolves
+    // to the single local operator team.
     const cookies = parseCookies(c.req.header("cookie"));
     if (verifySessionCookie(cookies[SESSION_COOKIE_NAME], token)) {
       // Rolling expiry: every authenticated hit re-issues Set-Cookie so an
       // actively-used session never sees an expiry. Only 30 days of true
       // inactivity force a re-bootstrap.
       c.header("Set-Cookie", buildSessionCookie(deriveSessionValue(token)));
+      c.set("tenantId", DEFAULT_TEAM_ID);
       return next();
     }
     // Bearer: programmatic clients (Hermes WebUI, agents, the MCP path).
-    // Same secret as the cookie HMAC derives from, but transmitted directly.
-    const auth = c.req.header("authorization") ?? "";
-    const match = /^Bearer\s+(\S+)$/i.exec(auth);
-    const given = Buffer.from(match?.[1] ?? "", "utf8");
-    const want = Buffer.from(token, "utf8");
-    if (match && given.length === want.length && timingSafeEqual(given, want)) {
+    // Resolved via the same team_tokens lookup every other transport uses.
+    const resolved = presentedToken && deps.teamTokens
+      ? await resolveTeamByToken(deps.teamTokens, presentedToken)
+      : null;
+    if (resolved) {
+      c.set("tenantId", resolved.teamId);
       return next();
     }
     return c.json({ error: "unauthorized" }, 401);
@@ -505,7 +581,7 @@ const HOSTED_GATED_ROUTES: ReadonlyArray<{ method: string; path: string; disposi
   { method: "POST", path: "/api/hook/hermes-agent/session-lifecycle", disposition: "M6-FILTER" },
 ];
 
-function installHostedModeGate(app: Hono): void {
+function installHostedModeGate(app: Hono<AppEnv>): void {
   const gated = new Map<string, HostedDisposition>();
   for (const r of HOSTED_GATED_ROUTES) gated.set(`${r.method} ${r.path}`, r.disposition);
 
@@ -534,7 +610,7 @@ function installHostedModeGate(app: Hono): void {
 // `nlm ui` is the bootstrap path — it opens /ui/auth?t=<token>, which
 // validates and sets the cookie. After that the cookie carries every
 // subsequent /ui/* and /api/* call.
-function installUiGate(app: Hono): void {
+function installUiGate(app: Hono<AppEnv>): void {
   const skipGate = !!process.env["VITEST"] || process.env["NODE_ENV"] === "test";
   app.use("/ui/*", async (c, next) => {
     if (skipGate) return next();
@@ -557,7 +633,7 @@ function installUiGate(app: Hono): void {
   });
 }
 
-function registerUiAuthRoutes(app: Hono, nonceStore: NonceStore): void {
+function registerUiAuthRoutes(app: Hono<AppEnv>, nonceStore: NonceStore): void {
   app.get("/ui/auth", (c) => {
     const token = process.env["NLM_MCP_TOKEN"];
     const next = sanitizeNextPath(c.req.query("next"));
@@ -602,7 +678,7 @@ function renderAuthPage(): string {
 </main></body></html>`;
 }
 
-function registerHealthRoute(app: Hono, deps: HttpDeps): void {
+function registerHealthRoute(app: Hono<AppEnv>, deps: HttpDeps): void {
   app.get("/api/health", async (c) => {
     const snap = corpusSnapshot();
     const corpus = snap
@@ -635,41 +711,38 @@ function registerHealthRoute(app: Hono, deps: HttpDeps): void {
 // Stateless: one transport + McpServer instance per request, no in-memory
 // session state. Bearer token from NLM_MCP_TOKEN is mandatory.
 // The existing stdio MCP path (nlm mcp / .mcp.json) is untouched.
-function registerMcpRoute(app: Hono, deps: HttpDeps): void {
+function registerMcpRoute(app: Hono<AppEnv>, deps: HttpDeps): void {
   if (!deps.mcpDeps) return;
-  const mcpToken = process.env["NLM_MCP_TOKEN"];
-  if (!mcpToken) {
+  if (!deps.teamTokens) {
     throw new Error(
-      "NLM_MCP_TOKEN must be set when mcpDeps is provided — " +
+      "teamTokens must be wired when mcpDeps is provided — " +
       "refusing to mount an unauthenticated /mcp endpoint",
     );
   }
   const capturedMcpDeps = deps.mcpDeps;
+  const teamTokens = deps.teamTokens;
   app.all("/mcp", async (c) => {
     const auth = c.req.header("authorization") ?? "";
     const match = /^Bearer\s+(\S+)$/i.exec(auth);
-    const given = Buffer.from(match?.[1] ?? "", "utf8");
-    const want = Buffer.from(mcpToken, "utf8");
-    if (!match || given.length !== want.length || !timingSafeEqual(given, want)) {
+    const resolved = await resolveTeamByToken(teamTokens, match?.[1]);
+    if (!resolved) {
       return c.json({ error: "unauthorized" }, 401);
     }
     // No sessionIdGenerator = stateless mode: no session ID in responses,
     // no session validation. Correct for per-request agent calls.
     const transport = new WebStandardStreamableHTTPServerTransport({});
-    // Bearer-token gated above; the token doesn't resolve a tenant until M3
-    // (program spec §3), so DEFAULT_TEAM_ID is the composition-root value here too.
-    const server = createMcpServer(capturedMcpDeps, DEFAULT_TEAM_ID);
+    const server = createMcpServer(capturedMcpDeps, resolved.teamId);
     await server.connect(transport);
     return transport.handleRequest(c.req.raw);
   });
 }
 
-function registerRecallRoutes(app: Hono, deps: HttpDeps): void {
+function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   app.get("/api/recall", async (c) => {
-    // Composition point for this request (program spec §4.6 "M2 threading
-    // semantics until M3"): DEFAULT_TEAM_ID until the Bearer token resolves
-    // a real tenant.
-    const tenantId = DEFAULT_TEAM_ID;
+    // Composition point for this request (program spec §3 M3): the tenant
+    // the general gate resolved from the Bearer token / cookie / local-mode
+    // default, stashed on the Hono context by installLocalOnlyMiddleware.
+    const tenantId = c.get("tenantId");
     const q = c.req.query("q") ?? "";
     const entity = c.req.query("entity");
     const kind = c.req.query("kind");
@@ -858,7 +931,7 @@ function registerRecallRoutes(app: Hono, deps: HttpDeps): void {
 }
 
 // ── Hook endpoints (Phase 1d) ─────────────────────────────────────────────
-function registerHookRoutes(app: Hono): void {
+function registerHookRoutes(app: Hono<AppEnv>): void {
   // PreCompact hook: flush surfaced-ID memo for the compacting conversation
   // and stamp a compaction record so post-compaction recalls don't get
   // suppressed by stale "already surfaced" gates.
@@ -900,7 +973,7 @@ function registerHookRoutes(app: Hono): void {
 // pre_llm_call  → POST /api/hook/hermes-agent/pre-turn  (recall + inject)
 // post_llm_call → POST /api/hook/hermes-agent/post-turn (citation detect)
 // on_session_{start,end,finalize,reset} → POST /api/hook/hermes-agent/session-lifecycle
-function registerHermesAgentHookRoutes(app: Hono, deps: HttpDeps): void {
+function registerHermesAgentHookRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   // pre-turn: run keyword recall against user_message, update the per-session
   // memo to avoid re-surfacing the same sessions within one conversation, and
   // return the formatted pointer block as {"context": "..."}.
@@ -924,7 +997,7 @@ function registerHermesAgentHookRoutes(app: Hono, deps: HttpDeps): void {
       return c.json({ context: null });
     }
     try {
-      const tenantId = DEFAULT_TEAM_ID;
+      const tenantId = c.get("tenantId");
       const result = await deps.recall.search(tenantId, {
         query: userMessage,
         mode: "keyword",
@@ -1021,12 +1094,12 @@ function registerHermesAgentHookRoutes(app: Hono, deps: HttpDeps): void {
 }
 
 // ── Fact recall (Phase B.3 surface, exposed over HTTP for the MCP proxy) ──
-function registerFactRoutes(app: Hono, deps: HttpDeps): void {
+function registerFactRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   app.get("/api/recall/facts", async (c) => {
     if (!deps.factRecall) {
       return c.json({ error: "fact recall not wired in this deployment" }, 503);
     }
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     const q = c.req.query("q") ?? "";
     const subject = c.req.query("subject");
     const predicate = c.req.query("predicate");
@@ -1100,7 +1173,7 @@ function registerFactRoutes(app: Hono, deps: HttpDeps): void {
       return c.json({ error: "subject is required" }, 400);
     }
     const predicate = c.req.query("predicate");
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     const chains = await deps.factStore.getHistory(tenantId, subject, predicate);
     return c.json({ subject, predicate: predicate ?? null, chains });
   });
@@ -1119,7 +1192,7 @@ function registerFactRoutes(app: Hono, deps: HttpDeps): void {
   });
 }
 
-function registerLiveRoutes(app: Hono, deps: HttpDeps): void {
+function registerLiveRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   // Pre-existing bug fixed in passing (C2): PgSessionStore's recentWrites/
   // recentMarkers are async (return a Promise), but SqliteSessionStore's are
   // synchronous — these handlers must be async + await the call so pg
@@ -1127,20 +1200,20 @@ function registerLiveRoutes(app: Hono, deps: HttpDeps): void {
   // JSON.
   app.get("/api/live/recent-writes", async (c) => {
     if (!deps.liveStore) return c.json({ writes: [] });
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     const limit = parseLimit(c.req.query("limit"), 50, 200);
     return c.json({ writes: await deps.liveStore.recentWrites(tenantId, limit) });
   });
 
   app.get("/api/live/recent-markers", async (c) => {
     if (!deps.liveStore) return c.json({ markers: [] });
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     const limit = parseLimit(c.req.query("limit"), 50, 200);
     return c.json({ markers: await deps.liveStore.recentMarkers(tenantId, limit) });
   });
 }
 
-function registerDatasetRoute(app: Hono, deps: HttpDeps): void {
+function registerDatasetRoute(app: Hono<AppEnv>, deps: HttpDeps): void {
   app.get("/api/dataset", (c) => {
     if (!deps.dbPath) return c.json({ error: "dataset endpoint requires dbPath" }, 503);
     const includePaths = c.req.query("include_paths") === "true";
@@ -1150,7 +1223,7 @@ function registerDatasetRoute(app: Hono, deps: HttpDeps): void {
 
 // ── Data management ─────────────────────────────────────────────
 // Storage stats, live-safe backup snapshot, and staged restore.
-function registerDataManagementRoutes(app: Hono, deps: HttpDeps): void {
+function registerDataManagementRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   app.get("/api/data/stats", async (c) => {
     if (!deps.liveStore || !deps.dbPath) {
       return c.json({ error: "data stats require liveStore + dbPath" }, 503);
@@ -1249,14 +1322,14 @@ function registerDataManagementRoutes(app: Hono, deps: HttpDeps): void {
 // Append-only event log: dismiss/snooze/retire/label/merge all land here.
 // Mutations are projected into the dataset at read time, never applied to
 // the underlying sessions/entities/markers tables.
-function registerActionRoutes(app: Hono, deps: HttpDeps): void {
+function registerActionRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   app.post("/api/action", async (c) => {
     if (!deps.liveStore) return c.json({ error: "actions require liveStore" }, 503);
     const body = await c.req.json().catch(() => null);
     const parsed = parseActionInput(body);
     if (!parsed) return c.json({ error: "invalid action payload" }, 400);
     const store = deps.liveStore;
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     const id = store instanceof PgSessionStore
       ? await writeActionPg(store.pool, tenantId, parsed)
       : writeAction(store.rawDb(), tenantId, parsed);
@@ -1273,7 +1346,7 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
       .filter((x): x is NonNullable<ReturnType<typeof parseActionInput>> => x !== null);
     if (inputs.length === 0) return c.json({ accepted: 0, ids: [] });
     const store = deps.liveStore;
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     const ids = store instanceof PgSessionStore
       ? await writeActionsBatchPg(store.pool, tenantId, inputs)
       : writeActionsBatch(store.rawDb(), tenantId, inputs);
@@ -1284,7 +1357,7 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
   app.post("/api/action/:id/undo", async (c) => {
     if (!deps.liveStore) return c.json({ error: "actions require liveStore" }, 503);
     const store = deps.liveStore;
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     const result = store instanceof PgSessionStore
       ? await undoActionPg(store.pool, tenantId, c.req.param("id"))
       : undoAction(store.rawDb(), tenantId, c.req.param("id"));
@@ -1305,7 +1378,7 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
       ...(kind ? { kind } : {}),
     };
     const store = deps.liveStore;
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     const rows = store instanceof PgSessionStore
       ? await listActionsPg(store.pool, tenantId, opts)
       : listActions(store.rawDb(), tenantId, opts);
@@ -1313,7 +1386,7 @@ function registerActionRoutes(app: Hono, deps: HttpDeps): void {
   });
 }
 
-function registerClassifierRoutes(app: Hono, deps: HttpDeps): void {
+function registerClassifierRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   app.get("/api/classifier/info", (c) => {
     const provider = deps.classifier?.provider ?? "ollama";
     const model = deps.classifier?.model ?? "qwen3.5:4b";
@@ -1358,10 +1431,10 @@ function registerClassifierRoutes(app: Hono, deps: HttpDeps): void {
 // ── Sources registry ────────────────────────────────────────────
 // Each row = one transcript origin the daemon scans. UI uses these
 // endpoints to surface existing sources + let users add custom ones.
-function registerSourceRoutes(app: Hono, deps: HttpDeps): void {
+function registerSourceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   app.get("/api/sources", async (c) => {
     if (!deps.sources) return c.json({ sources: [] });
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     return c.json({ sources: await deps.sources.list(tenantId) });
   });
 
@@ -1370,7 +1443,7 @@ function registerSourceRoutes(app: Hono, deps: HttpDeps): void {
     const body = (await c.req.json().catch(() => null)) as Partial<SourceInsert> | null;
     const parsed = parseSourceInsert(body);
     if (!parsed) return c.json({ error: "invalid source payload" }, 400);
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     if (await deps.sources.getByName(tenantId, parsed.name)) {
       return c.json({ error: `source named '${parsed.name}' already exists` }, 409);
     }
@@ -1384,7 +1457,7 @@ function registerSourceRoutes(app: Hono, deps: HttpDeps): void {
     const body = (await c.req.json().catch(() => null)) as Partial<SourceUpdate> | null;
     const patch = parseSourceUpdate(body);
     if (!patch) return c.json({ error: "invalid patch payload" }, 400);
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     const updated = await deps.sources.update(tenantId, id, patch);
     if (!updated) return c.json({ error: `source ${id} not found` }, 404);
     return c.json(updated);
@@ -1394,7 +1467,7 @@ function registerSourceRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.sources) return c.json({ error: "sources registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     const ok = await deps.sources.delete(tenantId, id);
     if (!ok) return c.json({ error: `source ${id} not found` }, 404);
     return c.json({ deleted: id });
@@ -1404,7 +1477,7 @@ function registerSourceRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.sources) return c.json({ error: "sources registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     const token = await deps.sources.regenerateToken(tenantId, id);
     if (!token) return c.json({ error: "regenerate-token only applies to webhook sources" }, 400);
     return c.json({ token });
@@ -1413,7 +1486,7 @@ function registerSourceRoutes(app: Hono, deps: HttpDeps): void {
 
 // Ingest (webhook push). Auth: Bearer token tied to a webhook source.
 // Classification runs async so callers get a fast 202.
-function registerIngestRoute(app: Hono, deps: HttpDeps): void {
+function registerIngestRoute(app: Hono<AppEnv>, deps: HttpDeps): void {
   app.post("/api/ingest", async (c) => {
     if (!deps.ingest || !deps.sources) {
       return c.json({ error: "ingest pipeline not wired" }, 503);
@@ -1446,11 +1519,10 @@ function registerIngestRoute(app: Hono, deps: HttpDeps): void {
     };
 
     const ingest = deps.ingest;
-    // Pre-wires M4 (spec §3): stamp the ingested session with the resolved
-    // source row's own tenant_id rather than the DEFAULT_TEAM_ID constant.
-    // Every source is stamped DEFAULT_TEAM_ID today (single-tenant), so this
-    // is a no-op in local mode — plumbing only, until M4 gives sources real
-    // per-team tenant_id values.
+    // M4 (spec §3/§8): the ingested session is stamped with the resolved
+    // source row's own tenant_id, not the caller's general-gate tenantId —
+    // ingest auth is a distinct credential (the source's webhook token)
+    // from the team_tokens Bearer auth the rest of /api/* uses.
     void ingestSession(input, ingest, source.tenantId).catch((e) => {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`[ingest] background failure for ${id}: ${msg}`);
@@ -1463,10 +1535,10 @@ function registerIngestRoute(app: Hono, deps: HttpDeps): void {
 // ── Providers registry ──────────────────────────────────────────
 // Each row = one LLM endpoint. Keys are redacted on every response
 // (rows carry hasApiKey:boolean instead).
-function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
+function registerProviderRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   app.get("/api/providers", async (c) => {
     if (!deps.providers) return c.json({ providers: [] });
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     return c.json({ providers: await deps.providers.list(tenantId) });
   });
 
@@ -1475,7 +1547,7 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
     const body = (await c.req.json().catch(() => null)) as Partial<ProviderInsert> | null;
     const parsed = parseProviderInsert(body);
     if (!parsed) return c.json({ error: "invalid provider payload" }, 400);
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     if (await deps.providers.getByName(tenantId, parsed.name)) {
       return c.json({ error: `provider named '${parsed.name}' already exists` }, 409);
     }
@@ -1489,7 +1561,7 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
     const body = (await c.req.json().catch(() => null)) as Partial<ProviderUpdate> | null;
     const patch = parseProviderUpdate(body);
     if (!patch) return c.json({ error: "invalid patch payload" }, 400);
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     const updated = await deps.providers.update(tenantId, id, patch);
     if (!updated) return c.json({ error: `provider ${id} not found` }, 404);
     return c.json(updated);
@@ -1499,7 +1571,7 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.providers) return c.json({ error: "providers registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     const ok = await deps.providers.delete(tenantId, id);
     if (!ok) return c.json({ error: `provider ${id} not found` }, 404);
     return c.json({ deleted: id });
@@ -1509,7 +1581,7 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.providers) return c.json({ error: "providers registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     const provider = await deps.providers.get(tenantId, id);
     if (!provider) return c.json({ error: `provider ${id} not found` }, 404);
     const key = await deps.providers.getSecret(tenantId, id);
@@ -1526,7 +1598,7 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
     if (!deps.providers) return c.json({ error: "providers registry unavailable" }, 503);
     const id = Number.parseInt(c.req.param("id"), 10);
     if (!Number.isFinite(id)) return c.json({ error: "invalid id" }, 400);
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     const provider = await deps.providers.get(tenantId, id);
     if (!provider) return c.json({ error: `provider ${id} not found` }, 404);
     const key = await deps.providers.getSecret(tenantId, id);
@@ -1545,10 +1617,10 @@ function registerProviderRoutes(app: Hono, deps: HttpDeps): void {
   });
 }
 
-function registerSessionRoute(app: Hono, deps: HttpDeps): void {
+function registerSessionRoute(app: Hono<AppEnv>, deps: HttpDeps): void {
   app.get("/api/session/:id", async (c) => {
     const id = c.req.param("id");
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     const session = await deps.store.getById(tenantId, id);
     if (!session) {
       return c.json({ error: `session ${id} not found` }, 404);
@@ -1561,7 +1633,7 @@ function registerSessionRoute(app: Hono, deps: HttpDeps): void {
   // predecessor (the session being retired); body names the successor.
   app.post("/api/session/:id/supersede", async (c) => {
     const predecessorId = c.req.param("id");
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     let body: unknown;
     try {
       body = await c.req.json();
@@ -1730,7 +1802,7 @@ function parseProviderUpdate(raw: unknown): ProviderUpdate | null {
   return patch;
 }
 
-function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
+function registerSignalRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   app.post("/api/signal", async (c) => {
     if (!deps.signalStore || deps.installScope === undefined) {
       return c.json({ error: "signal store not wired in this deployment" }, 503);
@@ -1751,7 +1823,7 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
       return c.json({ error: e instanceof Error ? e.message : "invalid signal" }, 400);
     }
     const rawBody = body as Record<string, unknown>;
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     signal = await stampSignalScope(signal, tenantId, {
       repoPath: typeof rawBody["repo_path"] === "string" ? rawBody["repo_path"] : null,
       sessionScopeReader: deps.sessionScopeReader,
@@ -1794,7 +1866,7 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
     const repo = c.req.query("repo");
     if (!repo) return c.json({ error: "repo is required" }, 400);
     const model = c.req.query("model");
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     const block = await buildFailureModeBlock(
       tenantId,
       deps.signalStore,
@@ -1813,7 +1885,7 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
       return c.json({ error: "days must be 1..365" }, 400);
     }
     const sinceTs = new Date(Date.now() - days * 86_400_000).toISOString();
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     const rows = await deps.signalStore.listForAggregation(tenantId, { installScope: deps.installScope, sinceTs });
     const modes = aggregateFailureModes(rows);
     return c.json({ days, total: rows.length, modes });
@@ -1844,7 +1916,7 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
       return c.json({ error: e instanceof Error ? e.message : "invalid exemplar" }, 400);
     }
     inp = { ...inp, scope: scopeStampEnabled() ? inp.scope : null };
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     const { id, skipped } = await deps.exemplarStore.insert(tenantId, inp);
     if (!skipped && deps.codeEmbedder) {
       // Best-effort embedding: fire-and-forget, never blocks the response.
@@ -1876,7 +1948,7 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
     if (patch.retired === undefined && patch.outcome === undefined) {
       return c.json({ error: "provide retire (boolean) and/or outcome" }, 400);
     }
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
     const result = await deps.exemplarStore.setVerdict(tenantId, c.req.param("id"), patch, "human");
     if (result.status === "not_found") return c.json({ error: "exemplar not found" }, 404);
     return c.json({ id: c.req.param("id"), status: result.status }, 200);
@@ -1897,7 +1969,7 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
     const lang = c.req.query("lang");
     const model = c.req.query("model");
     const includeNegatives = c.req.query("negatives") !== "0";
-    const tenantId = DEFAULT_TEAM_ID;
+    const tenantId = c.get("tenantId");
 
     const result = await recallCode(
       tenantId,
@@ -1918,7 +1990,7 @@ function registerSignalRoutes(app: Hono, deps: HttpDeps): void {
   });
 }
 
-function mountSpa(app: Hono, dist: string): void {
+function mountSpa(app: Hono<AppEnv>, dist: string): void {
   const indexHtml = join(dist, "index.html");
   if (!existsSync(indexHtml)) return;
 

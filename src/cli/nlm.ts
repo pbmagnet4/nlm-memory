@@ -80,6 +80,7 @@ import {
 import { runSupersedeCommand } from "./supersede.js";
 import { runInitCommand } from "./init.js";
 import { DEFAULT_TEAM_ID } from "../core/tenancy/default-team.js";
+import { hashTeamToken } from "../core/tenancy/team-auth.js";
 import { runScopeBackfill, formatBackfillResult } from "./scope-backfill.js";
 import { runScopeCoverage, formatCoverageResult } from "./scope-coverage.js";
 import { loadAliasMap } from "../core/scope/alias-map.js";
@@ -442,8 +443,14 @@ program
     // Generate NLM_MCP_TOKEN if missing so /api/* gets Bearer-protected for
     // non-browser callers. Idempotent: re-reads persisted token first.
     autoloadEnv();
-    ensureMcpToken();
+    const mcpToken = ensureMcpToken();
     const { storage, store, facts, signals, scope, sources, providers, recall, factRecall, embedder, classifier } = await buildStack();
+    // Local-mode continuity (program spec §3 M3): idempotently seed the
+    // existing NLM_MCP_TOKEN's hash for the default team, so an install that
+    // already has a token keeps authenticating through the same
+    // resolveTeamByToken path as any future per-team token. No-op after the
+    // first boot (ensureActive is insert-if-absent).
+    await storage.teamTokens.ensureActive(hashTeamToken(mcpToken), DEFAULT_TEAM_ID);
     const { existsSync } = await import("node:fs");
     const hasMcpToken = Boolean(process.env["NLM_MCP_TOKEN"]);
     const codeEmb = buildCodeEmbedder();
@@ -457,6 +464,7 @@ program
       classifier,
       sources,
       providers,
+      teamTokens: storage.teamTokens,
       ingest: {
         classifier,
         embedder,

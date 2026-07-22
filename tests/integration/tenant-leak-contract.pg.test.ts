@@ -16,7 +16,9 @@
  * (row-level tenancy, matching the real hosted topology), and the test
  * interleaves concurrent Promise.all batches of reads and writes across
  * both tenants against the one live pg instance.
- * Cases 7, 8, 12 mirror the sqlite file's it.todo (M3/M4/M6 surfaces).
+ * M3 flips case 8 (token-swap auth) to a real assertion. Case 7 (ingest
+ * attribution) is M4's job; case 12 (M6 file-state isolation) mirrors the
+ * sqlite file's it.todo.
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { seedTenantCorpusPg, type SeededTenantCorpusPg } from "../helpers/seed-tenant-corpus-pg.js";
@@ -24,6 +26,11 @@ import { rollupWorkstream } from "../../src/core/workstream/rollup.js";
 import { buildWorkDigest } from "../../src/core/work-digest/build-work-digest.js";
 import { buildFailureModeBlock } from "../../src/core/signals/failure-mode-recall.js";
 import { getSessionHandler } from "../../src/mcp/server.js";
+import { createApp } from "../../src/http/app.js";
+import { RecallService } from "../../src/core/recall/recall-service.js";
+import { FixedEmbedder } from "../fixtures/llm-stubs.js";
+import { PgTeamTokenStore } from "../../src/core/tenancy/team-token-store.js";
+import { hashTeamToken } from "../../src/core/tenancy/team-auth.js";
 import type { Fact, Signal } from "../../src/shared/types.js";
 import { usePgTestSchema } from "../helpers/pg-test-schema.js";
 
@@ -185,10 +192,67 @@ describe.skipIf(!PG_TEST_URL)("tenant leak-test contract (spec §6, pg lane)", (
       "revoked token's push is rejected",
   );
 
-  it.todo(
-    "case 8: token-swap — the same request body issued with A's then B's token returns disjoint result sets; a " +
-      "bad/absent token gets 401 with no corpus read",
-  );
+  // Case 8 (M3, spec §3), pg twin. Mirrors the sqlite file's case 8 against
+  // PgTeamTokenStore + the real HTTP app on the isolated per-file schema.
+  it("case 8: token-swap — the same request body issued with A's then B's token returns disjoint result sets; a " +
+      "bad/absent token gets 401 with no corpus read", async () => {
+    await seed();
+    const prevHosted = process.env["NLM_HOSTED"];
+    process.env["NLM_HOSTED"] = "1";
+    try {
+      const teamTokens = new PgTeamTokenStore(fixture.storage.pgPool());
+      const tokenA = "token-team-a-case8-pg";
+      const tokenB = "token-team-b-case8-pg";
+      const tokenRevoked = "token-revoked-case8-pg";
+      await teamTokens.insert(hashTeamToken(tokenA), "team_a");
+      await teamTokens.insert(hashTeamToken(tokenB), "team_b");
+      await teamTokens.insert(hashTeamToken(tokenRevoked), "team_a");
+      await teamTokens.revoke(hashTeamToken(tokenRevoked));
+
+      const { A, B } = fixture.ids;
+      const recall = new RecallService({ store: fixture.sessionStore, llm: new FixedEmbedder() });
+      const app = createApp({ recall, store: fixture.sessionStore, teamTokens });
+
+      const resA = await app.request("/api/recall?q=onboarding&mode=keyword", {
+        headers: { authorization: `Bearer ${tokenA}` },
+      });
+      expect(resA.status).toBe(200);
+      const idsA = ((await resA.json()) as { results: Array<{ id: string }> }).results.map((r) => r.id);
+      expect(idsA).toContain(A.sessionIds[0]);
+      expect(idsA).not.toContain(B.sessionIds[0]);
+
+      const resB = await app.request("/api/recall?q=onboarding&mode=keyword", {
+        headers: { authorization: `Bearer ${tokenB}` },
+      });
+      expect(resB.status).toBe(200);
+      const idsB = ((await resB.json()) as { results: Array<{ id: string }> }).results.map((r) => r.id);
+      expect(idsB).toContain(B.sessionIds[0]);
+      expect(idsB).not.toContain(A.sessionIds[0]);
+
+      let called = false;
+      const spyRecall = { search: async () => { called = true; return { query: "", mode: "keyword" as const, limit: 0, total: 0, results: [] }; } };
+      const spyApp = createApp({ recall: spyRecall as never, store: fixture.sessionStore, teamTokens });
+
+      const resBad = await spyApp.request("/api/recall?q=x&mode=keyword", {
+        headers: { authorization: "Bearer garbage-token-xyz-pg" },
+      });
+      expect(resBad.status).toBe(401);
+      expect(called).toBe(false);
+
+      const resRevoked = await spyApp.request("/api/recall?q=x&mode=keyword", {
+        headers: { authorization: `Bearer ${tokenRevoked}` },
+      });
+      expect(resRevoked.status).toBe(401);
+      expect(called).toBe(false);
+
+      const resAbsent = await spyApp.request("/api/recall?q=x&mode=keyword");
+      expect(resAbsent.status).toBe(401);
+      expect(called).toBe(false);
+    } finally {
+      if (prevHosted === undefined) delete process.env["NLM_HOSTED"];
+      else process.env["NLM_HOSTED"] = prevHosted;
+    }
+  });
 
   it("case 10: concurrent tenants (pg) — interleaved A and B reads/writes on one pg instance never bleed", async () => {
     await seed();

@@ -11,10 +11,10 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Hono } from "hono";
 import { RecallService } from "../../src/core/recall/recall-service.js";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { createApp } from "../../src/http/app.js";
+type AppInstance = ReturnType<typeof createApp>;
 import type { EmbedResult, LLMClient } from "../../src/ports/llm-client.js";
 import { makeSession } from "../fixtures/sessions.js";
 
@@ -36,7 +36,7 @@ class NoopEmbedder implements LLMClient {
 describe("hermes-agent hook endpoints", () => {
   let tmp: string;
   let storage: SqliteStorage;
-  let app: Hono;
+  let app: AppInstance;
   let citationLogPath: string;
 
   beforeEach(async () => {
