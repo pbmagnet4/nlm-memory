@@ -253,7 +253,58 @@ async function classifyAll(
   return { key: candidate.key, label: candidate.label, results, elapsedMsById };
 }
 
-function buildCandidates(): CandidateConfig[] {
+/**
+ * One entry of `NLM_EVAL_CANDIDATES` — see buildCandidates() below. `provider`
+ * selects which ClassifierClient wraps the endpoint: "ollama" reuses the
+ * production OllamaClient, "openai-compatible" reuses the eval-local
+ * OpenAICompatibleClassifier (Studio auditions and any other OpenAI-shaped
+ * endpoint).
+ */
+interface CandidateSpec {
+  readonly name: string;
+  readonly provider: "ollama" | "openai-compatible";
+  readonly baseUrl?: string;
+  readonly model: string;
+}
+
+export function candidatesFromEnv(raw: string): CandidateConfig[] {
+  let specs: unknown;
+  try {
+    specs = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`NLM_EVAL_CANDIDATES: invalid JSON — ${(err as Error).message}`);
+  }
+  if (!Array.isArray(specs) || specs.length === 0) {
+    throw new Error("NLM_EVAL_CANDIDATES: must be a non-empty JSON array");
+  }
+  const ollamaUrl = process.env["NLM_OLLAMA_URL"] ?? "http://localhost:11434";
+  return specs.map((spec: CandidateSpec, i: number) => {
+    if (!spec || typeof spec !== "object" || !spec.name || !spec.provider || !spec.model) {
+      throw new Error(`NLM_EVAL_CANDIDATES[${i}]: requires "name", "provider", and "model"`);
+    }
+    const key = `${spec.provider}:${spec.model}`;
+    if (spec.provider === "ollama") {
+      return {
+        key,
+        label: spec.name,
+        client: new OllamaClient({ baseUrl: spec.baseUrl ?? ollamaUrl, classifyModel: spec.model }),
+      };
+    }
+    if (spec.provider === "openai-compatible") {
+      return {
+        key,
+        label: spec.name,
+        client: new OpenAICompatibleClassifier(spec.baseUrl ?? STUDIO_BASE, spec.model),
+      };
+    }
+    throw new Error(`NLM_EVAL_CANDIDATES[${i}]: unknown provider "${String(spec.provider)}"`);
+  });
+}
+
+export function buildCandidates(): CandidateConfig[] {
+  const envCandidates = process.env["NLM_EVAL_CANDIDATES"];
+  if (envCandidates) return candidatesFromEnv(envCandidates);
+
   const ollamaUrl = process.env["NLM_OLLAMA_URL"] ?? "http://localhost:11434";
   const prodModel = process.env["NLM_CLASSIFIER_MODEL"] ?? "qwen3:4b-instruct-2507-q4_K_M";
   return [
