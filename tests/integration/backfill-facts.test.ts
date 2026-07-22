@@ -99,7 +99,7 @@ describe("backfillFacts", () => {
       id: "sess_done", body: "BODY-DONE", startedAt: "2026-05-17T12:00:00Z",
     }));
     // Pre-existing fact on sess_done — backfill should skip it.
-    await factStore.insert({
+    await factStore.insert("team_local", {
       id: "f_pre", kind: "decision", subject: "x", predicate: "framework",
       value: "v", sourceSessionId: "sess_done", sourceQuote: null,
       createdAt: "2026-05-17T12:00:00Z", supersededBy: null, confidence: 0.9,
@@ -115,18 +115,18 @@ describe("backfillFacts", () => {
       ])],
     ]));
 
-    const report = await backfillFacts({
+    const report = await backfillFacts( {
       store, factStore, classifier, statePath,
-    });
+    }, "team_local");
 
     expect(report.total).toBe(2); // sess_done excluded by the NOT EXISTS clause
     expect(report.processed).toBe(2);
     expect(report.factsWritten).toBe(3);
     expect(classifier.calls).toHaveLength(2);
 
-    expect(await factStore.listBySession("sess_old1")).toHaveLength(1);
-    expect(await factStore.listBySession("sess_old2")).toHaveLength(2);
-    expect(await factStore.listBySession("sess_done")).toHaveLength(1); // untouched
+    expect(await factStore.listBySession("team_local", "sess_old1")).toHaveLength(1);
+    expect(await factStore.listBySession("team_local", "sess_old2")).toHaveLength(2);
+    expect(await factStore.listBySession("team_local", "sess_done")).toHaveLength(1); // untouched
   });
 
   it("supersedence fires across backfill iterations (B.4 in the backfill path)", async () => {
@@ -146,13 +146,13 @@ describe("backfillFacts", () => {
       ])],
     ]));
 
-    await backfillFacts({ store, factStore, classifier, statePath });
+    await backfillFacts( { store, factStore, classifier, statePath }, "team_local");
 
-    const current = await factStore.findCurrent("x", "framework");
+    const current = await factStore.findCurrent("team_local", "x", "framework");
     expect(current?.value).toBe("Hono");
     expect(current?.sourceSessionId).toBe("sess_late");
 
-    const chains = await factStore.getHistory("x", "framework");
+    const chains = await factStore.getHistory("team_local", "x", "framework");
     expect(chains[0]?.history.map((f) => f.value)).toEqual(["Hono", "Fastify"]);
   });
 
@@ -166,13 +166,13 @@ describe("backfillFacts", () => {
       ])],
     ]));
 
-    const report = await backfillFacts({
+    const report = await backfillFacts( {
       store, factStore, classifier, statePath, dryRun: true,
-    });
+    }, "team_local");
 
     expect(report.processed).toBe(1);
     expect(report.factsWritten).toBe(1);
-    expect(await factStore.listBySession("sess_dry")).toHaveLength(0); // not written
+    expect(await factStore.listBySession("team_local", "sess_dry")).toHaveLength(0); // not written
     expect(existsSync(statePath)).toBe(false); // dry-run never touches state
   });
 
@@ -192,7 +192,7 @@ describe("backfillFacts", () => {
       ])],
     ]));
 
-    const r1 = await backfillFacts({ store, factStore, classifier, statePath });
+    const r1 = await backfillFacts( { store, factStore, classifier, statePath }, "team_local");
     expect(r1.processed).toBe(2);
     expect(JSON.parse(readFileSync(statePath, "utf8")).done.sort()).toEqual([
       "sess_a", "sess_b",
@@ -200,9 +200,9 @@ describe("backfillFacts", () => {
 
     // Without reprocess, the SQL eligibility filter excludes both — the
     // happy-path "resume" is implicit (rows already have facts).
-    const r2 = await backfillFacts({
+    const r2 = await backfillFacts( {
       store, factStore, classifier: new ScriptedClassifier(new Map()), statePath,
-    });
+    }, "team_local");
     expect(r2.total).toBe(0);
 
     // With reprocess, eligibility drops the NOT-EXISTS clause; the state
@@ -210,10 +210,10 @@ describe("backfillFacts", () => {
     // the post-fix semantics, state-file ids are filtered out BEFORE the
     // work queue is built, so `total` is 0 (empty work queue) and
     // `skippedAlreadyDone` reports the pre-filter count.
-    const r3 = await backfillFacts({
+    const r3 = await backfillFacts( {
       store, factStore, classifier: new ScriptedClassifier(new Map()), statePath,
       reprocess: true,
-    });
+    }, "team_local");
     expect(r3.total).toBe(0);
     expect(r3.skippedAlreadyDone).toBe(2);
     expect(r3.processed).toBe(0);
@@ -231,9 +231,9 @@ describe("backfillFacts", () => {
         { kind: "decision", subject: "z", predicate: "framework", value: "v" },
       ])],
     ]));
-    const report = await backfillFacts({
+    const report = await backfillFacts( {
       store, factStore, classifier, statePath, from: "sess_aaa",
-    });
+    }, "team_local");
     expect(report.total).toBe(1);
     expect(classifier.calls).toEqual(["BODY-Z"]);
   });
@@ -251,9 +251,9 @@ describe("backfillFacts", () => {
       ]));
     }
     const classifier = new ScriptedClassifier(map);
-    const report = await backfillFacts({
+    const report = await backfillFacts( {
       store, factStore, classifier, statePath, limit: 2,
-    });
+    }, "team_local");
     expect(report.total).toBe(2);
     expect(report.processed).toBe(2);
     expect(classifier.calls).toHaveLength(2);
@@ -284,9 +284,9 @@ describe("backfillFacts", () => {
         { kind: "decision", subject: "s4", predicate: "framework", value: "v" },
       ])],
     ]));
-    const report = await backfillFacts({
+    const report = await backfillFacts( {
       store, factStore, classifier, statePath, limit: 2,
-    });
+    }, "team_local");
     expect(report.skippedAlreadyDone).toBe(3); // pre-filter count
     expect(report.total).toBe(2);              // work queue after pre-filter
     expect(report.processed).toBe(2);          // both processed
@@ -303,14 +303,14 @@ describe("backfillFacts", () => {
         0.2,
       )],
     ]));
-    const r1 = await backfillFacts({ store, factStore, classifier, statePath });
+    const r1 = await backfillFacts( { store, factStore, classifier, statePath }, "team_local");
     expect(r1.skippedLowConfidence).toBe(1);
     expect(r1.factsWritten).toBe(0);
 
     // Re-run uses the state file to skip rather than retrying.
-    const r2 = await backfillFacts({
+    const r2 = await backfillFacts( {
       store, factStore, classifier: new ScriptedClassifier(new Map()), statePath,
-    });
+    }, "team_local");
     expect(r2.skippedAlreadyDone).toBe(1);
   });
 
@@ -324,7 +324,7 @@ describe("backfillFacts", () => {
       new Map(),
       new Set(["BODY-0"]), // first session immediately errors
     );
-    const report = await backfillFacts({ store, factStore, classifier, statePath });
+    const report = await backfillFacts( { store, factStore, classifier, statePath }, "team_local");
     expect(report.classifyFailures).toBe(1);
     expect(report.processed).toBe(0);
     // Should NOT call the classifier on the remaining 2 sessions.
@@ -338,7 +338,7 @@ describe("backfillFacts", () => {
       id: "sess_future", body: "BODY-FUTURE", startedAt: future,
     }));
     const classifier = new ScriptedClassifier(new Map());
-    const report = await backfillFacts({ store, factStore, classifier, statePath });
+    const report = await backfillFacts( { store, factStore, classifier, statePath }, "team_local");
     expect(report.total).toBe(0);
   });
 
@@ -346,7 +346,7 @@ describe("backfillFacts", () => {
     store.insertSessionForTest(makeSession({
       id: "sess_repro", body: "BODY-REPRO", startedAt: "2026-05-17T10:00:00Z",
     }));
-    await factStore.insert({
+    await factStore.insert("team_local", {
       id: "f_existing", kind: "decision", subject: "x", predicate: "framework",
       value: "old", sourceSessionId: "sess_repro", sourceQuote: null,
       createdAt: "2026-05-17T10:00:00Z", supersededBy: null, confidence: 0.9,
@@ -357,14 +357,14 @@ describe("backfillFacts", () => {
         { kind: "decision", subject: "x", predicate: "framework", value: "new" },
       ])],
     ]));
-    const report = await backfillFacts({
+    const report = await backfillFacts( {
       store, factStore, classifier, statePath, reprocess: true,
-    });
+    }, "team_local");
     expect(report.processed).toBe(1);
 
     // The DELETE+insert pattern in ingestSessionFacts wipes the old
     // fact (same source_session_id) and writes the new one.
-    const all = await factStore.listBySession("sess_repro");
+    const all = await factStore.listBySession("team_local", "sess_repro");
     expect(all.map((f) => f.value)).toEqual(["new"]);
   });
 });

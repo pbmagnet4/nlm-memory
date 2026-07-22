@@ -31,9 +31,9 @@ describe("SqliteFactStore insert statement caching", () => {
   });
 
   it("cached statement inserts each fact correctly", async () => {
-    await storage.facts.insert(makeFact({ id: "fact_1", sourceSessionId: "sess_parent" }));
-    await storage.facts.insert(makeFact({ id: "fact_2", sourceSessionId: "sess_parent" }));
-    expect(await storage.facts.getById("fact_1")).not.toBeNull();
-    expect(await storage.facts.getById("fact_2")).not.toBeNull();
+    await storage.facts.insert("team_local", makeFact({ id: "fact_1", sourceSessionId: "sess_parent" }));
+    await storage.facts.insert("team_local", makeFact({ id: "fact_2", sourceSessionId: "sess_parent" }));
+    expect(await storage.facts.getById("team_local", "fact_1")).not.toBeNull();
+    expect(await storage.facts.getById("team_local", "fact_2")).not.toBeNull();
   });
 });

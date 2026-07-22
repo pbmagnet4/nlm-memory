@@ -62,7 +62,7 @@ describe("insertSession self-supersede guard", () => {
   });
 
   it("supersedes === record.id leaves no edge and status stays 'closed'", async () => {
-    await store.insertSession(makeRecord({ id: "sess_self" }), null, {
+    await store.insertSession( "team_local",makeRecord({ id: "sess_self" }), null, {
       priorSessionId: "sess_self",
       kind: "replaces",
     });

@@ -89,11 +89,10 @@ describe("fact supersedence survives a re-ingest pass", () => {
       { sid: "sess_b", at: "2026-04-15T16:55:00Z" },
       { sid: "sess_c", at: "2026-04-15T17:05:00Z" },
     ];
-    for (const s of sessions) await store.insertSession(makeRecord(s.sid, s.at));
+    for (const s of sessions) await store.insertSession("team_local", makeRecord(s.sid, s.at));
     for (const s of sessions) {
-      await store.insertFactsForSession(
-        s.sid, storage.facts, [makeFact(`fact_${s.sid}`, s.sid, s.at)], null,
-      );
+      await store.insertFactsForSession( "team_local",
+        s.sid, storage.facts, [makeFact(`fact_${s.sid}`, s.sid, s.at)], null);
     }
 
     const db = store.rawDb();
@@ -109,9 +108,9 @@ describe("fact supersedence survives a re-ingest pass", () => {
     // the same (subject, predicate) — created out of order across backfill
     // passes — then ingest a third. The loop's `ORDER BY created_at DESC LIMIT
     // 1` catches only the newest, leaving the other active. Two actives remain.
-    await store.insertSession(makeRecord("sess_x", "2026-04-15T16:17:00Z"));
-    await store.insertSession(makeRecord("sess_y", "2026-04-15T16:21:00Z"));
-    await store.insertSession(makeRecord("sess_z", "2026-04-15T17:05:00Z"));
+    await store.insertSession("team_local", makeRecord("sess_x", "2026-04-15T16:17:00Z"));
+    await store.insertSession("team_local", makeRecord("sess_y", "2026-04-15T16:21:00Z"));
+    await store.insertSession("team_local", makeRecord("sess_z", "2026-04-15T17:05:00Z"));
 
     const db = store.rawDb();
     const factStore = storage.facts;
@@ -120,7 +119,7 @@ describe("fact supersedence survives a re-ingest pass", () => {
     // fact_y active, a later pass inserted fact_x without superseding it
     // because, at that moment, fact_y was not yet present / the chain was
     // broken by an ON DELETE SET NULL un-supersede).
-    await factStore.insertMany([
+    await factStore.insertMany("team_local", [
       makeFact("fact_x", "sess_x", "2026-04-15T16:17:00Z"),
       makeFact("fact_y", "sess_y", "2026-04-15T16:21:00Z"),
     ]);
@@ -133,9 +132,8 @@ describe("fact supersedence survives a re-ingest pass", () => {
     // A live ingest of sess_z asserts the same pair. A correct supersedence
     // rule collapses ALL prior actives under the new fact, restoring the
     // invariant. The current loop supersedes only one.
-    await store.insertFactsForSession(
-      "sess_z", factStore, [makeFact("fact_z", "sess_z", "2026-04-15T17:05:00Z")], null,
-    );
+    await store.insertFactsForSession( "team_local",
+      "sess_z", factStore, [makeFact("fact_z", "sess_z", "2026-04-15T17:05:00Z")], null);
 
     const dup = db
       .prepare<[], { bad: string }>(

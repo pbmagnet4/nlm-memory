@@ -63,7 +63,7 @@ describe.skipIf(!PG_TEST_URL)("pg fact ingest correctness (#351 parity)", () => 
     // Two facts, same (subject, predicate), one batch. Winner = last in batch.
     const a = makeFact({ id: "f_a", subject: "svc", predicate: "framework", value: "Fastify", sourceSessionId: "s1" });
     const b = makeFact({ id: "f_b", subject: "svc", predicate: "framework", value: "Hono", sourceSessionId: "s1" });
-    await storage.facts.ingestSessionFacts("s1", [a, b]);
+    await storage.facts.ingestSessionFacts("team_local", "s1", [a, b]);
     const rows = (await pool.query(
       "SELECT id, superseded_by FROM facts WHERE subject = 'svc' ORDER BY id",
     )).rows;
@@ -76,10 +76,10 @@ describe.skipIf(!PG_TEST_URL)("pg fact ingest correctness (#351 parity)", () => 
 
   it("collapse deletes embeddings of newly superseded facts", async () => {
     const prior = makeFact({ id: "f_old", subject: "svc", predicate: "framework", value: "Express", sourceSessionId: "s0" });
-    await storage.facts.ingestSessionFacts("s0", [prior]);
-    await storage.facts.upsertEmbedding("f_old", new Float32Array(768).fill(0.1));
+    await storage.facts.ingestSessionFacts("team_local", "s0", [prior]);
+    await storage.facts.upsertEmbedding("team_local", "f_old", new Float32Array(768).fill(0.1));
     const next = makeFact({ id: "f_new", subject: "svc", predicate: "framework", value: "Hono", sourceSessionId: "s1" });
-    await storage.facts.ingestSessionFacts("s1", [next]);
+    await storage.facts.ingestSessionFacts("team_local", "s1", [next]);
     const emb = (await pool.query("SELECT fact_id FROM fact_embeddings WHERE fact_id = 'f_old'")).rows;
     expect(emb).toHaveLength(0); // ghost embedding must leave the ANN index
     const oldRow = (await pool.query("SELECT superseded_by FROM facts WHERE id = 'f_old'")).rows[0];
@@ -88,9 +88,9 @@ describe.skipIf(!PG_TEST_URL)("pg fact ingest correctness (#351 parity)", () => 
 
   it("re-ingest of the same session is idempotent and leaves one active fact", async () => {
     const f1 = makeFact({ id: "f_1", subject: "svc", predicate: "framework", value: "Hono", sourceSessionId: "s1" });
-    await storage.facts.ingestSessionFacts("s1", [f1]);
+    await storage.facts.ingestSessionFacts("team_local", "s1", [f1]);
     const f1b = makeFact({ id: "f_1b", subject: "svc", predicate: "framework", value: "Hono", sourceSessionId: "s1" });
-    await storage.facts.ingestSessionFacts("s1", [f1b]);
+    await storage.facts.ingestSessionFacts("team_local", "s1", [f1b]);
     const active = (await pool.query(
       "SELECT id FROM facts WHERE subject = 'svc' AND superseded_by IS NULL",
     )).rows;
@@ -121,7 +121,7 @@ describe.skipIf(!PG_TEST_URL)("pg fact ingest correctness (#351 parity)", () => 
     };
     const fLoser = makeFact({ id: "pg_dup_loser", subject: "db", predicate: "engine", value: "pg", sourceSessionId: "sess_dup_pg" });
     const fWinner = makeFact({ id: "pg_dup_winner", subject: "db", predicate: "engine", value: "sqlite", sourceSessionId: "sess_dup_pg" });
-    await storage.sessions.insertSession(record, embedder, null, {
+    await storage.sessions.insertSession( "team_local",record, embedder, null, {
       factStore: storage.facts,
       facts: [fLoser, fWinner],
     });
@@ -137,7 +137,7 @@ describe.skipIf(!PG_TEST_URL)("pg fact ingest correctness (#351 parity)", () => 
     const embedder = new StubEmbedder();
     const fLoser = makeFact({ id: "pg_bkfl_loser", subject: "orm", predicate: "lib", value: "Prisma", sourceSessionId: "s1" });
     const fWinner = makeFact({ id: "pg_bkfl_winner", subject: "orm", predicate: "lib", value: "Drizzle", sourceSessionId: "s1" });
-    await storage.sessions.insertFactsForSession("s1", storage.facts, [fLoser, fWinner], embedder);
+    await storage.sessions.insertFactsForSession( "team_local","s1", storage.facts, [fLoser, fWinner], embedder);
 
     const loserEmb = (await pool.query("SELECT fact_id FROM fact_embeddings WHERE fact_id = $1", ["pg_bkfl_loser"])).rows;
     const winnerEmb = (await pool.query("SELECT fact_id FROM fact_embeddings WHERE fact_id = $1", ["pg_bkfl_winner"])).rows;

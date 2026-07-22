@@ -41,17 +41,17 @@ class ScriptedFactStore implements FactStore {
   ) {}
   async insert() {}
   async insertMany() {}
-  async getById(id: string) {
+  async getById(_tenantId: string, id: string) {
     return this.candidates.find((f) => f.id === id) ?? null;
   }
-  async getByIds(ids: ReadonlyArray<string>) {
+  async getByIds(_tenantId: string, ids: ReadonlyArray<string>) {
     const set = new Set(ids);
     return this.candidates.filter((f) => set.has(f.id));
   }
   async findCurrent() {
     return null;
   }
-  async list(_q: FactQuery) {
+  async list(_tenantId: string, _q: FactQuery) {
     return this.candidates;
   }
   async listBySession() {
@@ -64,7 +64,7 @@ class ScriptedFactStore implements FactStore {
   async retire() {}
   async upsertEmbedding() {}
   async ingestSessionFacts() {}
-  async listForRecall(_f: FactListFilter) {
+  async listForRecall(_tenantId: string, _f: FactListFilter) {
     return this.candidates;
   }
   async semanticSearch(): Promise<ReadonlyArray<FactSemanticNeighbor>> {
@@ -74,6 +74,7 @@ class ScriptedFactStore implements FactStore {
     return [];
   }
   async corroborationCounts(
+    _tenantId: string,
     triples: ReadonlyArray<{ subject: string; predicate: string; value: string }>,
   ): Promise<Map<string, number>> {
     if (this.shouldThrow) throw new Error("simulated DB failure");
@@ -123,7 +124,7 @@ describe("fact corroboration boost (Spec G.1)", () => {
     // Pure structured query (no query text) — service returns candidates
     // by created_at then applies corroboration. We seeded both with the
     // same timestamp; corroboration must break the tie in favor of "duckdb".
-    const result = await svc.search({ subject: "beacon", predicate: "uses", mode: "keyword" });
+    const result = await svc.search("team_local", { subject: "beacon", predicate: "uses", mode: "keyword" });
     expect(result.results.map((r) => r.id)).toEqual(["strong", "weak"]);
     expect(result.results[0]!.corroborationCount).toBe(10);
     expect(result.results[1]!.corroborationCount).toBe(1);
@@ -142,7 +143,7 @@ describe("fact corroboration boost (Spec G.1)", () => {
       ]),
     );
     const svc = new FactRecallService({ factStore: store, llm: new StubLLM() });
-    const result = await svc.search({ subject: "x", mode: "keyword" });
+    const result = await svc.search("team_local", { subject: "x", mode: "keyword" });
     // Cap is 2.0; even with a million corroborations, score boost is bounded
     expect(result.results[0]!.id).toBe("f2");
     expect(result.results[1]!.id).toBe("f1");
@@ -162,7 +163,7 @@ describe("fact corroboration boost (Spec G.1)", () => {
       ]),
     );
     const svc = new FactRecallService({ factStore: store, llm: new StubLLM() });
-    const result = await svc.search({ subject: "x", mode: "keyword" });
+    const result = await svc.search("team_local", { subject: "x", mode: "keyword" });
     // Boost capped at 1.0 means no re-ordering; native order (created_at DESC,
     // same timestamps → insert order) preserved.
     expect(result.results.map((r) => r.id)).toEqual(["first", "second"]);
@@ -174,7 +175,7 @@ describe("fact corroboration boost (Spec G.1)", () => {
     const facts = [makeFact({ id: "f1", subject: "x", predicate: "y", value: "v" })];
     const store = new ScriptedFactStore(facts, new Map([["x y v", 7]]));
     const svc = new FactRecallService({ factStore: store, llm: new StubLLM() });
-    const result = await svc.search({ subject: "x", mode: "keyword" });
+    const result = await svc.search("team_local", { subject: "x", mode: "keyword" });
     expect(result.results[0]!.corroborationCount).toBe(7);
   });
 
@@ -182,7 +183,7 @@ describe("fact corroboration boost (Spec G.1)", () => {
     const facts = [makeFact({ id: "f1", subject: "x", predicate: "y", value: "v" })];
     const store = new ScriptedFactStore(facts, new Map(), true);
     const svc = new FactRecallService({ factStore: store, llm: new StubLLM() });
-    const result = await svc.search({ subject: "x", mode: "keyword" });
+    const result = await svc.search("team_local", { subject: "x", mode: "keyword" });
     // Search still succeeded; hit is returned without corroborationCount.
     expect(result.results.map((r) => r.id)).toEqual(["f1"]);
     expect(result.results[0]!.corroborationCount).toBeUndefined();

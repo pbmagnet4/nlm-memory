@@ -64,11 +64,11 @@ describe("SqliteSessionStore.semanticSearch", () => {
     store.insertEmbeddingForTest("s_new_semantic", unit([1, 0.5, 0]));
 
     // Mark old as superseded by new
-    await store.markSuperseded("s_old_semantic", "s_new_semantic");
+    await store.markSuperseded("team_local", "s_old_semantic", "s_new_semantic");
 
     // Query with a vector similar to both
     const queryVec = unit([1, 0.1, 0]);
-    const results = await store.semanticSearch(queryVec, 10);
+    const results = await store.semanticSearch("team_local", queryVec, 10);
 
     // Should only find the new session, not the old superseded one
     const sessionIds = results.map((r) => r.sessionId);
@@ -80,7 +80,7 @@ describe("SqliteSessionStore.semanticSearch", () => {
     store.insertSessionForTest(makeSession({ id: "s_ws_empty", label: "kafka pipeline" }));
     store.insertEmbeddingForTest("s_ws_empty", unit([1, 0, 0]));
     const q = unit([1, 0, 0]);
-    const results = await store.semanticSearch(q, 10, { workstreamIds: [] });
+    const results = await store.semanticSearch( "team_local",q, 10, { workstreamIds: [] });
     expect(results).toHaveLength(0);
   });
 
@@ -114,11 +114,11 @@ describe("SqliteSessionStore.semanticSearch", () => {
     store.insertEmbeddingForTest("s_final", unit([1, 0, 0]));
 
     // Mark old_alt as superseded
-    await store.markSuperseded("s_old_alt", "s_final");
+    await store.markSuperseded("team_local", "s_old_alt", "s_final");
 
     // Query
     const queryVec = unit([0.95, 0.05, 0]);
-    const results = await store.semanticSearch(queryVec, 10);
+    const results = await store.semanticSearch("team_local", queryVec, 10);
 
     const sessionIds = results.map((r) => r.sessionId);
     expect(sessionIds).toContain("s_baseline");

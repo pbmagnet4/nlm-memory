@@ -38,13 +38,13 @@ describe("SqliteFactStore (SQLite-internal)", () => {
   });
 
   it("upsertEmbedding replaces, not duplicates", async () => {
-    await storage.facts.insert(makeFact({ id: "f1", sourceSessionId: "sess_parent" }));
+    await storage.facts.insert("team_local", makeFact({ id: "f1", sourceSessionId: "sess_parent" }));
     const v1 = new Float32Array(768);
     v1[0] = 1;
     const v2 = new Float32Array(768);
     v2[1] = 1;
-    await storage.facts.upsertEmbedding("f1", v1);
-    await storage.facts.upsertEmbedding("f1", v2);
+    await storage.facts.upsertEmbedding("team_local", "f1", v1);
+    await storage.facts.upsertEmbedding("team_local", "f1", v2);
     const count = storage
       .rawDb()
       .prepare<[], { c: number }>(
@@ -61,12 +61,12 @@ describe("SqliteFactStore (SQLite-internal)", () => {
       .get(factId)?.c;
 
   it("markSuperseded deletes the superseded fact's embedding (no ANN ghost) (#351)", async () => {
-    await storage.facts.insert(makeFact({ id: "old", sourceSessionId: "sess_parent" }));
-    await storage.facts.insert(makeFact({ id: "new", sourceSessionId: "sess_parent" }));
+    await storage.facts.insert("team_local", makeFact({ id: "old", sourceSessionId: "sess_parent" }));
+    await storage.facts.insert("team_local", makeFact({ id: "new", sourceSessionId: "sess_parent" }));
     const v = new Float32Array(768); v[0] = 1;
-    await storage.facts.upsertEmbedding("old", v);
+    await storage.facts.upsertEmbedding("team_local", "old", v);
     expect(embCount("old")).toBe(1);
-    await storage.facts.markSuperseded("old", "new");
+    await storage.facts.markSuperseded("team_local", "old", "new");
     expect(embCount("old")).toBe(0);
   });
 
@@ -74,11 +74,11 @@ describe("SqliteFactStore (SQLite-internal)", () => {
     // "dup" comes from a DIFFERENT session; ingesting a fresh fact for the same
     // (subject,predicate) into sess_parent collapses (supersedes) it.
     storage.sessions.insertSessionForTest(makeSession({ id: "sess_other", label: "Other" }));
-    await storage.facts.insert(makeFact({ id: "dup", subject: "X", predicate: "uses", sourceSessionId: "sess_other" }));
+    await storage.facts.insert("team_local", makeFact({ id: "dup", subject: "X", predicate: "uses", sourceSessionId: "sess_other" }));
     const v = new Float32Array(768); v[2] = 1;
-    await storage.facts.upsertEmbedding("dup", v);
+    await storage.facts.upsertEmbedding("team_local", "dup", v);
     expect(embCount("dup")).toBe(1);
-    await storage.facts.ingestSessionFacts("sess_parent", [
+    await storage.facts.ingestSessionFacts("team_local", "sess_parent", [
       makeFact({ id: "fresh", subject: "X", predicate: "uses", sourceSessionId: "sess_parent" }),
     ]);
     expect(embCount("dup")).toBe(0);
@@ -88,7 +88,7 @@ describe("SqliteFactStore (SQLite-internal)", () => {
     // Two facts for the same (subject,predicate) in one batch used to supersede
     // each other (A->B, B->A) — both recall-ineligible forever. The winner
     // collapse leaves exactly one active, no cycle.
-    await storage.facts.ingestSessionFacts("sess_parent", [
+    await storage.facts.ingestSessionFacts("team_local", "sess_parent", [
       makeFact({ id: "d1", subject: "A", predicate: "uses", value: "x", sourceSessionId: "sess_parent" }),
       makeFact({ id: "d2", subject: "A", predicate: "uses", value: "y", sourceSessionId: "sess_parent" }),
     ]);
@@ -106,12 +106,12 @@ describe("SqliteFactStore (SQLite-internal)", () => {
   });
 
   it("ingestSessionFacts drops embeddings of replaced same-session facts (#351)", async () => {
-    await storage.facts.insert(makeFact({ id: "old1", subject: "Y", predicate: "ran", sourceSessionId: "sess_parent" }));
+    await storage.facts.insert("team_local", makeFact({ id: "old1", subject: "Y", predicate: "ran", sourceSessionId: "sess_parent" }));
     const v = new Float32Array(768); v[3] = 1;
-    await storage.facts.upsertEmbedding("old1", v);
+    await storage.facts.upsertEmbedding("team_local", "old1", v);
     expect(embCount("old1")).toBe(1);
     // Re-ingesting sess_parent deletes its prior facts (and their embeddings).
-    await storage.facts.ingestSessionFacts("sess_parent", [
+    await storage.facts.ingestSessionFacts("team_local", "sess_parent", [
       makeFact({ id: "replacement", subject: "Z", predicate: "ran", sourceSessionId: "sess_parent" }),
     ]);
     expect(embCount("old1")).toBe(0);
@@ -121,11 +121,11 @@ describe("SqliteFactStore (SQLite-internal)", () => {
     // The backfill entry point inlines the same DELETE-prior-facts logic as
     // ingestSessionFacts but the #351 fix patched only the port method, leaving
     // this path orphaning vec0 vectors (no backing fact). See sqlite-session-store.ts.
-    await storage.facts.insert(makeFact({ id: "bf_old", subject: "P", predicate: "ran", sourceSessionId: "sess_parent" }));
+    await storage.facts.insert("team_local", makeFact({ id: "bf_old", subject: "P", predicate: "ran", sourceSessionId: "sess_parent" }));
     const v = new Float32Array(768); v[5] = 1;
-    await storage.facts.upsertEmbedding("bf_old", v);
+    await storage.facts.upsertEmbedding("team_local", "bf_old", v);
     expect(embCount("bf_old")).toBe(1);
-    await storage.sessions.insertFactsForSession("sess_parent", storage.facts, [
+    await storage.sessions.insertFactsForSession("team_local", "sess_parent", storage.facts, [
       makeFact({ id: "bf_new", subject: "Q", predicate: "ran", sourceSessionId: "sess_parent" }),
     ]);
     expect(embCount("bf_old")).toBe(0);

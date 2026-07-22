@@ -79,12 +79,12 @@ describe.skipIf(!PG_TEST_URL)("backfillFacts (PG backend)", () => {
       ["body two", classifyResult([{ kind: "decision", subject: "Beacon", predicate: "db", value: "Postgres" }])],
     ]));
 
-    const report = await backfillFacts({ store: storage.sessions, factStore: storage.facts, classifier, statePath });
+    const report = await backfillFacts( { store: storage.sessions, factStore: storage.facts, classifier, statePath }, "team_local");
 
     expect(report.processed).toBe(2);
     expect(report.factsWritten).toBe(2);
-    expect((await storage.facts.findCurrent("Beacon", "framework"))?.value).toBe("Hono");
-    expect((await storage.facts.findCurrent("Beacon", "db"))?.value).toBe("Postgres");
+    expect((await storage.facts.findCurrent("team_local", "Beacon", "framework"))?.value).toBe("Hono");
+    expect((await storage.facts.findCurrent("team_local", "Beacon", "db"))?.value).toBe("Postgres");
   });
 
   it("skips sessions that already have facts (reprocess=false) and is resumable", async () => {
@@ -93,32 +93,32 @@ describe.skipIf(!PG_TEST_URL)("backfillFacts (PG backend)", () => {
       ["body one", classifyResult([{ kind: "decision", subject: "Beacon", predicate: "framework", value: "Hono" }])],
     ]));
 
-    const r1 = await backfillFacts({ store: storage.sessions, factStore: storage.facts, classifier, statePath });
+    const r1 = await backfillFacts( { store: storage.sessions, factStore: storage.facts, classifier, statePath }, "team_local");
     expect(r1.processed).toBe(1);
 
     // Second run: the session now has facts → excluded by the candidate query.
-    const r2 = await backfillFacts({ store: storage.sessions, factStore: storage.facts, classifier, statePath });
+    const r2 = await backfillFacts( { store: storage.sessions, factStore: storage.facts, classifier, statePath }, "team_local");
     expect(r2.total).toBe(0);
     expect(r2.processed).toBe(0);
   });
 
   it("supersedes a prior fact when reprocess=true yields a new value", async () => {
     await storage.sessions.insertSessionForTest(session("s1", "body v1", "2026-05-01T00:00:00Z"));
-    await backfillFacts({
+    await backfillFacts( {
       store: storage.sessions, factStore: storage.facts, statePath,
       classifier: new ScriptedClassifier(new Map([
         ["body v1", classifyResult([{ kind: "decision", subject: "Beacon", predicate: "framework", value: "Express" }])],
       ])),
-    });
+    }, "team_local");
 
     await storage.sessions.insertSessionForTest(session("s2", "body v2", "2026-05-02T00:00:00Z"));
-    await backfillFacts({
+    await backfillFacts( {
       store: storage.sessions, factStore: storage.facts, statePath: join(tmp, "state2.json"),
       classifier: new ScriptedClassifier(new Map([
         ["body v2", classifyResult([{ kind: "decision", subject: "Beacon", predicate: "framework", value: "Hono" }])],
       ])),
-    });
+    }, "team_local");
 
-    expect((await storage.facts.findCurrent("Beacon", "framework"))?.value).toBe("Hono");
+    expect((await storage.facts.findCurrent("team_local", "Beacon", "framework"))?.value).toBe("Hono");
   });
 });

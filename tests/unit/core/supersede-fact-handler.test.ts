@@ -71,7 +71,7 @@ describe("supersedeFactHandler", () => {
     expect(body["marked"]).toBe(true);
     expect(body["fact_id"]).toBe("fact_abc123");
     expect(body["reason"]).toBe("outdated decision");
-    expect(vi.mocked(factStore.retire)).toHaveBeenCalledWith("fact_abc123");
+    expect(vi.mocked(factStore.retire)).toHaveBeenCalledWith(expect.any(String), "fact_abc123");
     // The old no-op path must not be used.
     expect(vi.mocked(factStore.markSuperseded)).not.toHaveBeenCalled();
   });

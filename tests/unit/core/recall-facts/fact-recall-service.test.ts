@@ -25,14 +25,14 @@ class InMemoryFactStore implements FactStore {
   ) {}
   async insert(): Promise<void> {}
   async insertMany(): Promise<void> {}
-  async getById(id: string): Promise<Fact | null> {
+  async getById(_tenantId: string, id: string): Promise<Fact | null> {
     return this.facts.find((f) => f.id === id) ?? null;
   }
-  async getByIds(ids: ReadonlyArray<string>): Promise<ReadonlyArray<Fact>> {
+  async getByIds(_tenantId: string, ids: ReadonlyArray<string>): Promise<ReadonlyArray<Fact>> {
     const set = new Set(ids);
     return this.facts.filter((f) => set.has(f.id));
   }
-  async findCurrent(subject: string, predicate: string): Promise<Fact | null> {
+  async findCurrent(_tenantId: string, subject: string, predicate: string): Promise<Fact | null> {
     return this.facts.find(
       (f) =>
         f.subject === subject &&
@@ -51,7 +51,7 @@ class InMemoryFactStore implements FactStore {
   }
   async markSuperseded(): Promise<void> {}
   async retire(): Promise<void> {}
-  async listForRecall(filter: FactListFilter): Promise<ReadonlyArray<Fact>> {
+  async listForRecall(_tenantId: string, filter: FactListFilter): Promise<ReadonlyArray<Fact>> {
     return this.facts.filter((f) => {
       if (filter.subject !== undefined && f.subject !== filter.subject) return false;
       if (filter.predicate !== undefined && f.predicate !== filter.predicate) return false;
@@ -68,6 +68,7 @@ class InMemoryFactStore implements FactStore {
     return [];
   }
   async corroborationCounts(
+    _tenantId: string,
     triples: ReadonlyArray<{ subject: string; predicate: string; value: string }>,
   ): Promise<Map<string, number>> {
     // Default: every triple is corroborated by exactly one session (no boost
@@ -131,7 +132,7 @@ describe("FactRecallService.search (keyword)", () => {
       factStore: new InMemoryFactStore(corpus),
       llm: new StubEmbedder(),
     });
-    const result = await svc.search({});
+    const result = await svc.search("team_local", {});
     expect(result.total).toBe(0);
     expect(result.results).toEqual([]);
   });
@@ -141,7 +142,7 @@ describe("FactRecallService.search (keyword)", () => {
       factStore: new InMemoryFactStore(corpus),
       llm: new StubEmbedder(),
     });
-    const result = await svc.search({
+    const result = await svc.search("team_local", {
       subject: "nlm-memory-ts",
       predicate: "framework",
     });
@@ -155,7 +156,7 @@ describe("FactRecallService.search (keyword)", () => {
       factStore: new InMemoryFactStore(corpus),
       llm: new StubEmbedder(),
     });
-    const result = await svc.search({ subject: "nlm-memory-ts" });
+    const result = await svc.search("team_local", { subject: "nlm-memory-ts" });
     expect(result.results.map((r) => r.id)).toEqual(["f_hono"]);
   });
 
@@ -164,7 +165,7 @@ describe("FactRecallService.search (keyword)", () => {
       factStore: new InMemoryFactStore(corpus),
       llm: new StubEmbedder(),
     });
-    const result = await svc.search({
+    const result = await svc.search("team_local", {
       subject: "nlm-memory-ts",
       includeSuperseded: true,
     });
@@ -176,7 +177,7 @@ describe("FactRecallService.search (keyword)", () => {
       factStore: new InMemoryFactStore(corpus),
       llm: new StubEmbedder(),
     });
-    const result = await svc.search({ predicate: "framework" });
+    const result = await svc.search("team_local", { predicate: "framework" });
     // f_lowconf has confidence 0.5; f_hono has 0.9; f_superseded is dropped
     expect(result.results.map((r) => r.id)).toEqual(["f_hono"]);
   });
@@ -186,7 +187,7 @@ describe("FactRecallService.search (keyword)", () => {
       factStore: new InMemoryFactStore(corpus),
       llm: new StubEmbedder(),
     });
-    const result = await svc.search({ predicate: "framework", minConfidence: 0.4 });
+    const result = await svc.search("team_local", { predicate: "framework", minConfidence: 0.4 });
     expect(result.results.map((r) => r.id).sort()).toEqual(["f_hono", "f_lowconf"]);
   });
 
@@ -195,7 +196,7 @@ describe("FactRecallService.search (keyword)", () => {
       factStore: new InMemoryFactStore(corpus),
       llm: new StubEmbedder(),
     });
-    const result = await svc.search({ query: "Hono" });
+    const result = await svc.search("team_local", { query: "Hono" });
     expect(result.results[0]?.id).toBe("f_hono");
     expect(result.results[0]?.matchedIn).toContain("value");
   });
@@ -205,7 +206,7 @@ describe("FactRecallService.search (keyword)", () => {
       factStore: new InMemoryFactStore(corpus),
       llm: new StubEmbedder(),
     });
-    const result = await svc.search({ kind: "attribute" });
+    const result = await svc.search("team_local", { kind: "attribute" });
     expect(result.results.map((r) => r.id).sort()).toEqual(["f_endpoint", "f_model"]);
   });
 
@@ -214,7 +215,7 @@ describe("FactRecallService.search (keyword)", () => {
       factStore: new InMemoryFactStore(corpus),
       llm: new StubEmbedder(),
     });
-    const result = await svc.search({ kind: "attribute", limit: 1 });
+    const result = await svc.search("team_local", { kind: "attribute", limit: 1 });
     expect(result.results).toHaveLength(1);
   });
 });
@@ -229,7 +230,7 @@ describe("FactRecallService.search (semantic)", () => {
       factStore: new InMemoryFactStore(corpus, neighbors),
       llm: new StubEmbedder(),
     });
-    const result = await svc.search({ query: "where does the LLM run", mode: "semantic" });
+    const result = await svc.search("team_local", { query: "where does the LLM run", mode: "semantic" });
     expect(result.results[0]?.id).toBe("f_endpoint");
     expect(result.results[0]?.matchedIn).toEqual(["semantic"]);
   });
@@ -239,7 +240,7 @@ describe("FactRecallService.search (semantic)", () => {
       factStore: new InMemoryFactStore(corpus),
       llm: new StubEmbedder(true),
     });
-    const result = await svc.search({ query: "anything", mode: "semantic" });
+    const result = await svc.search("team_local", { query: "anything", mode: "semantic" });
     expect(result.modeUnavailable).toBe("ollama_unreachable");
     expect(result.total).toBe(0);
   });
@@ -260,7 +261,7 @@ describe("FactRecallService.search (semantic)", () => {
     // Force the window to exclude the old fact (only the original corpus is "recent").
     store.listForRecall = async () => corpus;
     const svc = new FactRecallService({ factStore: store, llm: new StubEmbedder() });
-    const result = await svc.search({ query: "legacy datastore choice", mode: "semantic" });
+    const result = await svc.search("team_local", { query: "legacy datastore choice", mode: "semantic" });
     expect(result.results.map((r) => r.id)).toContain("f_old_decision");
   });
 
@@ -276,7 +277,7 @@ describe("FactRecallService.search (semantic)", () => {
     const store = new InMemoryFactStore([...corpus, lowConf], [{ factId: "f_old_lowconf", distance: 0.1 }]);
     store.listForRecall = async () => corpus;
     const svc = new FactRecallService({ factStore: store, llm: new StubEmbedder() });
-    const result = await svc.search({ query: "legacy cache choice", mode: "semantic" });
+    const result = await svc.search("team_local", { query: "legacy cache choice", mode: "semantic" });
     expect(result.results.map((r) => r.id)).not.toContain("f_old_lowconf");
   });
 });
@@ -291,7 +292,7 @@ describe("FactRecallService.search stale prose lane", () => {
       factStore: new InMemoryFactStore(corpus),
       llm: embedder,
     });
-    const result = await svc.search({ query: "Hono", mode: "semantic" });
+    const result = await svc.search("team_local", { query: "Hono", mode: "semantic" });
     expect(result.modeUnavailable).toBe("ollama_unreachable");
     expect(result.total).toBe(0);
     expect(embedder.calls).toBe(0);
@@ -304,7 +305,7 @@ describe("FactRecallService.search stale prose lane", () => {
       factStore: new InMemoryFactStore(corpus),
       llm: embedder,
     });
-    const result = await svc.search({ query: "Hono", mode: "hybrid" });
+    const result = await svc.search("team_local", { query: "Hono", mode: "hybrid" });
     expect(result.modeUnavailable).toBe("ollama_unreachable");
     expect(embedder.calls).toBe(0);
     expect(result.results.map((r) => r.id)).toContain("f_hono");
@@ -318,7 +319,7 @@ describe("FactRecallService.search stale prose lane", () => {
       factStore: new InMemoryFactStore(corpus, neighbors),
       llm: embedder,
     });
-    const result = await svc.search({ query: "LLM host", mode: "semantic" });
+    const result = await svc.search("team_local", { query: "LLM host", mode: "semantic" });
     expect(embedder.calls).toBe(1);
     expect(result.modeUnavailable).toBeUndefined();
   });
@@ -331,7 +332,7 @@ describe("FactRecallService.search stale prose lane", () => {
       factStore: new InMemoryFactStore(corpus, neighbors),
       llm: embedder,
     });
-    const result = await svc.search({ query: "model name", mode: "semantic" });
+    const result = await svc.search("team_local", { query: "model name", mode: "semantic" });
     expect(embedder.calls).toBe(1);
     expect(result.modeUnavailable).toBeUndefined();
   });
@@ -348,7 +349,7 @@ describe("FactRecallService.search (hybrid)", () => {
       factStore: new InMemoryFactStore(corpus, neighbors),
       llm: new StubEmbedder(),
     });
-    const result = await svc.search({ query: "Hono", mode: "hybrid" });
+    const result = await svc.search("team_local", { query: "Hono", mode: "hybrid" });
     const ids = result.results.map((r) => r.id);
     expect(ids).toContain("f_endpoint"); // semantic
     expect(ids).toContain("f_hono"); // keyword-only backfill
@@ -370,7 +371,7 @@ describe("FactRecallService.search (hybrid)", () => {
       factStore: new InMemoryFactStore(corpus),
       llm: new StubEmbedder(true),
     });
-    const result = await svc.search({ query: "Hono", mode: "hybrid" });
+    const result = await svc.search("team_local", { query: "Hono", mode: "hybrid" });
     expect(result.modeUnavailable).toBe("ollama_unreachable");
     // Keyword leg still returns the match — recall is not empty.
     expect(result.results.map((r) => r.id)).toContain("f_hono");

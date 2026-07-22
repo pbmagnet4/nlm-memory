@@ -3,11 +3,15 @@
  * The standing cross-tenant leak-test contract (program spec §6), sqlite
  * lane. This file is test-first at the contract level (Global Constraints,
  * Wave A): it enumerates every adversarial case from spec §6 (1-9, 11-12;
- * case 10 is concurrency and lands with M7's harness) as a named `it()`
- * before store-layer tenant threading exists (that's Wave B/C). A case that
- * cannot pass yet is `it.todo` with its exact case text — visibly red-by-
- * design, never deleted, never silently skipped. Wave B/C flip cases to real
- * assertions as threading lands; the pg twin
+ * case 10 is concurrency and lands with M7's harness) as a named `it()`.
+ * Wave B lands SessionStore + FactStore threading, so cases 1, 2, and the
+ * session/fact by-id slice of case 4 flip here to real assertions against
+ * the fixture's real (now tenant-threaded) SqliteSessionStore/SqliteFactStore.
+ * Cases 3, 5, 6, 7, 8, 9, 12 stay `it.todo` — they exercise
+ * EntityStore/WorkstreamStore/SignalStore/source-token auth/M6 state, none
+ * of which are threaded yet (Wave B3-B6, later work). A case that cannot
+ * pass yet is `it.todo` with its exact case text — visibly red-by-design,
+ * never deleted, never silently skipped. The pg twin
  * (tenant-leak-contract.pg.test.ts) is written in Wave C.
  *
  * The pg twin and case 10 are out of scope here per the plan.
@@ -23,12 +27,12 @@ const ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "../..");
 describe("tenant leak-test contract (spec §6, sqlite lane)", () => {
   let fixture: SeededTenantCorpus;
 
-  beforeEach(() => {
-    fixture = seedTenantCorpus();
+  beforeEach(async () => {
+    fixture = await seedTenantCorpus();
   });
 
   afterEach(() => {
-    fixture.db.close();
+    fixture.sessionStore.close();
     rmSync(fixture.dir, { recursive: true, force: true });
   });
 
@@ -59,14 +63,55 @@ describe("tenant leak-test contract (spec §6, sqlite lane)", () => {
     expect(embeddingCount.n).toBe(4);
   });
 
-  it.todo(
-    "case 1: recall as team A never returns a B session/fact/exemplar — keyword, semantic, AND hybrid modes",
-  );
+  // Case 1 (session + fact parts, store level). Store methods have no
+  // "hybrid" mode of their own — hybrid merge is RecallService/
+  // FactRecallService composition over these same store calls, which stay
+  // tenant-blind by construction since they thread the caller's tenantId
+  // straight through (recall-service.ts, fact-recall-service.ts). Exemplar
+  // recall is CodeExemplarStore (unthreaded, Wave B3) and stays out of scope.
+  it("case 1: recall as team A never returns a B session/fact — keyword and semantic store paths", async () => {
+    const { A, B } = fixture.ids;
 
-  it.todo(
-    "case 2: vector-neighbor leak — a B fact embedded as the nearest neighbor of an A query is not returned by " +
-      "semantic or hybrid recall as A, even outside the keyword candidate window (the semanticSearch → getByIds path)",
-  );
+    // Keyword: query text ("onboarding") matches both tenants' session labels.
+    const kwHits = await fixture.sessionStore.keywordSearch("team_a", "onboarding", 10);
+    expect(kwHits.map((h) => h.sessionId)).toContain(A.sessionIds[0]);
+    expect(kwHits.map((h) => h.sessionId)).not.toContain(B.sessionIds[0]);
+
+    // getByIds: a mixed A+B id list resolves only the caller's own rows.
+    const sessions = await fixture.sessionStore.getByIds("team_a", [...A.sessionIds, ...B.sessionIds]);
+    expect(sessions.map((s) => s.id).sort()).toEqual([...A.sessionIds].sort());
+
+    // Facts: listForRecall and getByIds are the two store-level fact read
+    // paths FactRecallService composes into keyword/semantic/hybrid.
+    const factsForRecall = await fixture.factStore.listForRecall("team_a", {});
+    expect(factsForRecall.map((f) => f.id).sort()).toEqual([...A.factIds].sort());
+
+    const facts = await fixture.factStore.getByIds("team_a", [...A.factIds, ...B.factIds]);
+    expect(facts.map((f) => f.id).sort()).toEqual([...A.factIds].sort());
+  });
+
+  // Case 2 (fact vector-neighbor leak). The fixture seeds A's and B's first
+  // fact with near-identical embeddings (epsilon apart) — a naive KNN scan
+  // over the whole corpus returns B's row as A's nearest neighbor. The
+  // semanticSearch → getByIds path (mirrored here exactly as
+  // FactRecallService.runSemantic composes them) must still resolve only A's
+  // fact, because semanticSearch re-filters candidate ids against the
+  // tenant-scoped `facts` table before returning (program spec §4.3).
+  it("case 2: vector-neighbor leak — a B fact embedded near an A query is not returned by A's semantic search", async () => {
+    const { A, B } = fixture.ids;
+    const queryVector = new Float32Array(768);
+    for (let i = 0; i < 768; i++) queryVector[i] = Math.sin((i + 1) * 1); // matches A's fact-1 embedding exactly
+
+    const neighbors = await fixture.factStore.semanticSearch("team_a", queryVector, 5);
+    const neighborIds = neighbors.map((n) => n.factId);
+    expect(neighborIds).toContain(A.factIds[0]);
+    expect(neighborIds).not.toContain(B.factIds[0]);
+
+    // Even resolving the raw candidate ids (as if the keyword window missed
+    // them) through getByIds must not leak B's row to an A caller.
+    const resolved = await fixture.factStore.getByIds("team_a", [A.factIds[0], B.factIds[0]]);
+    expect(resolved.map((f) => f.id)).toEqual([A.factIds[0]]);
+  });
 
   it.todo(
     "case 3: entity- and kind-filtered recall as A never returns a B session; the same surface form registered as " +
@@ -74,10 +119,23 @@ describe("tenant leak-test contract (spec §6, sqlite lane)", () => {
       "return an entity name that exists only in B",
   );
 
-  it.todo(
-    "case 4: by-id refusal — get_session / /api/session/:id / get_fact_history for a B id as A returns the " +
-      "not-found shape identical to a nonexistent id; supersedence/continues enrichment omits cross-tenant links",
-  );
+  // Case 4 (session + fact by-id parts, store level). The MCP/HTTP-layer
+  // supersedence/continues enrichment fencing (program spec §4.6 hardening
+  // 2) is Wave C scope and stays out of this store-level slice.
+  it("case 4: by-id refusal — SessionStore.getById / FactStore.getById / FactStore.getHistory for a cross-tenant id return the not-found shape", async () => {
+    const { A, B } = fixture.ids;
+
+    expect(await fixture.sessionStore.getById("team_a", B.sessionIds[0])).toBeNull();
+    expect(await fixture.sessionStore.getById("team_a", "nonexistent-session")).toBeNull();
+
+    expect(await fixture.factStore.getById("team_a", B.factIds[0])).toBeNull();
+    expect(await fixture.factStore.getById("team_a", "nonexistent-fact")).toBeNull();
+
+    const bFact = await fixture.factStore.getById("team_b", B.factIds[0]);
+    const bSubject = bFact!.subject;
+    const chains = await fixture.factStore.getHistory("team_a", bSubject);
+    expect(chains).toEqual([]);
+  });
 
   it.todo(
     "case 5: workstream surfaces — recall_workstream, list_merge_suggestions, merge_workstreams, rebind_session " +

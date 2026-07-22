@@ -7,26 +7,25 @@
  * same entity surface form registered in both corpora, and signals sharing a
  * repo basename.
  *
- * Bootstrap mirrors tests/integration/tenant-schema.test.ts (WAL pragma +
- * sqlite-vec load + runMigrations) so the fixture exercises the exact same
- * schema production writes against.
+ * Sessions and facts are seeded through the real SqliteSessionStore /
+ * SqliteFactStore (both tenant-threaded as of M2 Wave B) so the fixture
+ * exercises the exact write paths production uses — insertSession stamps
+ * `tenant_id` on the session row AND resolves/links entities under that
+ * tenant, so no separate raw entity-table SQL is needed for what
+ * insertSession already covers.
  *
- * Every corpus write here is raw SQL rather than going through the store
- * classes. This is deliberate, not a shortcut: none of the 19 store classes
- * accept a tenantId yet (that's Wave B's job — see the plan). Calling e.g.
- * SqliteFactStore.insert() today would silently stamp every row with
- * whatever the column DEFAULT is ('team_local'), which defeats the point of
- * a two-tenant fixture. Once Wave B threads tenantId through the store
- * signatures, this fixture is expected to be rewritten against the real
- * stores (compiler-driven, like every other caller).
+ * code_exemplars, signals, and workstreams are NOT yet tenant-threaded
+ * (M2 Waves B3-B6) — those tables are still seeded with raw SQL directly
+ * against the store's own connection, stamping tenant_id by hand.
  */
 import Database from "better-sqlite3";
-import * as sqliteVec from "sqlite-vec";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runMigrations } from "../../src/core/storage/migrate.js";
+import { SqliteSessionStore, type IngestRecord } from "../../src/core/storage/sqlite-session-store.js";
+import { SqliteFactStore } from "../../src/core/storage/sqlite-fact-store.js";
+import type { Fact } from "../../src/shared/types.js";
 
 const MIGRATIONS = join(fileURLToPath(new URL(".", import.meta.url)), "../../migrations");
 const DIMS = 768;
@@ -46,6 +45,8 @@ export interface TenantSeedIds {
 export interface SeededTenantCorpus {
   readonly db: Database.Database;
   readonly dir: string;
+  readonly sessionStore: SqliteSessionStore;
+  readonly factStore: SqliteFactStore;
   readonly ids: { readonly A: TenantSeedIds; readonly B: TenantSeedIds };
 }
 
@@ -77,7 +78,12 @@ interface TeamSpec {
   readonly repoPath: string;
 }
 
-function seedTeam(db: Database.Database, spec: TeamSpec): TenantSeedIds {
+async function seedTeam(
+  sessionStore: SqliteSessionStore,
+  factStore: SqliteFactStore,
+  db: Database.Database,
+  spec: TeamSpec,
+): Promise<TenantSeedIds> {
   const { teamId, repoPath } = spec;
   const sessionIds: [string, string] = [`session-${teamId}-1`, `session-${teamId}-2`];
   const factIds: [string, string] = [`fact-${teamId}-1`, `fact-${teamId}-2`];
@@ -87,46 +93,60 @@ function seedTeam(db: Database.Database, spec: TeamSpec): TenantSeedIds {
 
   db.prepare("INSERT OR IGNORE INTO teams (id, name) VALUES (?, ?)").run(teamId, spec.teamName);
 
-  // ── Sessions (disjoint labels/bodies) ────────────────────────────────────
-  const insertSession = db.prepare(`
-    INSERT INTO sessions (id, runtime, runtime_session_id, started_at, label, summary, body, status, tenant_id)
-    VALUES (?, 'claude-code', ?, '2026-07-20T00:00:00Z', ?, ?, ?, 'closed', ?)
-  `);
-  insertSession.run(
-    sessionIds[0], `rt-${teamId}-1`,
-    `${teamId} onboarding session`, `${teamId} summary one`, `Body content unique to ${teamId}, session one.`,
+  // ── Sessions (disjoint labels/bodies), via the real tenant-threaded store ─
+  const baseRecord = (id: string, runtimeSessionId: string, label: string, summary: string, body: string): IngestRecord => ({
+    id,
+    runtime: "claude-code",
+    runtimeSessionId,
+    startedAt: "2026-07-20T00:00:00Z",
+    endedAt: null,
+    durationMin: null,
+    label,
+    summary,
+    body,
+    status: "closed",
+    transcriptKind: null,
+    transcriptPath: null,
+    transcriptOffset: null,
+    transcriptLength: null,
+    entities: [ENTITY_CANONICAL],
+    decisions: [],
+    openQuestions: [],
+    scope: null,
+  });
+  await sessionStore.insertSession(
     teamId,
+    baseRecord(sessionIds[0], `rt-${teamId}-1`, `${teamId} onboarding session`, `${teamId} summary one`, `Body content unique to ${teamId}, session one.`),
   );
-  insertSession.run(
-    sessionIds[1], `rt-${teamId}-2`,
-    `${teamId} follow-up session`, `${teamId} summary two`, `Body content unique to ${teamId}, session two.`,
+  await sessionStore.insertSession(
     teamId,
+    baseRecord(sessionIds[1], `rt-${teamId}-2`, `${teamId} follow-up session`, `${teamId} summary two`, `Body content unique to ${teamId}, session two.`),
   );
-
-  // ── Entity: same surface form in both tenants, composite-keyed rows ─────
-  db.prepare(
-    "INSERT INTO entities (tenant_id, canonical, type, status, source) VALUES (?, ?, 'concept', 'active', 'fixture')",
-  ).run(teamId, ENTITY_CANONICAL);
-  db.prepare(
-    "INSERT INTO session_entities (tenant_id, session_id, entity_canonical) VALUES (?, ?, ?)",
-  ).run(teamId, sessionIds[0], ENTITY_CANONICAL);
 
   // ── Facts: 2 per tenant, embeddings near-identical across tenants ───────
-  const insertFact = db.prepare(`
-    INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, source_quote, confidence, tenant_id)
-    VALUES (?, 'attribute', ?, ?, ?, ?, NULL, 0.9, ?)
-  `);
-  const insertFactEmbedding = db.prepare("INSERT INTO fact_embeddings (fact_id, embedding) VALUES (?, ?)");
-  insertFact.run(factIds[0], `${teamId}-subject-one`, "uses", `${teamId} value one`, sessionIds[0], teamId);
-  insertFact.run(factIds[1], `${teamId}-subject-two`, "uses", `${teamId} value two`, sessionIds[1], teamId);
+  const makeFact = (id: string, subject: string, value: string): Fact => ({
+    id,
+    kind: "attribute",
+    subject,
+    predicate: "uses",
+    value,
+    sourceSessionId: sessionIds[0],
+    sourceQuote: null,
+    createdAt: "2026-07-20T00:00:00Z",
+    supersededBy: null,
+    confidence: 0.9,
+  });
+  await factStore.insert(teamId, makeFact(factIds[0], `${teamId}-subject-one`, `${teamId} value one`));
+  await factStore.insert(teamId, makeFact(factIds[1], `${teamId}-subject-two`, `${teamId} value two`));
   // salt 1 / 2 are shared across seedTeam calls so team_a and team_b land
   // near the same point in vector space for each fact index — a naive
   // (untenanted) KNN scan would return the other team's row as top neighbor.
   const epsilon = teamId === "team_a" ? 0 : 1e-4;
-  insertFactEmbedding.run(factIds[0], toBlob(nearNeighbor(baseVector(1), epsilon)));
-  insertFactEmbedding.run(factIds[1], toBlob(nearNeighbor(baseVector(2), epsilon)));
+  await factStore.upsertEmbedding(teamId, factIds[0], nearNeighbor(baseVector(1), epsilon));
+  await factStore.upsertEmbedding(teamId, factIds[1], nearNeighbor(baseVector(2), epsilon));
 
   // ── Code exemplar (not adversarial — own embedding per tenant) ──────────
+  // code_exemplars is not yet tenant-threaded (M2 Wave B3) — raw SQL, hand-stamped.
   db.prepare(`
     INSERT INTO code_exemplars (
       id, install_scope, signal_id, session_id, repo, model, lang,
@@ -141,39 +161,40 @@ function seedTeam(db: Database.Database, spec: TeamSpec): TenantSeedIds {
   );
 
   // ── Signal: same repo basename across tenants, different full path ─────
+  // signals is not yet tenant-threaded (M2 Wave B4) — raw SQL, hand-stamped.
   db.prepare(`
     INSERT INTO signals (id, v, install_scope, kind, producer, outcome, model, repo, session_id, ts, tenant_id)
     VALUES (?, 1, ?, 'gate', 'quality-gate', 'pass', 'qwen3-coder', ?, ?, '2026-07-20T00:00:00Z', ?)
   `).run(signalId, teamId, repoPath, sessionIds[0], teamId);
 
   // ── Workstream + bindings ───────────────────────────────────────────────
+  // workstreams/workstream_entities are not yet tenant-threaded (M2 Wave B4)
+  // — raw SQL, hand-stamped. Session→workstream binding goes through the
+  // real (threaded) SessionStore.setWorkstreamBinding.
   db.prepare(
     "INSERT INTO workstreams (id, label, status, tenant_id) VALUES (?, ?, 'active', ?)",
   ).run(workstreamId, `${teamId} workstream`, teamId);
   db.prepare(
     "INSERT INTO workstream_entities (tenant_id, workstream_id, entity_canonical, session_count) VALUES (?, ?, ?, 1)",
   ).run(teamId, workstreamId, ENTITY_CANONICAL);
-  db.prepare(
-    "UPDATE sessions SET workstream_id = ?, binding_source = 'auto', binding_confidence = 1.0 WHERE id = ?",
-  ).run(workstreamId, sessionIds[0]);
+  await sessionStore.setWorkstreamBinding(teamId, sessionIds[0], workstreamId, "classifier", 1.0);
 
   return { sessionIds, factIds, exemplarId, signalId, workstreamId, entityCanonical: ENTITY_CANONICAL, repo: repoPath };
 }
 
 /**
  * Seeds team_a/team_b into a fresh temp sqlite db. Caller owns cleanup:
- * `db.close()` then `rmSync(dir, { recursive: true, force: true })`.
+ * `fixture.sessionStore.close()` then `rmSync(dir, { recursive: true, force: true })`.
  */
-export function seedTenantCorpus(): SeededTenantCorpus {
+export async function seedTenantCorpus(): Promise<SeededTenantCorpus> {
   const dir = mkdtempSync(join(tmpdir(), "nlm-tenant-corpus-"));
-  const db = new Database(join(dir, "t.sqlite"));
-  db.pragma("foreign_keys = ON");
-  db.pragma("journal_mode = WAL");
-  sqliteVec.load(db);
-  runMigrations(db, MIGRATIONS);
+  const dbPath = join(dir, "t.sqlite");
+  const sessionStore = new SqliteSessionStore({ dbPath, migrationsDir: MIGRATIONS });
+  const db = sessionStore.rawDb();
+  const factStore = new SqliteFactStore(db);
 
-  const A = seedTeam(db, { teamId: "team_a", teamName: "Team A", repoPath: `/workspaces/team-a/${REPO_BASENAME}` });
-  const B = seedTeam(db, { teamId: "team_b", teamName: "Team B", repoPath: `/srv/team-b/${REPO_BASENAME}` });
+  const A = await seedTeam(sessionStore, factStore, db, { teamId: "team_a", teamName: "Team A", repoPath: `/workspaces/team-a/${REPO_BASENAME}` });
+  const B = await seedTeam(sessionStore, factStore, db, { teamId: "team_b", teamName: "Team B", repoPath: `/srv/team-b/${REPO_BASENAME}` });
 
-  return { db, dir, ids: { A, B } };
+  return { db, dir, sessionStore, factStore, ids: { A, B } };
 }

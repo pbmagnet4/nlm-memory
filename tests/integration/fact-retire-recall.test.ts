@@ -62,7 +62,7 @@ describe("supersede_fact end-to-end retirement (NLM #326)", () => {
   });
 
   it("removes a retired fact from recall but keeps it for includeSuperseded", async () => {
-    await storage.facts.insert(
+    await storage.facts.insert("team_local", 
       makeFact({
         id: "fact_bad",
         subject: "acme-app",
@@ -73,7 +73,7 @@ describe("supersede_fact end-to-end retirement (NLM #326)", () => {
       }),
     );
 
-    const before = await recall.search({ subject: "acme-app", mode: "keyword" });
+    const before = await recall.search("team_local", { subject: "acme-app", mode: "keyword" });
     expect(before.results.map((r) => r.id)).toEqual(["fact_bad"]);
 
     const deps: McpDeps = {
@@ -84,10 +84,10 @@ describe("supersede_fact end-to-end retirement (NLM #326)", () => {
     const res = await supersedeFactHandler(deps, { fact_id: "fact_bad", reason: "feedback-loop noise" });
     expect(res.isError).toBeFalsy();
 
-    const after = await recall.search({ subject: "acme-app", mode: "keyword" });
+    const after = await recall.search("team_local", { subject: "acme-app", mode: "keyword" });
     expect(after.results.map((r) => r.id)).toEqual([]);
 
-    const audit = await recall.search({ subject: "acme-app", mode: "keyword", includeSuperseded: true });
+    const audit = await recall.search("team_local", { subject: "acme-app", mode: "keyword", includeSuperseded: true });
     expect(audit.results.map((r) => r.id)).toEqual(["fact_bad"]);
   });
 });

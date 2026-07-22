@@ -86,12 +86,11 @@ describe("Phase B.4 — supersedence-on-ingest", () => {
       sourceSessionId: "sess_A",
       createdAt: "2026-05-18T10:00:00Z",
     });
-    await store.insertSession(
+    await store.insertSession( "team_local",
       makeRecord({ id: "sess_A", startedAt: "2026-05-18T10:00:00Z" }),
       null,
       null,
-      { factStore, facts: [factA] },
-    );
+      { factStore, facts: [factA] });
 
     // Session B asserts framework=Hono
     const factB = fact({
@@ -102,63 +101,58 @@ describe("Phase B.4 — supersedence-on-ingest", () => {
       sourceSessionId: "sess_B",
       createdAt: "2026-05-19T10:00:00Z",
     });
-    await store.insertSession(
+    await store.insertSession( "team_local",
       makeRecord({ id: "sess_B" }),
       null,
       null,
-      { factStore, facts: [factB] },
-    );
+      { factStore, facts: [factB] });
 
-    const fetchedA = await factStore.getById("f_A");
-    const fetchedB = await factStore.getById("f_B");
+    const fetchedA = await factStore.getById("team_local", "f_A");
+    const fetchedB = await factStore.getById("team_local", "f_B");
     expect(fetchedA?.supersededBy).toBe("f_B");
     expect(fetchedB?.supersededBy).toBeNull();
 
-    const current = await factStore.findCurrent("nlm-memory-ts", "framework");
+    const current = await factStore.findCurrent("team_local", "nlm-memory-ts", "framework");
     expect(current?.id).toBe("f_B");
     expect(current?.value).toBe("Hono");
   });
 
   it("no collision when subject differs", async () => {
-    await store.insertSession(
+    await store.insertSession( "team_local",
       makeRecord({ id: "sess_A" }),
       null, null,
       {
         factStore,
         facts: [fact({ id: "fA", subject: "alpha", predicate: "framework", value: "v", sourceSessionId: "sess_A" })],
-      },
-    );
-    await store.insertSession(
+      });
+    await store.insertSession( "team_local",
       makeRecord({ id: "sess_B" }),
       null, null,
       {
         factStore,
         facts: [fact({ id: "fB", subject: "beta", predicate: "framework", value: "v", sourceSessionId: "sess_B" })],
-      },
-    );
-    expect((await factStore.getById("fA"))?.supersededBy).toBeNull();
-    expect((await factStore.getById("fB"))?.supersededBy).toBeNull();
+      });
+    expect((await factStore.getById("team_local", "fA"))?.supersededBy).toBeNull();
+    expect((await factStore.getById("team_local", "fB"))?.supersededBy).toBeNull();
   });
 
   it("no collision when predicate differs", async () => {
-    await store.insertSession(
+    await store.insertSession( "team_local",
       makeRecord({ id: "sess_A" }),
       null, null,
       {
         factStore,
         facts: [fact({ id: "fA", subject: "x", predicate: "framework", value: "v", sourceSessionId: "sess_A" })],
-      },
-    );
-    await store.insertSession(
+      });
+    await store.insertSession( "team_local",
       makeRecord({ id: "sess_B" }),
       null, null,
       {
         factStore,
         facts: [fact({ id: "fB", subject: "x", predicate: "endpoint", value: "v", sourceSessionId: "sess_B" })],
-      },
-    );
-    expect((await factStore.getById("fA"))?.supersededBy).toBeNull();
-    expect((await factStore.getById("fB"))?.supersededBy).toBeNull();
+      });
+    expect((await factStore.getById("team_local", "fA"))?.supersededBy).toBeNull();
+    expect((await factStore.getById("team_local", "fB"))?.supersededBy).toBeNull();
   });
 
   it("always-supersede policy: same value from a new session still supersedes (provenance changes)", async () => {
@@ -166,18 +160,18 @@ describe("Phase B.4 — supersedence-on-ingest", () => {
       id: "f_A", subject: "x", predicate: "framework", value: "Hono",
       sourceSessionId: "sess_A", createdAt: "2026-05-18T10:00:00Z",
     });
-    await store.insertSession(makeRecord({ id: "sess_A", startedAt: "2026-05-18T10:00:00Z" }), null, null,
+    await store.insertSession( "team_local",makeRecord({ id: "sess_A", startedAt: "2026-05-18T10:00:00Z" }), null, null,
       { factStore, facts: [factA] });
 
     const factB = fact({
       id: "f_B", subject: "x", predicate: "framework", value: "Hono",
       sourceSessionId: "sess_B", createdAt: "2026-05-19T10:00:00Z",
     });
-    await store.insertSession(makeRecord({ id: "sess_B" }), null, null,
+    await store.insertSession( "team_local",makeRecord({ id: "sess_B" }), null, null,
       { factStore, facts: [factB] });
 
-    expect((await factStore.getById("f_A"))?.supersededBy).toBe("f_B");
-    expect((await factStore.getById("f_B"))?.supersededBy).toBeNull();
+    expect((await factStore.getById("team_local", "f_A"))?.supersededBy).toBe("f_B");
+    expect((await factStore.getById("team_local", "f_B"))?.supersededBy).toBeNull();
   });
 
   it("three-deep chain: A → B → C, only the immediate predecessor gets re-linked per ingest", async () => {
@@ -185,16 +179,16 @@ describe("Phase B.4 — supersedence-on-ingest", () => {
     const factB = fact({ id: "f_B", subject: "x", predicate: "framework", value: "Hono", sourceSessionId: "sess_B", createdAt: "2026-05-18T10:00:00Z" });
     const factC = fact({ id: "f_C", subject: "x", predicate: "framework", value: "Elysia", sourceSessionId: "sess_C", createdAt: "2026-05-19T10:00:00Z" });
 
-    await store.insertSession(makeRecord({ id: "sess_A", startedAt: "2026-05-17T10:00:00Z" }), null, null, { factStore, facts: [factA] });
-    await store.insertSession(makeRecord({ id: "sess_B", startedAt: "2026-05-18T10:00:00Z" }), null, null, { factStore, facts: [factB] });
-    await store.insertSession(makeRecord({ id: "sess_C", startedAt: "2026-05-19T10:00:00Z" }), null, null, { factStore, facts: [factC] });
+    await store.insertSession( "team_local",makeRecord({ id: "sess_A", startedAt: "2026-05-17T10:00:00Z" }), null, null, { factStore, facts: [factA] });
+    await store.insertSession( "team_local",makeRecord({ id: "sess_B", startedAt: "2026-05-18T10:00:00Z" }), null, null, { factStore, facts: [factB] });
+    await store.insertSession( "team_local",makeRecord({ id: "sess_C", startedAt: "2026-05-19T10:00:00Z" }), null, null, { factStore, facts: [factC] });
 
-    expect((await factStore.getById("f_A"))?.supersededBy).toBe("f_B");
-    expect((await factStore.getById("f_B"))?.supersededBy).toBe("f_C");
-    expect((await factStore.getById("f_C"))?.supersededBy).toBeNull();
+    expect((await factStore.getById("team_local", "f_A"))?.supersededBy).toBe("f_B");
+    expect((await factStore.getById("team_local", "f_B"))?.supersededBy).toBe("f_C");
+    expect((await factStore.getById("team_local", "f_C"))?.supersededBy).toBeNull();
 
     // History walks newest → oldest
-    const chains = await factStore.getHistory("x", "framework");
+    const chains = await factStore.getHistory("team_local", "x", "framework");
     expect(chains[0]?.history.map((f) => f.id)).toEqual(["f_C", "f_B", "f_A"]);
   });
 
@@ -204,21 +198,19 @@ describe("Phase B.4 — supersedence-on-ingest", () => {
       id: "f_old", subject: "x", predicate: "framework", value: "v1",
       sourceSessionId: "sess_old", createdAt: "2026-05-17T10:00:00Z",
     });
-    await store.insertSession(
+    await store.insertSession( "team_local",
       makeRecord({ id: "sess_old", startedAt: "2026-05-17T10:00:00Z" }),
-      null, null, { factStore, facts: [oldFact] },
-    );
+      null, null, { factStore, facts: [oldFact] });
 
     // Self session asserts framework=v2 — supersedes f_old
     const selfFactV1 = fact({
       id: "f_self_v1", subject: "x", predicate: "framework", value: "v2",
       sourceSessionId: "sess_self", createdAt: "2026-05-18T10:00:00Z",
     });
-    await store.insertSession(
+    await store.insertSession( "team_local",
       makeRecord({ id: "sess_self", startedAt: "2026-05-18T10:00:00Z" }),
-      null, null, { factStore, facts: [selfFactV1] },
-    );
-    expect((await factStore.getById("f_old"))?.supersededBy).toBe("f_self_v1");
+      null, null, { factStore, facts: [selfFactV1] });
+    expect((await factStore.getById("team_local", "f_old"))?.supersededBy).toBe("f_self_v1");
 
     // Re-ingest sess_self with a refreshed fact (e.g. classifier produced a
     // new id on a re-classification). The old self fact is wiped via DELETE;
@@ -228,16 +220,15 @@ describe("Phase B.4 — supersedence-on-ingest", () => {
       id: "f_self_v2", subject: "x", predicate: "framework", value: "v2",
       sourceSessionId: "sess_self", createdAt: "2026-05-18T11:00:00Z",
     });
-    await store.insertSession(
+    await store.insertSession( "team_local",
       makeRecord({ id: "sess_self", startedAt: "2026-05-18T10:00:00Z" }),
-      null, null, { factStore, facts: [selfFactV2] },
-    );
+      null, null, { factStore, facts: [selfFactV2] });
 
-    expect(await factStore.getById("f_self_v1")).toBeNull(); // deleted
-    expect((await factStore.getById("f_old"))?.supersededBy).toBe("f_self_v2");
-    expect((await factStore.getById("f_self_v2"))?.supersededBy).toBeNull();
+    expect(await factStore.getById("team_local", "f_self_v1")).toBeNull(); // deleted
+    expect((await factStore.getById("team_local", "f_old"))?.supersededBy).toBe("f_self_v2");
+    expect((await factStore.getById("team_local", "f_self_v2"))?.supersededBy).toBeNull();
 
-    const current = await factStore.findCurrent("x", "framework");
+    const current = await factStore.findCurrent("team_local", "x", "framework");
     expect(current?.id).toBe("f_self_v2");
   });
 
@@ -260,19 +251,19 @@ describe("Phase B.4 — supersedence-on-ingest", () => {
       decisions: [],
       open: [],
     });
-    await factStore.insert(
+    await factStore.insert("team_local", 
       fact({ id: "f_seed", subject: "x", predicate: "framework", value: "v1", sourceSessionId: "sess_seed" }),
     );
 
     // Insert a session with NO factSink. The seed fact stays current.
-    await store.insertSession(makeRecord({ id: "sess_nofacts" }));
-    expect((await factStore.getById("f_seed"))?.supersededBy).toBeNull();
+    await store.insertSession("team_local", makeRecord({ id: "sess_nofacts" }));
+    expect((await factStore.getById("team_local", "f_seed"))?.supersededBy).toBeNull();
   });
 
   it("multi-fact ingest: each new fact supersedes its own (s, p) predecessor independently", async () => {
     // Two prior facts, different (s, p) pairs
     const sessFirst = "sess_first";
-    await store.insertSession(
+    await store.insertSession( "team_local",
       makeRecord({ id: sessFirst, startedAt: "2026-05-18T10:00:00Z" }),
       null, null,
       {
@@ -281,11 +272,10 @@ describe("Phase B.4 — supersedence-on-ingest", () => {
           fact({ id: "p1", subject: "a", predicate: "framework", value: "Fastify", sourceSessionId: sessFirst, createdAt: "2026-05-18T10:00:00Z" }),
           fact({ id: "p2", subject: "b", predicate: "endpoint", value: ":8080", sourceSessionId: sessFirst, createdAt: "2026-05-18T10:00:00Z" }),
         ],
-      },
-    );
+      });
 
     // One ingest delivering supersedents to both
-    await store.insertSession(
+    await store.insertSession( "team_local",
       makeRecord({ id: "sess_multi", startedAt: "2026-05-19T10:00:00Z" }),
       null, null,
       {
@@ -294,25 +284,24 @@ describe("Phase B.4 — supersedence-on-ingest", () => {
           fact({ id: "n1", subject: "a", predicate: "framework", value: "Hono", sourceSessionId: "sess_multi", createdAt: "2026-05-19T10:00:00Z" }),
           fact({ id: "n2", subject: "b", predicate: "endpoint", value: ":3940", sourceSessionId: "sess_multi", createdAt: "2026-05-19T10:00:00Z" }),
         ],
-      },
-    );
+      });
 
-    expect((await factStore.getById("p1"))?.supersededBy).toBe("n1");
-    expect((await factStore.getById("p2"))?.supersededBy).toBe("n2");
-    expect((await factStore.getById("n1"))?.supersededBy).toBeNull();
-    expect((await factStore.getById("n2"))?.supersededBy).toBeNull();
+    expect((await factStore.getById("team_local", "p1"))?.supersededBy).toBe("n1");
+    expect((await factStore.getById("team_local", "p2"))?.supersededBy).toBe("n2");
+    expect((await factStore.getById("team_local", "n1"))?.supersededBy).toBeNull();
+    expect((await factStore.getById("team_local", "n2"))?.supersededBy).toBeNull();
   });
 
   it("FactRecallService default minConfidence respects supersedence — only current shows", async () => {
     const factA = fact({ id: "f_old", subject: "x", predicate: "framework", value: "Fastify", sourceSessionId: "sess_A", createdAt: "2026-05-17T10:00:00Z" });
     const factB = fact({ id: "f_new", subject: "x", predicate: "framework", value: "Hono", sourceSessionId: "sess_B", createdAt: "2026-05-19T10:00:00Z" });
-    await store.insertSession(makeRecord({ id: "sess_A", startedAt: "2026-05-17T10:00:00Z" }), null, null, { factStore, facts: [factA] });
-    await store.insertSession(makeRecord({ id: "sess_B", startedAt: "2026-05-19T10:00:00Z" }), null, null, { factStore, facts: [factB] });
+    await store.insertSession( "team_local",makeRecord({ id: "sess_A", startedAt: "2026-05-17T10:00:00Z" }), null, null, { factStore, facts: [factA] });
+    await store.insertSession( "team_local",makeRecord({ id: "sess_B", startedAt: "2026-05-19T10:00:00Z" }), null, null, { factStore, facts: [factB] });
 
-    const current = await factStore.list({ subject: "x", predicate: "framework" });
+    const current = await factStore.list("team_local", { subject: "x", predicate: "framework" });
     expect(current.map((f) => f.id)).toEqual(["f_new"]);
 
-    const all = await factStore.list({ subject: "x", predicate: "framework", includeSuperseded: true });
+    const all = await factStore.list("team_local", { subject: "x", predicate: "framework", includeSuperseded: true });
     expect(all.map((f) => f.id).sort()).toEqual(["f_new", "f_old"]);
   });
 
@@ -325,16 +314,16 @@ describe("Phase B.4 — supersedence-on-ingest", () => {
 
     // First ingest of sess_R lands one fact; give it a vec0 embedding.
     const first = fact({ id: "f_first", subject: "svc", predicate: "port", value: "3940", sourceSessionId: "sess_R" });
-    await store.insertSession(makeRecord({ id: "sess_R" }), null, null, { factStore, facts: [first] });
+    await store.insertSession( "team_local",makeRecord({ id: "sess_R" }), null, null, { factStore, facts: [first] });
     const v = new Float32Array(768); v[7] = 1;
-    await factStore.upsertEmbedding("f_first", v);
+    await factStore.upsertEmbedding("team_local", "f_first", v);
     expect(embCount("f_first")).toBe(1);
 
     // Re-ingest the SAME session id with a different fact: insertSession deletes
     // the prior fact (DELETE FROM facts WHERE source_session_id). Its embedding
     // must go too — otherwise it is an orphan vec0 vector that steals kNN slots.
     const second = fact({ id: "f_second", subject: "svc", predicate: "host", value: "localhost", sourceSessionId: "sess_R" });
-    await store.insertSession(makeRecord({ id: "sess_R" }), null, null, { factStore, facts: [second] });
+    await store.insertSession( "team_local",makeRecord({ id: "sess_R" }), null, null, { factStore, facts: [second] });
 
     expect(embCount("f_first")).toBe(0);
   });
@@ -344,7 +333,7 @@ describe("Phase B.4 — supersedence-on-ingest", () => {
     // duplicate-(s,p) batch under ONE winner, not per-fact (which makes A->B,
     // B->A — both recall-ineligible forever). The fix lived only in the
     // canonical ingestSessionFacts, which production does not call.
-    await store.insertSession(makeRecord({ id: "sess_dup" }), null, null, {
+    await store.insertSession( "team_local",makeRecord({ id: "sess_dup" }), null, null, {
       factStore,
       facts: [
         fact({ id: "d1", subject: "A", predicate: "uses", value: "x", sourceSessionId: "sess_dup" }),
@@ -371,20 +360,20 @@ describe("Phase B.4 — supersedence-on-ingest", () => {
         .prepare<[string], { c: number }>("SELECT COUNT(*) AS c FROM fact_embeddings WHERE fact_id = ?")
         .get(factId)?.c;
 
-    await store.insertSession(makeRecord({ id: "sess_p1" }), null, null, {
+    await store.insertSession( "team_local",makeRecord({ id: "sess_p1" }), null, null, {
       factStore,
       facts: [fact({ id: "c_old", subject: "M", predicate: "framework", value: "Fastify", sourceSessionId: "sess_p1" })],
     });
     const v = new Float32Array(768); v[9] = 1;
-    await factStore.upsertEmbedding("c_old", v);
+    await factStore.upsertEmbedding("team_local", "c_old", v);
     expect(embCount("c_old")).toBe(1);
 
     // A later session asserts the same (subject, predicate): c_old collapses.
-    await store.insertSession(makeRecord({ id: "sess_p2", startedAt: "2026-05-20T10:00:00Z" }), null, null, {
+    await store.insertSession( "team_local",makeRecord({ id: "sess_p2", startedAt: "2026-05-20T10:00:00Z" }), null, null, {
       factStore,
       facts: [fact({ id: "c_new", subject: "M", predicate: "framework", value: "Hono", sourceSessionId: "sess_p2" })],
     });
-    expect((await factStore.getById("c_old"))?.supersededBy).toBe("c_new");
+    expect((await factStore.getById("team_local", "c_old"))?.supersededBy).toBe("c_new");
     expect(embCount("c_old")).toBe(0);
   });
 });

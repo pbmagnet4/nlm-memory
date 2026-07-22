@@ -76,7 +76,7 @@ describe("fact-recall regression gate", () => {
     await storage.init();
     storage.sessions.insertSessionForTest(makeSession({ id: "sess_gate", label: "Gate" }));
     for (const f of SYNTHETIC_FACTS) {
-      await storage.facts.insert(
+      await storage.facts.insert("team_local", 
         makeFact({
           id: f.id,
           subject: f.subject,
@@ -96,7 +96,11 @@ describe("fact-recall regression gate", () => {
   });
 
   it(`keeps keyword fact recall R@5 at or above ${R5_FLOOR}`, async () => {
-    const report = await runEval({ recall }, GATE_QUERIES, { mode: "keyword", k: 5 });
+    const report = await runEval(
+      { recall: { search: (q) => recall.search("team_local", q) } },
+      GATE_QUERIES,
+      { mode: "keyword", k: 5 },
+    );
     expect(report.n).toBe(GATE_QUERIES.length);
     expect(report.rAt5).toBeGreaterThanOrEqual(R5_FLOOR);
   });
