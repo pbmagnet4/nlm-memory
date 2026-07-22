@@ -75,7 +75,7 @@
     "@huggingface/transformers": "4.2.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@toon-format/toon": "^2.3.0",
-    "better-sqlite3": "^12.10.0",
+    "better-sqlite3": "^13.0.1",
     "commander": "^15.0.0",
     "hono": "^4.6.0",
     "pg": "^8.21.0",
