@@ -396,6 +396,8 @@ recall: prompt / query
 | `NLM_HOOK_FACT_MIN_CORROBORATION` | `2` | Minimum number of sessions that must have asserted a fact before it qualifies for hook injection. Set to `1` to include single-source facts. |
 | `NLM_HOOK_FACT_MIN_CONFIDENCE` | `0.7` | Minimum classifier confidence for a fact to qualify for hook injection. |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | — | Required for `nlm digest --telegram` |
+| `NLM_ALERT_WEBHOOK` | — | Set to a URL to enable daemon self-reporting: version-drift and embedder-cold transitions POST a CloudEvents-shaped payload here. Unset means zero network calls. |
+| `NLM_ALERT_WEBHOOK_TOKEN` | — | Optional bearer token sent as `Authorization: Bearer <token>` on every `NLM_ALERT_WEBHOOK` POST. Only used when the webhook is set. |
 
 ### Changing the classifier from the UI
 

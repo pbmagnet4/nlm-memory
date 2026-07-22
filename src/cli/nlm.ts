@@ -83,6 +83,7 @@ import { runScopeBackfill, formatBackfillResult } from "./scope-backfill.js";
 import { runScopeCoverage, formatCoverageResult } from "./scope-coverage.js";
 import { loadAliasMap } from "../core/scope/alias-map.js";
 import { getUpdateStatus } from "../core/update-check/check.js";
+import { checkDriftAndAlert, checkEmbedderAndAlert } from "../core/alerts/check-and-alert.js";
 import { connectHermes, disconnectHermes, hermesConfigPath } from "../install/hermes.js";
 import { connectHermesAgent, disconnectHermesAgent, hermesAgentPluginDir } from "../install/hermes-agent.js";
 import { connectWindsurf, disconnectWindsurf } from "../install/windsurf.js";
@@ -552,6 +553,25 @@ program
       void signals.pruneOlderThan(cutoff).catch(() => { /* prune is best-effort */ });
     }, SIGNAL_PRUNE_INTERVAL_MS);
     signalPruneTimer.unref();
+
+    // NLM_ALERT_WEBHOOK self-reporting: version-drift + embedder-cold
+    // transitions POST to an operator-owned webhook. No-op (zero network
+    // calls) when the env var is unset — see core/alerts/fire-alert.ts.
+    const ALERT_DRIFT_CHECK_INTERVAL_MS = 60 * 60_000;
+    const alertDriftTimer = setInterval(() => {
+      void checkDriftAndAlert({ currentVersion: pkg.version }).catch(() => {
+        // Best-effort self-reporting — a failed check never blocks the daemon.
+      });
+    }, ALERT_DRIFT_CHECK_INTERVAL_MS);
+    alertDriftTimer.unref();
+
+    const ALERT_EMBEDDER_CHECK_INTERVAL_MS = 5 * 60_000;
+    const alertEmbedderTimer = setInterval(() => {
+      void checkEmbedderAndAlert().catch(() => {
+        // Best-effort self-reporting — a failed check never blocks the daemon.
+      });
+    }, ALERT_EMBEDDER_CHECK_INTERVAL_MS);
+    alertEmbedderTimer.unref();
 
     // Corpus monitor: 24h stats job + weekly re-derivation trend. SQLite only.
     // First run is delayed ~60s so warmup finishes first; then repeats every 24h.
