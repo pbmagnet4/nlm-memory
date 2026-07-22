@@ -7,19 +7,22 @@
  *
  * Skips when the env var is absent.
  *
- * IMPORTANT: These tests DROP and recreate the public schema to simulate a
- * fresh database. afterAll re-runs the full migration runner so that the
- * schema is left fully migrated for subsequent pg test files in the serial
- * pass.
+ * These tests exercise fresh-database migration behavior, so each `it`
+ * creates and drops its own throwaway schema via the pg-test-schema helper's
+ * primitives rather than sharing the file-level schema `usePgTestSchema`
+ * would hand out — the whole point of these cases is to start from nothing,
+ * which a single shared per-file schema can't provide across three tests.
+ * `public` is never touched.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PgStorage } from "../../src/core/storage/pg-storage.js";
 import { runMigrationsPg } from "../../src/core/storage/pg-migrate.js";
+import { createPgTestSchema, dropPgTestSchema } from "../helpers/pg-test-schema.js";
+import type { PgTestSchema } from "../helpers/pg-test-schema.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
 const MIGRATIONS_DIR = join(
@@ -27,33 +30,20 @@ const MIGRATIONS_DIR = join(
   "../../migrations/pg",
 );
 
-async function resetSchema(pool: Pool): Promise<void> {
-  await pool.query("DROP SCHEMA public CASCADE");
-  await pool.query("CREATE SCHEMA public");
-}
-
 describe.skipIf(!PG_TEST_URL)("pg migration runner", () => {
-  let pool: Pool;
+  let handle: PgTestSchema;
 
-  beforeAll(async () => {
-    pool = new Pool({ connectionString: PG_TEST_URL });
+  beforeEach(async () => {
+    handle = await createPgTestSchema(PG_TEST_URL!, import.meta.url);
   });
 
-  afterAll(async () => {
-    const storage = PgStorage.create({
-      connectionString: PG_TEST_URL!,
-      migrationsDir: MIGRATIONS_DIR,
-    });
-    await storage.init();
-    await storage.close();
-    await pool.end();
+  afterEach(async () => {
+    await dropPgTestSchema(PG_TEST_URL!, handle.schema);
   });
 
   it("fresh database: applies all migrations in order and stamps schema_migrations", async () => {
-    await resetSchema(pool);
-
     const storage = PgStorage.create({
-      connectionString: PG_TEST_URL!,
+      connectionString: handle.url,
       migrationsDir: MIGRATIONS_DIR,
     });
     await storage.init();
@@ -77,10 +67,8 @@ describe.skipIf(!PG_TEST_URL)("pg migration runner", () => {
   });
 
   it("re-running init is a no-op: row count and versions unchanged", async () => {
-    await resetSchema(pool);
-
     const storage = PgStorage.create({
-      connectionString: PG_TEST_URL!,
+      connectionString: handle.url,
       migrationsDir: MIGRATIONS_DIR,
     });
 
@@ -108,7 +96,10 @@ describe.skipIf(!PG_TEST_URL)("pg migration runner", () => {
   });
 
   it("existing manual-operator database: init stamps all versions without breaking", async () => {
-    await resetSchema(pool);
+    const storage = PgStorage.create({
+      connectionString: handle.url,
+      migrationsDir: MIGRATIONS_DIR,
+    });
 
     for (const file of [
       "001_initial.sql",
@@ -116,15 +107,11 @@ describe.skipIf(!PG_TEST_URL)("pg migration runner", () => {
       "025_workstreams.sql",
     ]) {
       const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf8");
-      await pool.query(sql);
+      await storage.pgPool().query(sql);
     }
 
-    await pool.query("DROP TABLE IF EXISTS schema_migrations");
+    await storage.pgPool().query("DROP TABLE IF EXISTS schema_migrations");
 
-    const storage = PgStorage.create({
-      connectionString: PG_TEST_URL!,
-      migrationsDir: MIGRATIONS_DIR,
-    });
     await expect(storage.init()).resolves.not.toThrow();
 
     const { rows } = await storage.pgPool().query<{ version: number }>(
