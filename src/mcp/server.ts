@@ -46,6 +46,7 @@ import type {
 } from "@shared/types.js";
 import { SIGNAL_OUTCOMES } from "@shared/types.js";
 import type Database from "better-sqlite3";
+import { isHostedMode } from "@core/tenancy/hosted-mode.js";
 
 const CHARACTER_LIMIT = 25_000;
 const DEFAULT_LIMIT = 10;
@@ -776,10 +777,18 @@ export async function citeSessionHandler(
   // Accepted for signature uniformity with the other 16 tool handlers
   // (program spec §4.1); unused today because citation-log.jsonl is
   // M6-scoped shared file state, not yet tenant-attributed (M2 disposition:
-  // M6-FILTER). C3 gates this tool under NLM_HOSTED before the file write.
+  // M6-FILTER).
   _tenantId: string,
   input: CiteSessionInput,
 ): Promise<ToolResult> {
+  // Hosted-mode gate (Wave C3): citation-log.jsonl is shared, unpartitioned
+  // file state (M6-FILTER, same class as the HTTP citation routes gated in
+  // installHostedModeGate). Under NLM_HOSTED=1 this returns an error result
+  // — not a throw — naming M6, before appendCitation ever touches the file.
+  // Local mode (NLM_HOSTED unset) is unaffected.
+  if (isHostedMode()) {
+    return err(new Error("cite_session is disabled in hosted mode until M6 (tenant-attributed daemon state) lands"));
+  }
   if (!input.id || input.id.length < MIN_CITE_ID_LEN) {
     return err(new Error(`id must be at least ${MIN_CITE_ID_LEN} characters`));
   }

@@ -115,6 +115,7 @@ import { inflightSnapshot } from "@core/health/embed-inflight.js";
 import { corpusSnapshot } from "@core/health/corpus-state.js";
 import { DEFAULT_NLM_PORT } from "../shared/net.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
+import { isHostedMode } from "@core/tenancy/hosted-mode.js";
 
 const HERMES_RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 
@@ -363,6 +364,7 @@ export function createApp(deps: HttpDeps): Hono {
   const boundPort = process.env["NLM_PORT"] ? Number.parseInt(process.env["NLM_PORT"], 10) : Number.parseInt(DEFAULT_NLM_PORT, 10);
 
   installLocalOnlyMiddleware(app, boundPort);
+  installHostedModeGate(app);
   registerHealthRoute(app, deps);
   registerMcpRoute(app, deps);
   registerRecallRoutes(app, deps);
@@ -465,6 +467,58 @@ function installLocalOnlyMiddleware(app: Hono, boundPort: number): void {
       return next();
     }
     return c.json({ error: "unauthorized" }, 401);
+  });
+}
+
+// ── Hosted-mode gate (program spec §4.6, M2 plan Wave C3) ─────────────
+//
+// Under NLM_HOSTED=1, two disposition classes are hard-disabled before any
+// handler logic runs:
+//
+//   LOCAL      — single-operator, whole-DB surfaces (dataset projection,
+//                backup/restore, data stats, the process-global classifier
+//                swap). Never tenant-reachable in hosted mode; there is no
+//                per-tenant meaning to "the whole DB".
+//   M6-FILTER  — surfaces backed by the shared, not-yet-tenant-attributed
+//                JSONL state (citation log, query logs, hook-memo files).
+//                Disabled until M6 lands; local mode is unaffected.
+//
+// One exhaustive path+method list, one middleware, checked before every
+// registerXxxRoutes call below so no handler for a gated path ever runs
+// under NLM_HOSTED=1. Local mode (NLM_HOSTED unset) takes the `next()`
+// fast-path unconditionally — zero behavior change.
+type HostedDisposition = "LOCAL" | "M6-FILTER";
+
+const HOSTED_GATED_ROUTES: ReadonlyArray<{ method: string; path: string; disposition: HostedDisposition }> = [
+  { method: "GET", path: "/api/dataset", disposition: "LOCAL" },
+  { method: "GET", path: "/api/data/backup", disposition: "LOCAL" },
+  { method: "POST", path: "/api/data/restore", disposition: "LOCAL" },
+  { method: "GET", path: "/api/data/stats", disposition: "LOCAL" },
+  { method: "POST", path: "/api/classifier", disposition: "LOCAL" },
+  { method: "POST", path: "/api/recall/cite-event", disposition: "M6-FILTER" },
+  { method: "POST", path: "/api/citation/explicit", disposition: "M6-FILTER" },
+  { method: "GET", path: "/api/recall/stats", disposition: "M6-FILTER" },
+  { method: "GET", path: "/api/recall/recent", disposition: "M6-FILTER" },
+  { method: "GET", path: "/api/recall/facts/stats", disposition: "M6-FILTER" },
+  { method: "POST", path: "/api/hook/pre-compact", disposition: "M6-FILTER" },
+  { method: "POST", path: "/api/hook/hermes-agent/post-turn", disposition: "M6-FILTER" },
+  { method: "POST", path: "/api/hook/hermes-agent/session-lifecycle", disposition: "M6-FILTER" },
+];
+
+function installHostedModeGate(app: Hono): void {
+  const gated = new Map<string, HostedDisposition>();
+  for (const r of HOSTED_GATED_ROUTES) gated.set(`${r.method} ${r.path}`, r.disposition);
+
+  app.use("/api/*", async (c, next) => {
+    if (!isHostedMode()) return next();
+    const disposition = gated.get(`${c.req.method} ${c.req.path}`);
+    if (disposition) {
+      return c.json(
+        { error: `route disabled in hosted mode (disposition: ${disposition})`, disposition },
+        403,
+      );
+    }
+    return next();
   });
 }
 
