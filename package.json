@@ -62,6 +62,7 @@
     "eval:signals": "tsx scripts/eval/signals-eval.ts",
     "eval:classifier": "tsx scripts/eval/classifier-eval.ts",
     "eval:fact-recall": "tsx scripts/eval/fact-recall-eval.ts",
+    "eval:recall-impact-replay": "tsx scripts/eval/recall-impact-replay.ts",
     "eval:code-exemplar": "tsx scripts/eval/code-exemplar-eval.ts",
     "eval:reranker": "tsx scripts/eval/reranker-ablation.ts",
     "eval:floor": "tsx scripts/eval/floor-calibration.ts",
