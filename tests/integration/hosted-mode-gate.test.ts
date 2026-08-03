@@ -49,6 +49,8 @@ const LOCAL_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
   { method: "POST", path: "/api/data/restore" },
   { method: "GET", path: "/api/data/stats" },
   { method: "POST", path: "/api/classifier" },
+  { method: "POST", path: "/api/jobs/reprocess" },
+  { method: "DELETE", path: "/api/jobs/reprocess" },
 ];
 
 // Formerly M6-FILTER-gated (403 in hosted mode until citation-log.jsonl /

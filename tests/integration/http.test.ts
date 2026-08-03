@@ -18,6 +18,7 @@ import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { createApp } from "../../src/http/app.js";
 type AppInstance = ReturnType<typeof createApp>;
 import type { Session } from "../../src/shared/types.js";
+import type { JobSnapshot } from "../../src/core/jobs/job-supervisor.js";
 import { makeFact } from "../fixtures/facts.js";
 import { makeSession } from "../fixtures/sessions.js";
 import { FixedEmbedder, StubClassifier, StubEmbedder } from "../fixtures/llm-stubs.js";
@@ -164,6 +165,53 @@ describe("HTTP adapter", () => {
       expect(body.corpus.sessions).toBe(100);
       expect(body.corpus.entities).toBe(500);
       expect(body.corpus.lastComputedAt).toBe("2026-07-03T00:00:00.000Z");
+    });
+  });
+
+  describe("job field in /api/health", () => {
+    function appWithJobSupervisor(snapshot: JobSnapshot): AppInstance {
+      return createApp({
+        recall: { search: async () => ({ query: "", mode: "keyword", limit: 0, total: 0, results: [] }) },
+        store: {},
+        jobSupervisor: { start: () => {}, stop: () => {}, snapshot: () => snapshot },
+      } as never);
+    }
+
+    it("is null when no job supervisor is wired", async () => {
+      const res = await app.request("/api/health");
+      const body = (await res.json()) as { job: JobSnapshot | null };
+      expect(body.job).toBeNull();
+    });
+
+    it("is null when the job supervisor is wired but idle (never started)", async () => {
+      const idleApp = appWithJobSupervisor({
+        name: "reprocess",
+        state: "idle",
+        processed: 0,
+        total: 0,
+        startedAt: null,
+        lastAdvanceAt: null,
+        restarts: 0,
+      });
+      const res = await idleApp.request("/api/health");
+      const body = (await res.json()) as { job: JobSnapshot | null };
+      expect(body.job).toBeNull();
+    });
+
+    it("reflects a running snapshot", async () => {
+      const runningSnap: JobSnapshot = {
+        name: "reprocess",
+        state: "running",
+        processed: 4,
+        total: 20,
+        startedAt: "2026-08-03T00:00:00.000Z",
+        lastAdvanceAt: "2026-08-03T00:00:10.000Z",
+        restarts: 1,
+      };
+      const runningApp = appWithJobSupervisor(runningSnap);
+      const res = await runningApp.request("/api/health");
+      const body = (await res.json()) as { job: JobSnapshot | null };
+      expect(body.job).toEqual(runningSnap);
     });
   });
 
