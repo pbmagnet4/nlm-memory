@@ -8,7 +8,7 @@
  * reads warmupSnapshot(), threads the persisted state, and fires.
  */
 
-import type { AlertEvent } from "./types.js";
+import type { EmbedderAlertEvent } from "./types.js";
 
 export interface EmbedderAlertState {
   /** Consecutive not-ready checks seen so far (resets to 0 once ready again). */
@@ -26,7 +26,7 @@ const SUSTAIN_CHECK_COUNT = 2;
 
 export interface EmbedderTransitionResult {
   readonly fire: boolean;
-  readonly event: AlertEvent | null;
+  readonly event: EmbedderAlertEvent | null;
   readonly next: EmbedderAlertState;
 }
 

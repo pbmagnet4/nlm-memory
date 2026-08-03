@@ -9,9 +9,9 @@
  */
 
 import type { JobSupervisorEvent } from "../jobs/job-supervisor.js";
-import type { AlertEvent } from "./types.js";
+import type { JobAlertEvent } from "./types.js";
 
-export function buildJobAlertEvent(event: JobSupervisorEvent): AlertEvent {
+export function buildJobAlertEvent(event: JobSupervisorEvent): JobAlertEvent {
   // `restarts` at "exhausted" is the number of respawns that actually
   // happened before the cap refused the next one — not restarts still
   // ahead. Spelling that out in prose here is the fix for a reviewer

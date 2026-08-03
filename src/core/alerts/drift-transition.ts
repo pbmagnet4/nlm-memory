@@ -12,7 +12,7 @@
  */
 
 import type { UpdateStatus } from "../update-check/check.js";
-import type { AlertEvent } from "./types.js";
+import type { DriftAlertEvent } from "./types.js";
 
 export interface DriftAlertState {
   /** ISO timestamp of when `behind` first became true, or null when not behind. */
@@ -31,7 +31,7 @@ const REFIRE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 export interface DriftTransitionResult {
   readonly fire: boolean;
-  readonly event: AlertEvent | null;
+  readonly event: DriftAlertEvent | null;
   readonly next: DriftAlertState;
 }
 

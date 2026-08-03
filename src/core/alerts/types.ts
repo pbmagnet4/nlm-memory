@@ -66,3 +66,16 @@ export type AlertEvent =
   | { readonly type: "nlm.drift.version_behind"; readonly data: AlertEventData }
   | { readonly type: "nlm.health.embedder_cold"; readonly data: AlertEventData }
   | { readonly type: "nlm.job.stalled"; readonly data: JobAlertEventData };
+
+/**
+ * Per-producer narrowings of `AlertEvent`. Each transition/builder module
+ * only ever constructs one union member, but declaring its return type as
+ * the full `AlertEvent` erases the discriminant for callers (including
+ * tests) that don't re-narrow via a type guard — `event.type` checked
+ * through `expect()` doesn't narrow `event.data`. Producers should return
+ * these instead; `fireAlert` still accepts any of them since each is a
+ * subtype of `AlertEvent`.
+ */
+export type DriftAlertEvent = Extract<AlertEvent, { type: "nlm.drift.version_behind" }>;
+export type EmbedderAlertEvent = Extract<AlertEvent, { type: "nlm.health.embedder_cold" }>;
+export type JobAlertEvent = Extract<AlertEvent, { type: "nlm.job.stalled" }>;
