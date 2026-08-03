@@ -278,7 +278,7 @@ Daemon binds `127.0.0.1:3940` (override with `NLM_PORT`). Selected endpoints:
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| GET | `/api/health` | Host-only | Liveness probe: version, warmup + embedding-lane state, corpus stats, `update: {current, latest, behind}` from the daily npm check, and `job: {name, state, processed, total, startedAt, lastAdvanceAt, restarts} \| null` — the daemon-supervised `reprocess` run (null when idle: never started, or the daemon just restarted, since the supervisor holds no state across restarts) |
+| GET | `/api/health` | Host-only | Liveness probe: version, warmup + embedding-lane state, corpus stats, `update: {current, latest, behind}` from the daily npm check, and `job: {name, state, processed, total, startedAt, lastAdvanceAt, restarts, restartsTotal} \| null` — the daemon-supervised `reprocess` run (null when idle: never started, or the daemon just restarted, since the supervisor holds no state across restarts). `restarts` is the restarts-without-progress counter (resets on any advance); `restartsTotal` is the run's lifetime respawn count, never reset — it's the one to watch for OOM churn on a run that keeps making progress between crashes. |
 | GET | `/api/recall` | Bearer/Origin | Hybrid recall — `?q=`, `?mode=keyword\|semantic\|hybrid`, `?limit=`, `?include_superseded=true` (default off; opt-in to surface overturned sessions down-ranked, badged with `superseded_by`). Each result carries `status` + `superseded_by`. |
 | GET | `/api/recall/stats` | Bearer/Origin | 7-day stats: total, hit_rate, useful_hit_rate, top queries |
 | GET | `/api/recall/recent` | Bearer/Origin | Last N recall events for live tail/telemetry |
@@ -311,7 +311,7 @@ nlm digest                  # print to stdout
 nlm digest --telegram       # post to Telegram (TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)
 ```
 
-Reports 24h real-traffic (probes filtered), 7d hit_rate + useful_hit_rate, honest cited-precision, top 5 queries, a tier-B outcome coverage line (held / overturned / built-upon / unobserved over the last 30 days), a `Jobs:` line for the daemon-supervised `reprocess` run (active progress, a completed/exhausted/stopped outcome, or "no active job"), and a **`WARN hook silent`** alert when Claude Code ran yesterday but no live hook fires were logged. That alert is the canary for post-install drift — node upgrades, `settings.json` hand-edits, and `dist/` moves silently break the hook while Claude Code keeps working. Setup-time smoke tests can't catch this; only the daily correlation can.
+Reports 24h real-traffic (probes filtered), 7d hit_rate + useful_hit_rate, honest cited-precision, top 5 queries, a tier-B outcome coverage line (held / overturned / built-upon / unobserved over the last 30 days), a `Jobs:` line for the daemon-supervised `reprocess` run (active progress, appending `, N restarts` when the run has OOM-churned at least once, a completed/exhausted/stopped outcome, or "no active job"), and a **`WARN hook silent`** alert when Claude Code ran yesterday but no live hook fires were logged. That alert is the canary for post-install drift — node upgrades, `settings.json` hand-edits, and `dist/` moves silently break the hook while Claude Code keeps working. Setup-time smoke tests can't catch this; only the daily correlation can.
 
 Wire to cron for a morning push:
 
@@ -400,7 +400,7 @@ recall: prompt / query
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | — | Required for `nlm digest --telegram` |
 | `NLM_ALERT_WEBHOOK` | — | Set to a URL to enable daemon self-reporting: version-drift and embedder-cold transitions POST a CloudEvents-shaped payload here. Unset means zero network calls. |
 | `NLM_ALERT_WEBHOOK_TOKEN` | — | Optional bearer token sent as `Authorization: Bearer <token>` on every `NLM_ALERT_WEBHOOK` POST. Only used when the webhook is set. |
-| `NLM_JOB_STALL_MINUTES` | `20` | Minutes a daemon-supervised `reprocess` run (see `POST /api/jobs/reprocess`) can go without a progress advance before the supervisor calls it stalled and fires `nlm.job.stalled` via `NLM_ALERT_WEBHOOK`. |
+| `NLM_JOB_STALL_MINUTES` | `20` | Minutes a daemon-supervised `reprocess` run (see `POST /api/jobs/reprocess`) can go without a progress advance before the supervisor calls it stalled and fires `nlm.job.stalled` via `NLM_ALERT_WEBHOOK`. The same event type also fires with `reason: "exhausted"` (restart budget used up) and `reason: "spawn_failed"` (the child process itself never launched — EMFILE/ENOMEM/bad binary). |
 
 ### Changing the classifier from the UI
 
