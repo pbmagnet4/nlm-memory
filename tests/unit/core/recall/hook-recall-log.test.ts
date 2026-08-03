@@ -92,4 +92,24 @@ describe("readHookRecallLog tenant path contract", () => {
       rmSync(derived, { force: true });
     }
   });
+
+  it("two tenants' hook-recall logs don't collide", async () => {
+    const derivedDirA = join(homedir(), ".nlm", "tenants", "tenant-a-hookrecall");
+    const derivedDirB = join(homedir(), ".nlm", "tenants", "tenant-b-hookrecall");
+    const derivedA = join(derivedDirA, "hook-log.jsonl");
+    const derivedB = join(derivedDirB, "hook-log.jsonl");
+    mkdirSync(derivedDirA, { recursive: true });
+    mkdirSync(derivedDirB, { recursive: true });
+    writeFileSync(derivedA, `${JSON.stringify({ ts: now(), conversationId: "conv_a", wouldInject: ["s_a"] })}\n`, "utf8");
+    writeFileSync(derivedB, `${JSON.stringify({ ts: now(), conversationId: "conv_b", wouldInject: ["s_b"] })}\n`, "utf8");
+    try {
+      const outA = await readHookRecallLog("tenant-a-hookrecall", 30);
+      const outB = await readHookRecallLog("tenant-b-hookrecall", 30);
+      expect(outA).toEqual([{ conversationId: "conv_a", injectedIds: ["s_a"] }]);
+      expect(outB).toEqual([{ conversationId: "conv_b", injectedIds: ["s_b"] }]);
+    } finally {
+      rmSync(derivedA, { force: true });
+      rmSync(derivedB, { force: true });
+    }
+  });
 });
