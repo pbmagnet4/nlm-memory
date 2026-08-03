@@ -7,12 +7,11 @@
 import { describe, expect, it } from "vitest";
 import {
   JobSupervisor,
-  type ChildHandle,
-  type Clock,
   type JobSupervisorEvent,
   type JobState,
-  type SpawnChild,
 } from "../../../../src/core/jobs/job-supervisor.js";
+import type { ChildHandle, SpawnChild } from "../../../../src/ports/spawn-child.js";
+import type { Clock } from "../../../../src/ports/clock.js";
 
 class FakeChild implements ChildHandle {
   private lineCb: ((line: string) => void) | null = null;
@@ -259,6 +258,68 @@ describe("JobSupervisor", () => {
     // Idempotent: stopping again (or with no active child) is a no-op.
     sup.stop();
     expect(sup.snapshot().state).toBe("stopped");
+  });
+
+  it("a stale exit/line from a stopped run's old child cannot touch a new run started after it", () => {
+    const clock = new FakeClock();
+    const children: FakeChild[] = [];
+    const events: JobSupervisorEvent[] = [];
+    const sup = new JobSupervisor({
+      spawnChild: fakeSpawner(children),
+      clock,
+      onEvent: (e) => events.push(e),
+      log: noopLog,
+    });
+
+    sup.start(["--verbose"]); // spawns child A
+    const childA = children[0]!;
+    sup.stop(); // kill sent to A; A's real exit/line delivery is still pending
+    expect(childA.killed).toBe(true);
+
+    sup.start(["--verbose", "--limit", "50"]); // new run: spawns child B
+    expect(children).toHaveLength(2);
+    const childB = children[1]!;
+    expect(sup.snapshot()).toMatchObject({ state: "running", processed: 0, total: 0, restarts: 0 });
+
+    // A's queued callbacks finally arrive after B is already the live child.
+    childA.emitLine("  [5/10] stale_sess  ok"); // must not corrupt B's processed/total
+    childA.emitExit(1); // must not be read as "B's child died with work remaining"
+
+    expect(sup.snapshot()).toMatchObject({ state: "running", processed: 0, total: 0, restarts: 0 });
+    expect(children).toHaveLength(2); // no spawn triggered by A's stale exit
+    expect(events).toEqual([]);
+
+    // B is still fully live and controllable.
+    childB.emitLine("  [1/3] sess_b1  ok");
+    expect(sup.snapshot()).toMatchObject({ processed: 1, total: 3 });
+    childB.emitExit(1); // work remaining -> real restart for B's run
+    expect(children).toHaveLength(3);
+    expect(sup.snapshot()).toMatchObject({ state: "running", restarts: 1 });
+  });
+
+  it("a stale exit from a mid-run respawn's predecessor cannot double-respawn", () => {
+    const clock = new FakeClock();
+    const children: FakeChild[] = [];
+    const events: JobSupervisorEvent[] = [];
+    const sup = new JobSupervisor({
+      spawnChild: fakeSpawner(children),
+      clock,
+      onEvent: (e) => events.push(e),
+      log: noopLog,
+    });
+
+    sup.start(["--verbose"]);
+    const childA = children[0]!;
+    childA.emitExit(1); // work remaining, no progress -> restarts=1, respawns child B
+    expect(children).toHaveLength(2);
+    expect(sup.snapshot()).toMatchObject({ restarts: 1 });
+
+    // A's exit callback fires a second time (e.g. a duplicate/late delivery) —
+    // must be ignored since this.child is now B, not A.
+    childA.emitExit(1);
+    expect(children).toHaveLength(2);
+    expect(sup.snapshot()).toMatchObject({ state: "running", restarts: 1 });
+    expect(events).toEqual([]);
   });
 
   it("snapshot has the full health-block shape in every state", () => {
