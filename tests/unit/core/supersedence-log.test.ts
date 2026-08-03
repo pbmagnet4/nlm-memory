@@ -4,11 +4,16 @@
  * operator notices when their audit trail silently goes missing.
  */
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { appendFactSupersedence, appendSupersedence } from "../../../src/core/storage/supersedence-log.js";
+import {
+  appendFactSupersedence,
+  appendSupersedence,
+  readSupersedenceLog,
+} from "../../../src/core/storage/supersedence-log.js";
+import { DEFAULT_TEAM_ID } from "../../../src/core/tenancy/default-team.js";
 
 describe("appendSupersedence", () => {
   let tmp: string;
@@ -25,6 +30,7 @@ describe("appendSupersedence", () => {
   it("writes a JSONL line with the expected fields", async () => {
     const logPath = join(tmp, "supersedence-log.jsonl");
     await appendSupersedence(
+      DEFAULT_TEAM_ID,
       {
         predecessorId: "sess_a",
         successorId: "sess_b",
@@ -46,6 +52,7 @@ describe("appendSupersedence", () => {
   it("omits reason and source when not provided", async () => {
     const logPath = join(tmp, "supersedence-log.jsonl");
     await appendSupersedence(
+      DEFAULT_TEAM_ID,
       { predecessorId: "sess_a", successorId: "sess_b" },
       logPath,
     );
@@ -56,8 +63,8 @@ describe("appendSupersedence", () => {
 
   it("appends rather than overwrites on multiple calls", async () => {
     const logPath = join(tmp, "supersedence-log.jsonl");
-    await appendSupersedence({ predecessorId: "a", successorId: "b" }, logPath);
-    await appendSupersedence({ predecessorId: "c", successorId: "d" }, logPath);
+    await appendSupersedence(DEFAULT_TEAM_ID, { predecessorId: "a", successorId: "b" }, logPath);
+    await appendSupersedence(DEFAULT_TEAM_ID, { predecessorId: "c", successorId: "d" }, logPath);
     const lines = readFileSync(logPath, "utf8").trim().split("\n");
     expect(lines).toHaveLength(2);
   });
@@ -74,7 +81,7 @@ describe("appendSupersedence", () => {
       .mockImplementation(() => true);
 
     await expect(
-      appendSupersedence({ predecessorId: "a", successorId: "b" }, logPath),
+      appendSupersedence(DEFAULT_TEAM_ID, { predecessorId: "a", successorId: "b" }, logPath),
     ).resolves.toBeUndefined();
 
     expect(stderrSpy).toHaveBeenCalledOnce();
@@ -99,6 +106,7 @@ describe("appendFactSupersedence", () => {
   it("writes a JSONL line with kind=fact and the expected fields", async () => {
     const logPath = join(tmp, "supersedence-log.jsonl");
     await appendFactSupersedence(
+      DEFAULT_TEAM_ID,
       { factId: "fact_abc123", reason: "wrong framework", source: "mcp" },
       logPath,
     );
@@ -116,7 +124,7 @@ describe("appendFactSupersedence", () => {
 
   it("omits reason and source when not provided", async () => {
     const logPath = join(tmp, "supersedence-log.jsonl");
-    await appendFactSupersedence({ factId: "fact_xyz" }, logPath);
+    await appendFactSupersedence(DEFAULT_TEAM_ID, { factId: "fact_xyz" }, logPath);
     const entry = JSON.parse(readFileSync(logPath, "utf8").trim()) as Record<string, unknown>;
     expect("reason" in entry).toBe(false);
     expect("source" in entry).toBe(false);
@@ -124,8 +132,8 @@ describe("appendFactSupersedence", () => {
 
   it("shares the log file with session entries without interference", async () => {
     const logPath = join(tmp, "supersedence-log.jsonl");
-    await appendSupersedence({ predecessorId: "sess_a", successorId: "sess_b" }, logPath);
-    await appendFactSupersedence({ factId: "fact_c", reason: "stale" }, logPath);
+    await appendSupersedence(DEFAULT_TEAM_ID, { predecessorId: "sess_a", successorId: "sess_b" }, logPath);
+    await appendFactSupersedence(DEFAULT_TEAM_ID, { factId: "fact_c", reason: "stale" }, logPath);
     const lines = readFileSync(logPath, "utf8").trim().split("\n");
     expect(lines).toHaveLength(2);
     const session = JSON.parse(lines[0]!) as Record<string, unknown>;
@@ -140,9 +148,62 @@ describe("appendFactSupersedence", () => {
     const logPath = join(block, "supersedence-log.jsonl");
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
-    await expect(appendFactSupersedence({ factId: "fact_x" }, logPath)).resolves.toBeUndefined();
+    await expect(
+      appendFactSupersedence(DEFAULT_TEAM_ID, { factId: "fact_x" }, logPath),
+    ).resolves.toBeUndefined();
 
     expect(stderrSpy).toHaveBeenCalledOnce();
     expect(String(stderrSpy.mock.calls[0]?.[0] ?? "")).toContain("fact-supersedence-log");
+  });
+});
+
+describe("supersedence-log tenant path contract", () => {
+  afterEach(() => {
+    delete process.env["NLM_SUPERSEDENCE_LOG"];
+  });
+
+  it("default team honors NLM_SUPERSEDENCE_LOG override (legacy behavior)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nlm-sup-tenant-"));
+    const logPath = join(dir, "supersedence-log.jsonl");
+    process.env["NLM_SUPERSEDENCE_LOG"] = logPath;
+    try {
+      await appendSupersedence(DEFAULT_TEAM_ID, { predecessorId: "a", successorId: "b" });
+      expect(existsSync(logPath)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a non-default tenant writes under ~/.nlm/tenants/<t>/supersedence-log.jsonl, ignoring NLM_SUPERSEDENCE_LOG", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nlm-sup-tenant-"));
+    const logPath = join(dir, "supersedence-log.jsonl");
+    process.env["NLM_SUPERSEDENCE_LOG"] = logPath;
+    const derived = join(homedir(), ".nlm", "tenants", "acme-suplog-test", "supersedence-log.jsonl");
+    try {
+      await appendSupersedence("acme-suplog-test", { predecessorId: "a", successorId: "b" });
+      expect(existsSync(logPath)).toBe(false);
+      expect(existsSync(derived)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(derived, { force: true });
+    }
+  });
+
+  it("two tenants' supersedence logs don't collide", async () => {
+    const derivedA = join(homedir(), ".nlm", "tenants", "tenant-a-suplog", "supersedence-log.jsonl");
+    const derivedB = join(homedir(), ".nlm", "tenants", "tenant-b-suplog", "supersedence-log.jsonl");
+    try {
+      await appendSupersedence("tenant-a-suplog", { predecessorId: "sess_a1", successorId: "sess_a2" });
+      await appendSupersedence("tenant-b-suplog", { predecessorId: "sess_b1", successorId: "sess_b2" });
+      const a = await readSupersedenceLog("tenant-a-suplog");
+      const b = await readSupersedenceLog("tenant-b-suplog");
+      expect(a).toHaveLength(1);
+      expect(a[0]?.predecessorId).toBe("sess_a1");
+      expect(b).toHaveLength(1);
+      expect(b[0]?.predecessorId).toBe("sess_b1");
+    } finally {
+      rmSync(derivedA, { force: true });
+      rmSync(derivedB, { force: true });
+    }
   });
 });
