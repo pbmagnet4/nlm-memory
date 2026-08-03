@@ -18,6 +18,7 @@ import {
   type RecallStats,
   type RecentEntry,
 } from "@core/digest/compose.js";
+import type { JobSnapshot } from "@core/jobs/job-supervisor.js";
 import { computePrecision } from "@core/recall/precision.js";
 import { readHookRecallLog } from "@core/recall/hook-recall-log.js";
 import { readCitationLog } from "@core/recall/citation-log.js";
@@ -138,6 +139,17 @@ export async function runDigest(opts: DigestOptions): Promise<DigestResult> {
     outcomeCoverage = null;
   }
 
+  // Best-effort: a health-fetch failure must not break the rest of the
+  // digest — it just falls back to the same "no active job" line an idle
+  // supervisor would report.
+  let job: JobSnapshot | null = null;
+  try {
+    const healthRes = await fetchJson(`${base}/api/health`, timeoutMs);
+    job = (healthRes as { job?: JobSnapshot | null }).job ?? null;
+  } catch {
+    job = null;
+  }
+
   const text = composeDigest({
     stats,
     recent,
@@ -145,6 +157,7 @@ export async function runDigest(opts: DigestOptions): Promise<DigestResult> {
     hookAlert,
     precision,
     outcomeCoverage,
+    job,
   });
 
   if (opts.telegram) {

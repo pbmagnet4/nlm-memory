@@ -152,4 +152,190 @@ describe("composeDigest", () => {
     });
     expect(text).toContain("tier-b outcomes (30d): no sessions ended in window");
   });
+
+  describe("Jobs line", () => {
+    it("shows no active job when job is absent (never started, or daemon restart mid-run)", () => {
+      const text = composeDigest({
+        stats: baseStats,
+        recent: [],
+        port: 3940,
+        hookAlert: null,
+        now: FIXED_NOW,
+      });
+      expect(text).toContain("Jobs: no active job");
+    });
+
+    it("shows no active job when job is explicitly null", () => {
+      const text = composeDigest({
+        stats: baseStats,
+        recent: [],
+        port: 3940,
+        hookAlert: null,
+        now: FIXED_NOW,
+        job: null,
+      });
+      expect(text).toContain("Jobs: no active job");
+    });
+
+    it("shows no active job for an idle snapshot", () => {
+      const text = composeDigest({
+        stats: baseStats,
+        recent: [],
+        port: 3940,
+        hookAlert: null,
+        now: FIXED_NOW,
+        job: {
+          name: "reprocess",
+          state: "idle",
+          processed: 0,
+          total: 0,
+          startedAt: null,
+          lastAdvanceAt: null,
+          restarts: 0,
+        },
+      });
+      expect(text).toContain("Jobs: no active job");
+    });
+
+    it("shows a running job's progress and time since last advance", () => {
+      const text = composeDigest({
+        stats: baseStats,
+        recent: [],
+        port: 3940,
+        hookAlert: null,
+        now: FIXED_NOW,
+        job: {
+          name: "reprocess",
+          state: "running",
+          processed: 412,
+          total: 664,
+          startedAt: "2026-05-30T11:40:00Z",
+          lastAdvanceAt: "2026-05-30T11:57:00Z", // 3m before FIXED_NOW (12:00:00Z)
+          restarts: 0,
+        },
+      });
+      expect(text).toContain("Jobs: reprocess 412/664, last advance 3m ago");
+    });
+
+    it("shows a running job with no progress yet, without a bogus timestamp", () => {
+      const text = composeDigest({
+        stats: baseStats,
+        recent: [],
+        port: 3940,
+        hookAlert: null,
+        now: FIXED_NOW,
+        job: {
+          name: "reprocess",
+          state: "running",
+          processed: 0,
+          total: 664,
+          startedAt: "2026-05-30T11:59:50Z",
+          lastAdvanceAt: null,
+          restarts: 0,
+        },
+      });
+      expect(text).toContain("Jobs: reprocess 0/664, no progress yet");
+    });
+
+    it("shows a stalled job with progress and time since last advance", () => {
+      const text = composeDigest({
+        stats: baseStats,
+        recent: [],
+        port: 3940,
+        hookAlert: null,
+        now: FIXED_NOW,
+        job: {
+          name: "reprocess",
+          state: "stalled",
+          processed: 412,
+          total: 664,
+          startedAt: "2026-05-30T11:00:00Z",
+          lastAdvanceAt: "2026-05-30T11:35:00Z", // 25m before FIXED_NOW
+          restarts: 2,
+        },
+      });
+      expect(text).toContain("Jobs: reprocess stalled at 412/664, last advance 25m ago");
+    });
+
+    it("shows a completed run's final tally", () => {
+      const text = composeDigest({
+        stats: baseStats,
+        recent: [],
+        port: 3940,
+        hookAlert: null,
+        now: FIXED_NOW,
+        job: {
+          name: "reprocess",
+          state: "completed",
+          processed: 664,
+          total: 664,
+          startedAt: "2026-05-30T10:00:00Z",
+          lastAdvanceAt: "2026-05-30T11:50:00Z",
+          restarts: 1,
+        },
+      });
+      expect(text).toContain("Jobs: reprocess completed 664/664");
+    });
+
+    it("phrases an exhausted run so the restarts count can't be misread as restarts still to come", () => {
+      const text = composeDigest({
+        stats: baseStats,
+        recent: [],
+        port: 3940,
+        hookAlert: null,
+        now: FIXED_NOW,
+        job: {
+          name: "reprocess",
+          state: "exhausted",
+          processed: 412,
+          total: 664,
+          startedAt: "2026-05-30T10:00:00Z",
+          lastAdvanceAt: "2026-05-30T11:30:00Z",
+          restarts: 3,
+        },
+      });
+      expect(text).toContain("Jobs: reprocess gave up after 3 fruitless restarts (412/664 processed)");
+    });
+
+    it("singularizes 'restart' when the exhausted count is exactly 1", () => {
+      const text = composeDigest({
+        stats: baseStats,
+        recent: [],
+        port: 3940,
+        hookAlert: null,
+        now: FIXED_NOW,
+        job: {
+          name: "reprocess",
+          state: "exhausted",
+          processed: 50,
+          total: 664,
+          startedAt: "2026-05-30T10:00:00Z",
+          lastAdvanceAt: "2026-05-30T11:30:00Z",
+          restarts: 1,
+        },
+      });
+      expect(text).toContain("Jobs: reprocess gave up after 1 fruitless restart (50/664 processed)");
+      expect(text).not.toContain("1 fruitless restarts");
+    });
+
+    it("shows a stopped run's tally at the point it was stopped", () => {
+      const text = composeDigest({
+        stats: baseStats,
+        recent: [],
+        port: 3940,
+        hookAlert: null,
+        now: FIXED_NOW,
+        job: {
+          name: "reprocess",
+          state: "stopped",
+          processed: 200,
+          total: 664,
+          startedAt: "2026-05-30T10:00:00Z",
+          lastAdvanceAt: "2026-05-30T11:30:00Z",
+          restarts: 0,
+        },
+      });
+      expect(text).toContain("Jobs: reprocess stopped at 200/664");
+    });
+  });
 });

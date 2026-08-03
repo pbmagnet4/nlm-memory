@@ -13,6 +13,7 @@
 
 import { isProbe } from "../telemetry/probe-filter.js";
 import type { OutcomeCoverage } from "../outcome/coverage.js";
+import type { JobSnapshot } from "../jobs/job-supervisor.js";
 
 export interface RecallStats {
   readonly total: number;
@@ -44,6 +45,13 @@ export interface ComposeInput {
   readonly precision?: DigestPrecision | null;
   /** Tier-B outcome rollup over sessions ended in the last 30 days (#352 phase 2). */
   readonly outcomeCoverage?: OutcomeCoverage | null;
+  /**
+   * JobSupervisor's reprocess snapshot (#414). Null/absent covers both "never
+   * started" and "daemon restarted mid-run" — the supervisor holds no
+   * persisted state across restarts, so a fresh process reports `idle` the
+   * same as one that never ran, and that's rendered as "no active job".
+   */
+  readonly job?: JobSnapshot | null;
   /** Override "now" for deterministic tests; defaults to Date.now(). */
   readonly now?: Date;
 }
@@ -100,6 +108,7 @@ export function composeDigest(input: ComposeInput): string {
     `Last 7d: ${real7d} real / ${total7d} total · surfaced ${pct(input.stats.hit_rate)}\n` +
     `Recall precision (cited/surfaced): ${formatPrecision(input.precision)}\n` +
     `${formatOutcomeCoverage(input.outcomeCoverage)}\n` +
+    `${formatJobLine(input.job, now)}\n` +
     `\n` +
     `Top real queries (24h):\n` +
     `${topLines}\n` +
@@ -125,6 +134,53 @@ function formatOutcomeCoverage(c: OutcomeCoverage | null | undefined): string {
     `held ${share(c.held)} · overturned ${share(c.overturned)} · built-upon ${share(c.builtUpon)} · ` +
     `re-derived ${share(c.reDerivedLater)} · unobserved ${share(c.unobserved)}`
   );
+}
+
+/**
+ * One-line reprocess status for the digest. `idle` and the null/absent case
+ * render identically ("no active job") — see the `job` field doc above for
+ * why a daemon restart mid-run collapses to the same line as never-started.
+ */
+function formatJobLine(job: JobSnapshot | null | undefined, now: Date): string {
+  if (!job) return "Jobs: no active job";
+  const { name, processed, total, restarts, lastAdvanceAt } = job;
+  switch (job.state) {
+    case "running": {
+      const advance = lastAdvanceAt ? `last advance ${formatAgo(lastAdvanceAt, now)}` : "no progress yet";
+      return `Jobs: ${name} ${processed}/${total}, ${advance}`;
+    }
+    case "stalled": {
+      const advance = lastAdvanceAt ? `last advance ${formatAgo(lastAdvanceAt, now)}` : "no progress yet";
+      return `Jobs: ${name} stalled at ${processed}/${total}, ${advance}`;
+    }
+    case "completed":
+      return `Jobs: ${name} completed ${processed}/${total}`;
+    case "exhausted":
+      // `restarts` at exhaustion already counts the refused final attempt
+      // (see job-alert.ts's buildJobAlertEvent) — "fruitless" frames the
+      // count as restarts that led nowhere, not restarts still to come.
+      return (
+        `Jobs: ${name} gave up after ${restarts} fruitless restart${restarts === 1 ? "" : "s"} ` +
+        `(${processed}/${total} processed)`
+      );
+    case "stopped":
+      return `Jobs: ${name} stopped at ${processed}/${total}`;
+    case "idle":
+    default:
+      return "Jobs: no active job";
+  }
+}
+
+function formatAgo(iso: string, now: Date): string {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return "unknown";
+  const s = Math.max(0, Math.floor((now.getTime() - t) / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
 }
 
 function truncate(s: string, max: number): string {
