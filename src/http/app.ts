@@ -118,6 +118,7 @@ import { tenantStatePath } from "@core/tenancy/tenant-state-path.js";
 import { isHostedMode } from "@core/tenancy/hosted-mode.js";
 import { resolveTeamByToken } from "@core/tenancy/team-auth.js";
 import type { TeamTokenStorePort } from "@core/tenancy/team-token-store.js";
+import type { JobSupervisor, JobSnapshot } from "@core/jobs/job-supervisor.js";
 
 const HERMES_RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 
@@ -176,6 +177,13 @@ export interface HttpDeps {
   readonly codeEmbedder?: CodeEmbedder;
   /** Test-only override for /api/health's update-check cache read (defaults to ~/.nlm/update-check.json via NLM_UPDATE_CHECK_CACHE). */
   readonly updateCheckDeps?: Pick<UpdateCheckDeps, "cachePath" | "now">;
+  /**
+   * Wire to enable POST/DELETE /api/jobs/reprocess + the `job` block on
+   * GET /api/health. Narrowed to the three methods the routes need so unit
+   * tests can pass a plain fake instead of a real JobSupervisor (which
+   * would otherwise require real spawnChild/clock ports).
+   */
+  readonly jobSupervisor?: Pick<JobSupervisor, "start" | "stop" | "snapshot">;
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -407,6 +415,7 @@ export function createApp(deps: HttpDeps): Hono<AppEnv> {
   registerProviderRoutes(app, deps);
   registerSessionRoute(app, deps);
   registerSignalRoutes(app, deps);
+  registerJobRoutes(app, deps);
 
   const nonceStore = createNonceStore();
   registerNonceRoute(app, nonceStore);
@@ -576,6 +585,11 @@ const HOSTED_GATED_ROUTES: ReadonlyArray<{ method: string; path: string; disposi
   { method: "POST", path: "/api/data/restore", disposition: "LOCAL" },
   { method: "GET", path: "/api/data/stats", disposition: "LOCAL" },
   { method: "POST", path: "/api/classifier", disposition: "LOCAL" },
+  // Single-operator process supervision — starting/stopping the daemon's
+  // own reprocess child has no per-tenant meaning, same LOCAL class as the
+  // classifier swap above.
+  { method: "POST", path: "/api/jobs/reprocess", disposition: "LOCAL" },
+  { method: "DELETE", path: "/api/jobs/reprocess", disposition: "LOCAL" },
 ];
 
 function installHostedModeGate(app: Hono<AppEnv>): void {
@@ -692,7 +706,13 @@ function registerHealthRoute(app: Hono<AppEnv>, deps: HttpDeps): void {
       latest: cachedUpdate.disabled ? null : cachedUpdate.latest,
       behind: cachedUpdate.disabled ? false : cachedUpdate.behind,
     };
-    return c.json({ status: "ok", service: "nlm-memory", version: pkg.version, warmup: warmupSnapshot(), embedding: laneHealthSnapshot(), embedInflight: inflightSnapshot(), corpus, update });
+    // "idle" (never started, or this daemon process's initial state — see
+    // job-supervisor.ts) reports as `job: null` rather than an idle block:
+    // an operator polling /api/health wants to know whether a run exists,
+    // not to distinguish "never run" from a five-field block of zeros.
+    const jobSnap: JobSnapshot | null = deps.jobSupervisor ? deps.jobSupervisor.snapshot() : null;
+    const job = jobSnap && jobSnap.state !== "idle" ? jobSnap : null;
+    return c.json({ status: "ok", service: "nlm-memory", version: pkg.version, warmup: warmupSnapshot(), embedding: laneHealthSnapshot(), embedInflight: inflightSnapshot(), corpus, update, job });
   });
 
   // Passive update poll for the UI. Same daily-cached check the CLI
@@ -2011,6 +2031,50 @@ function registerSignalRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
       null,
     );
     return c.json(result);
+  });
+}
+
+// ── Reprocess job supervision (single operator process, LOCAL disposition) ──
+// Thin HTTP wrapping over JobSupervisor (core/jobs/job-supervisor.ts).
+// start() is synchronous and throws BY DESIGN both when a run is already
+// active and when the injected spawnChild adapter itself fails to launch
+// the child — this route is the required catch point so neither case ever
+// crashes the daemon (binding note from Task 1's review).
+function registerJobRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
+  app.post("/api/jobs/reprocess", async (c) => {
+    if (!deps.jobSupervisor) return c.json({ error: "job supervisor not wired in this deployment" }, 503);
+    let body: { args?: unknown } | null = null;
+    try {
+      const text = await c.req.text();
+      body = text ? (JSON.parse(text) as { args?: unknown }) : null;
+    } catch {
+      return c.json({ error: "body must be JSON" }, 400);
+    }
+    const rawArgs = body?.args;
+    if (rawArgs !== undefined && (!Array.isArray(rawArgs) || !rawArgs.every((a) => typeof a === "string"))) {
+      return c.json({ error: "args must be an array of strings" }, 400);
+    }
+    // Passed straight through as argv entries by the real spawnChild
+    // adapter (never through a shell) — no interpolation risk here either
+    // way, but validating shape (not content) keeps this a passthrough,
+    // exactly as the reprocess CLI itself validates its own flags.
+    const args = (rawArgs as string[] | undefined) ?? [];
+    try {
+      deps.jobSupervisor.start(args);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      if (message === "reprocess job already active") {
+        return c.json({ error: message, snapshot: deps.jobSupervisor.snapshot() }, 409);
+      }
+      return c.json({ error: message }, 500);
+    }
+    return c.json({ ok: true, snapshot: deps.jobSupervisor.snapshot() }, 202);
+  });
+
+  app.delete("/api/jobs/reprocess", (c) => {
+    if (!deps.jobSupervisor) return c.json({ error: "job supervisor not wired in this deployment" }, 503);
+    deps.jobSupervisor.stop();
+    return c.json({ ok: true, snapshot: deps.jobSupervisor.snapshot() }, 200);
   });
 }
 
