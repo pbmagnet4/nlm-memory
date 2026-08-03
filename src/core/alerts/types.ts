@@ -10,13 +10,14 @@
 
 export type AlertEventType =
   | "nlm.drift.version_behind"
-  | "nlm.health.embedder_cold";
+  | "nlm.health.embedder_cold"
+  | "nlm.job.stalled";
 
 /**
- * Generic across both event types: `current` is the observed value,
- * `latest` is the target/expected value, `since` is the ISO timestamp
- * the current state began holding. For version drift that's the
- * installed vs. npm-latest version; for embedder health it's the
+ * Generic across both transition-based event types: `current` is the
+ * observed value, `latest` is the target/expected value, `since` is the
+ * ISO timestamp the current state began holding. For version drift that's
+ * the installed vs. npm-latest version; for embedder health it's the
  * degraded ("cold") vs. healthy ("ready") state label.
  */
 export interface AlertEventData {
@@ -25,7 +26,31 @@ export interface AlertEventData {
   readonly since: string;
 }
 
-export interface AlertEvent {
-  readonly type: AlertEventType;
-  readonly data: AlertEventData;
+/**
+ * `nlm.job.stalled` payload — built by core/alerts/job-alert.ts from a
+ * JobSupervisor event (core/jobs/job-supervisor.ts). Unlike the two
+ * transition-based events above there's no debounce state: JobSupervisor
+ * itself only emits "stalled" once per stall episode and "exhausted" once
+ * per run, so every JobSupervisorEvent maps 1:1 to a fired alert.
+ *
+ * `restarts` is the restarts-without-progress counter AT the moment of
+ * firing — for an "exhausted" event that INCLUDES the refused final
+ * restart attempt (it's always exactly the configured cap, e.g. 3), not a
+ * count of restarts still to come. `message` spells this out in prose so a
+ * receiving Slack relay/PagerDuty rule can't misread the number as restarts
+ * remaining.
+ */
+export interface JobAlertEventData {
+  readonly job: "reprocess";
+  readonly reason: "stalled" | "exhausted";
+  readonly processed: number;
+  readonly total: number;
+  readonly restarts: number;
+  readonly lastAdvanceAt: string | null;
+  readonly message: string;
 }
+
+export type AlertEvent =
+  | { readonly type: "nlm.drift.version_behind"; readonly data: AlertEventData }
+  | { readonly type: "nlm.health.embedder_cold"; readonly data: AlertEventData }
+  | { readonly type: "nlm.job.stalled"; readonly data: JobAlertEventData };
