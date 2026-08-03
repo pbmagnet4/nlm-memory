@@ -47,7 +47,19 @@
  * `restarts` in both the snapshot and event payloads is the
  * restarts-without-progress counter (reset by any advance), not a
  * lifetime total — it directly explains "why is this run stalled/
- * exhausted" the way an operator reading /api/health would want.
+ * exhausted" the way an operator reading /api/health would want. It counts
+ * only respawns that actually happened: the cap check runs BEFORE the
+ * increment, so an exhausted run's `restarts` equals the number of real
+ * respawns performed (== `maxRestartsWithoutProgress`), never that value
+ * plus the refused final attempt.
+ *
+ * `restartsTotal` is a companion lifetime counter: every successful respawn
+ * increments it, and unlike `restarts` it is never reset by progress —
+ * only a fresh `start()` resets it to 0. It exists because `restarts`
+ * resetting on every advance makes OOM churn invisible on a long run (a job
+ * that OOM-restarts 40 times but keeps making progress between crashes
+ * reports `restarts: 0`); `restartsTotal` is the "how much churn has this
+ * run actually had" number surfaced alongside it.
  *
  * State machine: "idle" (never started, or this JobSupervisor instance's
  * initial state — not one of the plan's five snapshot states, but the
@@ -55,6 +67,22 @@
  * needs) → "running" → ("stalled" ⇄ "running" across stall episodes) →
  * terminal "completed" | "exhausted" | "stopped". A terminal state is
  * left only by calling `start()` again, which begins a fresh run.
+ *
+ * Spawn-failure safety: `spawnChild` can throw synchronously (EMFILE,
+ * ENOMEM, a bad binary path) instead of returning a handle — both at
+ * `start()` and at every mid-run respawn inside `handleExit`. Both call
+ * sites wrap `spawnAndWire()` in try/catch: on a thrown spawn, the run
+ * lands in the terminal "exhausted" state (never leaves `state` reading
+ * "running" with no child) and fires a `{kind: "spawn_failed"}` event so
+ * an operator can tell "never got off the ground" apart from "ran out of
+ * restart budget". `start()` still rethrows the original error after
+ * landing that terminal state, preserving its existing contract (the HTTP
+ * route at `POST /api/jobs/reprocess` catches the throw and returns a
+ * clean 500) — the fix is that by the time it throws, `snapshot()` already
+ * reads a terminal state, so a subsequent `start()` call is not refused
+ * with "already active" and a subsequent POST does not 409 forever.
+ * `handleExit` has no caller to rethrow to (it runs off an async `onExit`
+ * callback), so it only logs and stops there.
  *
  * Stale-callback safety: `spawnAndWire` captures the child instance it just
  * spawned and every onLine/onExit callback checks `this.child === child`
@@ -85,6 +113,8 @@ export interface JobSnapshot {
   readonly startedAt: string | null;
   readonly lastAdvanceAt: string | null;
   readonly restarts: number;
+  /** Lifetime respawn count for this run — never reset by progress. See file-level doc. */
+  readonly restartsTotal: number;
 }
 
 interface JobSupervisorEventBase {
@@ -92,12 +122,14 @@ interface JobSupervisorEventBase {
   readonly processed: number;
   readonly total: number;
   readonly restarts: number;
+  readonly restartsTotal: number;
   readonly lastAdvanceAt: string | null;
 }
 
 export type JobSupervisorEvent =
   | ({ readonly kind: "stalled" } & JobSupervisorEventBase)
-  | ({ readonly kind: "exhausted" } & JobSupervisorEventBase);
+  | ({ readonly kind: "exhausted" } & JobSupervisorEventBase)
+  | ({ readonly kind: "spawn_failed" } & JobSupervisorEventBase);
 
 export interface JobSupervisorOptions {
   readonly spawnChild: SpawnChild;
@@ -146,6 +178,7 @@ export class JobSupervisor {
   private startedAt: string | null = null;
   private lastAdvanceAt: string | null = null;
   private restarts = 0;
+  private restartsTotal = 0;
   private stallEpisodeFired = false;
   private stopRequested = false;
 
@@ -170,12 +203,28 @@ export class JobSupervisor {
     this.processed = 0;
     this.total = 0;
     this.restarts = 0;
+    this.restartsTotal = 0;
     this.stallEpisodeFired = false;
     this.stopRequested = false;
     this.startedAt = new Date(this.clock.now()).toISOString();
     this.lastAdvanceAt = null;
     this.state = "running";
-    this.spawnAndWire();
+    try {
+      this.spawnAndWire();
+    } catch (e) {
+      this.child = null;
+      this.state = "exhausted";
+      this.emitEvent({
+        kind: "spawn_failed",
+        job: "reprocess",
+        processed: this.processed,
+        total: this.total,
+        restarts: this.restarts,
+        restartsTotal: this.restartsTotal,
+        lastAdvanceAt: this.lastAdvanceAt,
+      });
+      throw e;
+    }
   }
 
   /** Kills the active child (if any) and moves to "stopped". No-op if idle/terminal. */
@@ -201,6 +250,7 @@ export class JobSupervisor {
       startedAt: this.startedAt,
       lastAdvanceAt: this.lastAdvanceAt,
       restarts: this.restarts,
+      restartsTotal: this.restartsTotal,
     };
   }
 
@@ -256,8 +306,11 @@ export class JobSupervisor {
       return;
     }
 
-    this.restarts += 1;
-    if (this.restarts > this.maxRestartsWithoutProgress) {
+    // Checked BEFORE incrementing: `restarts` only counts respawns that
+    // actually happened, so exhaustion trips exactly when that many real
+    // respawns have already been spent — the emitted `restarts` on the
+    // "exhausted" event below is never one higher than the real count.
+    if (this.restarts >= this.maxRestartsWithoutProgress) {
       this.state = "exhausted";
       this.emitEvent({
         kind: "exhausted",
@@ -265,6 +318,7 @@ export class JobSupervisor {
         processed: this.processed,
         total: this.total,
         restarts: this.restarts,
+        restartsTotal: this.restartsTotal,
         lastAdvanceAt: this.lastAdvanceAt,
       });
       return;
@@ -272,7 +326,27 @@ export class JobSupervisor {
 
     this.state = "running";
     this.stallEpisodeFired = false;
-    this.spawnAndWire();
+    try {
+      this.spawnAndWire();
+    } catch (e) {
+      this.child = null;
+      this.state = "exhausted";
+      this.log(
+        `[job-supervisor] respawn failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      this.emitEvent({
+        kind: "spawn_failed",
+        job: "reprocess",
+        processed: this.processed,
+        total: this.total,
+        restarts: this.restarts,
+        restartsTotal: this.restartsTotal,
+        lastAdvanceAt: this.lastAdvanceAt,
+      });
+      return;
+    }
+    this.restarts += 1;
+    this.restartsTotal += 1;
   }
 
   private checkStall(): void {
@@ -292,6 +366,7 @@ export class JobSupervisor {
         processed: this.processed,
         total: this.total,
         restarts: this.restarts,
+        restartsTotal: this.restartsTotal,
         lastAdvanceAt: this.lastAdvanceAt,
       });
     } catch (e) {

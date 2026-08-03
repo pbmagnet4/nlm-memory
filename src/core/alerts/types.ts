@@ -30,22 +30,34 @@ export interface AlertEventData {
  * `nlm.job.stalled` payload — built by core/alerts/job-alert.ts from a
  * JobSupervisor event (core/jobs/job-supervisor.ts). Unlike the two
  * transition-based events above there's no debounce state: JobSupervisor
- * itself only emits "stalled" once per stall episode and "exhausted" once
- * per run, so every JobSupervisorEvent maps 1:1 to a fired alert.
+ * itself only emits "stalled"/"exhausted"/"spawn_failed" once per episode,
+ * so every JobSupervisorEvent maps 1:1 to a fired alert.
  *
  * `restarts` is the restarts-without-progress counter AT the moment of
- * firing — for an "exhausted" event that INCLUDES the refused final
- * restart attempt (it's always exactly the configured cap, e.g. 3), not a
- * count of restarts still to come. `message` spells this out in prose so a
- * receiving Slack relay/PagerDuty rule can't misread the number as restarts
- * remaining.
+ * firing — for an "exhausted" event this is the number of respawns that
+ * actually happened (it is always exactly the configured cap, e.g. 3), not
+ * a count of restarts still to come, and not the cap plus the refused final
+ * attempt. `message` spells this out in prose so a receiving Slack
+ * relay/PagerDuty rule can't misread the number as restarts remaining.
+ *
+ * `restartsTotal` is the run's lifetime respawn count (never reset by
+ * progress, unlike `restarts`) — see job-supervisor.ts's file-level doc.
+ * It surfaces OOM-churn on a run that keeps making progress between
+ * crashes, where `restarts` alone would read 0.
+ *
+ * `reason: "spawn_failed"` covers the case where `spawnChild` itself threw
+ * synchronously (EMFILE/ENOMEM/bad binary) instead of the child ever
+ * running — distinct from "exhausted" (ran, kept dying, used up its
+ * restart budget) so an operator isn't left guessing why a job never
+ * produced a single progress line.
  */
 export interface JobAlertEventData {
   readonly job: "reprocess";
-  readonly reason: "stalled" | "exhausted";
+  readonly reason: "stalled" | "exhausted" | "spawn_failed";
   readonly processed: number;
   readonly total: number;
   readonly restarts: number;
+  readonly restartsTotal: number;
   readonly lastAdvanceAt: string | null;
   readonly message: string;
 }

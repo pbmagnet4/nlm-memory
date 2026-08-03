@@ -143,11 +143,17 @@ function formatOutcomeCoverage(c: OutcomeCoverage | null | undefined): string {
  */
 function formatJobLine(job: JobSnapshot | null | undefined, now: Date): string {
   if (!job) return "Jobs: no active job";
-  const { name, processed, total, restarts, lastAdvanceAt } = job;
+  const { name, processed, total, restarts, restartsTotal, lastAdvanceAt } = job;
   switch (job.state) {
     case "running": {
       const advance = lastAdvanceAt ? `last advance ${formatAgo(lastAdvanceAt, now)}` : "no progress yet";
-      return `Jobs: ${name} ${processed}/${total}, ${advance}`;
+      // restartsTotal is the lifetime respawn count for this run (never
+      // reset by progress, unlike `restarts`) — surfaced only when >0 so an
+      // OOM-churning run that keeps making progress between crashes isn't
+      // silently indistinguishable from a clean one.
+      const restartSuffix =
+        restartsTotal > 0 ? `, ${restartsTotal} restart${restartsTotal === 1 ? "" : "s"}` : "";
+      return `Jobs: ${name} ${processed}/${total}, ${advance}${restartSuffix}`;
     }
     case "stalled": {
       const advance = lastAdvanceAt ? `last advance ${formatAgo(lastAdvanceAt, now)}` : "no progress yet";
