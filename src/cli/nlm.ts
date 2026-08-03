@@ -190,13 +190,17 @@ export function shouldAppendTrend(lastLineTs: string | null, now: number): boole
  * cycle (not gated by `shouldAppendTrend`, which only paces the separate
  * append-only trend log) so the cache stays ~24h fresh while the monitor
  * runs. Exported for direct testing and smoke runs against a corpus copy.
+ * `tenantId` scopes both the session scan (sqliteReDerivationDeps) and the
+ * cache file this write targets — two tenants must never compute or read
+ * each other's pairs.
  */
 export async function persistReDerivationPairs(
   rawDb: Parameters<typeof sqliteReDerivationDeps>[0],
+  tenantId: string,
   pairsPath: string,
   windowDays: number,
 ): Promise<Awaited<ReturnType<typeof computeReDerivationRate>>> {
-  const deps = sqliteReDerivationDeps(rawDb);
+  const deps = sqliteReDerivationDeps(rawDb, tenantId);
   const report = await computeReDerivationRate(deps, windowDays);
   // Write-temp-then-rename: the outcome adapters read this file on every
   // get_session, so a crash mid-write must never leave truncated JSON at
@@ -656,7 +660,7 @@ program
           // overwritten file so refreshing it daily costs nothing extra and
           // keeps sqlite-outcome-store.ts's reads within a ~24h staleness
           // bound (see #405).
-          const report = await persistReDerivationPairs(rawDb, rederivPairsPath, 42);
+          const report = await persistReDerivationPairs(rawDb, DEFAULT_TEAM_ID, rederivPairsPath, 42);
           if (shouldAppendTrend(lastTrendTs, now)) {
             appendFileSync(
               rederivTrendPath,
@@ -1165,6 +1169,7 @@ program
       }
       const deps = sqliteReDerivationDeps(
         (store as unknown as { rawDb(): unknown }).rawDb() as never,
+        DEFAULT_TEAM_ID,
       );
       const report = await computeReDerivationRate(deps, opts.window);
       if (opts.json) {

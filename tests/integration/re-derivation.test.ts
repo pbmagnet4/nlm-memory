@@ -15,6 +15,7 @@ import {
   sqliteReDerivationDeps,
 } from "../../src/core/metrics/re-derivation.js";
 import { makeSession } from "../fixtures/sessions.js";
+import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 
@@ -56,7 +57,7 @@ describe("computeReDerivationRate (SQLite deps)", () => {
       }),
     );
 
-    const deps = sqliteReDerivationDeps(store.rawDb());
+    const deps = sqliteReDerivationDeps(store.rawDb(), DEFAULT_TEAM_ID);
     const { rate, pairs } = await computeReDerivationRate(deps, 3650);
     expect(pairs.length).toBe(1);
     expect(rate).toBeGreaterThan(0);
@@ -81,7 +82,7 @@ describe("computeReDerivationRate (SQLite deps)", () => {
     );
     store.insertEdgeForTest("b", "a", "continues");
 
-    const deps = sqliteReDerivationDeps(store.rawDb());
+    const deps = sqliteReDerivationDeps(store.rawDb(), DEFAULT_TEAM_ID);
     const { pairs } = await computeReDerivationRate(deps, 3650);
     expect(pairs.length).toBe(0);
   });

@@ -63,7 +63,7 @@ describe("corpus monitor persists re-derivation pairs for the outcome rollup", (
       }),
     );
 
-    const report = await persistReDerivationPairs(storage.rawDb(), pairsPath, 3650);
+    const report = await persistReDerivationPairs(storage.rawDb(), DEFAULT_TEAM_ID, pairsPath, 3650);
     expect(report.pairs).toEqual([{ a: "a", b: "b", sharedEntities: ["pgvector"], jaccard: 1 }]);
 
     const persisted = JSON.parse(readFileSync(pairsPath, "utf8"));

@@ -22,6 +22,7 @@ import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { persistReDerivationPairs } from "../../../src/cli/nlm.js";
+import { DEFAULT_TEAM_ID } from "../../../src/core/tenancy/default-team.js";
 
 // computeReDerivationRate only needs prepare().all(); empty result sets are
 // enough here since this test is about the write path, not the metric.
@@ -42,7 +43,7 @@ describe("persistReDerivationPairs atomic write", () => {
 
   it("writes a same-directory temp file and renames it over the final path", async () => {
     const pairsPath = join(tmp, "re-derivation-pairs.json");
-    await persistReDerivationPairs(stubDb, pairsPath, 42);
+    await persistReDerivationPairs(stubDb, DEFAULT_TEAM_ID, pairsPath, 42);
 
     const writeTargets = vi.mocked(writeFileSync).mock.calls.map((c) => c[0]);
     expect(writeTargets).not.toContain(pairsPath);

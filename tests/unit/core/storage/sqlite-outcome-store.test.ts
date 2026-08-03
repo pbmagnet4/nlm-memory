@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir, homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteStorage } from "../../../../src/core/storage/sqlite-storage.js";
@@ -123,7 +123,13 @@ describe("sqlite outcome adapters", () => {
       const lines = [
         { ts: new Date().toISOString(), conversation_id: "conv-b", cited_id: "s1" },
       ];
-      const derivedDir = join(homedir(), ".nlm", "tenants", "acme-outcome-citation-test");
+      // NLM_STATE_ROOT keeps the non-default-tenant branch under this test's
+      // own temp dir instead of the real ~/.nlm/tenants/<t>/ (see
+      // tenant-state-path.ts) — SqliteOutcomeCitationReader with no explicit
+      // logPath falls back to the tenant-derived default.
+      const prevStateRoot = process.env["NLM_STATE_ROOT"];
+      process.env["NLM_STATE_ROOT"] = tmp;
+      const derivedDir = join(tmp, "tenants", "acme-outcome-citation-test");
       const derivedPath = join(derivedDir, "citation-log.jsonl");
       mkdirSync(derivedDir, { recursive: true });
       writeFileSync(derivedPath, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
@@ -133,7 +139,8 @@ describe("sqlite outcome adapters", () => {
         const tenantReader = new SqliteOutcomeCitationReader("acme-outcome-citation-test");
         expect(await tenantReader.listForSession("s1")).toEqual([{ conversationId: "conv-b" }]);
       } finally {
-        rmSync(derivedDir, { recursive: true, force: true });
+        if (prevStateRoot === undefined) delete process.env["NLM_STATE_ROOT"];
+        else process.env["NLM_STATE_ROOT"] = prevStateRoot;
       }
     });
   });
@@ -192,6 +199,29 @@ describe("sqlite outcome adapters", () => {
       utimesSync(pairsPath, freshSec, freshSec);
       const deps = await buildSqliteOutcomeDeps(storage.rawDb(), DEFAULT_TEAM_ID, { citationLogPath, reDerivationPairsPath: pairsPath });
       expect(deps.reDerivationPairs).toEqual(pairs);
+    });
+
+    it("two tenants' pairs caches don't collide when no explicit reDerivationPairsPath is given", async () => {
+      // NLM_STATE_ROOT (Task 3 seam) keeps the tenant-derived default path
+      // under this test's own temp dir instead of the real ~/.nlm/tenants/<t>/.
+      const prevStateRoot = process.env["NLM_STATE_ROOT"];
+      process.env["NLM_STATE_ROOT"] = tmp;
+      try {
+        const pairsA = [{ a: "a1", b: "a2", sharedEntities: ["alpha"], jaccard: 0.9 }];
+        const pairsB = [{ a: "b1", b: "b2", sharedEntities: ["beta"], jaccard: 0.7 }];
+        mkdirSync(join(tmp, "tenants", "tenant-a-rederive"), { recursive: true });
+        mkdirSync(join(tmp, "tenants", "tenant-b-rederive"), { recursive: true });
+        writeFileSync(join(tmp, "tenants", "tenant-a-rederive", "re-derivation-pairs.json"), JSON.stringify(pairsA));
+        writeFileSync(join(tmp, "tenants", "tenant-b-rederive", "re-derivation-pairs.json"), JSON.stringify(pairsB));
+
+        const depsA = await buildSqliteOutcomeDeps(storage.rawDb(), "tenant-a-rederive", { citationLogPath });
+        const depsB = await buildSqliteOutcomeDeps(storage.rawDb(), "tenant-b-rederive", { citationLogPath });
+        expect(depsA.reDerivationPairs).toEqual(pairsA);
+        expect(depsB.reDerivationPairs).toEqual(pairsB);
+      } finally {
+        if (prevStateRoot === undefined) delete process.env["NLM_STATE_ROOT"];
+        else process.env["NLM_STATE_ROOT"] = prevStateRoot;
+      }
     });
   });
 

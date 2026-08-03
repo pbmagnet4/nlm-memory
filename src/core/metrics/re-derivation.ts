@@ -8,6 +8,8 @@
  * above JACCARD_FLOOR, and have no `continues`/`supersedes` edge linking them.
  */
 
+import { tenantClause } from "@core/tenancy/tenant-clause.js";
+
 export interface ReDerivationSession {
   readonly id: string;
   readonly startedAt: string;
@@ -68,18 +70,23 @@ interface SqliteLike {
 /**
  * SQLite-backed deps for the CLI readout. Reads sessions started within the
  * window along with their entity links and decision markers, plus all edges.
+ * `tenantId` scopes the sessions SELECT via tenantClause — the pairs this
+ * produces get persisted to a tenant-derived cache file (see
+ * `@core/storage/sqlite-outcome-store.js`), so an un-tenanted scan here would
+ * leak every tenant's sessions into whichever tenant's file reads it back.
  */
-export function sqliteReDerivationDeps(db: SqliteLike): ReDerivationDeps {
+export function sqliteReDerivationDeps(db: SqliteLike, tenantId: string): ReDerivationDeps {
+  const tc = tenantClause(tenantId);
   return {
     async listSessionsWithin(windowDays) {
       const rows = db
         .prepare(
           `SELECT id, started_at AS startedAt
              FROM sessions
-            WHERE started_at >= datetime('now', ?)
+            WHERE started_at >= datetime('now', ?) AND ${tc.sql}
             ORDER BY started_at ASC`,
         )
-        .all(`-${windowDays} days`) as Array<{ id: string; startedAt: string }>;
+        .all(`-${windowDays} days`, tc.param) as Array<{ id: string; startedAt: string }>;
       const entStmt = db.prepare(
         "SELECT entity_canonical AS e FROM session_entities WHERE session_id = ?",
       );

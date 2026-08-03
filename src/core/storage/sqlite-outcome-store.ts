@@ -18,8 +18,10 @@
  *    directly.
  *
  * `reDerivationPairs` (#405) is read from the cache file the 24h
- * corpus-monitor job writes (`~/.nlm/re-derivation-pairs.json` by default,
- * see `src/cli/nlm.ts`'s `persistReDerivationPairs`), not recomputed inline.
+ * corpus-monitor job writes (tenant-derived via `tenantStatePath` — the
+ * default team's file is `~/.nlm/re-derivation-pairs.json`, every other
+ * tenant gets its own `~/.nlm/tenants/<t>/re-derivation-pairs.json`, see
+ * `src/cli/nlm.ts`'s `persistReDerivationPairs`), not recomputed inline.
  * Measured on the real corpus copy (~4.6k sessions/42d window),
  * `computeReDerivationRate` (`@core/metrics/re-derivation.js`) costs ~7s: an
  * N+1 query per session for entities/decisions, then an O(n^2) pairwise
@@ -35,11 +37,10 @@
  */
 
 import { readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { readCitationLog } from "@core/recall/citation-log.js";
 import { parseReDerivationPairsFile, type ReDerivationPair } from "@core/metrics/re-derivation.js";
+import { tenantStatePath } from "@core/tenancy/tenant-state-path.js";
 import type {
   OutcomeCitation,
   OutcomeCitationReader,
@@ -57,15 +58,23 @@ import { tenantClause } from "@core/tenancy/tenant-clause.js";
 
 const RELEVANT_EDGE_KINDS = "('supersedes','replaces','continues')";
 
-const DEFAULT_REDERIVATION_PAIRS_PATH = join(homedir(), ".nlm", "re-derivation-pairs.json");
-
 // 3x the corpus monitor's 24h refresh interval. A healthy monitor overwrites
 // the cache daily, so a file this old means the monitor has stopped and the
 // pairs can no longer be trusted as fresh - discard rather than serve stale
 // verdicts indefinitely.
 const REDERIVATION_PAIRS_MAX_AGE_MS = 72 * 60 * 60 * 1000;
 
-function loadCachedReDerivationPairs(pairsPath: string): ReadonlyArray<ReDerivationPair> {
+/**
+ * tenantId picks the tenant-derived cache file (default team → legacy
+ * `~/.nlm/re-derivation-pairs.json`; every other tenant → its own
+ * `~/.nlm/tenants/<t>/re-derivation-pairs.json`) when `pairsPath` is not
+ * given explicitly. Without this, every tenant read the exact same shared
+ * file regardless of who they were (#405 follow-up).
+ */
+function loadCachedReDerivationPairs(
+  tenantId: string,
+  pairsPath: string = tenantStatePath(tenantId, "re-derivation-pairs.json"),
+): ReadonlyArray<ReDerivationPair> {
   try {
     if (Date.now() - statSync(pairsPath).mtimeMs > REDERIVATION_PAIRS_MAX_AGE_MS) return [];
     return parseReDerivationPairsFile(readFileSync(pairsPath, "utf8"));
@@ -166,7 +175,7 @@ export async function buildSqliteOutcomeDeps(
     signals: new SqliteOutcomeSignalReader(db),
     edges: new SqliteOutcomeEdgeReader(db),
     citations: new SqliteOutcomeCitationReader(tenantId, opts.citationLogPath),
-    reDerivationPairs: loadCachedReDerivationPairs(opts.reDerivationPairsPath ?? DEFAULT_REDERIVATION_PAIRS_PATH),
+    reDerivationPairs: loadCachedReDerivationPairs(tenantId, opts.reDerivationPairsPath),
     ...(opts.now ? { now: opts.now } : {}),
     ...(opts.heldAfterDays !== undefined ? { heldAfterDays: opts.heldAfterDays } : {}),
   };
@@ -262,6 +271,6 @@ export async function loadOutcomeCoverageInput(
     }
   }
 
-  const reDerivationPairs = loadCachedReDerivationPairs(opts.reDerivationPairsPath ?? DEFAULT_REDERIVATION_PAIRS_PATH);
+  const reDerivationPairs = loadCachedReDerivationPairs(tenantId, opts.reDerivationPairsPath);
   return { sessions, signalsBySession, edgesBySession, citationsBySession, reDerivationPairs };
 }
