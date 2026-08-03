@@ -33,7 +33,6 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { seedTenantCorpus, type SeededTenantCorpus } from "../helpers/seed-tenant-corpus.js";
@@ -54,6 +53,7 @@ import { appendCitation, readCitationLog, citationStats, type CitationEntry } fr
 import { appendMiss, missStats, type MissEntry } from "../../src/core/recall/miss-log.js";
 import { appendHookLog, type HookLogEntry } from "../../src/core/hook/hook-log.js";
 import { appendSupersedence, readSupersedenceLog } from "../../src/core/storage/supersedence-log.js";
+import { logFactQuery, factRecallStats, type FactLogEntry } from "../../src/core/recall-facts/fact-query-log.js";
 import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
 
 const ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "../..");
@@ -374,7 +374,13 @@ describe("tenant leak-test contract (spec §6, sqlite lane)", () => {
   it("case 8: token-swap — the same request body issued with A's then B's token returns disjoint result sets; a " +
       "bad/absent token gets 401 with no corpus read", async () => {
     const prevHosted = process.env["NLM_HOSTED"];
+    const prevStateRoot = process.env["NLM_STATE_ROOT"];
     process.env["NLM_HOSTED"] = "1";
+    // GET /api/recall logs telemetry via query-log.ts's tenant-derived
+    // default path (no queryLogPath override wired into this test's app) —
+    // NLM_STATE_ROOT keeps those real token-resolved team_a/team_b writes
+    // under the fixture's temp dir instead of the real ~/.nlm/tenants/.
+    process.env["NLM_STATE_ROOT"] = fixture.dir;
     try {
       const teamTokens = new TeamTokenStore(fixture.db);
       const tokenA = "token-team-a-case8";
@@ -427,6 +433,8 @@ describe("tenant leak-test contract (spec §6, sqlite lane)", () => {
     } finally {
       if (prevHosted === undefined) delete process.env["NLM_HOSTED"];
       else process.env["NLM_HOSTED"] = prevHosted;
+      if (prevStateRoot === undefined) delete process.env["NLM_STATE_ROOT"];
+      else process.env["NLM_STATE_ROOT"] = prevStateRoot;
     }
   });
 
@@ -520,10 +528,16 @@ describe("tenant leak-test contract (spec §6, sqlite lane)", () => {
       "a conversation-id collision across teams does not share dedup state", async () => {
     const tenantA = "team_a_case12";
     const tenantB = "team_b_case12";
-    const derivedA = join(homedir(), ".nlm", "tenants", tenantA);
-    const derivedB = join(homedir(), ".nlm", "tenants", tenantB);
-    const supersedeDirA = join(homedir(), ".nlm", "tenants", "team_a");
-    const supersedeDirB = join(homedir(), ".nlm", "tenants", "team_b");
+    // NLM_STATE_ROOT (Task 3) relocates every non-default-team file-state
+    // write under the fixture's own temp dir instead of the developer's real
+    // ~/.nlm/tenants/<t>/ — the leak-contract file must never touch the real
+    // home directory, which the review flagged (30 residual dirs left behind
+    // before this seam existed).
+    const stateRoot = fixture.dir;
+    const derivedA = join(stateRoot, "tenants", tenantA);
+    const derivedB = join(stateRoot, "tenants", tenantB);
+    const supersedeDirA = join(stateRoot, "tenants", "team_a");
+    const supersedeDirB = join(stateRoot, "tenants", "team_b");
     const legacyQueryLog = join(fixture.dir, "legacy-query-log.jsonl");
     const legacyCitationLog = join(fixture.dir, "legacy-citation-log.jsonl");
     const legacyMissLog = join(fixture.dir, "legacy-miss-log.jsonl");
@@ -533,6 +547,7 @@ describe("tenant leak-test contract (spec §6, sqlite lane)", () => {
     const prevMissLog = process.env["NLM_MISS_LOG"];
     const prevHookLog = process.env["NLM_HOOK_LOG"];
     const prevHosted = process.env["NLM_HOSTED"];
+    const prevStateRoot = process.env["NLM_STATE_ROOT"];
     const sharedConvId = "case12-shared-conv";
 
     try {
@@ -543,6 +558,7 @@ describe("tenant leak-test contract (spec §6, sqlite lane)", () => {
       process.env["NLM_CITATION_LOG"] = legacyCitationLog;
       process.env["NLM_MISS_LOG"] = legacyMissLog;
       process.env["NLM_HOOK_LOG"] = legacyHookLog;
+      process.env["NLM_STATE_ROOT"] = stateRoot;
 
       // --- Memo: recordSurfaced(A, convId, [sessionA]) then loadSurfaced(B,
       // convId) is empty — a conversation-id collision across teams shares
@@ -583,6 +599,32 @@ describe("tenant leak-test contract (spec §6, sqlite lane)", () => {
       const legacyQueryRaw = readFileSync(legacyQueryLog, "utf8");
       expect(legacyQueryRaw).not.toContain("case12-query-a");
       expect(legacyQueryRaw).not.toContain("case12-query-b");
+
+      // --- Fact query log + stats. Same shape as the query log above: A and
+      // B each log one fact-recall query; each tenant's factRecallStats
+      // reflects only its own row, never the other tenant's subject.
+      const factQueryEntry = (over: Partial<FactLogEntry>): FactLogEntry => ({
+        source: "test",
+        runtime: null,
+        query: null,
+        subject: null,
+        predicate: null,
+        kind: null,
+        mode: "keyword",
+        limit: 5,
+        nResults: 1,
+        returnedIds: [],
+        ...over,
+      });
+      await logFactQuery(tenantA, factQueryEntry({ subject: "case12-fact-subject-a", returnedIds: ["fact_a"] }));
+      await logFactQuery(tenantB, factQueryEntry({ subject: "case12-fact-subject-b", returnedIds: ["fact_b"] }));
+
+      const aFactStats = await factRecallStats(tenantA, 7);
+      expect(aFactStats.total).toBe(1);
+      expect(aFactStats.top_subjects.map((s) => s.subject)).toEqual(["case12-fact-subject-a"]);
+      const bFactStats = await factRecallStats(tenantB, 7);
+      expect(bFactStats.total).toBe(1);
+      expect(bFactStats.top_subjects.map((s) => s.subject)).toEqual(["case12-fact-subject-b"]);
 
       // --- Citation log. Conversation ids must be "attributable" (not
       // test-prefixed) or appendCitation drops them at the source.
@@ -696,6 +738,20 @@ describe("tenant leak-test contract (spec §6, sqlite lane)", () => {
       expect(statsB.total).toBe(1);
       expect(statsB.top_queries.map((q) => q.query)).toEqual(["case12-query-b"]);
 
+      // --- HTTP level (fact stats leg): GET /api/recall/facts/stats as
+      // token-A/token-B reflects only that tenant's logFactQuery write above.
+      const resFactsA = await app.request("/api/recall/facts/stats?days=7", { headers: { authorization: `Bearer ${tokenA}` } });
+      expect(resFactsA.status).toBe(200);
+      const factStatsA = (await resFactsA.json()) as { total: number; top_subjects: Array<{ subject: string }> };
+      expect(factStatsA.total).toBe(1);
+      expect(factStatsA.top_subjects.map((s) => s.subject)).toEqual(["case12-fact-subject-a"]);
+
+      const resFactsB = await app.request("/api/recall/facts/stats?days=7", { headers: { authorization: `Bearer ${tokenB}` } });
+      expect(resFactsB.status).toBe(200);
+      const factStatsB = (await resFactsB.json()) as { total: number; top_subjects: Array<{ subject: string }> };
+      expect(factStatsB.total).toBe(1);
+      expect(factStatsB.top_subjects.map((s) => s.subject)).toEqual(["case12-fact-subject-b"]);
+
       // --- Amendment: appendSupersedence as A then readSupersedenceLog as B
       // returns nothing for B.
       await appendSupersedence(tenantA, {
@@ -744,6 +800,11 @@ describe("tenant leak-test contract (spec §6, sqlite lane)", () => {
       else process.env["NLM_HOOK_LOG"] = prevHookLog;
       if (prevHosted === undefined) delete process.env["NLM_HOSTED"];
       else process.env["NLM_HOSTED"] = prevHosted;
+      if (prevStateRoot === undefined) delete process.env["NLM_STATE_ROOT"];
+      else process.env["NLM_STATE_ROOT"] = prevStateRoot;
+      // derivedA/B and supersedeDirA/B live under the fixture's own temp dir
+      // (NLM_STATE_ROOT above) now, not the real home directory, so this is
+      // belt-and-suspenders on top of the fixture's own afterEach rmSync.
       rmSync(derivedA, { recursive: true, force: true });
       rmSync(derivedB, { recursive: true, force: true });
       rmSync(supersedeDirA, { recursive: true, force: true });
