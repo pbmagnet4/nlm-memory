@@ -894,9 +894,9 @@ export async function listMergeSuggestionsHandler(
  * The composition root for the MCP surface (program spec §4.6 "M2 threading
  * semantics until M3"): `tenantId` is required here, not defaulted, and
  * every tool handler below receives it explicitly rather than reading a
- * module-level constant. Callers (stdio in src/cli/nlm.ts, the HTTP /mcp
- * mount in src/http/app.ts) pass DEFAULT_TEAM_ID until M3 replaces it with
- * the token-resolved team.
+ * module-level constant. The stdio caller (src/cli/nlm.ts) is local-mode
+ * only and always passes DEFAULT_TEAM_ID; the HTTP /mcp mount
+ * (src/http/app.ts) passes the token-resolved team (M3).
  */
 export function createMcpServer(deps: McpDeps, tenantId: string): McpServer {
   const server = new McpServer({
