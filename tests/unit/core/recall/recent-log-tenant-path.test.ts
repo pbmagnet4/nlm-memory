@@ -9,7 +9,6 @@
  */
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { logQuery, type LogEntry } from "../../../../src/core/recall/query-log.js";
@@ -34,10 +33,12 @@ describe("recent-log.ts tenant path contract", () => {
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "nlm-recentlog-tenant-"));
+    process.env["NLM_STATE_ROOT"] = tmp;
   });
 
   afterEach(() => {
     delete process.env["NLM_QUERY_LOG"];
+    delete process.env["NLM_STATE_ROOT"];
     rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -50,35 +51,26 @@ describe("recent-log.ts tenant path contract", () => {
     expect(out.map((e) => e.query)).toContain("default-team-query");
   });
 
-  it("a non-default tenant reads ~/.nlm/tenants/<t>/query_log.jsonl, ignoring NLM_QUERY_LOG", async () => {
+  it("a non-default tenant reads STATE_ROOT/tenants/<t>/query_log.jsonl, ignoring NLM_QUERY_LOG", async () => {
     const logPath = join(tmp, "query_log.jsonl");
     process.env["NLM_QUERY_LOG"] = logPath;
-    const derived = join(homedir(), ".nlm", "tenants", "acme-recentlog-test", "query_log.jsonl");
-    try {
-      await logQuery("acme-recentlog-test", entry({ query: "tenant-query" }));
-      expect(existsSync(logPath)).toBe(false);
-      expect(existsSync(derived)).toBe(true);
-      const out = recentQueryLog("acme-recentlog-test", 10);
-      expect(out.map((e) => e.query)).toEqual(["tenant-query"]);
-    } finally {
-      rmSync(derived, { force: true });
-    }
+    const derived = join(tmp, "tenants", "acme-recentlog-test", "query_log.jsonl");
+    await logQuery("acme-recentlog-test", entry({ query: "tenant-query" }));
+    expect(existsSync(logPath)).toBe(false);
+    expect(existsSync(derived)).toBe(true);
+    const out = recentQueryLog("acme-recentlog-test", 10);
+    expect(out.map((e) => e.query)).toEqual(["tenant-query"]);
   });
 
   it("two tenants' recent-log reads don't collide", async () => {
-    const derivedA = join(homedir(), ".nlm", "tenants", "tenant-a-recentlog", "query_log.jsonl");
-    const derivedB = join(homedir(), ".nlm", "tenants", "tenant-b-recentlog", "query_log.jsonl");
-    try {
-      await logQuery("tenant-a-recentlog", entry({ query: "query-a" }));
-      await logQuery("tenant-b-recentlog", entry({ query: "query-b" }));
-      const outA = recentQueryLog("tenant-a-recentlog", 10);
-      const outB = recentQueryLog("tenant-b-recentlog", 10);
-      expect(outA.map((e) => e.query)).toEqual(["query-a"]);
-      expect(outB.map((e) => e.query)).toEqual(["query-b"]);
-    } finally {
-      rmSync(derivedA, { force: true });
-      rmSync(derivedB, { force: true });
-    }
+    const derivedA = join(tmp, "tenants", "tenant-a-recentlog", "query_log.jsonl");
+    const derivedB = join(tmp, "tenants", "tenant-b-recentlog", "query_log.jsonl");
+    await logQuery("tenant-a-recentlog", entry({ query: "query-a" }));
+    await logQuery("tenant-b-recentlog", entry({ query: "query-b" }));
+    const outA = recentQueryLog("tenant-a-recentlog", 10);
+    const outB = recentQueryLog("tenant-b-recentlog", 10);
+    expect(outA.map((e) => e.query)).toEqual(["query-a"]);
+    expect(outB.map((e) => e.query)).toEqual(["query-b"]);
   });
 
   it("an explicit logPath override wins regardless of tenant", async () => {

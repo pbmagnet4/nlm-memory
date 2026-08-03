@@ -8,7 +8,6 @@
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { logQuery, type LogEntry } from "../../../../src/core/recall/query-log.js";
@@ -32,10 +31,14 @@ describe("query-log.ts tenant path contract", () => {
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "nlm-querylog-tenant-"));
+    // NLM_STATE_ROOT keeps the non-default-tenant branch under this temp dir
+    // instead of the real ~/.nlm/tenants/<t>/ (see tenant-state-path.ts).
+    process.env["NLM_STATE_ROOT"] = tmp;
   });
 
   afterEach(() => {
     delete process.env["NLM_QUERY_LOG"];
+    delete process.env["NLM_STATE_ROOT"];
     rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -46,33 +49,24 @@ describe("query-log.ts tenant path contract", () => {
     expect(existsSync(logPath)).toBe(true);
   });
 
-  it("a non-default tenant writes under ~/.nlm/tenants/<t>/query_log.jsonl, ignoring NLM_QUERY_LOG", async () => {
+  it("a non-default tenant writes under STATE_ROOT/tenants/<t>/query_log.jsonl, ignoring NLM_QUERY_LOG", async () => {
     const logPath = join(tmp, "query_log.jsonl");
     process.env["NLM_QUERY_LOG"] = logPath;
-    const derived = join(homedir(), ".nlm", "tenants", "acme-querylog-test", "query_log.jsonl");
-    try {
-      await logQuery("acme-querylog-test", entry());
-      expect(existsSync(logPath)).toBe(false);
-      expect(existsSync(derived)).toBe(true);
-    } finally {
-      rmSync(derived, { force: true });
-    }
+    const derived = join(tmp, "tenants", "acme-querylog-test", "query_log.jsonl");
+    await logQuery("acme-querylog-test", entry());
+    expect(existsSync(logPath)).toBe(false);
+    expect(existsSync(derived)).toBe(true);
   });
 
   it("two tenants' query logs don't collide", async () => {
-    const derivedA = join(homedir(), ".nlm", "tenants", "tenant-a-querylog", "query_log.jsonl");
-    const derivedB = join(homedir(), ".nlm", "tenants", "tenant-b-querylog", "query_log.jsonl");
-    try {
-      await logQuery("tenant-a-querylog", entry({ query: "query-a" }));
-      await logQuery("tenant-b-querylog", entry({ query: "query-b" }));
-      const a = JSON.parse(readFileSync(derivedA, "utf8").trim());
-      const b = JSON.parse(readFileSync(derivedB, "utf8").trim());
-      expect(a.query).toBe("query-a");
-      expect(b.query).toBe("query-b");
-    } finally {
-      rmSync(derivedA, { force: true });
-      rmSync(derivedB, { force: true });
-    }
+    const derivedA = join(tmp, "tenants", "tenant-a-querylog", "query_log.jsonl");
+    const derivedB = join(tmp, "tenants", "tenant-b-querylog", "query_log.jsonl");
+    await logQuery("tenant-a-querylog", entry({ query: "query-a" }));
+    await logQuery("tenant-b-querylog", entry({ query: "query-b" }));
+    const a = JSON.parse(readFileSync(derivedA, "utf8").trim());
+    const b = JSON.parse(readFileSync(derivedB, "utf8").trim());
+    expect(a.query).toBe("query-a");
+    expect(b.query).toBe("query-b");
   });
 
   it("an explicit logPath override wins regardless of tenant", async () => {

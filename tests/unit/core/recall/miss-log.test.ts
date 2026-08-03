@@ -1,6 +1,5 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { appendMiss, appendMisses, missStats } from "../../../../src/core/recall/miss-log.js";
@@ -148,51 +147,46 @@ describe("miss-log: missStats", () => {
 });
 
 describe("miss-log tenant path contract", () => {
+  let stateRoot: string;
+
+  beforeEach(() => {
+    stateRoot = mkdtempSync(join(tmpdir(), "nlm-miss-tenant-"));
+    // NLM_STATE_ROOT keeps the non-default-tenant branch under this temp dir
+    // instead of the real ~/.nlm/tenants/<t>/ (see tenant-state-path.ts).
+    process.env["NLM_STATE_ROOT"] = stateRoot;
+  });
+
   afterEach(() => {
     delete process.env["NLM_MISS_LOG"];
     delete process.env["NLM_MISS_LOG_ENABLED"];
+    delete process.env["NLM_STATE_ROOT"];
+    rmSync(stateRoot, { recursive: true, force: true });
   });
 
   it("default team honors NLM_MISS_LOG override (legacy behavior)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "nlm-miss-tenant-"));
-    const logPath = join(dir, "miss-log.jsonl");
+    const logPath = join(stateRoot, "miss-log.jsonl");
     process.env["NLM_MISS_LOG"] = logPath;
-    try {
-      await appendMiss(DEFAULT_TEAM_ID, { conversationId: "c", missedId: "cc_x_111111", kind: "get_session", surfacedCount: 1 });
-      expect(existsSync(logPath)).toBe(true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    await appendMiss(DEFAULT_TEAM_ID, { conversationId: "c", missedId: "cc_x_111111", kind: "get_session", surfacedCount: 1 });
+    expect(existsSync(logPath)).toBe(true);
   });
 
-  it("a non-default tenant writes under ~/.nlm/tenants/<t>/miss-log.jsonl, ignoring NLM_MISS_LOG", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "nlm-miss-tenant-"));
-    const logPath = join(dir, "miss-log.jsonl");
+  it("a non-default tenant writes under STATE_ROOT/tenants/<t>/miss-log.jsonl, ignoring NLM_MISS_LOG", async () => {
+    const logPath = join(stateRoot, "miss-log-legacy.jsonl");
     process.env["NLM_MISS_LOG"] = logPath;
-    const derived = join(homedir(), ".nlm", "tenants", "acme-misslog-test", "miss-log.jsonl");
-    try {
-      await appendMiss("acme-misslog-test", { conversationId: "c", missedId: "cc_x_111111", kind: "get_session", surfacedCount: 1 });
-      expect(existsSync(logPath)).toBe(false);
-      expect(existsSync(derived)).toBe(true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-      rmSync(derived, { force: true });
-    }
+    const derived = join(stateRoot, "tenants", "acme-misslog-test", "miss-log.jsonl");
+    await appendMiss("acme-misslog-test", { conversationId: "c", missedId: "cc_x_111111", kind: "get_session", surfacedCount: 1 });
+    expect(existsSync(logPath)).toBe(false);
+    expect(existsSync(derived)).toBe(true);
   });
 
   it("two tenants' miss logs don't collide", async () => {
-    const derivedA = join(homedir(), ".nlm", "tenants", "tenant-a-misslog", "miss-log.jsonl");
-    const derivedB = join(homedir(), ".nlm", "tenants", "tenant-b-misslog", "miss-log.jsonl");
-    try {
-      await appendMiss("tenant-a-misslog", { conversationId: "c", missedId: "id_a_111111", kind: "get_session", surfacedCount: 1 });
-      await appendMiss("tenant-b-misslog", { conversationId: "c", missedId: "id_b_111111", kind: "get_session", surfacedCount: 1 });
-      const a = JSON.parse(readFileSync(derivedA, "utf8").trim());
-      const b = JSON.parse(readFileSync(derivedB, "utf8").trim());
-      expect(a.missedId).toBe("id_a_111111");
-      expect(b.missedId).toBe("id_b_111111");
-    } finally {
-      rmSync(derivedA, { force: true });
-      rmSync(derivedB, { force: true });
-    }
+    const derivedA = join(stateRoot, "tenants", "tenant-a-misslog", "miss-log.jsonl");
+    const derivedB = join(stateRoot, "tenants", "tenant-b-misslog", "miss-log.jsonl");
+    await appendMiss("tenant-a-misslog", { conversationId: "c", missedId: "id_a_111111", kind: "get_session", surfacedCount: 1 });
+    await appendMiss("tenant-b-misslog", { conversationId: "c", missedId: "id_b_111111", kind: "get_session", surfacedCount: 1 });
+    const a = JSON.parse(readFileSync(derivedA, "utf8").trim());
+    const b = JSON.parse(readFileSync(derivedB, "utf8").trim());
+    expect(a.missedId).toBe("id_a_111111");
+    expect(b.missedId).toBe("id_b_111111");
   });
 });

@@ -1,6 +1,5 @@
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -89,44 +88,41 @@ describe("cite-memo", () => {
 });
 
 describe("cite-memo.ts tenant path contract", () => {
+  let stateRoot: string;
+  let hookStateDir: string;
+
+  beforeEach(() => {
+    stateRoot = mkdtempSync(join(tmpdir(), "nlm-cite-memo-tenant-"));
+    hookStateDir = join(stateRoot, "hook-state-override");
+    // NLM_STATE_ROOT keeps the non-default-tenant branch under this temp dir
+    // instead of the real ~/.nlm/tenants/<t>/ (see tenant-state-path.ts).
+    process.env["NLM_STATE_ROOT"] = stateRoot;
+  });
+
   afterEach(() => {
     delete process.env["NLM_HOOK_STATE_DIR"];
+    delete process.env["NLM_STATE_ROOT"];
+    rmSync(stateRoot, { recursive: true, force: true });
   });
 
   it("default team honors NLM_HOOK_STATE_DIR override (legacy behavior)", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "nlm-cite-memo-tenant-"));
-    process.env["NLM_HOOK_STATE_DIR"] = tmp;
-    try {
-      recordCited(DEFAULT_TEAM_ID, "conv-1", ["cc_a"]);
-      expect(existsSync(join(tmp, "conv-1.cited.json"))).toBe(true);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
+    process.env["NLM_HOOK_STATE_DIR"] = hookStateDir;
+    recordCited(DEFAULT_TEAM_ID, "conv-1", ["cc_a"]);
+    expect(existsSync(join(hookStateDir, "conv-1.cited.json"))).toBe(true);
   });
 
-  it("a non-default tenant writes under ~/.nlm/tenants/<t>/hook-state/, ignoring NLM_HOOK_STATE_DIR", () => {
-    const tmp = mkdtempSync(join(tmpdir(), "nlm-cite-memo-tenant-"));
-    process.env["NLM_HOOK_STATE_DIR"] = tmp;
-    const derived = join(homedir(), ".nlm", "tenants", "acme-citememo-test", "hook-state", "conv-1.cited.json");
-    try {
-      recordCited("acme-citememo-test", "conv-1", ["cc_a"]);
-      expect(existsSync(join(tmp, "conv-1.cited.json"))).toBe(false);
-      expect(existsSync(derived)).toBe(true);
-    } finally {
-      clearCited("acme-citememo-test", "conv-1");
-      rmSync(tmp, { recursive: true, force: true });
-    }
+  it("a non-default tenant writes under STATE_ROOT/tenants/<t>/hook-state/, ignoring NLM_HOOK_STATE_DIR", () => {
+    process.env["NLM_HOOK_STATE_DIR"] = hookStateDir;
+    const derived = join(stateRoot, "tenants", "acme-citememo-test", "hook-state", "conv-1.cited.json");
+    recordCited("acme-citememo-test", "conv-1", ["cc_a"]);
+    expect(existsSync(join(hookStateDir, "conv-1.cited.json"))).toBe(false);
+    expect(existsSync(derived)).toBe(true);
   });
 
   it("two tenants citing the same conversation id do not collide", () => {
-    try {
-      recordCited("tenant-a-citememo", "conv-shared", ["cc_a"]);
-      recordCited("tenant-b-citememo", "conv-shared", ["cc_b"]);
-      expect([...loadCited("tenant-a-citememo", "conv-shared")]).toEqual(["cc_a"]);
-      expect([...loadCited("tenant-b-citememo", "conv-shared")]).toEqual(["cc_b"]);
-    } finally {
-      clearCited("tenant-a-citememo", "conv-shared");
-      clearCited("tenant-b-citememo", "conv-shared");
-    }
+    recordCited("tenant-a-citememo", "conv-shared", ["cc_a"]);
+    recordCited("tenant-b-citememo", "conv-shared", ["cc_b"]);
+    expect([...loadCited("tenant-a-citememo", "conv-shared")]).toEqual(["cc_a"]);
+    expect([...loadCited("tenant-b-citememo", "conv-shared")]).toEqual(["cc_b"]);
   });
 });

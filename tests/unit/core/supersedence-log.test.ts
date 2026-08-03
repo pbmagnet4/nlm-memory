@@ -5,7 +5,7 @@
  */
 
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir, homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -158,52 +158,45 @@ describe("appendFactSupersedence", () => {
 });
 
 describe("supersedence-log tenant path contract", () => {
+  let stateRoot: string;
+
+  beforeEach(() => {
+    stateRoot = mkdtempSync(join(tmpdir(), "nlm-sup-tenant-"));
+    // NLM_STATE_ROOT keeps the non-default-tenant branch under this temp dir
+    // instead of the real ~/.nlm/tenants/<t>/ (see tenant-state-path.ts).
+    process.env["NLM_STATE_ROOT"] = stateRoot;
+  });
+
   afterEach(() => {
     delete process.env["NLM_SUPERSEDENCE_LOG"];
+    delete process.env["NLM_STATE_ROOT"];
+    rmSync(stateRoot, { recursive: true, force: true });
   });
 
   it("default team honors NLM_SUPERSEDENCE_LOG override (legacy behavior)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "nlm-sup-tenant-"));
-    const logPath = join(dir, "supersedence-log.jsonl");
+    const logPath = join(stateRoot, "supersedence-log.jsonl");
     process.env["NLM_SUPERSEDENCE_LOG"] = logPath;
-    try {
-      await appendSupersedence(DEFAULT_TEAM_ID, { predecessorId: "a", successorId: "b" });
-      expect(existsSync(logPath)).toBe(true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    await appendSupersedence(DEFAULT_TEAM_ID, { predecessorId: "a", successorId: "b" });
+    expect(existsSync(logPath)).toBe(true);
   });
 
-  it("a non-default tenant writes under ~/.nlm/tenants/<t>/supersedence-log.jsonl, ignoring NLM_SUPERSEDENCE_LOG", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "nlm-sup-tenant-"));
-    const logPath = join(dir, "supersedence-log.jsonl");
+  it("a non-default tenant writes under STATE_ROOT/tenants/<t>/supersedence-log.jsonl, ignoring NLM_SUPERSEDENCE_LOG", async () => {
+    const logPath = join(stateRoot, "supersedence-log-legacy.jsonl");
     process.env["NLM_SUPERSEDENCE_LOG"] = logPath;
-    const derived = join(homedir(), ".nlm", "tenants", "acme-suplog-test", "supersedence-log.jsonl");
-    try {
-      await appendSupersedence("acme-suplog-test", { predecessorId: "a", successorId: "b" });
-      expect(existsSync(logPath)).toBe(false);
-      expect(existsSync(derived)).toBe(true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-      rmSync(derived, { force: true });
-    }
+    const derived = join(stateRoot, "tenants", "acme-suplog-test", "supersedence-log.jsonl");
+    await appendSupersedence("acme-suplog-test", { predecessorId: "a", successorId: "b" });
+    expect(existsSync(logPath)).toBe(false);
+    expect(existsSync(derived)).toBe(true);
   });
 
   it("two tenants' supersedence logs don't collide", async () => {
-    const derivedA = join(homedir(), ".nlm", "tenants", "tenant-a-suplog", "supersedence-log.jsonl");
-    const derivedB = join(homedir(), ".nlm", "tenants", "tenant-b-suplog", "supersedence-log.jsonl");
-    try {
-      await appendSupersedence("tenant-a-suplog", { predecessorId: "sess_a1", successorId: "sess_a2" });
-      await appendSupersedence("tenant-b-suplog", { predecessorId: "sess_b1", successorId: "sess_b2" });
-      const a = await readSupersedenceLog("tenant-a-suplog");
-      const b = await readSupersedenceLog("tenant-b-suplog");
-      expect(a).toHaveLength(1);
-      expect(a[0]?.predecessorId).toBe("sess_a1");
-      expect(b).toHaveLength(1);
-      expect(b[0]?.predecessorId).toBe("sess_b1");
-    } finally {
-      rmSync(derivedA, { force: true });
-      rmSync(derivedB, { force: true });
-    }
+    await appendSupersedence("tenant-a-suplog", { predecessorId: "sess_a1", successorId: "sess_a2" });
+    await appendSupersedence("tenant-b-suplog", { predecessorId: "sess_b1", successorId: "sess_b2" });
+    const a = await readSupersedenceLog("tenant-a-suplog");
+    const b = await readSupersedenceLog("tenant-b-suplog");
+    expect(a).toHaveLength(1);
+    expect(a[0]?.predecessorId).toBe("sess_a1");
+    expect(b).toHaveLength(1);
+    expect(b[0]?.predecessorId).toBe("sess_b1");
   });
 });

@@ -1,6 +1,5 @@
 import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -47,51 +46,45 @@ describe("appendCitation guard", () => {
 
 describe("appendCitation tenant path contract", () => {
   const UUID_A = "4cf4b47c-8a3b-4c1f-af3b-ad6a012301ed";
+  let stateRoot: string;
+
+  beforeEach(() => {
+    stateRoot = mkdtempSync(join(tmpdir(), "nlm-cite-tenant-"));
+    // NLM_STATE_ROOT keeps the non-default-tenant branch under this temp dir
+    // instead of the real ~/.nlm/tenants/<t>/ (see tenant-state-path.ts).
+    process.env["NLM_STATE_ROOT"] = stateRoot;
+  });
 
   afterEach(() => {
     delete process.env["NLM_CITATION_LOG"];
+    delete process.env["NLM_STATE_ROOT"];
+    rmSync(stateRoot, { recursive: true, force: true });
   });
 
   it("default team honors NLM_CITATION_LOG override (legacy behavior)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "nlm-cite-tenant-"));
-    const logPath = join(dir, "citation-log.jsonl");
+    const logPath = join(stateRoot, "citation-log.jsonl");
     process.env["NLM_CITATION_LOG"] = logPath;
-    try {
-      await appendCitation(DEFAULT_TEAM_ID, { conversationId: UUID_A, citedId: "cc_x", kind: "tool_use" });
-      expect(existsSync(logPath)).toBe(true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    await appendCitation(DEFAULT_TEAM_ID, { conversationId: UUID_A, citedId: "cc_x", kind: "tool_use" });
+    expect(existsSync(logPath)).toBe(true);
   });
 
-  it("a non-default tenant writes under ~/.nlm/tenants/<t>/citation-log.jsonl, ignoring NLM_CITATION_LOG", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "nlm-cite-tenant-"));
-    const logPath = join(dir, "citation-log.jsonl");
+  it("a non-default tenant writes under STATE_ROOT/tenants/<t>/citation-log.jsonl, ignoring NLM_CITATION_LOG", async () => {
+    const logPath = join(stateRoot, "citation-log-legacy.jsonl");
     process.env["NLM_CITATION_LOG"] = logPath;
-    const derived = join(homedir(), ".nlm", "tenants", "acme-citelog-test", "citation-log.jsonl");
-    try {
-      await appendCitation("acme-citelog-test", { conversationId: UUID_A, citedId: "cc_x", kind: "tool_use" });
-      expect(existsSync(logPath)).toBe(false);
-      expect(existsSync(derived)).toBe(true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-      rmSync(derived, { force: true });
-    }
+    const derived = join(stateRoot, "tenants", "acme-citelog-test", "citation-log.jsonl");
+    await appendCitation("acme-citelog-test", { conversationId: UUID_A, citedId: "cc_x", kind: "tool_use" });
+    expect(existsSync(logPath)).toBe(false);
+    expect(existsSync(derived)).toBe(true);
   });
 
   it("two tenants' citation logs don't collide", async () => {
-    const derivedA = join(homedir(), ".nlm", "tenants", "tenant-a-citelog", "citation-log.jsonl");
-    const derivedB = join(homedir(), ".nlm", "tenants", "tenant-b-citelog", "citation-log.jsonl");
-    try {
-      await appendCitation("tenant-a-citelog", { conversationId: UUID_A, citedId: "cc_a", kind: "tool_use" });
-      await appendCitation("tenant-b-citelog", { conversationId: UUID_A, citedId: "cc_b", kind: "tool_use" });
-      const a = JSON.parse(readFileSync(derivedA, "utf8").trim());
-      const b = JSON.parse(readFileSync(derivedB, "utf8").trim());
-      expect(a.cited_id).toBe("cc_a");
-      expect(b.cited_id).toBe("cc_b");
-    } finally {
-      rmSync(derivedA, { force: true });
-      rmSync(derivedB, { force: true });
-    }
+    const derivedA = join(stateRoot, "tenants", "tenant-a-citelog", "citation-log.jsonl");
+    const derivedB = join(stateRoot, "tenants", "tenant-b-citelog", "citation-log.jsonl");
+    await appendCitation("tenant-a-citelog", { conversationId: UUID_A, citedId: "cc_a", kind: "tool_use" });
+    await appendCitation("tenant-b-citelog", { conversationId: UUID_A, citedId: "cc_b", kind: "tool_use" });
+    const a = JSON.parse(readFileSync(derivedA, "utf8").trim());
+    const b = JSON.parse(readFileSync(derivedB, "utf8").trim());
+    expect(a.cited_id).toBe("cc_a");
+    expect(b.cited_id).toBe("cc_b");
   });
 });

@@ -1,7 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { readHookRecallLog } from "../../../../src/core/recall/hook-recall-log.js";
 import { DEFAULT_TEAM_ID } from "../../../../src/core/tenancy/default-team.js";
@@ -68,8 +67,19 @@ describe("readHookRecallLog", () => {
 });
 
 describe("readHookRecallLog tenant path contract", () => {
+  let stateRoot: string;
+
+  beforeEach(() => {
+    stateRoot = mkdtempSync(join(tmpdir(), "nlm-hook-recall-tenant-"));
+    // NLM_STATE_ROOT keeps the non-default-tenant branch under this temp dir
+    // instead of the real ~/.nlm/tenants/<t>/ (see tenant-state-path.ts).
+    process.env["NLM_STATE_ROOT"] = stateRoot;
+  });
+
   afterEach(() => {
     delete process.env["NLM_HOOK_LOG"];
+    delete process.env["NLM_STATE_ROOT"];
+    rmSync(stateRoot, { recursive: true, force: true });
   });
 
   it("default team honors NLM_HOOK_LOG override (legacy behavior)", async () => {
@@ -79,37 +89,28 @@ describe("readHookRecallLog tenant path contract", () => {
     expect(out).toHaveLength(1);
   });
 
-  it("a non-default tenant reads from ~/.nlm/tenants/<t>/hook-log.jsonl, ignoring NLM_HOOK_LOG", async () => {
+  it("a non-default tenant reads from STATE_ROOT/tenants/<t>/hook-log.jsonl, ignoring NLM_HOOK_LOG", async () => {
     process.env["NLM_HOOK_LOG"] = logPath;
-    const derivedDir = join(homedir(), ".nlm", "tenants", "acme-hookrecall-test");
+    const derivedDir = join(stateRoot, "tenants", "acme-hookrecall-test");
     const derived = join(derivedDir, "hook-log.jsonl");
     mkdirSync(derivedDir, { recursive: true });
     writeFileSync(derived, `${JSON.stringify({ ts: now(), conversationId: "conv_tenant", wouldInject: ["s9"] })}\n`, "utf8");
-    try {
-      const out = await readHookRecallLog("acme-hookrecall-test", 30);
-      expect(out).toEqual([{ conversationId: "conv_tenant", injectedIds: ["s9"] }]);
-    } finally {
-      rmSync(derived, { force: true });
-    }
+    const out = await readHookRecallLog("acme-hookrecall-test", 30);
+    expect(out).toEqual([{ conversationId: "conv_tenant", injectedIds: ["s9"] }]);
   });
 
   it("two tenants' hook-recall logs don't collide", async () => {
-    const derivedDirA = join(homedir(), ".nlm", "tenants", "tenant-a-hookrecall");
-    const derivedDirB = join(homedir(), ".nlm", "tenants", "tenant-b-hookrecall");
+    const derivedDirA = join(stateRoot, "tenants", "tenant-a-hookrecall");
+    const derivedDirB = join(stateRoot, "tenants", "tenant-b-hookrecall");
     const derivedA = join(derivedDirA, "hook-log.jsonl");
     const derivedB = join(derivedDirB, "hook-log.jsonl");
     mkdirSync(derivedDirA, { recursive: true });
     mkdirSync(derivedDirB, { recursive: true });
     writeFileSync(derivedA, `${JSON.stringify({ ts: now(), conversationId: "conv_a", wouldInject: ["s_a"] })}\n`, "utf8");
     writeFileSync(derivedB, `${JSON.stringify({ ts: now(), conversationId: "conv_b", wouldInject: ["s_b"] })}\n`, "utf8");
-    try {
-      const outA = await readHookRecallLog("tenant-a-hookrecall", 30);
-      const outB = await readHookRecallLog("tenant-b-hookrecall", 30);
-      expect(outA).toEqual([{ conversationId: "conv_a", injectedIds: ["s_a"] }]);
-      expect(outB).toEqual([{ conversationId: "conv_b", injectedIds: ["s_b"] }]);
-    } finally {
-      rmSync(derivedA, { force: true });
-      rmSync(derivedB, { force: true });
-    }
+    const outA = await readHookRecallLog("tenant-a-hookrecall", 30);
+    const outB = await readHookRecallLog("tenant-b-hookrecall", 30);
+    expect(outA).toEqual([{ conversationId: "conv_a", injectedIds: ["s_a"] }]);
+    expect(outB).toEqual([{ conversationId: "conv_b", injectedIds: ["s_b"] }]);
   });
 });
