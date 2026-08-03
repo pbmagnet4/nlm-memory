@@ -50,18 +50,22 @@ export function createReprocessSpawnChild(opts: ReprocessSpawnOptions): SpawnChi
 
     let lineCb: ((line: string) => void) | null = null;
     let exitCb: ((code: number | null) => void) | null = null;
-    let buf = "";
-    const feed = (chunk: Buffer): void => {
-      buf += chunk.toString("utf8");
+    // Separate buffers per stream: stdout and stderr are independent byte
+    // streams that can each deliver a partial (no-newline-yet) chunk in
+    // either order. A single shared buffer would let an in-flight partial
+    // line on one fd get spliced together with an unrelated chunk that
+    // lands on the other fd before the first line's newline arrives.
+    const makeFeed = (buf: { s: string }) => (chunk: Buffer): void => {
+      buf.s += chunk.toString("utf8");
       let idx: number;
-      while ((idx = buf.indexOf("\n")) !== -1) {
-        const line = buf.slice(0, idx);
-        buf = buf.slice(idx + 1);
+      while ((idx = buf.s.indexOf("\n")) !== -1) {
+        const line = buf.s.slice(0, idx);
+        buf.s = buf.s.slice(idx + 1);
         lineCb?.(line);
       }
     };
-    child.stdout?.on("data", feed);
-    child.stderr?.on("data", feed);
+    child.stdout?.on("data", makeFeed({ s: "" }));
+    child.stderr?.on("data", makeFeed({ s: "" }));
 
     // A spawn-level error (e.g. ENOENT on a bad execPath/script path) may
     // fire "error" without a normal "exit" ever following — without
