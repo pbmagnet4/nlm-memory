@@ -1,0 +1,37 @@
+{
+  "pullsSeen": 5866,
+  "genuineAfterStrip": 98,
+  "joined": 80,
+  "unjoinable": 18,
+  "joinRate": 0.816,
+  "scored": 80,
+  "used": 58,
+  "partial": 11,
+  "unused": 11,
+  "usefulnessAtPull": 0.794,
+  "offTopicRate": 0.138,
+  "byTool": {
+    "session": {
+      "used": 44,
+      "partial": 11,
+      "unused": 9,
+      "usefulness": 0.773
+    },
+    "fact": {
+      "used": 14,
+      "partial": 0,
+      "unused": 2,
+      "usefulness": 0.875
+    }
+  },
+  "byRuntime": {
+    "claude-code": {
+      "used": 58,
+      "partial": 11,
+      "unused": 11,
+      "usefulness": 0.794
+    }
+  },
+  "model": "qwen3.5:4b",
+  "days": 13
+}
