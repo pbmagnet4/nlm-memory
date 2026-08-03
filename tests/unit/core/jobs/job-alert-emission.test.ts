@@ -143,8 +143,10 @@ describe("JobSupervisor onEvent -> fireAlert(buildJobAlertEvent(...)) wiring", (
       expect(posts[0]!.body["type"]).toBe("nlm.job.stalled");
       const data = posts[0]!.body["data"] as Record<string, unknown>;
       expect(data["reason"]).toBe("exhausted");
-      expect(data["restarts"]).toBe(4);
-      expect(String(data["message"])).toMatch(/gave up after 4 fruitless restarts/);
+      // 3 real respawns happened (the 4th exit only trips the cap, no 4th
+      // respawn is attempted), so the reported count is 3, not 4.
+      expect(data["restarts"]).toBe(3);
+      expect(String(data["message"])).toMatch(/gave up after 3 fruitless restarts/);
     } finally {
       delete process.env["NLM_ALERT_WEBHOOK"];
     }

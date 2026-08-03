@@ -192,6 +192,7 @@ describe("HTTP adapter", () => {
         startedAt: null,
         lastAdvanceAt: null,
         restarts: 0,
+        restartsTotal: 0,
       });
       const res = await idleApp.request("/api/health");
       const body = (await res.json()) as { job: JobSnapshot | null };
@@ -207,6 +208,7 @@ describe("HTTP adapter", () => {
         startedAt: "2026-08-03T00:00:00.000Z",
         lastAdvanceAt: "2026-08-03T00:00:10.000Z",
         restarts: 1,
+        restartsTotal: 1,
       };
       const runningApp = appWithJobSupervisor(runningSnap);
       const res = await runningApp.request("/api/health");

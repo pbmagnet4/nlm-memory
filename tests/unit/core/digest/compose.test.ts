@@ -192,6 +192,7 @@ describe("composeDigest", () => {
           startedAt: null,
           lastAdvanceAt: null,
           restarts: 0,
+          restartsTotal: 0,
         },
       });
       expect(text).toContain("Jobs: no active job");
@@ -212,6 +213,7 @@ describe("composeDigest", () => {
           startedAt: "2026-05-30T11:40:00Z",
           lastAdvanceAt: "2026-05-30T11:57:00Z", // 3m before FIXED_NOW (12:00:00Z)
           restarts: 0,
+          restartsTotal: 0,
         },
       });
       expect(text).toContain("Jobs: reprocess 412/664, last advance 3m ago");
@@ -232,9 +234,74 @@ describe("composeDigest", () => {
           startedAt: "2026-05-30T11:59:50Z",
           lastAdvanceAt: null,
           restarts: 0,
+          restartsTotal: 0,
         },
       });
       expect(text).toContain("Jobs: reprocess 0/664, no progress yet");
+    });
+
+    it("appends a restart count to the running line once the run has OOM-churned, even though restarts (no-progress counter) has since reset", () => {
+      const text = composeDigest({
+        stats: baseStats,
+        recent: [],
+        port: 3940,
+        hookAlert: null,
+        now: FIXED_NOW,
+        job: {
+          name: "reprocess",
+          state: "running",
+          processed: 412,
+          total: 664,
+          startedAt: "2026-05-30T11:00:00Z",
+          lastAdvanceAt: "2026-05-30T11:57:00Z",
+          restarts: 0, // reset by a recent advance
+          restartsTotal: 2, // but this run has respawned twice lifetime
+        },
+      });
+      expect(text).toContain("Jobs: reprocess 412/664, last advance 3m ago, 2 restarts");
+    });
+
+    it("singularizes the running-line restart suffix when restartsTotal is exactly 1", () => {
+      const text = composeDigest({
+        stats: baseStats,
+        recent: [],
+        port: 3940,
+        hookAlert: null,
+        now: FIXED_NOW,
+        job: {
+          name: "reprocess",
+          state: "running",
+          processed: 100,
+          total: 664,
+          startedAt: "2026-05-30T11:00:00Z",
+          lastAdvanceAt: "2026-05-30T11:57:00Z",
+          restarts: 1,
+          restartsTotal: 1,
+        },
+      });
+      expect(text).toContain("Jobs: reprocess 100/664, last advance 3m ago, 1 restart");
+      expect(text).not.toContain("1 restarts");
+    });
+
+    it("omits the restart suffix on the running line when restartsTotal is 0", () => {
+      const text = composeDigest({
+        stats: baseStats,
+        recent: [],
+        port: 3940,
+        hookAlert: null,
+        now: FIXED_NOW,
+        job: {
+          name: "reprocess",
+          state: "running",
+          processed: 412,
+          total: 664,
+          startedAt: "2026-05-30T11:40:00Z",
+          lastAdvanceAt: "2026-05-30T11:57:00Z",
+          restarts: 0,
+          restartsTotal: 0,
+        },
+      });
+      expect(text).not.toContain("restart");
     });
 
     it("shows a stalled job with progress and time since last advance", () => {
@@ -252,6 +319,7 @@ describe("composeDigest", () => {
           startedAt: "2026-05-30T11:00:00Z",
           lastAdvanceAt: "2026-05-30T11:35:00Z", // 25m before FIXED_NOW
           restarts: 2,
+          restartsTotal: 2,
         },
       });
       expect(text).toContain("Jobs: reprocess stalled at 412/664, last advance 25m ago");
@@ -272,6 +340,7 @@ describe("composeDigest", () => {
           startedAt: "2026-05-30T10:00:00Z",
           lastAdvanceAt: "2026-05-30T11:50:00Z",
           restarts: 1,
+          restartsTotal: 1,
         },
       });
       expect(text).toContain("Jobs: reprocess completed 664/664");
@@ -292,6 +361,7 @@ describe("composeDigest", () => {
           startedAt: "2026-05-30T10:00:00Z",
           lastAdvanceAt: "2026-05-30T11:30:00Z",
           restarts: 3,
+          restartsTotal: 3,
         },
       });
       expect(text).toContain("Jobs: reprocess gave up after 3 fruitless restarts (412/664 processed)");
@@ -312,6 +382,7 @@ describe("composeDigest", () => {
           startedAt: "2026-05-30T10:00:00Z",
           lastAdvanceAt: "2026-05-30T11:30:00Z",
           restarts: 1,
+          restartsTotal: 1,
         },
       });
       expect(text).toContain("Jobs: reprocess gave up after 1 fruitless restart (50/664 processed)");
@@ -333,6 +404,7 @@ describe("composeDigest", () => {
           startedAt: "2026-05-30T10:00:00Z",
           lastAdvanceAt: "2026-05-30T11:30:00Z",
           restarts: 0,
+          restartsTotal: 0,
         },
       });
       expect(text).toContain("Jobs: reprocess stopped at 200/664");

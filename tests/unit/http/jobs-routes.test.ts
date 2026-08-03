@@ -17,6 +17,7 @@ const IDLE_SNAPSHOT: JobSnapshot = {
   startedAt: null,
   lastAdvanceAt: null,
   restarts: 0,
+  restartsTotal: 0,
 };
 
 const RUNNING_SNAPSHOT: JobSnapshot = {
@@ -27,6 +28,7 @@ const RUNNING_SNAPSHOT: JobSnapshot = {
   startedAt: "2026-08-03T00:00:00.000Z",
   lastAdvanceAt: "2026-08-03T00:00:05.000Z",
   restarts: 0,
+  restartsTotal: 0,
 };
 
 const STOPPED_SNAPSHOT: JobSnapshot = {

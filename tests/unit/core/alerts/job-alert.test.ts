@@ -1,9 +1,10 @@
 /**
  * buildJobAlertEvent — pure mapping from a JobSupervisorEvent to the
- * `nlm.job.stalled` AlertEvent. Covers both event kinds and the wording
- * requirement: an "exhausted" event's restarts count includes the refused
- * final attempt, so the message must read as "gave up after N", never
- * something a reader could mistake for restarts still to come.
+ * `nlm.job.stalled` AlertEvent. Covers all three event kinds and the
+ * wording requirement: an "exhausted" event's restarts count is the number
+ * of respawns that actually happened, so the message must read as "gave up
+ * after N", never something a reader could mistake for restarts still to
+ * come.
  */
 
 import { describe, expect, it } from "vitest";
@@ -18,6 +19,7 @@ describe("buildJobAlertEvent", () => {
       processed: 12,
       total: 50,
       restarts: 0,
+      restartsTotal: 0,
       lastAdvanceAt: "2026-08-01T00:00:00.000Z",
     };
 
@@ -41,6 +43,7 @@ describe("buildJobAlertEvent", () => {
       processed: 30,
       total: 50,
       restarts: 3,
+      restartsTotal: 3,
       lastAdvanceAt: "2026-08-01T00:10:00.000Z",
     };
 
@@ -57,6 +60,7 @@ describe("buildJobAlertEvent", () => {
       processed: 30,
       total: 50,
       restarts: 3,
+      restartsTotal: 3,
       lastAdvanceAt: "2026-08-01T00:10:00.000Z",
     };
 
@@ -75,6 +79,7 @@ describe("buildJobAlertEvent", () => {
       processed: 5,
       total: 10,
       restarts: 1,
+      restartsTotal: 1,
       lastAdvanceAt: null,
     };
 
@@ -90,6 +95,7 @@ describe("buildJobAlertEvent", () => {
       processed: 0,
       total: 0,
       restarts: 0,
+      restartsTotal: 0,
       lastAdvanceAt: null,
     };
 
@@ -97,5 +103,40 @@ describe("buildJobAlertEvent", () => {
 
     expect(alert.data.lastAdvanceAt).toBeNull();
     expect(alert.data.message).toContain("start");
+  });
+
+  it("passes restartsTotal through unchanged, distinct from the resettable restarts counter", () => {
+    const event: JobSupervisorEvent = {
+      kind: "stalled",
+      job: "reprocess",
+      processed: 200,
+      total: 664,
+      restarts: 0, // reset by a recent advance
+      restartsTotal: 12, // but this run has OOM-churned 12 times lifetime
+      lastAdvanceAt: "2026-08-01T00:00:00.000Z",
+    };
+
+    const alert = buildJobAlertEvent(event);
+
+    expect(alert.data.restarts).toBe(0);
+    expect(alert.data.restartsTotal).toBe(12);
+  });
+
+  it("maps a spawn_failed event to nlm.job.stalled with reason 'spawn_failed'", () => {
+    const event: JobSupervisorEvent = {
+      kind: "spawn_failed",
+      job: "reprocess",
+      processed: 0,
+      total: 0,
+      restarts: 0,
+      restartsTotal: 0,
+      lastAdvanceAt: null,
+    };
+
+    const alert = buildJobAlertEvent(event);
+
+    expect(alert.type).toBe("nlm.job.stalled");
+    expect(alert.data.reason).toBe("spawn_failed");
+    expect(alert.data.message).toMatch(/failed to start/i);
   });
 });
