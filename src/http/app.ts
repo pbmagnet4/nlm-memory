@@ -20,7 +20,6 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { timingSafeEqual } from "node:crypto";
-import { homedir } from "node:os";
 import { dirname, extname, join, normalize, sep } from "node:path";
 import { Hono } from "hono";
 import pkg from "../../package.json" with { type: "json" };
@@ -115,6 +114,7 @@ import { inflightSnapshot } from "@core/health/embed-inflight.js";
 import { corpusSnapshot } from "@core/health/corpus-state.js";
 import { DEFAULT_NLM_PORT } from "../shared/net.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
+import { tenantStatePath } from "@core/tenancy/tenant-state-path.js";
 import { isHostedMode } from "@core/tenancy/hosted-mode.js";
 import { resolveTeamByToken } from "@core/tenancy/team-auth.js";
 import type { TeamTokenStorePort } from "@core/tenancy/team-token-store.js";
@@ -546,24 +546,29 @@ function installLocalOnlyMiddleware(app: Hono<AppEnv>, boundPort: number, deps: 
   });
 }
 
-// ── Hosted-mode gate (program spec §4.6, M2 plan Wave C3) ─────────────
+// ── Hosted-mode gate (program spec §4.6, M2 plan Wave C3; M6 retired the
+//    M6-FILTER class) ──────────────────────────────────────────────────
 //
-// Under NLM_HOSTED=1, two disposition classes are hard-disabled before any
+// Under NLM_HOSTED=1, one disposition class is hard-disabled before any
 // handler logic runs:
 //
 //   LOCAL      — single-operator, whole-DB surfaces (dataset projection,
 //                backup/restore, data stats, the process-global classifier
 //                swap). Never tenant-reachable in hosted mode; there is no
 //                per-tenant meaning to "the whole DB".
-//   M6-FILTER  — surfaces backed by the shared, not-yet-tenant-attributed
-//                JSONL state (citation log, query logs, hook-memo files).
-//                Disabled until M6 lands; local mode is unaffected.
+//
+// The file-state surfaces (citation log, query/fact-query logs, hook-memo
+// files) previously sat behind an M6-FILTER disposition here until their
+// underlying JSONL state became tenant-attributed (core/tenancy/
+// tenant-state-path.ts) — every handler below now passes the request's
+// resolved `c.get("tenantId")` into those reads/writes, so they're reachable
+// in hosted mode like any other tenant-scoped route.
 //
 // One exhaustive path+method list, one middleware, checked before every
 // registerXxxRoutes call below so no handler for a gated path ever runs
 // under NLM_HOSTED=1. Local mode (NLM_HOSTED unset) takes the `next()`
 // fast-path unconditionally — zero behavior change.
-type HostedDisposition = "LOCAL" | "M6-FILTER";
+type HostedDisposition = "LOCAL";
 
 const HOSTED_GATED_ROUTES: ReadonlyArray<{ method: string; path: string; disposition: HostedDisposition }> = [
   { method: "GET", path: "/api/dataset", disposition: "LOCAL" },
@@ -571,14 +576,6 @@ const HOSTED_GATED_ROUTES: ReadonlyArray<{ method: string; path: string; disposi
   { method: "POST", path: "/api/data/restore", disposition: "LOCAL" },
   { method: "GET", path: "/api/data/stats", disposition: "LOCAL" },
   { method: "POST", path: "/api/classifier", disposition: "LOCAL" },
-  { method: "POST", path: "/api/recall/cite-event", disposition: "M6-FILTER" },
-  { method: "POST", path: "/api/citation/explicit", disposition: "M6-FILTER" },
-  { method: "GET", path: "/api/recall/stats", disposition: "M6-FILTER" },
-  { method: "GET", path: "/api/recall/recent", disposition: "M6-FILTER" },
-  { method: "GET", path: "/api/recall/facts/stats", disposition: "M6-FILTER" },
-  { method: "POST", path: "/api/hook/pre-compact", disposition: "M6-FILTER" },
-  { method: "POST", path: "/api/hook/hermes-agent/post-turn", disposition: "M6-FILTER" },
-  { method: "POST", path: "/api/hook/hermes-agent/session-lifecycle", disposition: "M6-FILTER" },
 ];
 
 function installHostedModeGate(app: Hono<AppEnv>): void {
@@ -812,11 +809,8 @@ function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     const result = await deps.recall.search(tenantId, query);
 
     // Fire-and-forget telemetry — never blocks the response.
-    // M6 Task 1 placeholder: query_log.jsonl is still M6-FILTER shared state
-    // (see installHostedModeGate below); pinned to DEFAULT_TEAM_ID until
-    // Task 2 replaces it with the `tenantId` already resolved above.
     void logQuery(
-      DEFAULT_TEAM_ID,
+      tenantId,
       {
         source,
         runtime,
@@ -836,15 +830,14 @@ function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   });
 
   app.get("/api/recall/stats", async (c) => {
+    const tenantId = c.get("tenantId");
     const daysStr = c.req.query("days") ?? "7";
     const days = Number.parseInt(daysStr, 10);
     if (!Number.isFinite(days) || days < 1 || days > 365) {
       return c.json({ error: "days must be 1..365" }, 400);
     }
-    // M6 Task 1 placeholder — this route is M6-FILTER gated in hosted mode;
-    // see installHostedModeGate below.
     const stats = await recallStats(
-      DEFAULT_TEAM_ID,
+      tenantId,
       days,
       ...(deps.queryLogPath !== undefined ? [deps.queryLogPath] : []),
     );
@@ -852,8 +845,10 @@ function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   });
 
   app.get("/api/recall/recent", (c) => {
+    const tenantId = c.get("tenantId");
     const limit = parseLimit(c.req.query("limit"), 50, 200);
     const entries = recentQueryLog(
+      tenantId,
       limit,
       ...(deps.queryLogPath !== undefined ? [deps.queryLogPath] : []),
     );
@@ -863,6 +858,7 @@ function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   // Citation events from the Stop hook. One POST per surfaced ID the
   // assistant cited in its response. Feeds the recall precision metric.
   app.post("/api/recall/cite-event", async (c) => {
+    const tenantId = c.get("tenantId");
     let body: Record<string, unknown>;
     try {
       body = (await c.req.json()) as Record<string, unknown>;
@@ -879,11 +875,8 @@ function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     }
     const responsePreview = body["response_preview"];
     const kind = body["kind"];
-    // M6 Task 1 placeholder: this route is M6-FILTER gated in hosted mode
-    // (see installHostedModeGate below); pinned to DEFAULT_TEAM_ID until
-    // Task 2 lands real tenant resolution.
     await appendCitation(
-      DEFAULT_TEAM_ID,
+      tenantId,
       {
         conversationId,
         citedId,
@@ -898,14 +891,14 @@ function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   });
 
   app.get("/api/recall/cite-stats", async (c) => {
+    const tenantId = c.get("tenantId");
     const daysStr = c.req.query("days") ?? "7";
     const days = Number.parseInt(daysStr, 10);
     if (!Number.isFinite(days) || days < 1 || days > 365) {
       return c.json({ error: "days must be 1..365" }, 400);
     }
-    // M6 Task 1 placeholder — this route is M6-FILTER gated in hosted mode.
     const stats = await citationStats(
-      DEFAULT_TEAM_ID,
+      tenantId,
       days,
       ...(deps.citationLogPath !== undefined ? [deps.citationLogPath] : []),
     );
@@ -917,6 +910,7 @@ function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   // so the training extractor can distinguish deterministic tool citations
   // from stop-hook detected prose citations.
   app.post("/api/citation/explicit", async (c) => {
+    const tenantId = c.get("tenantId");
     let body: Record<string, unknown>;
     try {
       body = (await c.req.json()) as Record<string, unknown>;
@@ -927,14 +921,13 @@ function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     if (typeof id !== "string" || !id) {
       return c.json({ error: "id required" }, 400);
     }
-    // M6 Task 1 placeholder — this route is M6-FILTER gated in hosted mode.
     await appendCitation(
-      DEFAULT_TEAM_ID,
+      tenantId,
       {
         conversationId:
           typeof body["conversation_id"] === "string"
             ? body["conversation_id"]
-            : (resolveConversationForSession(DEFAULT_TEAM_ID, id) ?? "mcp_tool"),
+            : (resolveConversationForSession(tenantId, id) ?? "mcp_tool"),
         citedId: id,
         kind: "tool_use",
         ...(typeof body["reason"] === "string" ? { responsePreview: body["reason"] } : {}),
@@ -952,6 +945,7 @@ function registerHookRoutes(app: Hono<AppEnv>): void {
   // suppressed by stale "already surfaced" gates.
   // Payload: { conversation_id, transcript_path?, surfaced_set?, ts? }
   app.post("/api/hook/pre-compact", async (c) => {
+    const tenantId = c.get("tenantId");
     let body: Record<string, unknown>;
     try {
       body = (await c.req.json()) as Record<string, unknown>;
@@ -962,11 +956,19 @@ function registerHookRoutes(app: Hono<AppEnv>): void {
     if (typeof conversationId !== "string" || !conversationId) {
       return c.json({ error: "conversation_id required" }, 400);
     }
-    // M6 Task 1 placeholder — this route is M6-FILTER gated in hosted mode.
-    const flushed = loadSurfaced(DEFAULT_TEAM_ID, conversationId).size;
-    clearSurfaced(DEFAULT_TEAM_ID, conversationId);
+    const flushed = loadSurfaced(tenantId, conversationId).size;
+    clearSurfaced(tenantId, conversationId);
     const compactedAt = new Date().toISOString();
-    const logPath = process.env["NLM_HOOK_LOG"] ?? join(homedir(), ".nlm", "hook-log.jsonl");
+    // Mirrors hook-log.ts's own path derivation (core/tenancy/tenant-state-path.ts):
+    // the default team's log honors NLM_HOOK_LOG; every other tenant is isolated
+    // under ~/.nlm/tenants/<tenantId>/hook-log.jsonl. This route writes a
+    // differently-shaped record (`kind: "pre-compact"`) than appendHookLog's
+    // HookLogEntry, so it can't reuse that function directly, but must still
+    // land in the same tenant-scoped file.
+    const logPath =
+      tenantId === DEFAULT_TEAM_ID
+        ? (process.env["NLM_HOOK_LOG"] ?? tenantStatePath(tenantId, "hook-log.jsonl"))
+        : tenantStatePath(tenantId, "hook-log.jsonl");
     try {
       mkdirSync(dirname(logPath), { recursive: true });
       appendFileSync(
@@ -1027,10 +1029,7 @@ function registerHermesAgentHookRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
         startedAt: r.startedAt,
         matchScore: r.matchScore,
       }));
-      // M6 Task 1 placeholder: hook-state is still M6-FILTER shared state
-      // (see installHostedModeGate below); pinned to DEFAULT_TEAM_ID until
-      // Task 2 replaces it with the `tenantId` already resolved above.
-      const surfaced = loadSurfaced(DEFAULT_TEAM_ID, sessionId);
+      const surfaced = loadSurfaced(tenantId, sessionId);
       const selected = selectHits({ hits, surfaced, scoreThreshold: 0, relativeFloor: HERMES_RELATIVE_FLOOR, perFireCap: 3, perConversationCap: 10 });
       if (
         selected.length === 0 &&
@@ -1040,7 +1039,7 @@ function registerHermesAgentHookRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
         return c.json({ context: null });
       }
       if (selected.length > 0) {
-        recordSurfaced(DEFAULT_TEAM_ID, sessionId, selected.map((h) => h.id));
+        recordSurfaced(tenantId, sessionId, selected.map((h) => h.id));
       }
       return c.json({
         context: formatPointerBlock(
@@ -1059,6 +1058,7 @@ function registerHermesAgentHookRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
   // post-turn: scan assistant_response for session IDs that were surfaced in
   // this conversation and log prose citation events.
   app.post("/api/hook/hermes-agent/post-turn", async (c) => {
+    const tenantId = c.get("tenantId");
     let body: Record<string, unknown>;
     try {
       body = (await c.req.json()) as Record<string, unknown>;
@@ -1073,8 +1073,7 @@ function registerHermesAgentHookRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
     if (typeof assistantResponse !== "string" || !assistantResponse) {
       return c.json({ ok: true, cited: 0 });
     }
-    // M6 Task 1 placeholder — this route is M6-FILTER gated in hosted mode.
-    const surfacedIds = [...loadSurfaced(DEFAULT_TEAM_ID, sessionId)];
+    const surfacedIds = [...loadSurfaced(tenantId, sessionId)];
     const cited: string[] = [];
     for (const id of surfacedIds) {
       if (assistantResponse.includes(id)) cited.push(id);
@@ -1082,7 +1081,7 @@ function registerHermesAgentHookRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
     const preview = assistantResponse.slice(0, 200);
     for (const citedId of cited) {
       await appendCitation(
-        DEFAULT_TEAM_ID,
+        tenantId,
         { conversationId: sessionId, citedId, kind: "prose", responsePreview: preview },
         ...(deps.citationLogPath !== undefined ? [deps.citationLogPath] : []),
       );
@@ -1093,6 +1092,7 @@ function registerHermesAgentHookRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
   // session-lifecycle: memo housekeeping for on_session_{start,end,finalize,reset}.
   // start is a no-op (memo is created lazily). end/finalize/reset clear the memo.
   app.post("/api/hook/hermes-agent/session-lifecycle", async (c) => {
+    const tenantId = c.get("tenantId");
     let body: Record<string, unknown>;
     try {
       body = (await c.req.json()) as Record<string, unknown>;
@@ -1106,9 +1106,8 @@ function registerHermesAgentHookRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
     if (event !== "start") {
       const sessionId = body["session_id"];
       if (typeof sessionId === "string" && sessionId) {
-        // M6 Task 1 placeholder — this route is M6-FILTER gated in hosted mode.
-        clearSurfaced(DEFAULT_TEAM_ID, sessionId);
-        clearCited(sessionId);
+        clearSurfaced(tenantId, sessionId);
+        clearCited(tenantId, sessionId);
       }
     }
     return c.json({ ok: true, event });
@@ -1163,11 +1162,8 @@ function registerFactRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
 
     const source = c.req.header("x-recall-source") ?? "http";
     const runtime = c.req.header("x-recall-runtime") ?? null;
-    // M6 Task 1 placeholder: fact_query_log.jsonl is still M6-FILTER shared
-    // state; pinned to DEFAULT_TEAM_ID until Task 2 replaces it with the
-    // `tenantId` already resolved above.
     void logFactQuery(
-      DEFAULT_TEAM_ID,
+      tenantId,
       {
         source,
         runtime,
@@ -1205,14 +1201,14 @@ function registerFactRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   });
 
   app.get("/api/recall/facts/stats", async (c) => {
+    const tenantId = c.get("tenantId");
     const daysStr = c.req.query("days") ?? "7";
     const days = Number.parseInt(daysStr, 10);
     if (!Number.isFinite(days) || days < 1 || days > 365) {
       return c.json({ error: "days must be 1..365" }, 400);
     }
-    // M6 Task 1 placeholder — this route is M6-FILTER gated in hosted mode.
     const stats = await factRecallStats(
-      DEFAULT_TEAM_ID,
+      tenantId,
       days,
       ...(deps.factQueryLogPath !== undefined ? [deps.factQueryLogPath] : []),
     );

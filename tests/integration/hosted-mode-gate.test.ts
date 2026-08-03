@@ -1,11 +1,19 @@
 /**
- * Hosted-mode gate contract (program spec §4.6, M2 plan Wave C3).
+ * Hosted-mode gate contract (program spec §4.6, M2 plan Wave C3; M6 retired
+ * the M6-FILTER class).
  *
- * Under NLM_HOSTED=1, every LOCAL and M6-FILTER route must 403 before any
- * handler logic runs — asserted per exact path+method here, per the plan's
+ * Under NLM_HOSTED=1, every LOCAL route must still 403 before any handler
+ * logic runs — asserted per exact path+method here, per the plan's
  * "contract-tested per path" requirement. Local mode (NLM_HOSTED unset) must
  * be completely unaffected: this file also proves the same paths behave
  * exactly as before when the flag is off.
+ *
+ * The routes formerly gated M6-FILTER (citation log, query/fact-query logs,
+ * hook-memo files) are no longer disposition-gated at all: their underlying
+ * JSONL state is now tenant-attributed (core/tenancy/tenant-state-path.ts)
+ * and every handler passes the request's resolved tenant into it, so these
+ * routes are reachable in hosted mode with a resolvable token, same as any
+ * other tenant-scoped route.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -31,7 +39,7 @@ function unit(values: number[]): Float32Array {
   return padded;
 }
 
-// Every path+method the plan names as LOCAL or M6-FILTER — the exact list
+// Every path+method the plan names as LOCAL — the exact list
 // installHostedModeGate in src/http/app.ts must gate. Kept independent of
 // that file's own HOSTED_GATED_ROUTES constant so this test can't pass by
 // tautology if a route silently drops out of both places together.
@@ -43,7 +51,12 @@ const LOCAL_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
   { method: "POST", path: "/api/classifier" },
 ];
 
-const M6_FILTER_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
+// Formerly M6-FILTER-gated (403 in hosted mode until citation-log.jsonl /
+// query_log.jsonl / fact_query_log.jsonl / hook-state became tenant-
+// attributed). Now reachable in every mode with a resolvable token — the
+// "un-gated" describe block below drives each with a valid payload and
+// asserts a real (non-403) response.
+const FORMERLY_M6_FILTER_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
   { method: "POST", path: "/api/recall/cite-event" },
   { method: "POST", path: "/api/citation/explicit" },
   { method: "GET", path: "/api/recall/stats" },
@@ -54,13 +67,24 @@ const M6_FILTER_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
   { method: "POST", path: "/api/hook/hermes-agent/session-lifecycle" },
 ];
 
-const ALL_GATED_ROUTES = [...LOCAL_ROUTES, ...M6_FILTER_ROUTES];
+const ALL_GATED_ROUTES = [...LOCAL_ROUTES, ...FORMERLY_M6_FILTER_ROUTES];
+
+// Valid minimal payload per formerly-gated POST route, so the "un-gated"
+// assertions below exercise a real 200 response rather than a validation 400
+// that would also mask a lingering 403.
+const FORMERLY_M6_FILTER_BODIES: Readonly<Record<string, unknown>> = {
+  "/api/recall/cite-event": { conversation_id: "conv-hosted-test", cited_id: "cited-id-1" },
+  "/api/citation/explicit": { id: "cited-id-1" },
+  "/api/hook/pre-compact": { conversation_id: "conv-hosted-test" },
+  "/api/hook/hermes-agent/post-turn": { session_id: "sess-hosted-test" },
+  "/api/hook/hermes-agent/session-lifecycle": { event: "start" },
+};
 
 async function requestFor(app: AppInstance, route: { method: string; path: string }): Promise<Response> {
   const init: RequestInit = { method: route.method, headers: { authorization: `Bearer ${TEST_TOKEN}` } };
   if (route.method === "POST") {
     init.headers = { ...init.headers, "content-type": "application/json" };
-    init.body = "{}";
+    init.body = JSON.stringify(FORMERLY_M6_FILTER_BODIES[route.path] ?? {});
   }
   return app.request(route.path, init);
 }
@@ -81,6 +105,15 @@ describe("hosted-mode gate (spec §4.6, Wave C3)", () => {
     // (M3: hosted mode has no ungated fallback) and reach the disposition
     // gate under test, exactly as they did before M3 tightened auth.
     await storage.teamTokens.insert(hashTeamToken(TEST_TOKEN), DEFAULT_TEAM_ID);
+    // The un-gated former M6-FILTER routes below write real DEFAULT_TEAM_ID
+    // file state (citation/query/fact-query logs, hook-state) — redirect via
+    // the modules' existing env-var overrides so this run touches tmp, not
+    // the developer's real ~/.nlm/*.
+    process.env["NLM_QUERY_LOG"] = join(tmp, "query_log.jsonl");
+    process.env["NLM_CITATION_LOG"] = join(tmp, "citation-log.jsonl");
+    process.env["NLM_FACT_QUERY_LOG"] = join(tmp, "fact_query_log.jsonl");
+    process.env["NLM_HOOK_LOG"] = join(tmp, "hook-log.jsonl");
+    process.env["NLM_HOOK_STATE_DIR"] = join(tmp, "hook-state");
     const recall = new RecallService({ store, llm: new FixedEmbedder(unit([0, 1, 0])) });
     app = createApp({ recall, store, liveStore: store, dbPath: join(tmp, "canonical.sqlite"), teamTokens: storage.teamTokens });
   });
@@ -90,6 +123,11 @@ describe("hosted-mode gate (spec §4.6, Wave C3)", () => {
     rmSync(tmp, { recursive: true, force: true });
     if (prevHosted === undefined) delete process.env["NLM_HOSTED"];
     else process.env["NLM_HOSTED"] = prevHosted;
+    delete process.env["NLM_QUERY_LOG"];
+    delete process.env["NLM_CITATION_LOG"];
+    delete process.env["NLM_FACT_QUERY_LOG"];
+    delete process.env["NLM_HOOK_LOG"];
+    delete process.env["NLM_HOOK_STATE_DIR"];
   });
 
   describe("NLM_HOSTED=1", () => {
@@ -106,12 +144,16 @@ describe("hosted-mode gate (spec §4.6, Wave C3)", () => {
       });
     }
 
-    for (const route of M6_FILTER_ROUTES) {
-      it(`${route.method} ${route.path} -> 403, disposition M6-FILTER`, async () => {
+    // Former M6-FILTER routes: un-gated, since citation-log.jsonl /
+    // query_log.jsonl / fact_query_log.jsonl / hook-state are now
+    // tenant-attributed. A resolvable token reaches the real handler and
+    // gets a real (non-403) response driven off a valid payload.
+    for (const route of FORMERLY_M6_FILTER_ROUTES) {
+      it(`${route.method} ${route.path} -> serves a tenant-scoped response in hosted mode (no longer 403)`, async () => {
         const res = await requestFor(app, route);
-        expect(res.status).toBe(403);
+        expect(res.status).toBe(200);
         const body = (await res.json()) as { disposition?: string };
-        expect(body.disposition).toBe("M6-FILTER");
+        expect(body.disposition).toBeUndefined();
       });
     }
 
@@ -128,13 +170,12 @@ describe("hosted-mode gate (spec §4.6, Wave C3)", () => {
       expect(res.status).toBe(200);
     });
 
-    it("cite_session MCP tool returns an error result (not a throw) naming M6", async () => {
+    it("cite_session MCP tool works normally in hosted mode (M6-FILTER gate retired — citation-log.jsonl is tenant-attributed)", async () => {
       const result = await citeSessionHandler("team_local", { id: "cc_sub_abc123def456" });
-      expect(result.isError).toBe(true);
-      expect(result.content[0]?.text).toContain("M6");
+      expect(result.isError).toBeFalsy();
     });
 
-    it("createMcpServer still registers cite_session under NLM_HOSTED (gate is inside the handler, not registration)", () => {
+    it("createMcpServer still registers cite_session under NLM_HOSTED", () => {
       const server = createMcpServer({ recall: { search: async () => ({ query: "", mode: "keyword", limit: 0, total: 0, results: [] }) } as never, store }, "team_local");
       expect(server).toBeDefined();
     });
