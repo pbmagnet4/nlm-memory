@@ -55,7 +55,19 @@
  * needs) → "running" → ("stalled" ⇄ "running" across stall episodes) →
  * terminal "completed" | "exhausted" | "stopped". A terminal state is
  * left only by calling `start()` again, which begins a fresh run.
+ *
+ * Stale-callback safety: `spawnAndWire` captures the child instance it just
+ * spawned and every onLine/onExit callback checks `this.child === child`
+ * before touching any state. A killed child (stop(), or a fast respawn
+ * chain) can still deliver a queued exit or line after this.child has moved
+ * on to a newer child or gone null; without the identity guard that stale
+ * delivery would corrupt the live run's processed/total/restarts, null out
+ * the live child (leaking it — now unmanaged and unkillable), or trigger a
+ * bogus respawn.
  */
+
+import type { ChildHandle, SpawnChild } from "@ports/spawn-child.js";
+import type { Clock } from "@ports/clock.js";
 
 export type JobState =
   | "idle"
@@ -86,22 +98,6 @@ interface JobSupervisorEventBase {
 export type JobSupervisorEvent =
   | ({ readonly kind: "stalled" } & JobSupervisorEventBase)
   | ({ readonly kind: "exhausted" } & JobSupervisorEventBase);
-
-/** One running (or just-exited) child process, as seen by the supervisor. */
-export interface ChildHandle {
-  onLine(cb: (line: string) => void): void;
-  onExit(cb: (code: number | null) => void): void;
-  kill(): void;
-}
-
-export type SpawnChild = (args: string[]) => ChildHandle;
-
-/** Injected time source + coarse interval scheduler. Real adapter (Task 2)
- *  wraps Date.now()/setInterval; tests use a virtual-time fake. */
-export interface Clock {
-  now(): number;
-  setInterval(fn: () => void, ms: number): void;
-}
 
 export interface JobSupervisorOptions {
   readonly spawnChild: SpawnChild;
@@ -211,7 +207,15 @@ export class JobSupervisor {
   private spawnAndWire(): void {
     const child = this.spawnChildFn(this.args);
     this.child = child;
+    // Identity-guard every callback against `this.child`: a killed-but-not-yet-
+    // exited child (stop(), or a respawn racing a slow exit/line delivery) can
+    // still deliver onLine/onExit after this.child has moved on to a newer
+    // child (or null). Without this guard a stale callback from child A would
+    // mutate state for the live run, null out this.child (leaking A's
+    // now-unmanaged, unkillable successor if A had one), or trigger a bogus
+    // restart/respawn.
     child.onLine((line) => {
+      if (this.child !== child) return;
       try {
         this.handleLine(line);
       } catch (e) {
@@ -219,6 +223,7 @@ export class JobSupervisor {
       }
     });
     child.onExit((code) => {
+      if (this.child !== child) return;
       try {
         this.handleExit(code);
       } catch (e) {
