@@ -21,6 +21,7 @@ import { detectMisses } from "@core/hook/miss-detect.js";
 import { loadSurfaced } from "@core/hook/memo.js";
 import { loadCited, recordCited } from "@core/hook/cite-memo.js";
 import { appendMisses } from "@core/recall/miss-log.js";
+import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import {
   readAllAssistantTurns,
   type ToolUseBlock,
@@ -77,7 +78,9 @@ export async function runStopHook(
     };
   }
 
-  const surfaced = loadSurfaced(input.conversationId);
+  // M6 Task 1 placeholder: hooks have no tenant context yet, so memo/log
+  // I/O is pinned to DEFAULT_TEAM_ID. Task 2 threads real tenant resolution.
+  const surfaced = loadSurfaced(DEFAULT_TEAM_ID, input.conversationId);
   if (surfaced.size === 0) {
     return {
       conversationId: input.conversationId,
@@ -123,6 +126,7 @@ export async function runStopHook(
   const misses = detectMisses({ toolUses: allToolUses, surfacedIds: surfaced });
   if (misses.length > 0) {
     void appendMisses(
+      DEFAULT_TEAM_ID,
       misses.map((m) => ({
         conversationId: input.conversationId,
         missedId: m.id,

@@ -15,6 +15,7 @@
 import { pathToFileURL } from "node:url";
 import { appendHookLog } from "@core/hook/hook-log.js";
 import { loadSurfaced, recordSurfaced } from "@core/hook/memo.js";
+import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import { formatPointerBlock } from "@core/hook/pointer-block.js";
 import { selectHits, type RecallHitInput } from "@core/hook/select.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
@@ -61,7 +62,9 @@ export async function runHook(
     hits = [];
   }
 
-  const surfaced = loadSurfaced(input.conversationId);
+  // M6 Task 1 placeholder: hooks have no tenant context yet, so log/memo
+  // I/O is pinned to DEFAULT_TEAM_ID. Task 2 threads real tenant resolution.
+  const surfaced = loadSurfaced(DEFAULT_TEAM_ID, input.conversationId);
   const selected = selectHits({
     hits,
     surfaced,
@@ -73,7 +76,7 @@ export async function runHook(
   const block = formatPointerBlock(selected);
   const estTokens = Math.ceil(block.length / 4);
 
-  appendHookLog({
+  appendHookLog(DEFAULT_TEAM_ID, {
     ts: new Date().toISOString(),
     conversationId: input.conversationId,
     promptPreview: input.query,
@@ -85,7 +88,7 @@ export async function runHook(
   });
 
   if (deps.mode === "live" && selected.length > 0) {
-    recordSurfaced(input.conversationId, selected.map((h) => h.id));
+    recordSurfaced(DEFAULT_TEAM_ID, input.conversationId, selected.map((h) => h.id));
     return block;
   }
   return "";

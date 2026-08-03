@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runPreCompact } from "../../src/hook/pre-compact-hook.js";
 import { recordSurfaced } from "../../src/core/hook/memo.js";
+import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
 
 describe("runPreCompact", () => {
   let tmp: string;
@@ -87,7 +88,7 @@ describe("runPreCompact", () => {
   });
 
   it("includes surfaced IDs in the payload when they exist", async () => {
-    recordSurfaced("conv-with-ids", ["sess_a", "sess_b"]);
+    recordSurfaced(DEFAULT_TEAM_ID, "conv-with-ids", ["sess_a", "sess_b"]);
     await runPreCompact(
       { conversationId: "conv-with-ids", transcriptPath: "/tmp/t.jsonl" },
       "3940",

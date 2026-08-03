@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runSessionEnd } from "../../src/hook/session-end-hook.js";
 import { loadSurfaced, recordSurfaced } from "../../src/core/hook/memo.js";
 import { loadCited, recordCited } from "../../src/core/hook/cite-memo.js";
+import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
 
 describe("session-end hook", () => {
   let tmp: string;
@@ -20,12 +21,12 @@ describe("session-end hook", () => {
   });
 
   it("deletes the per-conversation memo when one exists", () => {
-    recordSurfaced("conv-x", ["sess_1", "sess_2"]);
-    expect(loadSurfaced("conv-x").size).toBe(2);
+    recordSurfaced(DEFAULT_TEAM_ID, "conv-x", ["sess_1", "sess_2"]);
+    expect(loadSurfaced(DEFAULT_TEAM_ID, "conv-x").size).toBe(2);
     const result = runSessionEnd("conv-x");
     expect(result.cleared).toBe(true);
     expect(result.conversationId).toBe("conv-x");
-    expect(loadSurfaced("conv-x").size).toBe(0);
+    expect(loadSurfaced(DEFAULT_TEAM_ID, "conv-x").size).toBe(0);
   });
 
   it("reports cleared=false when no memo file exists", () => {

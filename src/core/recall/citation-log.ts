@@ -4,13 +4,17 @@
  * future learned reranker: each row is a (query, returned_id, was_cited)
  * triple once joined against ~/.nlm/query_log.jsonl by conversationId.
  *
- * Path defaults to ~/.nlm/citation-log.jsonl, overridable via
- * NLM_CITATION_LOG. Telemetry path — never raises.
+ * Path is tenant-derived (core/tenancy/tenant-state-path.ts): the default
+ * team's log is ~/.nlm/citation-log.jsonl, overridable via
+ * NLM_CITATION_LOG; every other tenant is isolated under
+ * ~/.nlm/tenants/<tenantId>/citation-log.jsonl and ignores the env
+ * override. Telemetry path — never raises.
  */
 
 import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { homedir } from "node:os";
+import { dirname } from "node:path";
+import { tenantStatePath } from "@core/tenancy/tenant-state-path.js";
+import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 
 export type CitationKind = "tool_use" | "prose";
 
@@ -29,8 +33,11 @@ export interface CitationStats {
   readonly log_present: boolean;
 }
 
-function defaultLogPath(): string {
-  return process.env["NLM_CITATION_LOG"] ?? join(homedir(), ".nlm", "citation-log.jsonl");
+function defaultLogPath(tenantId: string): string {
+  if (tenantId === DEFAULT_TEAM_ID) {
+    return process.env["NLM_CITATION_LOG"] ?? tenantStatePath(tenantId, "citation-log.jsonl");
+  }
+  return tenantStatePath(tenantId, "citation-log.jsonl");
 }
 
 /**
@@ -47,8 +54,9 @@ export function isAttributableConversationId(id: string): boolean {
 }
 
 export async function readCitationLog(
+  tenantId: string,
   days: number,
-  logPath: string = defaultLogPath(),
+  logPath: string = defaultLogPath(tenantId),
 ): Promise<CitationEntry[]> {
   let raw: string;
   try {
@@ -82,8 +90,9 @@ export async function readCitationLog(
 }
 
 export async function appendCitation(
+  tenantId: string,
   entry: CitationEntry,
-  logPath: string = defaultLogPath(),
+  logPath: string = defaultLogPath(tenantId),
 ): Promise<void> {
   // Drop unattributable / fixture citations at the source so the log stays a
   // clean training + metric substrate (see isAttributableConversationId).
@@ -106,8 +115,9 @@ export async function appendCitation(
 }
 
 export async function citationStats(
+  tenantId: string,
   days: number,
-  logPath: string = defaultLogPath(),
+  logPath: string = defaultLogPath(tenantId),
 ): Promise<CitationStats> {
   const base: CitationStats = {
     days,

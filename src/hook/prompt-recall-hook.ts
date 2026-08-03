@@ -15,6 +15,7 @@ import { classifyPrompt } from "@core/hook/gate.js";
 import { recentConversationContext, topicalWordCount } from "./recent-context.js";
 import { appendHookLog } from "@core/hook/hook-log.js";
 import { loadSurfaced, recordSurfaced } from "@core/hook/memo.js";
+import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import { formatPointerBlock, type PointerExemplar, type PointerFact } from "@core/hook/pointer-block.js";
 import { selectHits, type RecallHitInput } from "@core/hook/select.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
@@ -159,7 +160,9 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
   const preview = input.prompt.slice(0, PROMPT_PREVIEW_CHARS);
 
   if (gate === "generative" || gate === "skip") {
-    appendHookLog({
+    // M6 Task 1 placeholder: hooks have no tenant context yet, so log/memo
+    // I/O is pinned to DEFAULT_TEAM_ID. Task 2 threads real tenant resolution.
+    appendHookLog(DEFAULT_TEAM_ID, {
       ts: new Date().toISOString(),
       conversationId: input.conversationId,
       promptPreview: preview,
@@ -184,7 +187,7 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
   }
   const hits = fetched.hits;
 
-  const surfaced = loadSurfaced(input.conversationId);
+  const surfaced = loadSurfaced(DEFAULT_TEAM_ID, input.conversationId);
   const selected = selectHits({
     hits,
     surfaced,
@@ -223,7 +226,7 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
   const block = formatPointerBlock(injected, fetched.facts, fetched.exemplars);
   const estTokens = Math.ceil(block.length / 4);
 
-  appendHookLog({
+  appendHookLog(DEFAULT_TEAM_ID, {
     ts: new Date().toISOString(),
     conversationId: input.conversationId,
     promptPreview: preview,
@@ -236,7 +239,7 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
   });
 
   if (deps.mode === "live" && injected.length > 0) {
-    recordSurfaced(input.conversationId, injected.map((h) => h.id));
+    recordSurfaced(DEFAULT_TEAM_ID, input.conversationId, injected.map((h) => h.id));
     return block;
   }
   return "";

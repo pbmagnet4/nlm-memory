@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { appendHookLog, type HookLogEntry } from "../../src/core/hook/hook-log.js";
+import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
 
 const entry = (over: Partial<HookLogEntry> = {}): HookLogEntry => ({
   ts: "2026-05-20T12:00:00.000Z",
@@ -32,8 +33,8 @@ describe("appendHookLog", () => {
   });
 
   it("appends one JSON line per call", () => {
-    appendHookLog(entry());
-    appendHookLog(entry({ conversationId: "conv-2" }));
+    appendHookLog(DEFAULT_TEAM_ID, entry());
+    appendHookLog(DEFAULT_TEAM_ID, entry({ conversationId: "conv-2" }));
     const lines = readFileSync(logPath, "utf8").trim().split("\n");
     expect(lines).toHaveLength(2);
     const first = JSON.parse(lines[0] ?? "");
@@ -44,7 +45,7 @@ describe("appendHookLog", () => {
 
   it("creates the parent directory if missing", () => {
     process.env["NLM_HOOK_LOG"] = join(tmp, "nested", "deep", "hook-log.jsonl");
-    appendHookLog(entry());
+    appendHookLog(DEFAULT_TEAM_ID, entry());
     const lines = readFileSync(
       join(tmp, "nested", "deep", "hook-log.jsonl"),
       "utf8",

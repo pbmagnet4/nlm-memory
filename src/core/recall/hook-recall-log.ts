@@ -8,25 +8,32 @@
  * The file also holds stop / session-end / pre-compact entries, which this
  * reader ignores.
  *
- * Read-only telemetry path — never raises.
+ * Path is tenant-derived (core/tenancy/tenant-state-path.ts): the default
+ * team reads $NLM_HOOK_LOG or ~/.nlm/hook-log.jsonl; every other tenant
+ * reads ~/.nlm/tenants/<tenantId>/hook-log.jsonl and ignores the env
+ * override. Read-only telemetry path — never raises.
  */
 
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { tenantStatePath } from "@core/tenancy/tenant-state-path.js";
+import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 
 export interface HookRecallEntry {
   readonly conversationId: string;
   readonly injectedIds: ReadonlyArray<string>;
 }
 
-function defaultLogPath(): string {
-  return process.env["NLM_HOOK_LOG"] ?? join(homedir(), ".nlm", "hook-log.jsonl");
+function defaultLogPath(tenantId: string): string {
+  if (tenantId === DEFAULT_TEAM_ID) {
+    return process.env["NLM_HOOK_LOG"] ?? tenantStatePath(tenantId, "hook-log.jsonl");
+  }
+  return tenantStatePath(tenantId, "hook-log.jsonl");
 }
 
 export async function readHookRecallLog(
+  tenantId: string,
   days: number,
-  logPath: string = defaultLogPath(),
+  logPath: string = defaultLogPath(tenantId),
 ): Promise<HookRecallEntry[]> {
   let raw: string;
   try {

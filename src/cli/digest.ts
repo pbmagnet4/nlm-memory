@@ -119,8 +119,8 @@ export async function runDigest(opts: DigestOptions): Promise<DigestResult> {
   let precision: DigestPrecision | null = null;
   try {
     const [recallEntries, citationEntries] = await Promise.all([
-      readHookRecallLog(7),
-      readCitationLog(7),
+      readHookRecallLog(DEFAULT_TEAM_ID, 7),
+      readCitationLog(DEFAULT_TEAM_ID, 7),
     ]);
     const result = computePrecision(recallEntries, citationEntries);
     precision = {

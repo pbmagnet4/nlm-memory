@@ -14,6 +14,7 @@
 
 import { pathToFileURL } from "node:url";
 import { clearSurfaced } from "@core/hook/memo.js";
+import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import { clearCited } from "@core/hook/cite-memo.js";
 import { readStdin, hookModeFromEnv, appendHookEvent } from "./hook-helpers.js";
 
@@ -23,7 +24,9 @@ export interface SessionEndResult {
 }
 
 export function runSessionEnd(conversationId: string): SessionEndResult {
-  const surfacedCleared = clearSurfaced(conversationId);
+  // M6 Task 1 placeholder: hooks have no tenant context yet, so memo I/O
+  // is pinned to DEFAULT_TEAM_ID. Task 2 threads real tenant resolution.
+  const surfacedCleared = clearSurfaced(DEFAULT_TEAM_ID, conversationId);
   const citedCleared = clearCited(conversationId);
   return { conversationId, cleared: surfacedCleared || citedCleared };
 }

@@ -3,8 +3,12 @@
  * conversation holds the set of session ids already surfaced, so each is
  * surfaced at most once per conversation.
  *
- * State dir defaults to ~/.nlm/hook-state/, overridable via
- * NLM_HOOK_STATE_DIR (testability — mirrors query-log.ts).
+ * State dir is tenant-derived (core/tenancy/tenant-state-path.ts): the
+ * default team's memo dir is ~/.nlm/hook-state/, overridable via
+ * NLM_HOOK_STATE_DIR (testability — mirrors query-log.ts); every other
+ * tenant is isolated under ~/.nlm/tenants/<tenantId>/hook-state/ and
+ * ignores the env override (see the path contract note in
+ * tenant-state-path.ts).
  *
  * Every function is defensive: a missing or corrupt file yields an empty
  * memo, and a write failure is swallowed. The hook must never break on memo
@@ -20,21 +24,25 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { tenantStatePath } from "@core/tenancy/tenant-state-path.js";
+import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 
-function stateDir(): string {
-  return process.env["NLM_HOOK_STATE_DIR"] ?? join(homedir(), ".nlm", "hook-state");
+function stateDir(tenantId: string): string {
+  if (tenantId === DEFAULT_TEAM_ID) {
+    return process.env["NLM_HOOK_STATE_DIR"] ?? tenantStatePath(tenantId, "hook-state");
+  }
+  return tenantStatePath(tenantId, "hook-state");
 }
 
-function memoPath(conversationId: string): string {
+function memoPath(tenantId: string, conversationId: string): string {
   const safe = conversationId.replace(/[^A-Za-z0-9_-]/g, "_") || "unknown";
-  return join(stateDir(), `${safe}.json`);
+  return join(stateDir(tenantId), `${safe}.json`);
 }
 
-export function loadSurfaced(conversationId: string): Set<string> {
+export function loadSurfaced(tenantId: string, conversationId: string): Set<string> {
   try {
-    const path = memoPath(conversationId);
+    const path = memoPath(tenantId, conversationId);
     if (!existsSync(path)) return new Set();
     const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
     if (!Array.isArray(parsed)) return new Set();
@@ -45,14 +53,15 @@ export function loadSurfaced(conversationId: string): Set<string> {
 }
 
 export function recordSurfaced(
+  tenantId: string,
   conversationId: string,
   ids: ReadonlyArray<string>,
 ): void {
   try {
-    const merged = loadSurfaced(conversationId);
+    const merged = loadSurfaced(tenantId, conversationId);
     for (const id of ids) merged.add(id);
-    mkdirSync(stateDir(), { recursive: true });
-    writeFileSync(memoPath(conversationId), JSON.stringify([...merged]), "utf8");
+    mkdirSync(stateDir(tenantId), { recursive: true });
+    writeFileSync(memoPath(tenantId, conversationId), JSON.stringify([...merged]), "utf8");
   } catch {
     // Memo write failure must never break the hook.
   }
@@ -69,9 +78,9 @@ export function recordSurfaced(
  *
  * Defensive: any I/O error yields null so cite_session never breaks.
  */
-export function resolveConversationForSession(sessionId: string): string | null {
+export function resolveConversationForSession(tenantId: string, sessionId: string): string | null {
   try {
-    const dir = stateDir();
+    const dir = stateDir(tenantId);
     if (!existsSync(dir)) return null;
     let best: { conversationId: string; mtimeMs: number } | null = null;
     for (const file of readdirSync(dir)) {
@@ -99,9 +108,9 @@ export function resolveConversationForSession(sessionId: string): string | null 
  * hook so memo files don't accumulate forever. Returns true if a file was
  * removed, false otherwise — callers may want to log the outcome.
  */
-export function clearSurfaced(conversationId: string): boolean {
+export function clearSurfaced(tenantId: string, conversationId: string): boolean {
   try {
-    const path = memoPath(conversationId);
+    const path = memoPath(tenantId, conversationId);
     if (!existsSync(path)) return false;
     rmSync(path);
     return true;

@@ -3,15 +3,19 @@
  * fetched or cited but which the hook's pre-prompt recall never surfaced
  * in this conversation. Source: Stop hook's miss-detection pass (spec E).
  *
- * Default path ~/.nlm/miss-log.jsonl, overridable via NLM_MISS_LOG.
+ * Path is tenant-derived (core/tenancy/tenant-state-path.ts): the default
+ * team's log is ~/.nlm/miss-log.jsonl, overridable via NLM_MISS_LOG; every
+ * other tenant is isolated under ~/.nlm/tenants/<tenantId>/miss-log.jsonl
+ * and ignores the env override.
  * Disable emission entirely with NLM_MISS_LOG_ENABLED=0 — used by
  * deployments that want recall but not telemetry. Telemetry path — never
  * raises; failure to write is silently swallowed.
  */
 
 import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { homedir } from "node:os";
+import { dirname } from "node:path";
+import { tenantStatePath } from "@core/tenancy/tenant-state-path.js";
+import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 
 export type MissKind = "get_session" | "cite_session";
 
@@ -40,8 +44,11 @@ export interface MissStats {
   readonly logPresent: boolean;
 }
 
-function defaultLogPath(): string {
-  return process.env["NLM_MISS_LOG"] ?? join(homedir(), ".nlm", "miss-log.jsonl");
+function defaultLogPath(tenantId: string): string {
+  if (tenantId === DEFAULT_TEAM_ID) {
+    return process.env["NLM_MISS_LOG"] ?? tenantStatePath(tenantId, "miss-log.jsonl");
+  }
+  return tenantStatePath(tenantId, "miss-log.jsonl");
 }
 
 function isEnabled(): boolean {
@@ -50,9 +57,9 @@ function isEnabled(): boolean {
   return raw !== "0" && raw.toLowerCase() !== "false";
 }
 
-export async function appendMiss(entry: MissEntry, logPath?: string): Promise<void> {
+export async function appendMiss(tenantId: string, entry: MissEntry, logPath?: string): Promise<void> {
   if (!isEnabled()) return;
-  const path = logPath ?? defaultLogPath();
+  const path = logPath ?? defaultLogPath(tenantId);
   try {
     await mkdir(dirname(path), { recursive: true });
     const line = `${JSON.stringify({
@@ -71,12 +78,13 @@ export async function appendMiss(entry: MissEntry, logPath?: string): Promise<vo
  * hook invocation (which is the common case).
  */
 export async function appendMisses(
+  tenantId: string,
   entries: ReadonlyArray<MissEntry>,
   logPath?: string,
 ): Promise<void> {
   if (!isEnabled()) return;
   if (entries.length === 0) return;
-  const path = logPath ?? defaultLogPath();
+  const path = logPath ?? defaultLogPath(tenantId);
   try {
     await mkdir(dirname(path), { recursive: true });
     const ts = new Date().toISOString();
@@ -93,10 +101,11 @@ export async function appendMisses(
  * fields) are skipped silently.
  */
 export async function missStats(
+  tenantId: string,
   days: number,
   logPath?: string,
 ): Promise<MissStats> {
-  const path = logPath ?? defaultLogPath();
+  const path = logPath ?? defaultLogPath(tenantId);
   try {
     await stat(path);
   } catch {

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runStopHook } from "../../src/hook/stop-hook.js";
 import { recordSurfaced } from "../../src/core/hook/memo.js";
+import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
 import { loadCited } from "../../src/core/hook/cite-memo.js";
 import {
   readAllAssistantTurns,
@@ -111,7 +112,7 @@ describe("runStopHook", () => {
   });
 
   it("posts a citation for each surfaced ID found in the last assistant message", async () => {
-    recordSurfaced("conv-1", [
+    recordSurfaced(DEFAULT_TEAM_ID, "conv-1", [
       "cc_sub_a139f4ab7ca5aa909",
       "cc_ff88cd96-d1f9-428c-8a97-2e4ca431acbe",
       "hm_20260427_6ff562",
@@ -155,7 +156,7 @@ describe("runStopHook", () => {
   });
 
   it("posts a tool_use citation when the model invokes an NLM MCP tool referencing a surfaced ID", async () => {
-    recordSurfaced("conv-mcp", [
+    recordSurfaced(DEFAULT_TEAM_ID, "conv-mcp", [
       "cc_sub_a139f4ab7ca5aa909",
       "cc_ff88cd96-d1f9-428c-8a97-2e4ca431acbe",
     ]);
@@ -196,7 +197,7 @@ describe("runStopHook", () => {
   });
 
   it("ignores tool_use blocks for non-NLM tools", async () => {
-    recordSurfaced("conv-other", ["cc_sub_a139f4ab7ca5aa909"]);
+    recordSurfaced(DEFAULT_TEAM_ID, "conv-other", ["cc_sub_a139f4ab7ca5aa909"]);
     const transcript = join(tmp, "t.jsonl");
     writeTranscript(transcript, [
       {
@@ -226,7 +227,7 @@ describe("runStopHook", () => {
   });
 
   it("skips when stop_hook_active is true", async () => {
-    recordSurfaced("conv-2", ["cc_sub_a139f4ab7ca5aa909"]);
+    recordSurfaced(DEFAULT_TEAM_ID, "conv-2", ["cc_sub_a139f4ab7ca5aa909"]);
     const postCitation = vi.fn();
     const result = await runStopHook(
       {
@@ -263,7 +264,7 @@ describe("runStopHook", () => {
   });
 
   it("does not throw when postCitation rejects (daemon down)", async () => {
-    recordSurfaced("conv-3", ["cc_sub_a139f4ab7ca5aa909"]);
+    recordSurfaced(DEFAULT_TEAM_ID, "conv-3", ["cc_sub_a139f4ab7ca5aa909"]);
     const transcript = join(tmp, "t.jsonl");
     writeTranscript(transcript, [
       {
@@ -287,7 +288,7 @@ describe("runStopHook", () => {
   });
 
   it("handles missing transcript path by returning no citations", async () => {
-    recordSurfaced("conv-4", ["cc_sub_a139f4ab7ca5aa909"]);
+    recordSurfaced(DEFAULT_TEAM_ID, "conv-4", ["cc_sub_a139f4ab7ca5aa909"]);
     const postCitation = vi.fn();
     const result = await runStopHook(
       {
@@ -308,7 +309,7 @@ describe("runStopHook", () => {
     // the summary. The pre-fix detector scanned only the summary turn and
     // missed the get_session call entirely (348 stop firings in production
     // logged 0 citations despite 23 NLM tool_uses in transcripts).
-    recordSurfaced("conv-multi", [
+    recordSurfaced(DEFAULT_TEAM_ID, "conv-multi", [
       "cc_7ff73609-9ac8-4851-891c-e958915bb7fa",
     ]);
     const transcript = join(tmp, "t.jsonl");
@@ -371,7 +372,7 @@ describe("runStopHook", () => {
   });
 
   it("dedupes across repeated Stop firings — same tool_use citation is posted exactly once", async () => {
-    recordSurfaced("conv-dedup", [
+    recordSurfaced(DEFAULT_TEAM_ID, "conv-dedup", [
       "cc_sub_a139f4ab7ca5aa909",
     ]);
     const transcript = join(tmp, "t.jsonl");
@@ -455,7 +456,7 @@ describe("runStopHook", () => {
   });
 
   it("fires citation POSTs concurrently, not serially", async () => {
-    recordSurfaced("conv-conc", ["cc_sub_a139f4ab7ca5aa909", "cc_ff88cd96-d1f9-428c-8a97-2e4ca431acbe"]);
+    recordSurfaced(DEFAULT_TEAM_ID, "conv-conc", ["cc_sub_a139f4ab7ca5aa909", "cc_ff88cd96-d1f9-428c-8a97-2e4ca431acbe"]);
     const transcript = join(tmp, "t-conc.jsonl");
     writeTranscript(transcript, [
       {
@@ -484,7 +485,7 @@ describe("runStopHook", () => {
   });
 
   it("a rejected citation POST does not abort the others or throw", async () => {
-    recordSurfaced("conv-reject", ["cc_sub_a139f4ab7ca5aa909", "cc_ff88cd96-d1f9-428c-8a97-2e4ca431acbe"]);
+    recordSurfaced(DEFAULT_TEAM_ID, "conv-reject", ["cc_sub_a139f4ab7ca5aa909", "cc_ff88cd96-d1f9-428c-8a97-2e4ca431acbe"]);
     const transcript = join(tmp, "t-reject.jsonl");
     writeTranscript(transcript, [
       {
@@ -510,7 +511,7 @@ describe("runStopHook", () => {
   });
 
   it("records a citation locally even if postCitation fails — prevents reposting on next fire", async () => {
-    recordSurfaced("conv-failopen", ["cc_sub_a139f4ab7ca5aa909"]);
+    recordSurfaced(DEFAULT_TEAM_ID, "conv-failopen", ["cc_sub_a139f4ab7ca5aa909"]);
     const transcript = join(tmp, "t.jsonl");
     writeTranscript(transcript, [
       {

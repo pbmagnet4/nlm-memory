@@ -812,7 +812,11 @@ function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     const result = await deps.recall.search(tenantId, query);
 
     // Fire-and-forget telemetry — never blocks the response.
+    // M6 Task 1 placeholder: query_log.jsonl is still M6-FILTER shared state
+    // (see installHostedModeGate below); pinned to DEFAULT_TEAM_ID until
+    // Task 2 replaces it with the `tenantId` already resolved above.
     void logQuery(
+      DEFAULT_TEAM_ID,
       {
         source,
         runtime,
@@ -837,7 +841,10 @@ function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     if (!Number.isFinite(days) || days < 1 || days > 365) {
       return c.json({ error: "days must be 1..365" }, 400);
     }
+    // M6 Task 1 placeholder — this route is M6-FILTER gated in hosted mode;
+    // see installHostedModeGate below.
     const stats = await recallStats(
+      DEFAULT_TEAM_ID,
       days,
       ...(deps.queryLogPath !== undefined ? [deps.queryLogPath] : []),
     );
@@ -872,7 +879,11 @@ function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     }
     const responsePreview = body["response_preview"];
     const kind = body["kind"];
+    // M6 Task 1 placeholder: this route is M6-FILTER gated in hosted mode
+    // (see installHostedModeGate below); pinned to DEFAULT_TEAM_ID until
+    // Task 2 lands real tenant resolution.
     await appendCitation(
+      DEFAULT_TEAM_ID,
       {
         conversationId,
         citedId,
@@ -892,7 +903,9 @@ function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     if (!Number.isFinite(days) || days < 1 || days > 365) {
       return c.json({ error: "days must be 1..365" }, 400);
     }
+    // M6 Task 1 placeholder — this route is M6-FILTER gated in hosted mode.
     const stats = await citationStats(
+      DEFAULT_TEAM_ID,
       days,
       ...(deps.citationLogPath !== undefined ? [deps.citationLogPath] : []),
     );
@@ -914,12 +927,14 @@ function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     if (typeof id !== "string" || !id) {
       return c.json({ error: "id required" }, 400);
     }
+    // M6 Task 1 placeholder — this route is M6-FILTER gated in hosted mode.
     await appendCitation(
+      DEFAULT_TEAM_ID,
       {
         conversationId:
           typeof body["conversation_id"] === "string"
             ? body["conversation_id"]
-            : (resolveConversationForSession(id) ?? "mcp_tool"),
+            : (resolveConversationForSession(DEFAULT_TEAM_ID, id) ?? "mcp_tool"),
         citedId: id,
         kind: "tool_use",
         ...(typeof body["reason"] === "string" ? { responsePreview: body["reason"] } : {}),
@@ -947,8 +962,9 @@ function registerHookRoutes(app: Hono<AppEnv>): void {
     if (typeof conversationId !== "string" || !conversationId) {
       return c.json({ error: "conversation_id required" }, 400);
     }
-    const flushed = loadSurfaced(conversationId).size;
-    clearSurfaced(conversationId);
+    // M6 Task 1 placeholder — this route is M6-FILTER gated in hosted mode.
+    const flushed = loadSurfaced(DEFAULT_TEAM_ID, conversationId).size;
+    clearSurfaced(DEFAULT_TEAM_ID, conversationId);
     const compactedAt = new Date().toISOString();
     const logPath = process.env["NLM_HOOK_LOG"] ?? join(homedir(), ".nlm", "hook-log.jsonl");
     try {
@@ -1011,7 +1027,10 @@ function registerHermesAgentHookRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
         startedAt: r.startedAt,
         matchScore: r.matchScore,
       }));
-      const surfaced = loadSurfaced(sessionId);
+      // M6 Task 1 placeholder: hook-state is still M6-FILTER shared state
+      // (see installHostedModeGate below); pinned to DEFAULT_TEAM_ID until
+      // Task 2 replaces it with the `tenantId` already resolved above.
+      const surfaced = loadSurfaced(DEFAULT_TEAM_ID, sessionId);
       const selected = selectHits({ hits, surfaced, scoreThreshold: 0, relativeFloor: HERMES_RELATIVE_FLOOR, perFireCap: 3, perConversationCap: 10 });
       if (
         selected.length === 0 &&
@@ -1021,7 +1040,7 @@ function registerHermesAgentHookRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
         return c.json({ context: null });
       }
       if (selected.length > 0) {
-        recordSurfaced(sessionId, selected.map((h) => h.id));
+        recordSurfaced(DEFAULT_TEAM_ID, sessionId, selected.map((h) => h.id));
       }
       return c.json({
         context: formatPointerBlock(
@@ -1054,7 +1073,8 @@ function registerHermesAgentHookRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
     if (typeof assistantResponse !== "string" || !assistantResponse) {
       return c.json({ ok: true, cited: 0 });
     }
-    const surfacedIds = [...loadSurfaced(sessionId)];
+    // M6 Task 1 placeholder — this route is M6-FILTER gated in hosted mode.
+    const surfacedIds = [...loadSurfaced(DEFAULT_TEAM_ID, sessionId)];
     const cited: string[] = [];
     for (const id of surfacedIds) {
       if (assistantResponse.includes(id)) cited.push(id);
@@ -1062,6 +1082,7 @@ function registerHermesAgentHookRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
     const preview = assistantResponse.slice(0, 200);
     for (const citedId of cited) {
       await appendCitation(
+        DEFAULT_TEAM_ID,
         { conversationId: sessionId, citedId, kind: "prose", responsePreview: preview },
         ...(deps.citationLogPath !== undefined ? [deps.citationLogPath] : []),
       );
@@ -1085,7 +1106,8 @@ function registerHermesAgentHookRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
     if (event !== "start") {
       const sessionId = body["session_id"];
       if (typeof sessionId === "string" && sessionId) {
-        clearSurfaced(sessionId);
+        // M6 Task 1 placeholder — this route is M6-FILTER gated in hosted mode.
+        clearSurfaced(DEFAULT_TEAM_ID, sessionId);
         clearCited(sessionId);
       }
     }
@@ -1141,7 +1163,11 @@ function registerFactRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
 
     const source = c.req.header("x-recall-source") ?? "http";
     const runtime = c.req.header("x-recall-runtime") ?? null;
+    // M6 Task 1 placeholder: fact_query_log.jsonl is still M6-FILTER shared
+    // state; pinned to DEFAULT_TEAM_ID until Task 2 replaces it with the
+    // `tenantId` already resolved above.
     void logFactQuery(
+      DEFAULT_TEAM_ID,
       {
         source,
         runtime,
@@ -1184,7 +1210,9 @@ function registerFactRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     if (!Number.isFinite(days) || days < 1 || days > 365) {
       return c.json({ error: "days must be 1..365" }, 400);
     }
+    // M6 Task 1 placeholder — this route is M6-FILTER gated in hosted mode.
     const stats = await factRecallStats(
+      DEFAULT_TEAM_ID,
       days,
       ...(deps.factQueryLogPath !== undefined ? [deps.factQueryLogPath] : []),
     );

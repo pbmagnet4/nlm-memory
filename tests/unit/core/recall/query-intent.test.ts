@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { classifyQueryIntent } from "../../../../src/core/recall/query-intent.js";
 import { logQuery } from "../../../../src/core/recall/query-log.js";
+import { DEFAULT_TEAM_ID } from "../../../../src/core/tenancy/default-team.js";
 
 // --- classifier unit tests ---
 
@@ -104,6 +105,7 @@ describe("logQuery intent field", () => {
 
   it("writes intent=lookup for a plain keyword query", async () => {
     await logQuery(
+      DEFAULT_TEAM_ID,
       {
         source: "test",
         runtime: null,
@@ -124,6 +126,7 @@ describe("logQuery intent field", () => {
 
   it("writes intent=temporal for a time-anchored query", async () => {
     await logQuery(
+      DEFAULT_TEAM_ID,
       {
         source: "test",
         runtime: null,
@@ -143,6 +146,7 @@ describe("logQuery intent field", () => {
 
   it("writes intent=relational for a dependency query", async () => {
     await logQuery(
+      DEFAULT_TEAM_ID,
       {
         source: "test",
         runtime: null,
@@ -162,6 +166,7 @@ describe("logQuery intent field", () => {
 
   it("writes intent=other for a null query", async () => {
     await logQuery(
+      DEFAULT_TEAM_ID,
       {
         source: "test",
         runtime: null,

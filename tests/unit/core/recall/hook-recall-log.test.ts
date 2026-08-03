@@ -1,8 +1,10 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { readHookRecallLog } from "../../../../src/core/recall/hook-recall-log.js";
+import { DEFAULT_TEAM_ID } from "../../../../src/core/tenancy/default-team.js";
 
 let dir: string;
 let logPath: string;
@@ -32,7 +34,7 @@ describe("readHookRecallLog", () => {
     ];
     writeFileSync(logPath, lines.map((l) => JSON.stringify(l)).join("\n") + "\n", "utf8");
 
-    const out = await readHookRecallLog(30, logPath);
+    const out = await readHookRecallLog(DEFAULT_TEAM_ID, 30, logPath);
     expect(out).toHaveLength(1);
     expect(out[0]).toEqual({ conversationId: "conv_a", injectedIds: ["s1", "s2"] });
   });
@@ -45,12 +47,12 @@ describe("readHookRecallLog", () => {
     ];
     writeFileSync(logPath, lines.map((l) => JSON.stringify(l)).join("\n") + "\n", "utf8");
 
-    const out = await readHookRecallLog(30, logPath);
+    const out = await readHookRecallLog(DEFAULT_TEAM_ID, 30, logPath);
     expect(out.map((e) => e.conversationId)).toEqual(["conv_new"]);
   });
 
   it("returns empty array when the file is missing", async () => {
-    const out = await readHookRecallLog(30, join(dir, "nope.jsonl"));
+    const out = await readHookRecallLog(DEFAULT_TEAM_ID, 30, join(dir, "nope.jsonl"));
     expect(out).toEqual([]);
   });
 
@@ -60,7 +62,34 @@ describe("readHookRecallLog", () => {
       `${JSON.stringify({ ts: now(), conversationId: "conv_a", wouldInject: ["s1"] })}\nnot json\n`,
       "utf8",
     );
-    const out = await readHookRecallLog(30, logPath);
+    const out = await readHookRecallLog(DEFAULT_TEAM_ID, 30, logPath);
     expect(out).toHaveLength(1);
+  });
+});
+
+describe("readHookRecallLog tenant path contract", () => {
+  afterEach(() => {
+    delete process.env["NLM_HOOK_LOG"];
+  });
+
+  it("default team honors NLM_HOOK_LOG override (legacy behavior)", async () => {
+    process.env["NLM_HOOK_LOG"] = logPath;
+    writeFileSync(logPath, `${JSON.stringify({ ts: now(), conversationId: "conv_a", wouldInject: ["s1"] })}\n`, "utf8");
+    const out = await readHookRecallLog(DEFAULT_TEAM_ID, 30);
+    expect(out).toHaveLength(1);
+  });
+
+  it("a non-default tenant reads from ~/.nlm/tenants/<t>/hook-log.jsonl, ignoring NLM_HOOK_LOG", async () => {
+    process.env["NLM_HOOK_LOG"] = logPath;
+    const derivedDir = join(homedir(), ".nlm", "tenants", "acme-hookrecall-test");
+    const derived = join(derivedDir, "hook-log.jsonl");
+    mkdirSync(derivedDir, { recursive: true });
+    writeFileSync(derived, `${JSON.stringify({ ts: now(), conversationId: "conv_tenant", wouldInject: ["s9"] })}\n`, "utf8");
+    try {
+      const out = await readHookRecallLog("acme-hookrecall-test", 30);
+      expect(out).toEqual([{ conversationId: "conv_tenant", injectedIds: ["s9"] }]);
+    } finally {
+      rmSync(derived, { force: true });
+    }
   });
 });

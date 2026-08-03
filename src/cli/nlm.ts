@@ -1050,7 +1050,7 @@ program
   .option("--json", "emit JSON instead of a human-readable table")
   .action(async (opts) => {
     const { missStats } = await import("../core/recall/miss-log.js");
-    const stats = await missStats(opts.days);
+    const stats = await missStats(DEFAULT_TEAM_ID, opts.days);
     if (opts.json) {
       process.stdout.write(`${JSON.stringify(stats, null, 2)}\n`);
       return;
@@ -1091,9 +1091,9 @@ program
     const { readCitationLog } = await import("../core/recall/citation-log.js");
 
     const [recallEntries, queryEntries, citationEntries] = await Promise.all([
-      readHookRecallLog(opts.days),
-      readQueryLog(opts.days),
-      readCitationLog(opts.days),
+      readHookRecallLog(DEFAULT_TEAM_ID, opts.days),
+      readQueryLog(DEFAULT_TEAM_ID, opts.days),
+      readCitationLog(DEFAULT_TEAM_ID, opts.days),
     ]);
 
     const result = computePrecision(recallEntries, citationEntries);

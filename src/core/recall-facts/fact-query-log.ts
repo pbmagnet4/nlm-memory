@@ -4,16 +4,21 @@
  * recall. Every /api/recall/facts call appends one line; /api/recall/facts/
  * stats reads it back.
  *
- * Telemetry path — never raises. File format: one JSON object per line at
- * $NLM_FACT_QUERY_LOG or ~/.nlm/fact_query_log.jsonl. Append-only.
+ * Telemetry path — never raises. File format: one JSON object per line.
+ * Path is tenant-derived (core/tenancy/tenant-state-path.ts): the default
+ * team's log is at $NLM_FACT_QUERY_LOG or ~/.nlm/fact_query_log.jsonl;
+ * every other tenant is isolated under
+ * ~/.nlm/tenants/<tenantId>/fact_query_log.jsonl and ignores the env
+ * override. Append-only.
  *
  * Without this, the FactStore is a write-only system: facts go in via
  * ingest + backfill, but there's no signal on whether anything reads them.
  */
 
 import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { homedir } from "node:os";
+import { dirname } from "node:path";
+import { tenantStatePath } from "@core/tenancy/tenant-state-path.js";
+import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import type { FactKind, RecallMode } from "@shared/types.js";
 
 export interface FactLogEntry {
@@ -46,13 +51,17 @@ export interface FactStatsResult {
   readonly log_present: boolean;
 }
 
-function defaultLogPath(): string {
-  return process.env["NLM_FACT_QUERY_LOG"] ?? join(homedir(), ".nlm", "fact_query_log.jsonl");
+function defaultLogPath(tenantId: string): string {
+  if (tenantId === DEFAULT_TEAM_ID) {
+    return process.env["NLM_FACT_QUERY_LOG"] ?? tenantStatePath(tenantId, "fact_query_log.jsonl");
+  }
+  return tenantStatePath(tenantId, "fact_query_log.jsonl");
 }
 
 export async function logFactQuery(
+  tenantId: string,
   entry: FactLogEntry,
-  logPath: string = defaultLogPath(),
+  logPath: string = defaultLogPath(tenantId),
 ): Promise<void> {
   try {
     await mkdir(dirname(logPath), { recursive: true });
@@ -77,8 +86,9 @@ export async function logFactQuery(
 }
 
 export async function factRecallStats(
+  tenantId: string,
   days: number,
-  logPath: string = defaultLogPath(),
+  logPath: string = defaultLogPath(tenantId),
 ): Promise<FactStatsResult> {
   const base: FactStatsResult = {
     days,

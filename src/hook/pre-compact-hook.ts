@@ -15,6 +15,7 @@
 
 import { pathToFileURL } from "node:url";
 import { loadSurfaced } from "@core/hook/memo.js";
+import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
 import { hookAuthHeaders } from "./hook-auth.js";
 import { readStdin, fetchWithTimeout, appendHookEvent } from "./hook-helpers.js";
@@ -36,7 +37,9 @@ export async function runPreCompact(
   input: PreCompactInput,
   portValue = process.env["NLM_PORT"] ?? DEFAULT_NLM_PORT,
 ): Promise<PreCompactResult> {
-  const surfacedSet = [...loadSurfaced(input.conversationId)];
+  // M6 Task 1 placeholder: hooks have no tenant context yet, so memo reads
+  // are pinned to DEFAULT_TEAM_ID here. Task 2 threads real tenant resolution.
+  const surfacedSet = [...loadSurfaced(DEFAULT_TEAM_ID, input.conversationId)];
   const payload = {
     conversation_id: input.conversationId,
     transcript_path: input.transcriptPath,

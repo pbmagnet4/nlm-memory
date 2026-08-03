@@ -17,6 +17,7 @@ import { logQuery } from "@core/recall/query-log.js";
 import { logFactQuery } from "@core/recall-facts/fact-query-log.js";
 import { appendCitation } from "@core/recall/citation-log.js";
 import { resolveConversationForSession } from "@core/hook/memo.js";
+import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import { resolveConversationByQuery } from "@core/hook/resolve-conversation-by-query.js";
 import { appendFactSupersedence, appendSupersedence, readSupersedenceLog } from "@core/storage/supersedence-log.js";
 import type { FactRecallService } from "@core/recall-facts/fact-recall-service.js";
@@ -194,7 +195,9 @@ export async function recallSessionsHandler(
     // Telemetry — the MCP path is the real agent-usage path; without this it
     // is invisible to query_log.jsonl and the Recall page. Fire-and-forget,
     // mirrors the HTTP /api/recall handler.
-    void logQuery({
+    // M6 Task 1 placeholder: query-log.jsonl is still M6-FILTER shared state
+    // (see citeSessionHandler below); pinned to DEFAULT_TEAM_ID until Task 2.
+    void logQuery(DEFAULT_TEAM_ID, {
       source: "mcp",
       runtime,
       query: input.query ?? null,
@@ -250,7 +253,8 @@ export async function recallWorkstreamHandler(
       found.id,
     );
     if (!view) return okText(`No workstream matches "${idOrLabel}".`);
-    void logQuery({
+    // M6 Task 1 placeholder — see recallSessionsHandler above.
+    void logQuery(DEFAULT_TEAM_ID, {
       source: "mcp",
       runtime,
       query: idOrLabel,
@@ -482,7 +486,8 @@ export async function recallFactsHandler(
     const result = await deps.factRecall.search(tenantId, query);
     const conversationId = resolveConversationByQuery(input.query ?? "") ?? undefined;
     // Telemetry — see recallSessionsHandler. Fire-and-forget.
-    void logFactQuery({
+    // M6 Task 1 placeholder — see recallSessionsHandler above.
+    void logFactQuery(DEFAULT_TEAM_ID, {
       source: "mcp",
       runtime,
       query: input.query ?? null,
@@ -793,10 +798,13 @@ export async function citeSessionHandler(
     return err(new Error(`id must be at least ${MIN_CITE_ID_LEN} characters`));
   }
   try {
-    await appendCitation({
+    // M6 Task 1 placeholder: citation-log.jsonl is still M6-FILTER shared
+    // state (see the hosted-mode gate above); pinned to DEFAULT_TEAM_ID
+    // until Task 2 wires _tenantId through for real.
+    await appendCitation(DEFAULT_TEAM_ID, {
       // Agents rarely pass conversation_id; resolve it server-side from the
       // surfaced-memo so the citation joins to its hook fire (NLM #345).
-      conversationId: input.conversation_id ?? resolveConversationForSession(input.id) ?? "mcp_tool",
+      conversationId: input.conversation_id ?? resolveConversationForSession(DEFAULT_TEAM_ID, input.id) ?? "mcp_tool",
       citedId: input.id,
       kind: "tool_use",
       ...(input.reason !== undefined ? { responsePreview: input.reason } : {}),
@@ -1359,7 +1367,8 @@ export function createMcpServer(deps: McpDeps, tenantId: string): McpServer {
           ...result.positives.map((e) => e.id),
           ...result.negatives.map((e) => e.id),
         ];
-        void logQuery({
+        // M6 Task 1 placeholder — see recallSessionsHandler above.
+        void logQuery(DEFAULT_TEAM_ID, {
           source: "mcp",
           runtime: mcpRuntimeFromClient(server.server.getClientVersion()),
           query: args.query,
