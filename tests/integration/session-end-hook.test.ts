@@ -35,15 +35,15 @@ describe("session-end hook", () => {
   });
 
   it("also deletes the cited memo (Stop hook dedup state)", () => {
-    recordCited("conv-c", ["cc_x", "cc_y"]);
-    expect(loadCited("conv-c").size).toBe(2);
+    recordCited(DEFAULT_TEAM_ID, "conv-c", ["cc_x", "cc_y"]);
+    expect(loadCited(DEFAULT_TEAM_ID, "conv-c").size).toBe(2);
     const result = runSessionEnd("conv-c");
     expect(result.cleared).toBe(true);
-    expect(loadCited("conv-c").size).toBe(0);
+    expect(loadCited(DEFAULT_TEAM_ID, "conv-c").size).toBe(0);
   });
 
   it("reports cleared=true when only one of (surfaced, cited) memo exists", () => {
-    recordCited("conv-only-cited", ["cc_x"]);
+    recordCited(DEFAULT_TEAM_ID, "conv-only-cited", ["cc_x"]);
     expect(runSessionEnd("conv-only-cited").cleared).toBe(true);
   });
 });

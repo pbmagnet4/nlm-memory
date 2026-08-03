@@ -10,6 +10,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { recentQueryLog } from "../core/recall/recent-log.js";
+import { DEFAULT_TEAM_ID } from "../core/tenancy/default-team.js";
 
 export interface TableCoverage {
   total: number;
@@ -134,7 +135,9 @@ export async function runScopeCoverage(opts: {
       };
     }
 
-    const entries = recentQueryLog(entryWindow, logPath);
+    // `nlm scope coverage` is a local CLI tool (single-tenant, no per-tenant
+    // CLI concept) — DEFAULT_TEAM_ID is its real identity, not a placeholder.
+    const entries = recentQueryLog(DEFAULT_TEAM_ID, entryWindow, logPath);
     const idSet = new Set<string>();
     const idsBySurface = new Map<string, Set<string>>();
     for (const entry of entries) {

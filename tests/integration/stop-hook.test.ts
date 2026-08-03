@@ -450,7 +450,7 @@ describe("runStopHook", () => {
     expect(postCitation).toHaveBeenCalledTimes(1);
 
     // Cite-memo persisted the dedup state.
-    expect(loadCited("conv-dedup")).toEqual(
+    expect(loadCited(DEFAULT_TEAM_ID, "conv-dedup")).toEqual(
       new Set(["cc_sub_a139f4ab7ca5aa909"]),
     );
   });

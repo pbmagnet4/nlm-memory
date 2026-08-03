@@ -1,11 +1,16 @@
 /**
  * recentLog — tail the query log for the /live observability panel.
  * Returns the last N entries in chronological order (most recent first).
+ *
+ * Path is tenant-derived (core/tenancy/tenant-state-path.ts), mirroring
+ * query-log.ts (same underlying file): the default team's log is
+ * $NLM_QUERY_LOG or ~/.nlm/query_log.jsonl; every other tenant reads
+ * ~/.nlm/tenants/<tenantId>/query_log.jsonl and ignores the env override.
  */
 
 import { readFileSync, existsSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { tenantStatePath } from "@core/tenancy/tenant-state-path.js";
+import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 
 export interface RecentLogEntry {
   readonly ts: string;
@@ -20,13 +25,20 @@ export interface RecentLogEntry {
   readonly returnedIds: ReadonlyArray<string>;
 }
 
-function defaultLogPath(): string {
-  return process.env["NLM_QUERY_LOG"] ?? join(homedir(), ".nlm", "query_log.jsonl");
+function defaultLogPath(tenantId: string): string {
+  if (tenantId === DEFAULT_TEAM_ID) {
+    return process.env["NLM_QUERY_LOG"] ?? tenantStatePath(tenantId, "query_log.jsonl");
+  }
+  return tenantStatePath(tenantId, "query_log.jsonl");
 }
 
 const TAIL_BYTES = 256 * 1024;
 
-export function recentQueryLog(limit: number, logPath: string = defaultLogPath()): RecentLogEntry[] {
+export function recentQueryLog(
+  tenantId: string,
+  limit: number,
+  logPath: string = defaultLogPath(tenantId),
+): RecentLogEntry[] {
   if (!existsSync(logPath)) return [];
   const size = statSync(logPath).size;
   const start = Math.max(0, size - TAIL_BYTES);

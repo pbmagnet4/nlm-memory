@@ -78,8 +78,8 @@ export async function runStopHook(
     };
   }
 
-  // M6 Task 1 placeholder: hooks have no tenant context yet, so memo/log
-  // I/O is pinned to DEFAULT_TEAM_ID. Task 2 threads real tenant resolution.
+  // Client-side hook composition root: no per-tenant CLI/hook concept exists
+  // today, so DEFAULT_TEAM_ID is this surface's real identity, not a placeholder.
   const surfaced = loadSurfaced(DEFAULT_TEAM_ID, input.conversationId);
   if (surfaced.size === 0) {
     return {
@@ -115,7 +115,7 @@ export async function runStopHook(
     toolUses: allToolUses,
     surfacedIds: surfaced,
   });
-  const alreadyCited = loadCited(input.conversationId);
+  const alreadyCited = loadCited(DEFAULT_TEAM_ID, input.conversationId);
   const fresh = detected.filter((c) => !alreadyCited.has(c.id));
 
   // Spec E: passive miss detection. Any session the agent explicitly
@@ -146,7 +146,7 @@ export async function runStopHook(
     fresh.map((c) => deps.postCitation(input.conversationId, c.id, c.kind, preview)),
   );
   if (fresh.length > 0) {
-    recordCited(input.conversationId, fresh.map((c) => c.id));
+    recordCited(DEFAULT_TEAM_ID, input.conversationId, fresh.map((c) => c.id));
   }
 
   return {

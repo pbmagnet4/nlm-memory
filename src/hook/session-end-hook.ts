@@ -24,10 +24,10 @@ export interface SessionEndResult {
 }
 
 export function runSessionEnd(conversationId: string): SessionEndResult {
-  // M6 Task 1 placeholder: hooks have no tenant context yet, so memo I/O
-  // is pinned to DEFAULT_TEAM_ID. Task 2 threads real tenant resolution.
+  // Client-side hook composition root: no per-tenant CLI/hook concept exists
+  // today, so DEFAULT_TEAM_ID is this surface's real identity, not a placeholder.
   const surfacedCleared = clearSurfaced(DEFAULT_TEAM_ID, conversationId);
-  const citedCleared = clearCited(conversationId);
+  const citedCleared = clearCited(DEFAULT_TEAM_ID, conversationId);
   return { conversationId, cleared: surfacedCleared || citedCleared };
 }
 
