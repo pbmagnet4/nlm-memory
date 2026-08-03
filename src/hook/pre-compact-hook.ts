@@ -37,8 +37,8 @@ export async function runPreCompact(
   input: PreCompactInput,
   portValue = process.env["NLM_PORT"] ?? DEFAULT_NLM_PORT,
 ): Promise<PreCompactResult> {
-  // M6 Task 1 placeholder: hooks have no tenant context yet, so memo reads
-  // are pinned to DEFAULT_TEAM_ID here. Task 2 threads real tenant resolution.
+  // Client-side hook composition root: no per-tenant CLI/hook concept exists
+  // today, so DEFAULT_TEAM_ID is this surface's real identity, not a placeholder.
   const surfacedSet = [...loadSurfaced(DEFAULT_TEAM_ID, input.conversationId)];
   const payload = {
     conversation_id: input.conversationId,

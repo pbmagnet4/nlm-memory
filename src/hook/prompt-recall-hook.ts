@@ -160,8 +160,8 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
   const preview = input.prompt.slice(0, PROMPT_PREVIEW_CHARS);
 
   if (gate === "generative" || gate === "skip") {
-    // M6 Task 1 placeholder: hooks have no tenant context yet, so log/memo
-    // I/O is pinned to DEFAULT_TEAM_ID. Task 2 threads real tenant resolution.
+    // Client-side hook composition root: no per-tenant CLI/hook concept exists
+    // today, so DEFAULT_TEAM_ID is this surface's real identity, not a placeholder.
     appendHookLog(DEFAULT_TEAM_ID, {
       ts: new Date().toISOString(),
       conversationId: input.conversationId,
