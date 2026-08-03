@@ -2,8 +2,12 @@
 /**
  * The standing cross-tenant leak-test contract (program spec §6), sqlite
  * lane. This file is test-first at the contract level (Global Constraints,
- * Wave A): it enumerates every adversarial case from spec §6 (1-9, 11-12;
- * case 10 is concurrency and lands with M7's harness) as a named `it()`.
+ * Wave A): it enumerates every adversarial case from spec §6 that has a
+ * sqlite-reachable shape (1-9, 11-12) as a named `it()`. Case 10
+ * (concurrency) needs a real concurrent-writer db and lives only in the pg
+ * twin (tenant-leak-contract.pg.test.ts) — it already landed there via M7's
+ * usePgTestSchema isolated-schema harness, so it is not "pending" anywhere;
+ * sqlite's single-writer model has no equivalent case to assert.
  *
  * Wave B1-B4 landed SessionStore/FactStore/CodeExemplarStore/SignalStore/
  * WorkstreamStore/EntityStore/OutcomeStore threading, so cases 1-6 flip here
@@ -13,17 +17,23 @@
  *
  * Wave C1's surface threading + Wave C4's guard test complete cases 9 and 11
  * (below). M3 flips case 8 (token-swap auth) to a real assertion against the
- * real HTTP app + TeamTokenStore. Case 7 (ingest attribution) is M4's job;
- * case 12 (M6 file-state isolation) stays `it.todo` — a case that cannot
- * pass yet is `it.todo` with its exact case text — visibly red-by-design,
- * never deleted, never silently skipped.
+ * real HTTP app + TeamTokenStore. Case 7 (ingest attribution) is M4's job.
+ * M6 Tasks 1-4 tenant-threaded the file-state modules (memo, hook-log,
+ * query/citation/miss logs, supersedence-log, etc.) and un-gated the
+ * M6-FILTER hosted routes, so Task 3 here flips case 12 (file-state
+ * isolation) to a real assertion too. Every enumerated case (1-9, 11, 12) is
+ * now real in this file — none remain `it.todo`.
  *
  * The pg twin (tenant-leak-contract.pg.test.ts, Wave C5) mirrors the sqlite
- * cases that have pg-reachable shapes; case 10 (concurrency) stays out of
- * scope for both files per the plan (M7's isolated harness).
+ * cases that have pg-reachable shapes plus case 10. Case 12 is deliberately
+ * NOT duplicated there: the file-state modules are plain local-filesystem
+ * JSONL writers with no sqlite/pg involvement at all, so the pg lane would
+ * assert nothing the sqlite case doesn't already cover — see the one-line
+ * pointer comment in that file instead.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { seedTenantCorpus, type SeededTenantCorpus } from "../helpers/seed-tenant-corpus.js";
@@ -38,6 +48,13 @@ import { SourceRegistry } from "../../src/core/sources/source-registry.js";
 import { TeamTokenStore } from "../../src/core/tenancy/team-token-store.js";
 import { hashTeamToken } from "../../src/core/tenancy/team-auth.js";
 import type { Signal } from "../../src/shared/types.js";
+import { loadSurfaced, recordSurfaced } from "../../src/core/hook/memo.js";
+import { logQuery, readQueryLog, recallStats, type LogEntry } from "../../src/core/recall/query-log.js";
+import { appendCitation, readCitationLog, citationStats, type CitationEntry } from "../../src/core/recall/citation-log.js";
+import { appendMiss, missStats, type MissEntry } from "../../src/core/recall/miss-log.js";
+import { appendHookLog, type HookLogEntry } from "../../src/core/hook/hook-log.js";
+import { appendSupersedence, readSupersedenceLog } from "../../src/core/storage/supersedence-log.js";
+import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
 
 const ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "../..");
 
@@ -489,8 +506,248 @@ describe("tenant leak-test contract (spec §6, sqlite lane)", () => {
     expect(offenders).toEqual([]);
   });
 
-  it.todo(
-    "case 12: state isolation (M6) — per-conversation memo state and query/citation/miss logs never mix tenants; " +
-      "a conversation-id collision across teams does not share dedup state",
-  );
+  // Case 12 (M6 Tasks 1-4). The file-state modules (memo, hook-log,
+  // query/citation/miss logs, supersedence-log) predate per-tenant SQLite
+  // rows and used to write one shared file under ~/.nlm/ — the leak this
+  // case exists to close. tenantA/tenantB are unique to this case
+  // (team_a_case12/team_b_case12, not the fixture's SQL-backed team_a/
+  // team_b) so its real ~/.nlm/tenants/<t>/ writes can't collide with any
+  // other spec file; the one exception is the amendment's HTTP-supersede
+  // leg, which deliberately reuses the fixture's real team_a session ids so
+  // markSuperseded has rows to operate on without fabricating a second
+  // corpus.
+  it("case 12: state isolation (M6) — per-conversation memo state and query/citation/miss logs never mix tenants; " +
+      "a conversation-id collision across teams does not share dedup state", async () => {
+    const tenantA = "team_a_case12";
+    const tenantB = "team_b_case12";
+    const derivedA = join(homedir(), ".nlm", "tenants", tenantA);
+    const derivedB = join(homedir(), ".nlm", "tenants", tenantB);
+    const supersedeDirA = join(homedir(), ".nlm", "tenants", "team_a");
+    const supersedeDirB = join(homedir(), ".nlm", "tenants", "team_b");
+    const legacyQueryLog = join(fixture.dir, "legacy-query-log.jsonl");
+    const legacyCitationLog = join(fixture.dir, "legacy-citation-log.jsonl");
+    const legacyMissLog = join(fixture.dir, "legacy-miss-log.jsonl");
+    const legacyHookLog = join(fixture.dir, "legacy-hook-log.jsonl");
+    const prevQueryLog = process.env["NLM_QUERY_LOG"];
+    const prevCitationLog = process.env["NLM_CITATION_LOG"];
+    const prevMissLog = process.env["NLM_MISS_LOG"];
+    const prevHookLog = process.env["NLM_HOOK_LOG"];
+    const prevHosted = process.env["NLM_HOSTED"];
+    const sharedConvId = "case12-shared-conv";
+
+    try {
+      // Route the DEFAULT_TEAM_ID ("legacy") lane at temp files inside the
+      // fixture dir so this test never touches the developer's real
+      // ~/.nlm/query_log.jsonl etc. — mirrors the Task 1 unit-test convention.
+      process.env["NLM_QUERY_LOG"] = legacyQueryLog;
+      process.env["NLM_CITATION_LOG"] = legacyCitationLog;
+      process.env["NLM_MISS_LOG"] = legacyMissLog;
+      process.env["NLM_HOOK_LOG"] = legacyHookLog;
+
+      // --- Memo: recordSurfaced(A, convId, [sessionA]) then loadSurfaced(B,
+      // convId) is empty — a conversation-id collision across teams shares
+      // no dedup state.
+      recordSurfaced(tenantA, sharedConvId, ["sess_a_only"]);
+      expect([...loadSurfaced(tenantB, sharedConvId)]).toEqual([]);
+      expect([...loadSurfaced(tenantA, sharedConvId)]).toEqual(["sess_a_only"]);
+
+      // --- Query log: A and B each write one distinct entry; each tenant's
+      // reader/stats output contains only its own entry; the legacy
+      // default-team file receives neither tenant's row.
+      const queryEntry = (over: Partial<LogEntry>): LogEntry => ({
+        source: "test",
+        runtime: null,
+        query: null,
+        entity: null,
+        kind: null,
+        mode: "keyword",
+        limit: 5,
+        nResults: 1,
+        returnedIds: [],
+        ...over,
+      });
+      await logQuery(DEFAULT_TEAM_ID, queryEntry({ query: "case12-query-default" }));
+      await logQuery(tenantA, queryEntry({ query: "case12-query-a", returnedIds: ["sess_a"] }));
+      await logQuery(tenantB, queryEntry({ query: "case12-query-b", returnedIds: ["sess_b"] }));
+
+      expect((await readQueryLog(tenantA, 7)).map((e) => e.entry.query)).toEqual(["case12-query-a"]);
+      expect((await readQueryLog(tenantB, 7)).map((e) => e.entry.query)).toEqual(["case12-query-b"]);
+
+      const aStats = await recallStats(tenantA, 7);
+      expect(aStats.total).toBe(1);
+      expect(aStats.top_queries.map((q) => q.query)).toEqual(["case12-query-a"]);
+      const bStats = await recallStats(tenantB, 7);
+      expect(bStats.total).toBe(1);
+      expect(bStats.top_queries.map((q) => q.query)).toEqual(["case12-query-b"]);
+
+      const legacyQueryRaw = readFileSync(legacyQueryLog, "utf8");
+      expect(legacyQueryRaw).not.toContain("case12-query-a");
+      expect(legacyQueryRaw).not.toContain("case12-query-b");
+
+      // --- Citation log. Conversation ids must be "attributable" (not
+      // test-prefixed) or appendCitation drops them at the source.
+      const citation = (over: Partial<CitationEntry>): CitationEntry => ({
+        conversationId: "case12-cite-conv",
+        citedId: "case12-cited",
+        ...over,
+      });
+      await appendCitation(
+        DEFAULT_TEAM_ID,
+        citation({ conversationId: "case12-cite-conv-default", citedId: "case12-cited-default" }),
+      );
+      await appendCitation(tenantA, citation({ conversationId: "case12-cite-conv-a", citedId: "case12-cited-a" }));
+      await appendCitation(tenantB, citation({ conversationId: "case12-cite-conv-b", citedId: "case12-cited-b" }));
+
+      expect((await readCitationLog(tenantA, 7)).map((c) => c.citedId)).toEqual(["case12-cited-a"]);
+      expect((await readCitationLog(tenantB, 7)).map((c) => c.citedId)).toEqual(["case12-cited-b"]);
+
+      const aCiteStats = await citationStats(tenantA, 7);
+      expect(aCiteStats.top_ids.map((t) => t.id)).toEqual(["case12-cited-a"]);
+      const bCiteStats = await citationStats(tenantB, 7);
+      expect(bCiteStats.top_ids.map((t) => t.id)).toEqual(["case12-cited-b"]);
+
+      const legacyCitationRaw = readFileSync(legacyCitationLog, "utf8");
+      expect(legacyCitationRaw).not.toContain("case12-cited-a");
+      expect(legacyCitationRaw).not.toContain("case12-cited-b");
+
+      // --- Miss log.
+      const miss = (over: Partial<MissEntry>): MissEntry => ({
+        conversationId: "case12-miss-conv",
+        missedId: "case12-missed",
+        kind: "get_session",
+        surfacedCount: 0,
+        ...over,
+      });
+      await appendMiss(
+        DEFAULT_TEAM_ID,
+        miss({ conversationId: "case12-miss-conv-default", missedId: "case12-missed-default" }),
+      );
+      await appendMiss(tenantA, miss({ conversationId: "case12-miss-conv-a", missedId: "case12-missed-a" }));
+      await appendMiss(tenantB, miss({ conversationId: "case12-miss-conv-b", missedId: "case12-missed-b" }));
+
+      const aMissStats = await missStats(tenantA, 7);
+      expect(aMissStats.topIds.map((t) => t.id)).toEqual(["case12-missed-a"]);
+      const bMissStats = await missStats(tenantB, 7);
+      expect(bMissStats.topIds.map((t) => t.id)).toEqual(["case12-missed-b"]);
+
+      const legacyMissRaw = readFileSync(legacyMissLog, "utf8");
+      expect(legacyMissRaw).not.toContain("case12-missed-a");
+      expect(legacyMissRaw).not.toContain("case12-missed-b");
+
+      // --- Hook log. No dedicated reader export (unlike the logs above) —
+      // assert the raw derived-path file content directly, mirroring
+      // hook-log.test.ts's own path-contract style.
+      const hookEntry = (over: Partial<HookLogEntry>): HookLogEntry => ({
+        ts: new Date().toISOString(),
+        conversationId: "case12-hook-conv",
+        promptPreview: "p",
+        gate: "evaluate",
+        hits: [],
+        wouldInject: [],
+        estTokens: 0,
+        mode: "shadow",
+        ...over,
+      });
+      appendHookLog(DEFAULT_TEAM_ID, hookEntry({ conversationId: "case12-hook-conv-default" }));
+      appendHookLog(tenantA, hookEntry({ conversationId: "case12-hook-conv-a" }));
+      appendHookLog(tenantB, hookEntry({ conversationId: "case12-hook-conv-b" }));
+
+      const aHookRaw = readFileSync(join(derivedA, "hook-log.jsonl"), "utf8");
+      expect(aHookRaw).toContain("case12-hook-conv-a");
+      expect(aHookRaw).not.toContain("case12-hook-conv-b");
+      const bHookRaw = readFileSync(join(derivedB, "hook-log.jsonl"), "utf8");
+      expect(bHookRaw).toContain("case12-hook-conv-b");
+      expect(bHookRaw).not.toContain("case12-hook-conv-a");
+      const legacyHookRaw = readFileSync(legacyHookLog, "utf8");
+      expect(legacyHookRaw).not.toContain("case12-hook-conv-a");
+      expect(legacyHookRaw).not.toContain("case12-hook-conv-b");
+
+      // --- HTTP level: GET /api/recall/stats as token-A reflects A's write
+      // only (reuses the case-8 token fixtures — NLM_HOSTED=1, TeamTokenStore
+      // + hashTeamToken, no queryLogPath override so the route reads the
+      // same real tenant-derived file the direct logQuery calls above wrote).
+      process.env["NLM_HOSTED"] = "1";
+      // team_tokens.team_id has a live FK to teams(id) — tenantA/tenantB
+      // aren't part of the fixture's seeded corpus (only team_a/team_b are),
+      // so they need their own teams rows before a token can reference them.
+      fixture.db
+        .prepare("INSERT OR IGNORE INTO teams (id, name) VALUES (?, ?)")
+        .run(tenantA, tenantA);
+      fixture.db
+        .prepare("INSERT OR IGNORE INTO teams (id, name) VALUES (?, ?)")
+        .run(tenantB, tenantB);
+      const teamTokens = new TeamTokenStore(fixture.db);
+      const tokenA = "token-team-a-case12";
+      const tokenB = "token-team-b-case12";
+      await teamTokens.insert(hashTeamToken(tokenA), tenantA);
+      await teamTokens.insert(hashTeamToken(tokenB), tenantB);
+      const recallStub = { search: async () => ({ query: "", mode: "keyword" as const, limit: 0, total: 0, results: [] }) };
+      const app = createApp({ recall: recallStub as never, store: fixture.sessionStore, teamTokens });
+
+      const resA = await app.request("/api/recall/stats?days=7", { headers: { authorization: `Bearer ${tokenA}` } });
+      expect(resA.status).toBe(200);
+      const statsA = (await resA.json()) as { total: number; top_queries: Array<{ query: string }> };
+      expect(statsA.total).toBe(1);
+      expect(statsA.top_queries.map((q) => q.query)).toEqual(["case12-query-a"]);
+
+      const resB = await app.request("/api/recall/stats?days=7", { headers: { authorization: `Bearer ${tokenB}` } });
+      expect(resB.status).toBe(200);
+      const statsB = (await resB.json()) as { total: number; top_queries: Array<{ query: string }> };
+      expect(statsB.total).toBe(1);
+      expect(statsB.top_queries.map((q) => q.query)).toEqual(["case12-query-b"]);
+
+      // --- Amendment: appendSupersedence as A then readSupersedenceLog as B
+      // returns nothing for B.
+      await appendSupersedence(tenantA, {
+        predecessorId: "case12-sup-pred",
+        successorId: "case12-sup-succ",
+        reason: "case12",
+      });
+      expect(await readSupersedenceLog(tenantB)).toEqual([]);
+      const aSupersedence = await readSupersedenceLog(tenantA);
+      expect(aSupersedence.map((e) => e.predecessorId)).toEqual(["case12-sup-pred"]);
+
+      // --- Amendment (HTTP leg): the real POST /api/session/:id/supersede
+      // route invoked as token-A, asserted invisible to B at the store level
+      // — the "where cheap to assert at the store level" scope the amendment
+      // calls for, in place of building out a full get_session enrichment
+      // round-trip. Reuses the fixture's own real team_a session ids so
+      // markSuperseded has rows to operate on.
+      const { A } = fixture.ids;
+      const tokenSupA = "token-team-a-case12-supersede";
+      await teamTokens.insert(hashTeamToken(tokenSupA), "team_a");
+      const supRes = await app.request(`/api/session/${A.sessionIds[0]}/supersede`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${tokenSupA}`, "content-type": "application/json" },
+        body: JSON.stringify({ successor_id: A.sessionIds[1] }),
+      });
+      expect(supRes.status).toBe(200);
+      // The route's appendSupersedence call is fire-and-forget (not awaited,
+      // matching case 7's ingest write) — poll briefly rather than race it.
+      const deadline = Date.now() + 3000;
+      let teamASupersedence: Awaited<ReturnType<typeof readSupersedenceLog>> = [];
+      while (Date.now() < deadline) {
+        teamASupersedence = await readSupersedenceLog("team_a");
+        if (teamASupersedence.some((e) => e.predecessorId === A.sessionIds[0])) break;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(teamASupersedence.some((e) => e.predecessorId === A.sessionIds[0])).toBe(true);
+      expect(await readSupersedenceLog("team_b")).toEqual([]);
+    } finally {
+      if (prevQueryLog === undefined) delete process.env["NLM_QUERY_LOG"];
+      else process.env["NLM_QUERY_LOG"] = prevQueryLog;
+      if (prevCitationLog === undefined) delete process.env["NLM_CITATION_LOG"];
+      else process.env["NLM_CITATION_LOG"] = prevCitationLog;
+      if (prevMissLog === undefined) delete process.env["NLM_MISS_LOG"];
+      else process.env["NLM_MISS_LOG"] = prevMissLog;
+      if (prevHookLog === undefined) delete process.env["NLM_HOOK_LOG"];
+      else process.env["NLM_HOOK_LOG"] = prevHookLog;
+      if (prevHosted === undefined) delete process.env["NLM_HOSTED"];
+      else process.env["NLM_HOSTED"] = prevHosted;
+      rmSync(derivedA, { recursive: true, force: true });
+      rmSync(derivedB, { recursive: true, force: true });
+      rmSync(supersedeDirA, { recursive: true, force: true });
+      rmSync(supersedeDirB, { recursive: true, force: true });
+    }
+  });
 });

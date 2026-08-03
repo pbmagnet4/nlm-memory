@@ -17,8 +17,13 @@
  * interleaves concurrent Promise.all batches of reads and writes across
  * both tenants against the one live pg instance.
  * M3 flips case 8 (token-swap auth) to a real assertion. Case 7 (ingest
- * attribution) is M4's job; case 12 (M6 file-state isolation) mirrors the
- * sqlite file's it.todo.
+ * attribution) is M4's job. Case 12 (M6 file-state isolation) is
+ * deliberately NOT duplicated here: the file-state modules (memo, hook-log,
+ * query/citation/miss logs, supersedence-log) are plain local-filesystem
+ * JSONL writers with no sqlite/pg involvement — the storage backend never
+ * enters their code path — so a pg-lane copy would assert nothing the
+ * sqlite file's real case 12 doesn't already cover. See
+ * tenant-leak-contract.test.ts for the assertions.
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { seedTenantCorpusPg, type SeededTenantCorpusPg } from "../helpers/seed-tenant-corpus-pg.js";
@@ -360,8 +365,6 @@ describe.skipIf(!PG_TEST_URL)("tenant leak-test contract (spec §6, pg lane)", (
     expect(finalB.some((f) => f.id.startsWith("fact-team_a"))).toBe(false);
   });
 
-  it.todo(
-    "case 12: state isolation (M6) — per-conversation memo state and query/citation/miss logs never mix tenants; " +
-      "a conversation-id collision across teams does not share dedup state",
-  );
+  // Case 12 (M6 file-state isolation) intentionally has no pg-lane test —
+  // see the file header comment above.
 });
