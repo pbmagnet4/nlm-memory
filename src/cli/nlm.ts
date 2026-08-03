@@ -86,6 +86,10 @@ import { runScopeCoverage, formatCoverageResult } from "./scope-coverage.js";
 import { loadAliasMap } from "../core/scope/alias-map.js";
 import { getUpdateStatus } from "../core/update-check/check.js";
 import { checkDriftAndAlert, checkEmbedderAndAlert } from "../core/alerts/check-and-alert.js";
+import { fireAlert } from "../core/alerts/fire-alert.js";
+import { buildJobAlertEvent } from "../core/alerts/job-alert.js";
+import { JobSupervisor } from "../core/jobs/job-supervisor.js";
+import { realClock, createReprocessSpawnChild } from "./reprocess-job-adapters.js";
 import { connectHermes, disconnectHermes, hermesConfigPath } from "../install/hermes.js";
 import { connectHermesAgent, disconnectHermesAgent, hermesAgentPluginDir } from "../install/hermes-agent.js";
 import { connectWindsurf, disconnectWindsurf } from "../install/windsurf.js";
@@ -458,6 +462,21 @@ program
     const { existsSync } = await import("node:fs");
     const hasMcpToken = Boolean(process.env["NLM_MCP_TOKEN"]);
     const codeEmb = buildCodeEmbedder();
+    // Job supervision: owns the daemon's own reprocess child, restarting it
+    // on a non-clean exit while work remains and reporting stalls — see
+    // core/jobs/job-supervisor.ts for why this exists (a detached
+    // `nlm reprocess` died on OOM and sat unobserved).
+    // onEvent -> fireAlert is fire-and-forget on purpose: fireAlert already
+    // never throws (best-effort delivery, see fire-alert.ts) and JobSupervisor
+    // itself catches/logs anything an onEvent callback throws, so this can't
+    // crash the daemon either way.
+    const jobSupervisor = new JobSupervisor({
+      spawnChild: createReprocessSpawnChild({ execPath: process.execPath, nlmScriptPath: __filename }),
+      clock: realClock,
+      onEvent: (event) => {
+        void fireAlert(buildJobAlertEvent(event));
+      },
+    });
     const app = createApp({
       recall,
       store,
@@ -467,6 +486,7 @@ program
       dbPath: dbPath(),
       classifier,
       sources,
+      jobSupervisor,
       providers,
       teamTokens: storage.teamTokens,
       ingest: {
@@ -713,6 +733,10 @@ program
           if (checkpointTimer) clearInterval(checkpointTimer);
           scheduler.stop();
           memoSweep.stop();
+          // Reaps an active reprocess child instead of leaving it orphaned
+          // when the daemon exits. stop() is idempotent and a no-op when no
+          // run is active.
+          jobSupervisor.stop();
           await storage.close();
           process.exit(0);
         };
@@ -1373,7 +1397,51 @@ program
   .option("--dry-run", "print cohort report without writing")
   .option("-v, --verbose", "per-session progress on stderr")
   .option("--force-embed", "proceed even when the stored prose embedding lane mismatches the runtime embedder")
-  .action(async (opts: { limit?: number; minConfidence?: number; onlyNull?: boolean; excludeModel?: string[]; state?: string; dryRun?: boolean; verbose?: boolean; forceEmbed?: boolean }) => {
+  .option("--daemon", "submit to the running daemon's job supervisor instead of running in this process (restarts on OOM/crash, reports stalls)")
+  .action(async (opts: { limit?: number; minConfidence?: number; onlyNull?: boolean; excludeModel?: string[]; state?: string; dryRun?: boolean; verbose?: boolean; forceEmbed?: boolean; daemon?: boolean }) => {
+    if (opts.daemon) {
+      // Same daemon-call auth pattern as `nlm ui`'s bootstrap-nonce POST:
+      // autoload ~/.nlm/.env so a fresh shell still has NLM_MCP_TOKEN, then
+      // send it as Authorization: Bearer (absent token = local-mode
+      // fallback on the daemon side, never a hard requirement).
+      autoloadEnv();
+      const p = port();
+      const token = process.env["NLM_MCP_TOKEN"];
+      const args: string[] = [];
+      if (opts.limit !== undefined) args.push("--limit", String(opts.limit));
+      if (opts.minConfidence !== undefined) args.push("--min-confidence", String(opts.minConfidence));
+      if (opts.onlyNull) args.push("--only-null");
+      for (const tag of opts.excludeModel ?? []) args.push("--exclude-model", tag);
+      if (opts.state) args.push("--state", opts.state);
+      if (opts.dryRun) args.push("--dry-run");
+      if (opts.forceEmbed) args.push("--force-embed");
+      // -v is always added by the daemon's spawn adapter (job-supervisor.ts
+      // parses reprocess's [i/n] progress lines from it) — a local
+      // --verbose here would only affect this short-lived CLI invocation's
+      // own stdout, which prints nothing itself, so it's not forwarded.
+      try {
+        const res = await fetch(`http://localhost:${p}/api/jobs/reprocess`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(token ? { authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ args }),
+        });
+        const body = await res.json().catch(() => ({}) as Record<string, unknown>);
+        if (res.status === 202) {
+          console.log(`reprocess --daemon: submitted (${JSON.stringify(body)})`);
+          process.exit(0);
+        }
+        console.error(`reprocess --daemon: daemon returned ${res.status}: ${JSON.stringify(body)}`);
+        process.exit(1);
+      } catch (e) {
+        console.error(`reprocess --daemon: could not reach the daemon at localhost:${p}. Is it running?`);
+        console.error(`  ${e instanceof Error ? e.message : String(e)}`);
+        process.exit(1);
+      }
+      return;
+    }
     const { reprocess: runReprocess } = await import("../core/ingest/reprocess.js");
     const stack = await buildStack();
     try {
