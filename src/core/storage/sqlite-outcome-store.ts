@@ -54,7 +54,6 @@ import type {
 } from "@ports/outcome.js";
 import type { SessionStatus, SignalOutcome } from "@shared/types.js";
 import { tenantClause } from "@core/tenancy/tenant-clause.js";
-import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 
 const RELEVANT_EDGE_KINDS = "('supersedes','replaces','continues')";
 
@@ -133,16 +132,17 @@ export class SqliteOutcomeEdgeReader implements OutcomeEdgeReader {
  * rollup evidence has no expiry.
  */
 export class SqliteOutcomeCitationReader implements OutcomeCitationReader {
-  constructor(private readonly logPath?: string) {}
+  // tenantId is captured here rather than added to the OutcomeCitationReader
+  // port's listForSession(sessionId) signature — that port is shared by every
+  // adapter and callers (deriveOutcome) already scope by the outer tenantId
+  // argument; storing it on the adapter mirrors how logPath is already held.
+  constructor(private readonly tenantId: string, private readonly logPath?: string) {}
 
   async listForSession(sessionId: string): Promise<ReadonlyArray<OutcomeCitation>> {
-    // M6 Task 1 placeholder: OutcomeCitationReader's port signature carries
-    // no tenantId (citation-log.jsonl is still M6-FILTER shared state);
-    // pinned to DEFAULT_TEAM_ID until Task 2 threads real tenant resolution.
     const entries =
       this.logPath !== undefined
-        ? await readCitationLog(DEFAULT_TEAM_ID, Number.POSITIVE_INFINITY, this.logPath)
-        : await readCitationLog(DEFAULT_TEAM_ID, Number.POSITIVE_INFINITY);
+        ? await readCitationLog(this.tenantId, Number.POSITIVE_INFINITY, this.logPath)
+        : await readCitationLog(this.tenantId, Number.POSITIVE_INFINITY);
     return entries.filter((e) => e.citedId === sessionId).map((e) => ({ conversationId: e.conversationId }));
   }
 }
@@ -158,13 +158,14 @@ export interface BuildSqliteOutcomeDepsOptions {
 /** Per-session OutcomeDeps for `get_session`. Safe to build fresh per call. */
 export async function buildSqliteOutcomeDeps(
   db: Database.Database,
+  tenantId: string,
   opts: BuildSqliteOutcomeDepsOptions = {},
 ): Promise<OutcomeDeps> {
   return {
     sessions: new SqliteOutcomeSessionReader(db),
     signals: new SqliteOutcomeSignalReader(db),
     edges: new SqliteOutcomeEdgeReader(db),
-    citations: new SqliteOutcomeCitationReader(opts.citationLogPath),
+    citations: new SqliteOutcomeCitationReader(tenantId, opts.citationLogPath),
     reDerivationPairs: loadCachedReDerivationPairs(opts.reDerivationPairsPath ?? DEFAULT_REDERIVATION_PAIRS_PATH),
     ...(opts.now ? { now: opts.now } : {}),
     ...(opts.heldAfterDays !== undefined ? { heldAfterDays: opts.heldAfterDays } : {}),
@@ -249,14 +250,10 @@ export async function loadOutcomeCoverageInput(
     }
 
     const idSet = new Set(ids);
-    // M6 Task 1 placeholder: pinned to DEFAULT_TEAM_ID rather than the real
-    // `tenantId` already in scope on this function, matching Task 1's
-    // mechanical-placeholder scope; Task 2 should wire the real value here
-    // first since it requires no new plumbing.
     const citationEntries =
       opts.citationLogPath !== undefined
-        ? await readCitationLog(DEFAULT_TEAM_ID, Number.POSITIVE_INFINITY, opts.citationLogPath)
-        : await readCitationLog(DEFAULT_TEAM_ID, Number.POSITIVE_INFINITY);
+        ? await readCitationLog(tenantId, Number.POSITIVE_INFINITY, opts.citationLogPath)
+        : await readCitationLog(tenantId, Number.POSITIVE_INFINITY);
     for (const entry of citationEntries) {
       if (!idSet.has(entry.citedId)) continue;
       const list = citationsBySession.get(entry.citedId) ?? [];

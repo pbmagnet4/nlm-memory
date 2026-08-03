@@ -1,5 +1,5 @@
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir, homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteStorage } from "../../../../src/core/storage/sqlite-storage.js";
@@ -13,6 +13,7 @@ import {
 } from "../../../../src/core/storage/sqlite-outcome-store.js";
 import { makeSession } from "../../../fixtures/sessions.js";
 import type { Signal } from "../../../../src/shared/types.js";
+import { DEFAULT_TEAM_ID } from "../../../../src/core/tenancy/default-team.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../../../migrations");
 
@@ -108,14 +109,32 @@ describe("sqlite outcome adapters", () => {
         { ts: new Date().toISOString(), conversation_id: "conv-2", cited_id: "s2" },
       ];
       writeFileSync(citationLogPath, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
-      const reader = new SqliteOutcomeCitationReader(citationLogPath);
+      const reader = new SqliteOutcomeCitationReader(DEFAULT_TEAM_ID, citationLogPath);
       const result = await reader.listForSession("s1");
       expect(result).toEqual([{ conversationId: "conv-1" }]);
     });
 
     it("returns an empty array when the log file does not exist", async () => {
-      const reader = new SqliteOutcomeCitationReader(join(tmp, "nonexistent.jsonl"));
+      const reader = new SqliteOutcomeCitationReader(DEFAULT_TEAM_ID, join(tmp, "nonexistent.jsonl"));
       expect(await reader.listForSession("s1")).toEqual([]);
+    });
+
+    it("scopes citations by the tenantId passed at construction — a cross-tenant citation is invisible", async () => {
+      const lines = [
+        { ts: new Date().toISOString(), conversation_id: "conv-b", cited_id: "s1" },
+      ];
+      const derivedDir = join(homedir(), ".nlm", "tenants", "acme-outcome-citation-test");
+      const derivedPath = join(derivedDir, "citation-log.jsonl");
+      mkdirSync(derivedDir, { recursive: true });
+      writeFileSync(derivedPath, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+      try {
+        const defaultReader = new SqliteOutcomeCitationReader(DEFAULT_TEAM_ID, citationLogPath);
+        expect(await defaultReader.listForSession("s1")).toEqual([]);
+        const tenantReader = new SqliteOutcomeCitationReader("acme-outcome-citation-test");
+        expect(await tenantReader.listForSession("s1")).toEqual([{ conversationId: "conv-b" }]);
+      } finally {
+        rmSync(derivedDir, { recursive: true, force: true });
+      }
     });
   });
 
@@ -124,7 +143,7 @@ describe("sqlite outcome adapters", () => {
       storage.sessions.insertSessionForTest(
         makeSession({ id: "s1", endedAt: "2026-01-01T00:00:00.000Z", status: "superseded" }),
       );
-      const deps = await buildSqliteOutcomeDeps(storage.rawDb(), {
+      const deps = await buildSqliteOutcomeDeps(storage.rawDb(), DEFAULT_TEAM_ID, {
         citationLogPath,
         reDerivationPairsPath: join(tmp, "nonexistent-pairs.json"),
       });
@@ -137,21 +156,21 @@ describe("sqlite outcome adapters", () => {
       const pairsPath = join(tmp, "re-derivation-pairs.json");
       const pairs = [{ a: "s1", b: "s2", sharedEntities: ["pgvector"], jaccard: 0.8 }];
       writeFileSync(pairsPath, JSON.stringify(pairs));
-      const deps = await buildSqliteOutcomeDeps(storage.rawDb(), { citationLogPath, reDerivationPairsPath: pairsPath });
+      const deps = await buildSqliteOutcomeDeps(storage.rawDb(), DEFAULT_TEAM_ID, { citationLogPath, reDerivationPairsPath: pairsPath });
       expect(deps.reDerivationPairs).toEqual(pairs);
     });
 
     it("falls back to [] when the pairs cache file is corrupt", async () => {
       const pairsPath = join(tmp, "re-derivation-pairs.json");
       writeFileSync(pairsPath, "{not valid json");
-      const deps = await buildSqliteOutcomeDeps(storage.rawDb(), { citationLogPath, reDerivationPairsPath: pairsPath });
+      const deps = await buildSqliteOutcomeDeps(storage.rawDb(), DEFAULT_TEAM_ID, { citationLogPath, reDerivationPairsPath: pairsPath });
       expect(deps.reDerivationPairs).toEqual([]);
     });
 
     it("falls back to [] when the pairs cache file contains a non-array shape", async () => {
       const pairsPath = join(tmp, "re-derivation-pairs.json");
       writeFileSync(pairsPath, JSON.stringify({ oops: "not an array" }));
-      const deps = await buildSqliteOutcomeDeps(storage.rawDb(), { citationLogPath, reDerivationPairsPath: pairsPath });
+      const deps = await buildSqliteOutcomeDeps(storage.rawDb(), DEFAULT_TEAM_ID, { citationLogPath, reDerivationPairsPath: pairsPath });
       expect(deps.reDerivationPairs).toEqual([]);
     });
 
@@ -161,7 +180,7 @@ describe("sqlite outcome adapters", () => {
       writeFileSync(pairsPath, JSON.stringify(pairs));
       const staleSec = (Date.now() - 73 * 60 * 60 * 1000) / 1000;
       utimesSync(pairsPath, staleSec, staleSec);
-      const deps = await buildSqliteOutcomeDeps(storage.rawDb(), { citationLogPath, reDerivationPairsPath: pairsPath });
+      const deps = await buildSqliteOutcomeDeps(storage.rawDb(), DEFAULT_TEAM_ID, { citationLogPath, reDerivationPairsPath: pairsPath });
       expect(deps.reDerivationPairs).toEqual([]);
     });
 
@@ -171,7 +190,7 @@ describe("sqlite outcome adapters", () => {
       writeFileSync(pairsPath, JSON.stringify(pairs));
       const freshSec = (Date.now() - 71 * 60 * 60 * 1000) / 1000;
       utimesSync(pairsPath, freshSec, freshSec);
-      const deps = await buildSqliteOutcomeDeps(storage.rawDb(), { citationLogPath, reDerivationPairsPath: pairsPath });
+      const deps = await buildSqliteOutcomeDeps(storage.rawDb(), DEFAULT_TEAM_ID, { citationLogPath, reDerivationPairsPath: pairsPath });
       expect(deps.reDerivationPairs).toEqual(pairs);
     });
   });

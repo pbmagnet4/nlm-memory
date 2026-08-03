@@ -15,6 +15,7 @@ import { persistReDerivationPairs } from "../../src/cli/nlm.js";
 import { buildSqliteOutcomeDeps } from "../../src/core/storage/sqlite-outcome-store.js";
 import { deriveOutcome } from "../../src/core/outcome/rollup.js";
 import { makeSession } from "../fixtures/sessions.js";
+import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 
@@ -68,7 +69,7 @@ describe("corpus monitor persists re-derivation pairs for the outcome rollup", (
     const persisted = JSON.parse(readFileSync(pairsPath, "utf8"));
     expect(persisted).toEqual(report.pairs);
 
-    const deps = await buildSqliteOutcomeDeps(storage.rawDb(), { reDerivationPairsPath: pairsPath });
+    const deps = await buildSqliteOutcomeDeps(storage.rawDb(), DEFAULT_TEAM_ID, { reDerivationPairsPath: pairsPath });
     expect(deps.reDerivationPairs).toEqual(report.pairs);
 
     const verdictA = await deriveOutcome("team_local", "a", deps);
@@ -88,7 +89,7 @@ describe("corpus monitor persists re-derivation pairs for the outcome rollup", (
     storage.sessions.insertSessionForTest(
       makeSession({ id: "a", endedAt: null, status: "closed", entities: ["pgvector"] }),
     );
-    const deps = await buildSqliteOutcomeDeps(storage.rawDb(), {
+    const deps = await buildSqliteOutcomeDeps(storage.rawDb(), DEFAULT_TEAM_ID, {
       reDerivationPairsPath: join(tmp, "nonexistent-pairs.json"),
     });
     const verdict = await deriveOutcome("team_local", "a", deps);
@@ -100,7 +101,7 @@ describe("corpus monitor persists re-derivation pairs for the outcome rollup", (
       makeSession({ id: "a", endedAt: null, status: "closed", entities: ["pgvector"] }),
     );
     writeFileSync(pairsPath, "{not valid json", "utf8");
-    const deps = await buildSqliteOutcomeDeps(storage.rawDb(), { reDerivationPairsPath: pairsPath });
+    const deps = await buildSqliteOutcomeDeps(storage.rawDb(), DEFAULT_TEAM_ID, { reDerivationPairsPath: pairsPath });
     expect(deps.reDerivationPairs).toEqual([]);
     const verdict = await deriveOutcome("team_local", "a", deps);
     expect(verdict.verdict).toBe("unobserved");

@@ -17,7 +17,6 @@ import { logQuery } from "@core/recall/query-log.js";
 import { logFactQuery } from "@core/recall-facts/fact-query-log.js";
 import { appendCitation } from "@core/recall/citation-log.js";
 import { resolveConversationForSession } from "@core/hook/memo.js";
-import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import { resolveConversationByQuery } from "@core/hook/resolve-conversation-by-query.js";
 import { appendFactSupersedence, appendSupersedence, readSupersedenceLog } from "@core/storage/supersedence-log.js";
 import type { FactRecallService } from "@core/recall-facts/fact-recall-service.js";
@@ -47,7 +46,6 @@ import type {
 } from "@shared/types.js";
 import { SIGNAL_OUTCOMES } from "@shared/types.js";
 import type Database from "better-sqlite3";
-import { isHostedMode } from "@core/tenancy/hosted-mode.js";
 
 const CHARACTER_LIMIT = 25_000;
 const DEFAULT_LIMIT = 10;
@@ -195,9 +193,7 @@ export async function recallSessionsHandler(
     // Telemetry — the MCP path is the real agent-usage path; without this it
     // is invisible to query_log.jsonl and the Recall page. Fire-and-forget,
     // mirrors the HTTP /api/recall handler.
-    // M6 Task 1 placeholder: query-log.jsonl is still M6-FILTER shared state
-    // (see citeSessionHandler below); pinned to DEFAULT_TEAM_ID until Task 2.
-    void logQuery(DEFAULT_TEAM_ID, {
+    void logQuery(tenantId, {
       source: "mcp",
       runtime,
       query: input.query ?? null,
@@ -253,8 +249,7 @@ export async function recallWorkstreamHandler(
       found.id,
     );
     if (!view) return okText(`No workstream matches "${idOrLabel}".`);
-    // M6 Task 1 placeholder — see recallSessionsHandler above.
-    void logQuery(DEFAULT_TEAM_ID, {
+    void logQuery(tenantId, {
       source: "mcp",
       runtime,
       query: idOrLabel,
@@ -436,7 +431,7 @@ export async function getSessionHandler(
     let outcome;
     if (deps.outcomeDb) {
       try {
-        outcome = await deriveOutcome(tenantId, session.id, await buildSqliteOutcomeDeps(deps.outcomeDb));
+        outcome = await deriveOutcome(tenantId, session.id, await buildSqliteOutcomeDeps(deps.outcomeDb, tenantId));
       } catch {
         outcome = undefined;
       }
@@ -486,8 +481,7 @@ export async function recallFactsHandler(
     const result = await deps.factRecall.search(tenantId, query);
     const conversationId = resolveConversationByQuery(input.query ?? "") ?? undefined;
     // Telemetry — see recallSessionsHandler. Fire-and-forget.
-    // M6 Task 1 placeholder — see recallSessionsHandler above.
-    void logFactQuery(DEFAULT_TEAM_ID, {
+    void logFactQuery(tenantId, {
       source: "mcp",
       runtime,
       query: input.query ?? null,
@@ -779,32 +773,17 @@ export async function supersedeFactHandler(
 }
 
 export async function citeSessionHandler(
-  // Accepted for signature uniformity with the other 16 tool handlers
-  // (program spec §4.1); unused today because citation-log.jsonl is
-  // M6-scoped shared file state, not yet tenant-attributed (M2 disposition:
-  // M6-FILTER).
-  _tenantId: string,
+  tenantId: string,
   input: CiteSessionInput,
 ): Promise<ToolResult> {
-  // Hosted-mode gate (Wave C3): citation-log.jsonl is shared, unpartitioned
-  // file state (M6-FILTER, same class as the HTTP citation routes gated in
-  // installHostedModeGate). Under NLM_HOSTED=1 this returns an error result
-  // — not a throw — naming M6, before appendCitation ever touches the file.
-  // Local mode (NLM_HOSTED unset) is unaffected.
-  if (isHostedMode()) {
-    return err(new Error("cite_session is disabled in hosted mode until M6 (tenant-attributed daemon state) lands"));
-  }
   if (!input.id || input.id.length < MIN_CITE_ID_LEN) {
     return err(new Error(`id must be at least ${MIN_CITE_ID_LEN} characters`));
   }
   try {
-    // M6 Task 1 placeholder: citation-log.jsonl is still M6-FILTER shared
-    // state (see the hosted-mode gate above); pinned to DEFAULT_TEAM_ID
-    // until Task 2 wires _tenantId through for real.
-    await appendCitation(DEFAULT_TEAM_ID, {
+    await appendCitation(tenantId, {
       // Agents rarely pass conversation_id; resolve it server-side from the
       // surfaced-memo so the citation joins to its hook fire (NLM #345).
-      conversationId: input.conversation_id ?? resolveConversationForSession(DEFAULT_TEAM_ID, input.id) ?? "mcp_tool",
+      conversationId: input.conversation_id ?? resolveConversationForSession(tenantId, input.id) ?? "mcp_tool",
       citedId: input.id,
       kind: "tool_use",
       ...(input.reason !== undefined ? { responsePreview: input.reason } : {}),
@@ -1367,8 +1346,7 @@ export function createMcpServer(deps: McpDeps, tenantId: string): McpServer {
           ...result.positives.map((e) => e.id),
           ...result.negatives.map((e) => e.id),
         ];
-        // M6 Task 1 placeholder — see recallSessionsHandler above.
-        void logQuery(DEFAULT_TEAM_ID, {
+        void logQuery(tenantId, {
           source: "mcp",
           runtime: mcpRuntimeFromClient(server.server.getClientVersion()),
           query: args.query,
