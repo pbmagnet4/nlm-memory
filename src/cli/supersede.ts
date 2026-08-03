@@ -151,7 +151,7 @@ export async function executeSupersede(
     return { kind: "cancelled", reason: msg };
   }
 
-  void appendSupersedence({
+  void appendSupersedence(DEFAULT_TEAM_ID, {
     predecessorId: predecessor.session.id,
     successorId: successor.session.id,
     source: "cli",

@@ -4,15 +4,19 @@
  * supersedence at ingest time is not logged here — that lineage is already
  * implicit in the session_edges row's predecessor reference.
  *
- * Path defaults to ~/.nlm/supersedence-log.jsonl, overridable via
- * NLM_SUPERSEDENCE_LOG. Telemetry path — never raises, but on failure it
- * emits one warning line to stderr so a silent disk-full or permission
- * issue doesn't leave the operator believing their audit trail is intact.
+ * Path is tenant-derived (core/tenancy/tenant-state-path.ts): the default
+ * team's log is ~/.nlm/supersedence-log.jsonl, overridable via
+ * NLM_SUPERSEDENCE_LOG; every other tenant is isolated under
+ * ~/.nlm/tenants/<tenantId>/supersedence-log.jsonl and ignores the env
+ * override. Telemetry path — never raises, but on failure it emits one
+ * warning line to stderr so a silent disk-full or permission issue doesn't
+ * leave the operator believing their audit trail is intact.
  */
 
 import { appendFile, mkdir, readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { homedir } from "node:os";
+import { dirname } from "node:path";
+import { tenantStatePath } from "@core/tenancy/tenant-state-path.js";
+import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 
 export interface SupersedenceEntry {
   readonly predecessorId: string;
@@ -21,21 +25,23 @@ export interface SupersedenceEntry {
   readonly source?: string;
 }
 
-function defaultLogPath(): string {
-  return (
-    process.env["NLM_SUPERSEDENCE_LOG"] ??
-    join(homedir(), ".nlm", "supersedence-log.jsonl")
-  );
+function defaultLogPath(tenantId: string): string {
+  if (tenantId === DEFAULT_TEAM_ID) {
+    return process.env["NLM_SUPERSEDENCE_LOG"] ?? tenantStatePath(tenantId, "supersedence-log.jsonl");
+  }
+  return tenantStatePath(tenantId, "supersedence-log.jsonl");
 }
 
 /** Read all supersedence log entries. Never raises — returns [] on missing file. */
-export async function readSupersedenceLog(): Promise<
+export async function readSupersedenceLog(
+  tenantId: string,
+  logPath: string = defaultLogPath(tenantId),
+): Promise<
   ReadonlyArray<SupersedenceEntry & { ts: string; source?: string }>
 > {
-  const path = defaultLogPath();
   let raw: string;
   try {
-    raw = await readFile(path, "utf8");
+    raw = await readFile(logPath, "utf8");
   } catch {
     // Log file missing or unreadable - no supersedence history recovered.
     return [];
@@ -74,8 +80,9 @@ export interface FactSupersedenceEntry {
 /** Append a fact-level supersedence event to the shared audit JSONL.
  *  Entries carry `kind: "fact"` so the session-scoped reader skips them. */
 export async function appendFactSupersedence(
+  tenantId: string,
   entry: FactSupersedenceEntry,
-  logPath: string = defaultLogPath(),
+  logPath: string = defaultLogPath(tenantId),
 ): Promise<void> {
   try {
     await mkdir(dirname(logPath), { recursive: true });
@@ -96,8 +103,9 @@ export async function appendFactSupersedence(
 }
 
 export async function appendSupersedence(
+  tenantId: string,
   entry: SupersedenceEntry,
-  logPath: string = defaultLogPath(),
+  logPath: string = defaultLogPath(tenantId),
 ): Promise<void> {
   try {
     await mkdir(dirname(logPath), { recursive: true });

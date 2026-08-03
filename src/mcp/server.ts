@@ -396,7 +396,7 @@ export async function getSessionHandler(
 
     // Load supersedence log once so we can join reason + recordedBy onto supersededBy
     const supersedenceLog = session.supersededBy
-      ? await readSupersedenceLog()
+      ? await readSupersedenceLog(tenantId)
       : [];
     const supersedenceMap = new Map(supersedenceLog.map((e) => [e.predecessorId, e]));
 
@@ -404,12 +404,13 @@ export async function getSessionHandler(
       const s = byId.get(id);
       return s ? { id, label: s.label, summary: s.summary } : { id, label: "", summary: "" };
     });
-    // Supersedence-enrichment fencing (program spec §4.6 hardening 2): the
-    // shared supersedence-log.jsonl is not itself tenant-partitioned, so a
+    // Supersedence-enrichment fencing (program spec §4.6 hardening 2): even
+    // though readSupersedenceLog now reads the caller's own tenant file, a
     // log entry's `reason`/`recordedBy` may only surface for a successor id
-    // that resolved through the tenant-filtered getByIds above (`byId`). An
-    // unresolved id (cross-tenant, or genuinely missing) contributes nothing
-    // — not even its reason — same as the by-id not-found shape (case 4).
+    // that resolved through the tenant-filtered getByIds above (`byId`) —
+    // defense in depth against any pre-M6 legacy entry that predates
+    // per-tenant log files. An unresolved id contributes nothing — not even
+    // its reason — same as the by-id not-found shape (case 4).
     const supersededBy = session.supersededBy
       ? (() => {
           const s = byId.get(session.supersededBy);
@@ -700,7 +701,7 @@ export async function markSupersededHandler(
   }
   try {
     await deps.store.markSuperseded(tenantId, input.predecessor_id, input.successor_id);
-    void appendSupersedence({
+    void appendSupersedence(tenantId, {
       predecessorId: input.predecessor_id,
       successorId: input.successor_id,
       source: "mcp",
@@ -757,7 +758,7 @@ export async function supersedeFactHandler(
   }
   try {
     await deps.factStore.retire(tenantId, input.fact_id);
-    void appendFactSupersedence({
+    void appendFactSupersedence(tenantId, {
       factId: input.fact_id,
       source: "mcp",
       ...(input.reason !== undefined ? { reason: input.reason } : {}),

@@ -1686,7 +1686,7 @@ function registerSessionRoute(app: Hono<AppEnv>, deps: HttpDeps): void {
           : 500;
       return c.json({ error: msg }, status);
     }
-    void appendSupersedence({
+    void appendSupersedence(tenantId, {
       predecessorId,
       successorId,
       source: c.req.header("x-supersedence-source") ?? "http",
