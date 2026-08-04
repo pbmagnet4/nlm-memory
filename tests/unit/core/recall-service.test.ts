@@ -145,6 +145,25 @@ describe("RecallService.search", () => {
     expect(result.results.map((r) => r.id)).toEqual(["strong", "weak"]);
   });
 
+  it("metadata tiebreaker (#308) reorders a hybrid near-tie toward decision overlap", async () => {
+    // Same shape as the keyword-mode tiebreaker test above, but run through
+    // hybrid mode: both sessions are keyword-only hits (no semantic overlap),
+    // so mergeHybrid bands them both into [0.5, 1.0] by normalized BM25.
+    // "dec" ranks below "raw" on the banded score alone; the capped decision
+    // bonus must still lift it above "raw" after finalize()'s tiebreak step.
+    const sessions: Session[] = [
+      makeSession({ id: "raw", label: "pgvector qdrant pgvector", decisions: [] }),
+      makeSession({ id: "dec", label: "pgvector qdrant", decisions: ["chose pgvector over qdrant"] }),
+    ];
+    const store = new InMemoryStore(sessions, [], [
+      { sessionId: "raw", score: 10.0 }, // banded: 0.5 + 0.5*(10/10) = 1.0
+      { sessionId: "dec", score: 9.2 },  // banded: 0.5 + 0.5*(9.2/10) = 0.96; 0.96*1.13 = 1.0848 > 1.0
+    ]);
+    const svc = new RecallService({ store, llm: new StubEmbedder() });
+    const result = await svc.search("team_local", { query: "pgvector qdrant", mode: "hybrid" });
+    expect(result.results.map((r) => r.id)).toEqual(["dec", "raw"]);
+  });
+
   it("keyword mode populates matchedIn from the resolved session", async () => {
     const store = new InMemoryStore(corpus, [], [{ sessionId: "b", score: 5 }]);
     const svc = new RecallService({ store, llm: new StubEmbedder() });

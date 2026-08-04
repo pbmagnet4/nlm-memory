@@ -245,7 +245,7 @@ export class RecallService {
       const forceIncluded = (shape.hasTemporal && shape.hasNamedEntity)
         ? forceIncludeKeywordTop(merged, kwHits, limit)
         : merged;
-      result = finalize(input.query, entity, kind, mode, limit, forceIncluded);
+      result = finalize(input.query, entity, kind, mode, limit, forceIncluded, queryTokens);
       if (semError) result = { ...result, modeUnavailable: semError };
     }
 
@@ -478,10 +478,13 @@ function finalize(
   // Disable per-deployment with NLM_RECALL_DECAY_HALF_LIFE_DAYS=0.
   //
   // The metadata tiebreaker (#308) is applied in the same multiplicative
-  // step for keyword recall: a capped bonus for query tokens matching the
-  // hit's decision markers / entity canonicals, reordering near-ties so a
-  // strong decision-overlap session can pass a marginally-higher BM25
-  // neighbour. queryTokens is only passed for the keyword leg.
+  // step for keyword AND hybrid recall: a capped bonus for query tokens
+  // matching the hit's decision markers / entity canonicals, reordering
+  // near-ties so a strong decision-overlap session can pass a marginally-
+  // higher BM25 (or banded hybrid) neighbour. queryTokens is withheld for
+  // the semantic leg: a semantic-only search has no keyword query driving
+  // it, so there are no meaningful query tokens to match against decision
+  // markers.
   const now = Date.now();
   const adjusted: RecallHit[] = hits.map((h) => {
     const supersededFactor = h.status === "superseded" ? SUPERSEDED_SCORE_MULTIPLIER : 1;
