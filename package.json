@@ -67,7 +67,8 @@
     "eval:reranker": "tsx scripts/eval/reranker-ablation.ts",
     "eval:floor": "tsx scripts/eval/floor-calibration.ts",
     "eval:matcher": "tsx scripts/eval/tune-matcher.ts",
-    "eval:naming": "tsx scripts/eval/tune-naming.ts"
+    "eval:naming": "tsx scripts/eval/tune-naming.ts",
+    "eval:rederiv-sample": "tsx scripts/eval/re-derivation-sample.ts"
   },
   "dependencies": {
     "@clack/prompts": "^1.4.0",
