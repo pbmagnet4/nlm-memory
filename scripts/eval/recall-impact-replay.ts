@@ -38,6 +38,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SqliteSessionStore } from "../../src/core/storage/sqlite-session-store.js";
 import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
+import { chatOnce } from "./lib/chat-client.js";
 import {
   bucketIndex,
   buildGeneratorMessages,
@@ -169,65 +170,29 @@ function readEligibleGateRows(path: string): { rows: HookLogRow[]; malformedLine
 }
 
 // ---------------------------------------------------------------------------
-// Chat completion (OpenAI-compatible, non-streaming — one retry on failure)
+// Chat completion (OpenAI-compatible, non-streaming — retry via chatOnce)
 // ---------------------------------------------------------------------------
 
-async function callChatOnce(
-  cfg: ChatConfig,
-  system: string,
-  user: string,
-  params: { temperature: number; maxTokens: number },
-  timeoutMs: number,
-): Promise<string> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(`${cfg.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.apiKey}` },
-      body: JSON.stringify({
-        model: cfg.model,
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-        temperature: params.temperature,
-        max_tokens: params.maxTokens,
-        stream: false,
-        ...(REASONING_EFFORT ? { reasoning_effort: REASONING_EFFORT } : {}),
-      }),
-      signal: controller.signal,
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new Error(`HTTP ${res.status}: ${body.slice(0, 300)}`);
-    }
-    const body = (await res.json()) as { choices?: ReadonlyArray<{ message?: { content?: string } }> };
-    const content = body.choices?.[0]?.message?.content;
-    if (typeof content !== "string" || content.trim().length === 0) {
-      // Reasoning models can burn the whole max_tokens budget on
-      // reasoning_content and return an empty content string — surfaced as a
-      // failure (one retry upstream) and reported, never silently accepted.
-      throw new Error("empty completion");
-    }
-    return content;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** One retry on any transport/HTTP failure — matches the shared-server queuing note in the spec. */
+/** Thin adapter to the shared chat-client, preserving this file's call-site shape. */
 async function callChat(
   cfg: ChatConfig,
   system: string,
   user: string,
   params: { temperature: number; maxTokens: number },
 ): Promise<string> {
-  try {
-    return await callChatOnce(cfg, system, user, params, CHAT_TIMEOUT_MS);
-  } catch {
-    return await callChatOnce(cfg, system, user, params, CHAT_TIMEOUT_MS);
-  }
+  return chatOnce(
+    {
+      baseUrl: cfg.baseUrl,
+      model: cfg.model,
+      apiKey: cfg.apiKey,
+      temperature: params.temperature,
+      maxTokens: params.maxTokens,
+      ...(REASONING_EFFORT ? { reasoningEffort: REASONING_EFFORT } : {}),
+      timeoutMs: CHAT_TIMEOUT_MS,
+    },
+    system,
+    user,
+  );
 }
 
 // ---------------------------------------------------------------------------
