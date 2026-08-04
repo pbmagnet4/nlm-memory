@@ -94,6 +94,22 @@ decisions share is boilerplate phrasing, prefer RITUAL over GENUINE.
 Two sessions can also re-derive the same decision while sharing almost no words.
 Judge the substance, not the wording overlap.
 
+TWO THINGS THAT ARE NOT RE-DERIVATION, and are the most common false positives:
+
+- Following a standing rule. If both sessions do the same housekeeping because a
+  documented policy says to (archiving the oldest CHANGELOG entry to keep a
+  10-entry cap, bumping a version, running a required check), that is the policy
+  being applied twice, not a decision being worked out twice. Label RITUAL.
+
+- Recurring scheduled reviews. Autonomous daily or weekly review sessions restate
+  their own operating parameters every run by design. Two of them agreeing about
+  thresholds, paths, or settings is the routine repeating, not one re-deriving
+  the other. Label RITUAL.
+
+GENUINE requires that the later session visibly WORKED SOMETHING OUT that the
+earlier one had already worked out. If the later session merely follows,
+restates, or complies with the earlier decision, it is not GENUINE.
+
 If you are genuinely unsure, pick the most likely label and set confidence low.`;
 
 function renderSide(name: string, s: SampleSide): string {

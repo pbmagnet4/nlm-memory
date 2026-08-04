@@ -2,14 +2,15 @@
  * Stage A blind judge runner.
  *
  * Reads reports/re-derivation/sample.jsonl, asks a cross-family judge to label
- * each pair against the five-way rubric, and writes labels.jsonl.
+ * each pair against the six-way rubric, and writes labels.jsonl.
  *
  * Three things here are deliberate:
  *
- *  1. Verdicts cache on disk keyed by sha256(model + ":" + prompt). A rubric
- *     edit changes the prompt and therefore invalidates the cache, which is the
- *     correct behaviour - stale verdicts from an older rubric must never be
- *     mixed into a run.
+ *  1. Verdicts cache on disk keyed by sha256(model, SYSTEM prompt, user prompt).
+ *     The system prompt must be in the key: the rubric lives there, and an
+ *     earlier version keyed on the user prompt alone replayed 300/303 stale
+ *     verdicts after a rubric edit, returning a byte-identical distribution that
+ *     read as convergence. Stale verdicts must never be mixed into a run.
  *
  *  2. A row that fails is recorded and SKIPPED, never fatal. chatOnce retries
  *     once with no backoff, which was fine for the replay eval against a warm
@@ -65,12 +66,18 @@ function log(m: string): void {
   process.stderr.write(`${m}\n`);
 }
 
-function cacheKey(model: string, prompt: string): string {
-  return createHash("sha256").update(`${model}:${prompt}`).digest("hex");
+/**
+ * The SYSTEM prompt is part of the key, not just the user prompt. The rubric
+ * lives in the system message, so keying on the user prompt alone means editing
+ * the rubric silently replays stale verdicts - which happened on 2026-08-04 and
+ * produced a byte-identical label distribution that looked like convergence.
+ */
+function cacheKey(model: string, system: string, prompt: string): string {
+  return createHash("sha256").update(`${model}\u0000${system}\u0000${prompt}`).digest("hex");
 }
 
-function readCache(model: string, prompt: string): string | null {
-  const p = join(CACHE_DIR, `${cacheKey(model, prompt)}.json`);
+function readCache(model: string, system: string, prompt: string): string | null {
+  const p = join(CACHE_DIR, `${cacheKey(model, system, prompt)}.json`);
   if (!existsSync(p)) return null;
   try {
     return (JSON.parse(readFileSync(p, "utf8")) as { raw: string }).raw;
@@ -79,19 +86,19 @@ function readCache(model: string, prompt: string): string | null {
   }
 }
 
-function writeCacheEntry(model: string, prompt: string, raw: string): void {
+function writeCacheEntry(model: string, system: string, prompt: string, raw: string): void {
   writeFileSync(
-    join(CACHE_DIR, `${cacheKey(model, prompt)}.json`),
+    join(CACHE_DIR, `${cacheKey(model, system, prompt)}.json`),
     JSON.stringify({ model, raw }),
   );
 }
 
 async function judge(model: string, row: SampleRow): Promise<{ raw: string; cached: boolean }> {
   const prompt = buildJudgePrompt(row);
-  const hit = readCache(model, prompt);
+  const hit = readCache(model, RUBRIC_SYSTEM, prompt);
   if (hit !== null) return { raw: hit, cached: true };
   const raw = await chatOnce(opts(model), RUBRIC_SYSTEM, prompt);
-  writeCacheEntry(model, prompt, raw);
+  writeCacheEntry(model, RUBRIC_SYSTEM, prompt, raw);
   return { raw, cached: false };
 }
 
