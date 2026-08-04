@@ -144,7 +144,10 @@ describe("pairFeatures", () => {
   it("counts decisions and tokens per side", () => {
     const f = pairFeatures(a, b, {});
     expect(f.minDecisionCount).toBe(1);
-    expect(f.minStrippedTokens).toBe(2);
+    // "Task 6 approved" and "Approved Task 6" both strip to {task, 6, approved}.
+    // None of those three is a stopword and bare digits survive stripping, so
+    // this is 3. Do not "fix" it by adding domain words to STOPWORDS.
+    expect(f.minStrippedTokens).toBe(3);
   });
 
   it("orders the pair earlier-first regardless of argument order", () => {
@@ -350,18 +353,24 @@ Expected: PASS, typecheck clean.
 
 - [ ] **Step 5: Verify the tokenizer really matches the incumbent**
 
+**Do not use `npx tsx -e` for this.** The repo path contains a space, and tsx's
+`-e` resolves relative imports against a synthetic `[eval]` pseudo-module path
+that breaks on it. Write the check to a temp file with an absolute import path,
+run it, delete it.
+
 Run:
 ```bash
-npx tsx -e '
-import { tokenize } from "./scripts/eval/lib/re-derivation-features.js";
+cat > /tmp/tokcheck.mjs <<'EOF'
+import { tokenize } from "<absolute repo path>/scripts/eval/lib/re-derivation-features.ts";
 const texts = ["Set Sonnet 4.6 as the default model for new sessions", "Task 6 approved"];
 const incumbent = new Set(texts.join(" ").toLowerCase().split(/\W+/).filter(Boolean));
 const ours = tokenize(texts, false);
 const same = incumbent.size === ours.size && [...incumbent].every((t) => ours.has(t));
 console.log(same ? "MATCH" : "DIVERGED", incumbent.size, ours.size);
-'
+EOF
+npx tsx /tmp/tokcheck.mjs; rm -f /tmp/tokcheck.mjs
 ```
-Expected: `MATCH`. If it diverges, the sweep cannot score the shipped configuration and Task 1 is not done.
+Expected: `MATCH 13 13`. If it diverges, the sweep cannot score the shipped configuration and Task 1 is not done.
 
 - [ ] **Step 6: Commit**
 
