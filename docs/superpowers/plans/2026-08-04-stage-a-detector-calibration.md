@@ -436,7 +436,7 @@ describe("allocatedSample", () => {
 
 describe("balancedQuota", () => {
   it("splits n as evenly as possible across the sub-key values present", () => {
-    const q = balancedQuota(rows, (x) => x.size, 30, 7);
+    const q = balancedQuota(rows, (x) => x.size, 30);
     expect(Object.values(q).reduce((s, v) => s + v, 0)).toBe(30);
     expect(Object.values(q).every((v) => v === 10)).toBe(true);
   });
@@ -446,13 +446,13 @@ describe("balancedQuota", () => {
       ...Array.from({ length: 2 }, (_, i) => ({ id: i, stratum: "A", size: "small" })),
       ...Array.from({ length: 50 }, (_, i) => ({ id: 100 + i, stratum: "A", size: "large" })),
     ];
-    const q = balancedQuota(skewed, (x) => x.size, 12, 7);
+    const q = balancedQuota(skewed, (x) => x.size, 12);
     expect(q["small"]).toBe(2);
     expect(q["large"]).toBe(10);
   });
 
   it("never allocates more than n in total", () => {
-    const q = balancedQuota(rows, (x) => x.size, 7, 7);
+    const q = balancedQuota(rows, (x) => x.size, 7);
     expect(Object.values(q).reduce((s, v) => s + v, 0)).toBe(7);
   });
 });
@@ -538,7 +538,6 @@ export function balancedQuota<T>(
   rows: ReadonlyArray<T>,
   subKeyOf: (row: T) => string,
   n: number,
-  _seed: number,
 ): Record<string, number> {
   const sizes = new Map<string, number>();
   for (const row of rows) {
@@ -812,7 +811,8 @@ Structure, in order:
 5. Embed decision text: for every in-window decision-bearing session, `await embedder.embed(text, "document")` per decision marker, concurrency 4, with a progress line every 250 markers. Cache to `reports/re-derivation/decision-vectors.jsonl` keyed by `sha256(model + ":" + text)` so a re-run is free.
 6. Compute the session-pooled decision embedding (component-wise mean of that session's decision vectors, L2-normalised) as the auxiliary variable for the cosine-ranked strata.
 7. Assign strata by stopword-stripped pooled Jaccard per the spec table; carve P3 as the top 1% by pooled cosine within `J' = 0` **before** A5 is formed, so the two do not overlap.
-8. Within each stratum, compute size terciles over `minStrippedTokens` and draw with `balancedQuota` + `allocatedSample`, seed `deriveSeed(20260804, "sample")`.
+8. **Sort the pair list into a stable order before sampling** — `pairs.sort((p, q) => p.pairId.localeCompare(q.pairId))`. `allocatedSample` seeds its shuffle but shuffles the pool as handed to it, so enumerating pairs out of a `Set` without sorting first produces a different sample on a re-run despite the same seed. This is the difference between a reproducible pre-registered sample and one that only looks reproducible.
+9. Within each stratum, compute size terciles over `minStrippedTokens` and draw with `balancedQuota(rows, sizeTercile, n)` then `allocatedSample(rows, stratumOf, quotas, deriveSeed(20260804, "sample"))`.
 9. Write `frame.json` and `sample.jsonl`.
 
 `frame.json` shape:
@@ -1200,10 +1200,18 @@ Expected: FAIL — module not found.
 Core weighting, which is the whole point of the module:
 
 ```typescript
-const weight = (stratum: string) => frame[stratum]!.population / frame[stratum]!.drawn;
+// A stratum with drawn === 0 has no sampled evidence. Weighting it would divide
+// by zero and hand it an Infinity weight, which silently swallows every other
+// stratum's contribution. Skip it and report it as uncovered instead.
+const weight = (stratum: string) => {
+  const s = frame[stratum];
+  if (!s || s.drawn === 0) return null;
+  return s.population / s.drawn;
+};
 
 for (const row of labeled) {
   const w = weight(row.stratum);
+  if (w === null) { uncovered.add(row.stratum); continue; }
   const fires = pred(row.features);
   if (fires && row.genuine) weightedTP += w;
   else if (fires && !row.genuine) weightedFP += w;
