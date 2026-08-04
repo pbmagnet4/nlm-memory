@@ -20,6 +20,7 @@ import { join, resolve } from "node:path";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { codeHash, normalizeExemplar } from "../../src/core/exemplars/ingest-exemplar.js";
 import { recallCode } from "../../src/core/exemplars/recall-code.js";
+import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
 import type { CodeEmbedder, EmbedCodeResult } from "../../src/ports/code-embedder.js";
 
 const MIGRATIONS_DIR = resolve(import.meta.dirname, "../../migrations");
@@ -115,19 +116,20 @@ async function main(): Promise<void> {
     [exhaustedExemplar, VECTORS.exhaustedCode] as const,
     [otherScopeExemplar, VECTORS.passCode] as const,
   ]) {
-    const { id, skipped } = await storage.exemplars.insert(inp);
+    const { id, skipped } = await storage.exemplars.insert(DEFAULT_TEAM_ID, inp);
     ok(`insert ${inp.outcome}/${inp.installScope} not skipped`, !skipped);
-    if (vec) await storage.exemplars.upsertEmbedding(id, vec);
+    if (vec) await storage.exemplars.upsertEmbedding(DEFAULT_TEAM_ID, id, vec);
   }
 
   // ── Idempotence ───────────────────────────────────────────────────────────
   process.stdout.write("\nStep 2: idempotence\n");
-  const { skipped } = await storage.exemplars.insert(passExemplar);
+  const { skipped } = await storage.exemplars.insert(DEFAULT_TEAM_ID, passExemplar);
   ok("duplicate insert is skipped", skipped);
 
   // ── Recall: positives ranked above negatives ───────────────────────────────
   process.stdout.write("\nStep 3: recall — positives above negatives\n");
   const goodResult = await recallCode(
+    DEFAULT_TEAM_ID,
     { query: "QUERY_GOOD add two numbers", installScope: SCOPE, includeNegatives: true, k: 10 },
     storage.exemplars,
     embedder,
@@ -139,6 +141,7 @@ async function main(): Promise<void> {
     goodResult.positives[0]?.outcome === "pass" || goodResult.positives[0]?.outcome === "fix");
 
   const noNegResult = await recallCode(
+    DEFAULT_TEAM_ID,
     { query: "QUERY_GOOD add two numbers", installScope: SCOPE, includeNegatives: false, k: 10 },
     storage.exemplars,
     embedder,
@@ -149,6 +152,7 @@ async function main(): Promise<void> {
   // ── Cross-tenant isolation ────────────────────────────────────────────────
   process.stdout.write("\nStep 4: install_scope isolation\n");
   const otherResult = await recallCode(
+    DEFAULT_TEAM_ID,
     { query: "QUERY_GOOD add two numbers", installScope: OTHER_SCOPE, k: 10 },
     storage.exemplars,
     embedder,
@@ -172,9 +176,9 @@ async function main(): Promise<void> {
       outcome: "pass",
       ts: `2026-01-0${i + 1}T00:00:00.000Z`,
     });
-    await storage.exemplars.insert(inp);
+    await storage.exemplars.insert(DEFAULT_TEAM_ID, inp);
   }
-  const deleted = await storage.exemplars.applyBucketCap(SCOPE, 3);
+  const deleted = await storage.exemplars.applyBucketCap(DEFAULT_TEAM_ID, SCOPE, 3);
   ok("bucket cap evicted old rows", deleted > 0);
 
   // ── Prune reverted ────────────────────────────────────────────────────────
@@ -185,8 +189,8 @@ async function main(): Promise<void> {
     taskContext: "reverted func", code: revertedCode, outcome: "pass",
     survived: 0, ts: new Date().toISOString(),
   });
-  await storage.exemplars.insert(revInp);
-  const pruned = await storage.exemplars.pruneReverted(SCOPE);
+  await storage.exemplars.insert(DEFAULT_TEAM_ID, revInp);
+  const pruned = await storage.exemplars.pruneReverted(DEFAULT_TEAM_ID, SCOPE);
   ok("reverted row pruned", pruned >= 1);
 
   // ── Summary ───────────────────────────────────────────────────────────────

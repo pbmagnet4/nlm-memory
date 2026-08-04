@@ -30,6 +30,7 @@ import { topicalWordCount } from "../../src/hook/recent-context.js";
 import { extractRecallQuery } from "../../src/core/hook/query-extract.js";
 import { RecallService } from "../../src/core/recall/recall-service.js";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
+import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
 import type { LLMClient } from "../../src/ports/llm-client.js";
 import { judgeUsefulness, USEFULNESS_MODEL, type Verdict } from "./lib/usefulness-judge.js";
 
@@ -148,7 +149,7 @@ function makeTopHit(recall: RecallService): (query: string) => Promise<string | 
     const extracted = extractRecallQuery(query);
     if (extracted === null) return null;
     try {
-      const res = await recall.search({ query: extracted, mode: "keyword", limit: 5 });
+      const res = await recall.search(DEFAULT_TEAM_ID, { query: extracted, mode: "keyword", limit: 5 });
       return res.results[0]?.id ?? null;
     } catch (e) {
       // The NO_LLM invariant must fail the run, not silently drop the sample.

@@ -43,6 +43,7 @@ import { fileURLToPath } from "node:url";
 import { RecallService } from "../../src/core/recall/recall-service.js";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { OllamaClient } from "../../src/llm/ollama-client.js";
+import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
 import type { LLMClient } from "../../src/ports/llm-client.js";
 import type { RecallMode } from "../../src/shared/types.js";
 import { scoreOne, aggregate, type SingleScore } from "../longmemeval/scorer.js";
@@ -98,7 +99,7 @@ async function runQuery(
 ): Promise<QueryResult> {
   const by_mode: Record<string, SingleScore & { returnedIds: string[] }> = {};
   for (const mode of modes) {
-    const result = await recall.search({ query: query.question, mode, limit: k });
+    const result = await recall.search(DEFAULT_TEAM_ID, { query: query.question, mode, limit: k });
     const returnedIds = result.results.map((r) => r.id);
     const score = scoreOne({
       returnedIds,

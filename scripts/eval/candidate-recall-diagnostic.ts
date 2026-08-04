@@ -44,6 +44,7 @@ import { turnsToBody, type LongMemEvalInstance } from "../longmemeval/types.js";
 import { chunkSessionText } from "../../src/core/embedding/chunk-body.js";
 import { OllamaClient } from "../../src/llm/ollama-client.js";
 import { EmbeddingCache } from "../longmemeval/embedding-cache.js";
+import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
 import {
   aggregateClasses,
   classifyMiss,
@@ -86,6 +87,9 @@ class UnreachableEmbedder implements LLMClient {
   async classify(): Promise<never> {
     throw new Error("not used");
   }
+  async nameWorkstream(): Promise<never> {
+    throw new Error("not used");
+  }
 }
 
 /** Cache-backed embedder that degrades to "unreachable" on any miss/error. */
@@ -105,6 +109,9 @@ class CacheOrUnreachableEmbedder implements LLMClient {
   async classify(): Promise<never> {
     throw new Error("not used");
   }
+  async nameWorkstream(): Promise<never> {
+    throw new Error("not used");
+  }
 }
 
 /**
@@ -120,11 +127,11 @@ async function widePool(
   wide: number,
 ): Promise<Set<string>> {
   const ids = new Set<string>();
-  const kw = await store.keywordSearch(query, wide);
+  const kw = await store.keywordSearch(DEFAULT_TEAM_ID, query, wide);
   for (const n of kw) ids.add(n.sessionId);
   try {
     const emb = await llm.embed(query, "query");
-    const sem = await store.semanticSearch(emb.vector, wide);
+    const sem = await store.semanticSearch(DEFAULT_TEAM_ID, emb.vector, wide);
     for (const n of sem) ids.add(n.sessionId);
   } catch (err) {
     if (!(err instanceof LLMUnreachableError)) throw err;
@@ -159,7 +166,7 @@ async function runGolden(args: Args): Promise<DiagnosticAggregate> {
   const classes: MissClass[] = [];
   try {
     for (const { query, expectTop3 } of GOLDEN_QUERIES) {
-      const result = await svc.search({ query, mode: "keyword", limit: args.k });
+      const result = await svc.search(DEFAULT_TEAM_ID, { query, mode: "keyword", limit: args.k });
       const finalTopKIds = result.results.slice(0, args.k).map((r) => r.id);
       const wide = await widePool(store, llm, query, args.wide);
       const cls = classifyMiss({
@@ -250,7 +257,7 @@ async function runOneLme(
 
     const mode: RecallMode = "hybrid";
     const svc = new RecallService({ store, llm: embedder });
-    const result = await svc.search({ query: instance.question, mode, limit: args.k });
+    const result = await svc.search(DEFAULT_TEAM_ID, { query: instance.question, mode, limit: args.k });
     const finalTopKIds = result.results.slice(0, args.k).map((r) => r.id);
     const wide = await widePool(store, embedder, instance.question, args.wide);
     return classifyMiss({

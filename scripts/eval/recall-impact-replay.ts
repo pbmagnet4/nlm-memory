@@ -37,6 +37,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SqliteSessionStore } from "../../src/core/storage/sqlite-session-store.js";
+import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
 import {
   bucketIndex,
   buildGeneratorMessages,
@@ -282,7 +283,7 @@ async function initState(mode: Mode): Promise<EvalState> {
   if (!existsSync(dbPath)) throw new Error(`corpus DB not found at ${dbPath}`);
   const store = new SqliteSessionStore({ dbPath, migrationsDir: MIGRATIONS_DIR, readonly: true });
   const uniqueIds = [...new Set(rows.flatMap((r) => r.wouldInject))];
-  const sessions = await store.getByIds(uniqueIds);
+  const sessions = await store.getByIds(DEFAULT_TEAM_ID, uniqueIds);
   store.close();
   const sessionMap = new Map<string, SessionLike>(
     sessions.map((s) => [s.id, { id: s.id, label: s.label, startedAt: s.startedAt, summary: s.summary }]),

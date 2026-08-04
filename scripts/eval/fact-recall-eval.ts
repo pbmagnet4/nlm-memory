@@ -34,6 +34,7 @@ import { fileURLToPath } from "node:url";
 import { SqliteStorage } from "@core/storage/sqlite-storage.js";
 import { OllamaClient } from "../../src/llm/ollama-client.js";
 import { FactRecallService } from "@core/recall-facts/fact-recall-service.js";
+import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import type { Fact, RecallMode } from "@shared/types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -217,7 +218,7 @@ interface PrecisionMetrics {
  * A leak (any distractor in the results) drives precision below 1.0.
  */
 async function precisionArm(
-  storage: { facts: { insertMany(f: ReadonlyArray<Fact>): Promise<void>; upsertEmbedding(id: string, v: Float32Array): Promise<void> }; sessions: { rawDb(): { prepare(sql: string): { run(...args: unknown[]): void } } } },
+  storage: { facts: { insertMany(tenantId: string, f: ReadonlyArray<Fact>): Promise<void>; upsertEmbedding(tenantId: string, id: string, v: Float32Array): Promise<void> }; sessions: { rawDb(): { prepare(sql: string): { run(...args: unknown[]): void } } } },
   factRecall: FactRecallService,
   embedder: OllamaClient,
   gold: ReadonlyArray<Fact>,
@@ -231,15 +232,15 @@ async function precisionArm(
     const retired: Fact = { ...f, id: `${f.id}__dx_ret`, value: `${f.value} (retired)`, supersededBy: null };
     distractors.push(superseded, retired);
   }
-  await storage.facts.insertMany(distractors);
+  await storage.facts.insertMany(DEFAULT_TEAM_ID, distractors);
 
   const db = storage.sessions.rawDb();
   for (const d of distractors) {
     if (d.id.endsWith("__dx_ret")) {
       db.prepare("UPDATE facts SET retired_at = ? WHERE id = ?").run(now, d.id);
     }
-    const emb = await embedder.embed(`${d.subject} ${d.predicate} ${d.value}`, "passage");
-    await storage.facts.upsertEmbedding(d.id, emb.vector);
+    const emb = await embedder.embed(`${d.subject} ${d.predicate} ${d.value}`, "document");
+    await storage.facts.upsertEmbedding(DEFAULT_TEAM_ID, d.id, emb.vector);
   }
 
   const metrics: PrecisionMetrics[] = [];
@@ -248,7 +249,7 @@ async function precisionArm(
     let supersededLeaks = 0;
     let retiredLeaks = 0;
     for (const f of gold) {
-      const res = await factRecall.search({ query: `${f.subject} ${f.predicate}`, mode, limit: probe });
+      const res = await factRecall.search(DEFAULT_TEAM_ID, { query: `${f.subject} ${f.predicate}`, mode, limit: probe });
       for (const h of res.results) {
         resultsTotal += 1;
         if (h.id.endsWith("__dx_sup")) supersededLeaks += 1;
@@ -288,7 +289,7 @@ async function main(): Promise<void> {
   const factRecall = new FactRecallService({ factStore: storage.facts, llm: embedder });
 
   // Candidate pool: current decision facts at/above the recall confidence floor.
-  const pool = await storage.facts.listForRecall({
+  const pool = await storage.facts.listForRecall(DEFAULT_TEAM_ID, {
     kind: "decision",
     minConfidence: 0.6,
     includeSuperseded: false,
@@ -312,7 +313,7 @@ async function main(): Promise<void> {
     let r5 = 0;
     let rankSum = 0;
     for (const q of queries) {
-      const res = await factRecall.search({ query: q.query, mode, limit: args.probe });
+      const res = await factRecall.search(DEFAULT_TEAM_ID, { query: q.query, mode, limit: args.probe });
       const idx = res.results.findIndex((h) => h.id === q.goldId);
       if (idx >= 0) {
         const rank = idx + 1;

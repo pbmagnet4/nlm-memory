@@ -353,20 +353,27 @@ async function main(): Promise<void> {
   const allPulls = [...sessionBatch.pulls, ...factBatch.pulls];
   const genuine = allPulls.length;
 
-  let db: Database.Database | null = null;
-  let summStmt: Database.Statement<[string], { label: string; summary: string; body: string }> | null = null;
+  // Boxed in an object, not a bare `let`: db is only ever assigned inside the
+  // ctxOf closure below, and TS's control-flow narrowing doesn't follow
+  // reassignment through a nested function — a bare `let db` narrows to
+  // `null` at the `if (db) db.close()` call below, making `db.close()` a
+  // type error against `never`. Property access on an object sidesteps that.
+  const conn: {
+    db: Database.Database | null;
+    summStmt: Database.Statement<[string], { label: string; summary: string; body: string }> | null;
+  } = { db: null, summStmt: null };
 
   function ctxOf(ids: string[]): string {
     if (ids.length === 0) return "";
-    if (!db) {
-      db = new Database(args.db, { readonly: true });
-      summStmt = db.prepare<[string], { label: string; summary: string; body: string }>(
+    if (!conn.db) {
+      conn.db = new Database(args.db, { readonly: true });
+      conn.summStmt = conn.db.prepare<[string], { label: string; summary: string; body: string }>(
         "SELECT label, COALESCE(summary,'') AS summary, COALESCE(substr(body,1,500),'') AS body FROM sessions WHERE id = ?",
       );
     }
     const parts: string[] = [];
     for (const id of ids) {
-      const r = summStmt!.get(id);
+      const r = conn.summStmt!.get(id);
       if (r) parts.push(`${r.label}\n${r.summary}\n${r.body}`.trim());
     }
     return parts.join("\n\n").trim();
@@ -416,7 +423,7 @@ async function main(): Promise<void> {
     }
   }
 
-  if (db) db.close();
+  if (conn.db) conn.db.close();
 
   const usefulnessAtPull = scored > 0 ? (counts.used + 0.5 * counts.partial) / scored : 0;
   const offTopicRate = scored > 0 ? counts.unused / scored : 0;

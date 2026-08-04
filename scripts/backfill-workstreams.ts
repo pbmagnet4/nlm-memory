@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { bindSessionToWorkstream, NAMING_CONTENT_CHARS } from "../src/core/workstream/bind.js";
 import { parseWorkTopics, aliasToLabelMap } from "../src/core/workstream/work-topics.js";
 import { buildClassifier } from "../src/llm/build-classifier.js";
+import { DEFAULT_TEAM_ID } from "../src/core/tenancy/default-team.js";
 import type { SessionStore } from "../src/ports/session-store.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -56,8 +57,8 @@ async function main(): Promise<void> {
   };
 
   try {
-    const rows = storage.sessions.rawDb().prepare<[], { id: string; label: string; summary: string; body: string; started_at: string }>(
-      `SELECT id, label, COALESCE(summary,'') AS summary, COALESCE(body,'') AS body, started_at FROM sessions WHERE label IS NOT NULL AND label != '' AND workstream_id IS NULL ORDER BY started_at ASC${limit ? ` LIMIT ${limit}` : ""}`,
+    const rows = storage.sessions.rawDb().prepare<[], { id: string; label: string; summary: string; body: string; started_at: string; scope: string | null }>(
+      `SELECT id, label, COALESCE(summary,'') AS summary, COALESCE(body,'') AS body, started_at, scope FROM sessions WHERE label IS NOT NULL AND label != '' AND workstream_id IS NULL ORDER BY started_at ASC${limit ? ` LIMIT ${limit}` : ""}`,
     ).all();
 
     const log = (m: string): void => { process.stdout.write(m + "\n"); };
@@ -73,13 +74,15 @@ async function main(): Promise<void> {
           log,
           source: "backfill",
         },
+        DEFAULT_TEAM_ID,
         {
           sessionId: row.id,
           label: row.label,
           summary: row.summary,
-          body: row.body || undefined,
+          ...(row.body ? { body: row.body } : {}),
           entities: [],
           startedAt: row.started_at,
+          scope: row.scope,
         },
       );
       if (result !== null) {

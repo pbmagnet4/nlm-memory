@@ -18,6 +18,7 @@ import { normalizeSignal } from "@core/signals/ingest-signal.js";
 import { buildFailureModeBlock } from "@core/signals/failure-mode-recall.js";
 import { aggregateFailureModes } from "@core/signals/aggregate.js";
 import { recommendActions } from "@core/signals/recommend.js";
+import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import type { Signal } from "@shared/types.js";
 
 const SCOPE = "eval-install";
@@ -92,13 +93,14 @@ async function main(): Promise<void> {
     ...bucket(POLY, "qwen3-coder", "types", 60, 0.08), // below 20% -> quiet
     ...bucket(TAX, "qwen3-coder", "types", 50, 0.62), // bad enough to swap model
   ];
-  await storage.signals.insertMany(corpus);
+  await storage.signals.insertMany(DEFAULT_TEAM_ID, corpus);
 
   console.log(`\nSignals meaningfulness eval — ${corpus.length} signals across 3 repos, 2 models\n`);
 
   // ── Criterion 1: correctness + the headline mode surfaces with right numbers ─
   console.log("1. Correctness + recall of a real failure mode");
   const nlmQwen = await buildFailureModeBlock(
+    DEFAULT_TEAM_ID,
     storage.signals,
     { installScope: SCOPE, repo: NLM, model: "qwen3-coder", now: fixedNow },
   );
@@ -113,11 +115,13 @@ async function main(): Promise<void> {
   // ── Criterion 2: precision — healthy / sub-threshold scopes stay quiet ──
   console.log("\n2. Precision (no nagging when the model is fine)");
   const nlmStrong = await buildFailureModeBlock(
+    DEFAULT_TEAM_ID,
     storage.signals,
     { installScope: SCOPE, repo: NLM, model: "claude-sonnet", now: fixedNow },
   );
   check("strong model in same repo -> empty block", nlmStrong === "", `got ${nlmStrong.length} chars`);
   const polyQwen = await buildFailureModeBlock(
+    DEFAULT_TEAM_ID,
     storage.signals,
     { installScope: SCOPE, repo: POLY, model: "qwen3-coder", now: fixedNow },
   );
@@ -129,6 +133,7 @@ async function main(): Promise<void> {
   console.log("\n3. Scoping (repo + model isolation)");
   check("nlm block does not mention claude-sonnet", !nlmQwen.includes("claude-sonnet"));
   const otherInstall = await buildFailureModeBlock(
+    DEFAULT_TEAM_ID,
     storage.signals,
     { installScope: "different-install", repo: NLM, model: "qwen3-coder", now: fixedNow },
   );
@@ -137,7 +142,7 @@ async function main(): Promise<void> {
   // ── Criterion 4: recommendations are actionable + proportionate ─────────
   console.log("\n4. Recommendations (surface + recommend, no auto-act)");
   const sinceTs = new Date(NOW.getTime() - 14 * 86_400_000).toISOString();
-  const allRows = await storage.signals.listForAggregation({ installScope: SCOPE, sinceTs });
+  const allRows = await storage.signals.listForAggregation(DEFAULT_TEAM_ID, { installScope: SCOPE, sinceTs });
   const modes = aggregateFailureModes(allRows);
   const recs = recommendActions(modes);
   const swapRecs = recs.filter((r) => r.kind === "model-swap");
@@ -153,6 +158,7 @@ async function main(): Promise<void> {
   console.log("5. Ranking + cap");
   check("worst failure rate ranks first", modes.length > 0 && modes[0]!.failRate >= (modes[1]?.failRate ?? 0));
   const capped = await buildFailureModeBlock(
+    DEFAULT_TEAM_ID,
     storage.signals,
     { installScope: SCOPE, repo: TAX, model: "qwen3-coder", now: fixedNow },
     { maxModes: 1 },
@@ -161,9 +167,9 @@ async function main(): Promise<void> {
 
   // ── Criterion 6: idempotency (re-ingest is a no-op) ────────────────────
   console.log("\n6. Idempotency (re-ingest must not inflate counts)");
-  const before = (await storage.signals.listForAggregation({ installScope: SCOPE })).length;
-  await storage.signals.insertMany(corpus); // identical payloads -> identical ids
-  const after = (await storage.signals.listForAggregation({ installScope: SCOPE })).length;
+  const before = (await storage.signals.listForAggregation(DEFAULT_TEAM_ID, { installScope: SCOPE })).length;
+  await storage.signals.insertMany(DEFAULT_TEAM_ID, corpus); // identical payloads -> identical ids
+  const after = (await storage.signals.listForAggregation(DEFAULT_TEAM_ID, { installScope: SCOPE })).length;
   check("re-inserting the full corpus changes nothing", before === after, `${before} -> ${after}`);
 
   await storage.close();

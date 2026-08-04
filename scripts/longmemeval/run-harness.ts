@@ -46,6 +46,7 @@ import { RecallService } from "../../src/core/recall/recall-service.js";
 import { SqliteSessionStore } from "../../src/core/storage/sqlite-session-store.js";
 import { OllamaClient } from "../../src/llm/ollama-client.js";
 import { DeepSeekClient } from "../../src/llm/deepseek-client.js";
+import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
 import type {
   EmbedResult,
   EmbeddingKind,
@@ -182,6 +183,12 @@ class CachingEmbedder implements LLMClient {
   async classify(): Promise<never> {
     throw new Error("classify not used in LongMemEval body-only harness");
   }
+  async nameWorkstream(): Promise<never> {
+    throw new Error("nameWorkstream not used in LongMemEval body-only harness");
+  }
+  async rewriteForRecall(): Promise<never> {
+    throw new Error("rewriteForRecall not used in LongMemEval body-only harness");
+  }
 }
 
 interface InstanceResult {
@@ -278,7 +285,7 @@ async function runInstance(
     const recall = new RecallService({ store, llm: embedder });
     const byMode: InstanceResult["by_mode"] = {};
     for (const mode of args.modes) {
-      const result = await recall.search({
+      const result = await recall.search(DEFAULT_TEAM_ID, {
         query: instance.question,
         mode,
         limit: args.k,
