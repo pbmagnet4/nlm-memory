@@ -1,0 +1,123 @@
+{
+  "provisional": true,
+  "frame": {
+    "generatedAt": "2026-08-04T15:17:57.878Z",
+    "window": {
+      "lo": "2026-05-06 15:16:42",
+      "hi": "2026-08-04 15:16:42",
+      "days": 90
+    },
+    "corpus": {
+      "sessionsInWindow": 7451,
+      "decisionBearing": 3046
+    },
+    "detectorEligible": 1905497,
+    "decisionlessSidePairs": 1266809,
+    "frameSize": 467267,
+    "zeroEntityPairsSeen": 3998847,
+    "zeroEntityUncovered": 3993847,
+    "strata": {
+      "A1": {
+        "definition": "J' >= 0.35",
+        "population": 53,
+        "quota": 53,
+        "drawn": 53
+      },
+      "A2": {
+        "definition": "J' in [0.15,0.35)",
+        "population": 843,
+        "quota": 45,
+        "drawn": 45
+      },
+      "A3": {
+        "definition": "J' in [0.05,0.15)",
+        "population": 32231,
+        "quota": 45,
+        "drawn": 45
+      },
+      "A4": {
+        "definition": "J' in (0,0.05)",
+        "population": 256228,
+        "quota": 40,
+        "drawn": 40
+      },
+      "A5": {
+        "definition": "J' = 0, minus P3",
+        "population": 176133,
+        "quota": 30,
+        "drawn": 30
+      },
+      "P1": {
+        "definition": "gap <= 7d, unlinked, J' >= 0.15",
+        "population": 2066,
+        "quota": 30,
+        "drawn": 30
+      },
+      "P2": {
+        "definition": "zero shared entities, top 5000 by pooled cosine",
+        "population": 5000,
+        "quota": 30,
+        "drawn": 30
+      },
+      "P3": {
+        "definition": "J' = 0, top 1% pooled cosine",
+        "population": 1779,
+        "quota": 30,
+        "drawn": 30
+      }
+    },
+    "seed": 20260804,
+    "embedModel": "text-embedding-nomic-embed-text-v1.5",
+    "shortfalls": []
+  },
+  "labelDistribution": {
+    "UNRELATED": 210,
+    "RITUAL": 59,
+    "REVISIT": 2,
+    "SAME_TOPIC_DIFFERENT_DECISION": 23,
+    "DUPLICATE": 3,
+    "GENUINE": 6
+  },
+  "labelled": 303,
+  "incumbent": {
+    "config": {
+      "signal": "rawPooled",
+      "floor": 0.5,
+      "gapDays": 7,
+      "requireEntity": true,
+      "excludeSubagents": false,
+      "minTokens": 0
+    },
+    "precision": 0.06666666666666667,
+    "recall": 0.0011432345917382247,
+    "f1": 0.0022479206733771267,
+    "weightedTP": 1,
+    "weightedFP": 14,
+    "weightedFN": 873.7111111111111,
+    "precisionCI": [
+      0.011866895493268559,
+      0.29816529873780023
+    ],
+    "recallCI": [
+      4.974548210558167e-7,
+      0.7247727484902985
+    ],
+    "uncoveredStrata": []
+  },
+  "bestF1": {
+    "config": {
+      "signal": "rawPooled",
+      "floor": 0.1,
+      "minTokens": 0,
+      "gapDays": 30,
+      "requireEntity": true,
+      "excludeSubagents": true
+    },
+    "precision": 0.19792926842748448,
+    "recall": 0.818835425029216,
+    "f1": 0.3187984352358768
+  },
+  "firing": null,
+  "paretoCount": 62,
+  "configurationsSwept": 10560
+}
