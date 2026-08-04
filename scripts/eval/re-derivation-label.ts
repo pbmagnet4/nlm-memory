@@ -172,10 +172,22 @@ function stratifiedPick(
   return picked.sort((x, y) => x.pairId.localeCompare(y.pairId));
 }
 
+/**
+ * The spot check is deliberately NOT a random positive/negative split.
+ *
+ * With a positive class this small, the population estimate is dominated by a
+ * handful of labels in high-weight strata: one missed GENUINE in A4 (sampled
+ * 40 of 256,228) implies ~6,400 population positives on its own, while a wrong
+ * label in A1 (sampled 53 of 53) moves the estimate by one. So the human's
+ * attention buys the most when spent on (a) every GENUINE the judge called, and
+ * (b) negatives drawn from the highest-weight strata, where a false negative is
+ * expensive. Verdicts stay hidden either way.
+ */
 function spotCheckMarkdown(
   rows: ReadonlyArray<SampleRow & { stratum: string }>,
   outcomes: Map<string, Outcome>,
   n: number,
+  strataWeight: Readonly<Record<string, number>> = {},
 ): string {
   const pos: Array<SampleRow & { stratum: string }> = [];
   const neg: Array<SampleRow & { stratum: string }> = [];
@@ -184,11 +196,10 @@ function spotCheckMarkdown(
     if (!v) continue;
     (v.label === "GENUINE" ? pos : neg).push(r);
   }
-  const half = Math.floor(n / 2);
-  const pick = [
-    ...seededShuffle(pos, makeRng(deriveSeed(SEED, "spotcheck:pos"))).slice(0, half),
-    ...seededShuffle(neg, makeRng(deriveSeed(SEED, "spotcheck:neg"))).slice(0, n - half),
-  ];
+  const heavyFirst = seededShuffle(neg, makeRng(deriveSeed(SEED, "spotcheck:neg"))).sort(
+    (x, y) => (strataWeight[y.stratum] ?? 0) - (strataWeight[x.stratum] ?? 0),
+  );
+  const pick = [...pos, ...heavyFirst.slice(0, Math.max(0, n - pos.length))];
   const shuffled = seededShuffle(pick, makeRng(deriveSeed(SEED, "spotcheck:order")));
 
   const head = [
@@ -325,7 +336,14 @@ async function main(): Promise<void> {
   }
 
   if (pilot === null && limit === null) {
-    writeFileSync(join(OUT_DIR, "spot-check.md"), spotCheckMarkdown(rows, outcomes, 20));
+    const frame = JSON.parse(readFileSync(join(OUT_DIR, "frame.json"), "utf8")) as {
+      strata: Record<string, { population: number; drawn: number }>;
+    };
+    const weights: Record<string, number> = {};
+    for (const [k, v] of Object.entries(frame.strata)) {
+      weights[k] = v.drawn ? v.population / v.drawn : 0;
+    }
+    writeFileSync(join(OUT_DIR, "spot-check.md"), spotCheckMarkdown(rows, outcomes, 20, weights));
     log("wrote spot-check.md");
   }
 }
