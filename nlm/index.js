@@ -223,7 +223,9 @@ function parseRecallTimeout(raw) {
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? n : 4e3;
 }
-var RECALL_TIMEOUT_MS = parseRecallTimeout(process.env["NLM_HOOK_RECALL_TIMEOUT_MS"]);
+function recallTimeoutMs() {
+  return parseRecallTimeout(process.env["NLM_HOOK_RECALL_TIMEOUT_MS"]);
+}
 async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword") {
   const query = extractRecallQuery(prompt);
   if (query === null) return { hits: [], facts: [], exemplars: [] };
@@ -237,7 +239,7 @@ async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword")
   try {
     const extra = { "x-recall-source": "hook" };
     if (runtime) extra["x-recall-runtime"] = runtime;
-    const res = await fetchWithTimeout(url, { headers: hookAuthHeaders(extra) }, RECALL_TIMEOUT_MS);
+    const res = await fetchWithTimeout(url, { headers: hookAuthHeaders(extra) }, recallTimeoutMs());
     if (!res.ok) return { hits: [], facts: [], exemplars: [] };
     let body;
     try {
@@ -464,14 +466,44 @@ function recentConversationContext(transcriptPath, opts = {}) {
 
 // src/core/hook/hook-log.ts
 import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+
+// src/core/tenancy/tenant-state-path.ts
+import { createHash } from "node:crypto";
 import { homedir as homedir2 } from "node:os";
-import { dirname, join } from "node:path";
-function logPath() {
-  return process.env["NLM_HOOK_LOG"] ?? join(homedir2(), ".nlm", "hook-log.jsonl");
+import { join } from "node:path";
+
+// src/core/tenancy/default-team.ts
+var DEFAULT_TEAM_ID = "team_local";
+
+// src/core/tenancy/tenant-state-path.ts
+var TENANTS_DIRNAME = "tenants";
+var SAFE_TENANT_ID = /^[A-Za-z0-9_-]+$/;
+function sanitizeTenantId(tenantId) {
+  if (SAFE_TENANT_ID.test(tenantId)) return tenantId;
+  const sanitized = tenantId.replace(/[^A-Za-z0-9_-]/g, "_") || "unknown";
+  const hash = createHash("sha256").update(tenantId).digest("hex").slice(0, 8);
+  return `${sanitized}_${hash}`;
 }
-function appendHookLog(entry) {
+function stateRoot() {
+  return process.env["NLM_STATE_ROOT"] || join(homedir2(), ".nlm");
+}
+function tenantStatePath(tenantId, ...segments) {
+  const base = stateRoot();
+  if (tenantId === DEFAULT_TEAM_ID) return join(base, ...segments);
+  return join(base, TENANTS_DIRNAME, sanitizeTenantId(tenantId), ...segments);
+}
+
+// src/core/hook/hook-log.ts
+function logPath(tenantId) {
+  if (tenantId === DEFAULT_TEAM_ID) {
+    return process.env["NLM_HOOK_LOG"] ?? tenantStatePath(tenantId, "hook-log.jsonl");
+  }
+  return tenantStatePath(tenantId, "hook-log.jsonl");
+}
+function appendHookLog(tenantId, entry) {
   try {
-    const path = logPath();
+    const path = logPath(tenantId);
     mkdirSync(dirname(path), { recursive: true });
     appendFileSync(path, `${JSON.stringify(entry)}
 `, "utf8");
@@ -489,18 +521,20 @@ import {
   statSync,
   writeFileSync
 } from "node:fs";
-import { homedir as homedir3 } from "node:os";
 import { join as join2 } from "node:path";
-function stateDir() {
-  return process.env["NLM_HOOK_STATE_DIR"] ?? join2(homedir3(), ".nlm", "hook-state");
+function stateDir(tenantId) {
+  if (tenantId === DEFAULT_TEAM_ID) {
+    return process.env["NLM_HOOK_STATE_DIR"] ?? tenantStatePath(tenantId, "hook-state");
+  }
+  return tenantStatePath(tenantId, "hook-state");
 }
-function memoPath(conversationId) {
+function memoPath(tenantId, conversationId) {
   const safe = conversationId.replace(/[^A-Za-z0-9_-]/g, "_") || "unknown";
-  return join2(stateDir(), `${safe}.json`);
+  return join2(stateDir(tenantId), `${safe}.json`);
 }
-function loadSurfaced(conversationId) {
+function loadSurfaced(tenantId, conversationId) {
   try {
-    const path = memoPath(conversationId);
+    const path = memoPath(tenantId, conversationId);
     if (!existsSync3(path)) return /* @__PURE__ */ new Set();
     const parsed = JSON.parse(readFileSync2(path, "utf8"));
     if (!Array.isArray(parsed)) return /* @__PURE__ */ new Set();
@@ -509,12 +543,12 @@ function loadSurfaced(conversationId) {
     return /* @__PURE__ */ new Set();
   }
 }
-function recordSurfaced(conversationId, ids) {
+function recordSurfaced(tenantId, conversationId, ids) {
   try {
-    const merged = loadSurfaced(conversationId);
+    const merged = loadSurfaced(tenantId, conversationId);
     for (const id of ids) merged.add(id);
-    mkdirSync2(stateDir(), { recursive: true });
-    writeFileSync(memoPath(conversationId), JSON.stringify([...merged]), "utf8");
+    mkdirSync2(stateDir(tenantId), { recursive: true });
+    writeFileSync(memoPath(tenantId, conversationId), JSON.stringify([...merged]), "utf8");
   } catch {
   }
 }
@@ -582,10 +616,10 @@ function medianScore(hits) {
   return sorted[Math.floor(sorted.length / 2)] ?? 0;
 }
 function selectHits(params) {
-  const { hits, surfaced, scoreThreshold, perFireCap, perConversationCap, relativeFloor = 0 } = params;
-  const relCut = relativeFloor > 0 ? relativeFloor * medianScore(hits) : 0;
+  const { hits, surfaced, scoreThreshold: scoreThreshold2, perFireCap, perConversationCap, relativeFloor: relativeFloor2 = 0 } = params;
+  const relCut = relativeFloor2 > 0 ? relativeFloor2 * medianScore(hits) : 0;
   const eligible = hits.filter(
-    (h) => h.matchScore >= scoreThreshold && h.matchScore >= relCut && !surfaced.has(h.id)
+    (h) => h.matchScore >= scoreThreshold2 && h.matchScore >= relCut && !surfaced.has(h.id)
   );
   const budget = Math.max(0, perConversationCap - surfaced.size);
   const limit = Math.min(perFireCap, budget);
@@ -655,8 +689,8 @@ ${candidate}` }
 }
 
 // src/hook/prompt-recall-hook.ts
-var SCORE_THRESHOLD = parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR"]);
-var RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
+var scoreThreshold = () => parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR"]);
+var relativeFloor = () => parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 var PER_FIRE_CAP = 3;
 var PER_CONVERSATION_CAP = 10;
 var PROMPT_PREVIEW_CHARS = 200;
@@ -665,7 +699,9 @@ function parseHookDeadline(raw, defaultMs = 4e3) {
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? n : defaultMs;
 }
-var HOOK_DEADLINE_MS = parseHookDeadline(process.env["NLM_HOOK_DEADLINE_MS"], 6e3);
+function hookDeadlineMs() {
+  return parseHookDeadline(process.env["NLM_HOOK_DEADLINE_MS"], 6e3);
+}
 async function withDeadline(p, ms, fallback) {
   if (ms <= 0) return fallback;
   let timer;
@@ -703,7 +739,7 @@ async function runHook(input, deps) {
   const gate = classifyPrompt(input.prompt);
   const preview = input.prompt.slice(0, PROMPT_PREVIEW_CHARS);
   if (gate === "generative" || gate === "skip") {
-    appendHookLog({
+    appendHookLog(DEFAULT_TEAM_ID, {
       ts: (/* @__PURE__ */ new Date()).toISOString(),
       conversationId: input.conversationId,
       promptPreview: preview,
@@ -715,7 +751,7 @@ async function runHook(input, deps) {
     });
     return "";
   }
-  const deadline = Date.now() + (deps.deadlineMs ?? HOOK_DEADLINE_MS);
+  const deadline = Date.now() + (deps.deadlineMs ?? hookDeadlineMs());
   let fetched = { hits: [], facts: [] };
   try {
     fetched = normalizeRecall(
@@ -725,12 +761,12 @@ async function runHook(input, deps) {
     fetched = { hits: [], facts: [] };
   }
   const hits = fetched.hits;
-  const surfaced = loadSurfaced(input.conversationId);
+  const surfaced = loadSurfaced(DEFAULT_TEAM_ID, input.conversationId);
   const selected = selectHits({
     hits,
     surfaced,
-    scoreThreshold: SCORE_THRESHOLD,
-    relativeFloor: RELATIVE_FLOOR,
+    scoreThreshold: scoreThreshold(),
+    relativeFloor: relativeFloor(),
     perFireCap: PER_FIRE_CAP,
     perConversationCap: PER_CONVERSATION_CAP
   });
@@ -758,7 +794,7 @@ ${h.summary ?? ""}`) }))),
   }
   const block = formatPointerBlock(injected, fetched.facts, fetched.exemplars);
   const estTokens = Math.ceil(block.length / 4);
-  appendHookLog({
+  appendHookLog(DEFAULT_TEAM_ID, {
     ts: (/* @__PURE__ */ new Date()).toISOString(),
     conversationId: input.conversationId,
     promptPreview: preview,
@@ -770,7 +806,7 @@ ${h.summary ?? ""}`) }))),
     ...gateDecisions ? { gateDecisions } : {}
   });
   if (deps.mode === "live" && injected.length > 0) {
-    recordSurfaced(input.conversationId, injected.map((h) => h.id));
+    recordSurfaced(DEFAULT_TEAM_ID, input.conversationId, injected.map((h) => h.id));
     return block;
   }
   return "";
