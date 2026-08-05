@@ -38,8 +38,25 @@ export interface ReDerivationPair {
 export interface ReDerivationReport {
   readonly rate: number;
   readonly pairs: ReadonlyArray<ReDerivationPair>;
-  /** Denominator: entity-sharing session pairs eligible for the rate. */
+  /**
+   * Denominator of the legacy pair-space rate: entity-sharing session pairs
+   * where BOTH sides carry at least one decision. A pair with a decisionless
+   * side cannot be a re-derivation by construction, and counting it inflated
+   * this figure roughly 3x - measured 2026-08-04 on the live 90-day window,
+   * 1,266,809 of 1,905,497 eligible pairs (66.5%) had a decisionless side.
+   */
   readonly eligible: number;
+  /** Sessions in the window carrying at least one decision. Linear in corpus size. */
+  readonly decisionBearingSessions: number;
+  /** Distinct later-side sessions appearing in `pairs`. Counted once each. */
+  readonly reDerivingSessions: number;
+  /**
+   * reDerivingSessions / decisionBearingSessions. This is the trendable metric:
+   * the pair-space `rate` divides by a denominator that grows quadratically with
+   * the corpus, so it mechanically falls the more the product is used, which is
+   * backwards for a number whose job is to show improvement.
+   */
+  readonly sessionRate: number;
 }
 
 const JACCARD_FLOOR = 0.5;
@@ -132,11 +149,15 @@ export async function computeReDerivationRate(
       .map((e) => [e.from_session, e.to_session].sort().join("|")),
   );
   const pairs: ReDerivationPair[] = [];
+  const reDeriving = new Set<string>();
   let eligible = 0;
   for (let i = 0; i < sessions.length; i++) {
     for (let j = i + 1; j < sessions.length; j++) {
       const s = sessions[i]!;
       const t = sessions[j]!;
+      // A decisionless side can never be a re-derivation, so such a pair does
+      // not belong in the denominator at all.
+      if (s.decisions.length === 0 || t.decisions.length === 0) continue;
       const shared = s.entities.filter((e) => t.entities.includes(e));
       if (shared.length === 0) continue;
       eligible++;
@@ -147,8 +168,19 @@ export async function computeReDerivationRate(
       const jac = jaccard(s.decisions, t.decisions);
       if (jac >= JACCARD_FLOOR) {
         pairs.push({ a: s.id, b: t.id, sharedEntities: shared, jaccard: round2(jac) });
+        const later =
+          new Date(t.startedAt).getTime() >= new Date(s.startedAt).getTime() ? t.id : s.id;
+        reDeriving.add(later);
       }
     }
   }
-  return { rate: eligible ? pairs.length / eligible : 0, pairs, eligible };
+  const decisionBearingSessions = sessions.filter((s) => s.decisions.length > 0).length;
+  return {
+    rate: eligible ? pairs.length / eligible : 0,
+    pairs,
+    eligible,
+    decisionBearingSessions,
+    reDerivingSessions: reDeriving.size,
+    sessionRate: decisionBearingSessions ? reDeriving.size / decisionBearingSessions : 0,
+  };
 }
