@@ -157,7 +157,10 @@ describe("writeMcpServerToConfig — never duplicates the MCP table", () => {
   // the plain stdio shape, and still refuses when the user has customized it
   // (see codex-mcp-migration.test.ts). `--stdio` reverses it.
   it("migrates a bare stdio block to the shared HTTP endpoint", () => {
-    const bare = '[mcp_servers.nlm-memory]\ncommand = "node"\nargs = ["x"]\n\n[mcp_servers.nlm-memory.env]\nNLM_FORMAT = "toon"\n';
+    // Realistic shape: the `mcp` subcommand is always present in what this
+    // installer (or a user copying it) writes. Detection keys off that, so a
+    // placeholder args value would not — and should not — migrate.
+    const bare = '[mcp_servers.nlm-memory]\ncommand = "node"\nargs = ["/p/nlm-memory/dist/cli/nlm.js", "mcp"]\n\n[mcp_servers.nlm-memory.env]\nNLM_FORMAT = "toon"\n';
     writeFileSync(cfg, bare);
     expect(writeMcpServerToConfig(cfg)).toBe("migrated-stdio");
     const txt = readFileSync(cfg, "utf8");

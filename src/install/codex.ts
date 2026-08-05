@@ -148,14 +148,30 @@ export function writeMcpServerToConfig(
 export function isOurStdioTable(content: string): boolean {
   const body = nlmTableBodies(content);
   if (body.length === 0) return false;
-  const keys = body
+  const entries = body
     .flatMap((b) => b.split("\n"))
     .map((l) => l.trim())
     .filter((l) => l.length > 0 && !l.startsWith("#"))
-    .map((l) => l.split("=")[0]?.trim() ?? "");
+    .map((l) => {
+      const eq = l.indexOf("=");
+      return eq < 0 ? ["", ""] : [l.slice(0, eq).trim(), l.slice(eq + 1).trim()];
+    });
+  const keys = entries.map(([k]) => k ?? "");
   if (keys.some((k) => k === "url")) return false;
   const allowed = new Set(["command", "args", "NLM_FORMAT"]);
-  return keys.length > 0 && keys.every((k) => allowed.has(k));
+  if (keys.length === 0 || !keys.every((k) => allowed.has(k))) return false;
+
+  // Key names alone are not enough. A deliberate wrapper — a shell script that
+  // sets env then execs nlm — uses exactly these keys, and migrating it away
+  // would destroy a setup the user built on purpose. Require the values to
+  // look like something this installer would have produced: the nlm entrypoint
+  // (or node running it) with the `mcp` subcommand.
+  const val = (k: string): string => entries.find(([key]) => key === k)?.[1] ?? "";
+  const command = val("command").replace(/^["']|["']$/g, "");
+  const base = command.split("/").filter(Boolean).at(-1) ?? command;
+  const commandLooksOurs = ["nlm", "nlm.js", "node"].includes(base);
+  const argsHasMcpSubcommand = /(^|[[,\s])["']mcp["']/.test(val("args"));
+  return commandLooksOurs && argsHasMcpSubcommand;
 }
 
 /** Bodies of `[mcp_servers.nlm-memory]` and its dotted sub-tables. */
