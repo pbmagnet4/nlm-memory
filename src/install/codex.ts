@@ -32,6 +32,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { codexMcpToml, type McpTransport } from "./mcp-block.js";
 
 const DEFAULT_SOURCE = "pbmagnet4/nlm-memory";
 const PLUGIN_NAME = "nlm-memory";
@@ -57,6 +58,8 @@ export interface ConnectOptions {
   readonly source?: string;
   readonly withHooks?: boolean;
   readonly dryRun?: boolean;
+  /** Defaults to "http" — see mcp-block.ts for why. */
+  readonly transport?: McpTransport;
 }
 
 export interface DisconnectOptions {
@@ -102,26 +105,92 @@ export function codexConfigPath(): string {
  * system's .mcp.json indirection (which we can't currently verify works
  * outside the upstream plugin pipeline).
  */
-export type McpWriteResult = "written" | "skipped-existing";
+export type McpWriteResult = "written" | "skipped-existing" | "migrated-stdio";
 
-export function writeMcpServerToConfig(configPath: string): McpWriteResult {
+export function writeMcpServerToConfig(
+  configPath: string,
+  transport: McpTransport = "http",
+): McpWriteResult {
   mkdirSync(dirname(configPath), { recursive: true });
   const existing = existsSync(configPath) ? readFileSync(configPath, "utf8") : "";
   const next = stripSentinelBlock(existing);
 
-  // An un-sentineled [mcp_servers.nlm-memory] table — hand-authored, or left by
-  // a pre-rename install — already wires the server. Appending our managed
-  // block would create a duplicate TOML key and break codex's parser, so leave
-  // the user's block untouched (and persist the sentinel-strip if we did one).
-  if (hasNlmMcpTable(next)) {
-    if (next !== existing) writeFileSync(configPath, next, "utf8");
-    return "skipped-existing";
+  // An un-sentineled [mcp_servers.nlm-memory] table — hand-authored, or left
+  // by a pre-rename install. Appending our managed block would duplicate the
+  // TOML key and break codex's parser, so we either replace it (when it is
+  // recognizably the stdio shape we used to emit, i.e. an upgrade) or leave it
+  // strictly alone (when the user has customized it beyond that).
+  let base = next;
+  let migrated = false;
+  if (hasNlmMcpTable(base)) {
+    if (transport === "http" && isOurStdioTable(base)) {
+      base = removeNlmMcpTables(base);
+      migrated = true;
+    } else {
+      if (base !== existing) writeFileSync(configPath, base, "utf8");
+      return "skipped-existing";
+    }
   }
 
-  const block = `${MCP_SENTINEL_BEGIN}\n[mcp_servers.nlm-memory]\ncommand = "nlm"\nargs = ["mcp"]\n${MCP_SENTINEL_END}\n`;
-  const sep = next.length > 0 && !next.endsWith("\n\n") ? (next.endsWith("\n") ? "\n" : "\n\n") : "";
-  writeFileSync(configPath, next + sep + block, "utf8");
-  return "written";
+  const block = `${MCP_SENTINEL_BEGIN}\n${codexMcpToml({ transport })}${MCP_SENTINEL_END}\n`;
+  const sep = base.length > 0 && !base.endsWith("\n\n") ? (base.endsWith("\n") ? "\n" : "\n\n") : "";
+  writeFileSync(configPath, base + sep + block, "utf8");
+  return migrated ? "migrated-stdio" : "written";
+}
+
+/**
+ * True when the existing un-sentineled table is the stdio shape this installer
+ * used to emit — `command`/`args` and nothing exotic. A table carrying a `url`
+ * is already HTTP; one with extra keys we never wrote is user-customized. Both
+ * are left alone, because silently rewriting someone's deliberate config is
+ * worse than leaving them on stdio.
+ */
+export function isOurStdioTable(content: string): boolean {
+  const body = nlmTableBodies(content);
+  if (body.length === 0) return false;
+  const keys = body
+    .flatMap((b) => b.split("\n"))
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !l.startsWith("#"))
+    .map((l) => l.split("=")[0]?.trim() ?? "");
+  if (keys.some((k) => k === "url")) return false;
+  const allowed = new Set(["command", "args", "NLM_FORMAT"]);
+  return keys.length > 0 && keys.every((k) => allowed.has(k));
+}
+
+/** Bodies of `[mcp_servers.nlm-memory]` and its dotted sub-tables. */
+function nlmTableBodies(content: string): string[] {
+  const out: string[] = [];
+  const lines = content.split("\n");
+  let capturing = false;
+  let buf: string[] = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (t.startsWith("[")) {
+      if (capturing) { out.push(buf.join("\n")); buf = []; }
+      capturing = t === "[mcp_servers.nlm-memory]" || t.startsWith("[mcp_servers.nlm-memory.");
+      continue;
+    }
+    if (capturing) buf.push(line);
+  }
+  if (capturing) out.push(buf.join("\n"));
+  return out;
+}
+
+/** Drop `[mcp_servers.nlm-memory]` and its dotted sub-tables from the TOML. */
+export function removeNlmMcpTables(content: string): string {
+  const lines = content.split("\n");
+  const kept: string[] = [];
+  let dropping = false;
+  for (const line of lines) {
+    const t = line.trim();
+    if (t.startsWith("[")) {
+      dropping = t === "[mcp_servers.nlm-memory]" || t.startsWith("[mcp_servers.nlm-memory.");
+      if (dropping) continue;
+    }
+    if (!dropping) kept.push(line);
+  }
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n");
 }
 
 /** True if the config already declares an `[mcp_servers.nlm-memory]` table. */
@@ -323,7 +392,7 @@ export function connectCodex(
   // universal infrastructure that should work whether or not the plugin
   // system honors the bundled .mcp.json indirection.
   const configPath = codexConfigPath();
-  const mcpResult = writeMcpServerToConfig(configPath);
+  const mcpResult = writeMcpServerToConfig(configPath, opts.transport ?? "http");
 
   return {
     source,

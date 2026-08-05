@@ -93,7 +93,7 @@ import { realClock, createReprocessSpawnChild } from "./reprocess-job-adapters.j
 import { connectHermes, disconnectHermes, hermesConfigPath } from "../install/hermes.js";
 import { connectHermesAgent, disconnectHermesAgent, hermesAgentPluginDir } from "../install/hermes-agent.js";
 import { connectWindsurf, disconnectWindsurf } from "../install/windsurf.js";
-import { connectPi, disconnectPi, piSettingsPath } from "../install/pi.js";
+import { connectPi, connectPiMcp, disconnectPi, piSettingsPath } from "../install/pi.js";
 import { runSetup } from "../install/setup.js";
 import { runParity } from "./classify-parity.js";
 import { reembedCorpus } from "../core/embedding/embed-backfill.js";
@@ -2031,13 +2031,19 @@ connect
   .option("--with-hooks", "additionally write absolute paths to ~/.codex/hooks.json (Codex Desktop fallback for openai/codex#16430)")
   .option("--repair", "first strip a stale pre-rename nlm-memory-ts install (config block + plugin + marketplace), then connect")
   .option("--dry-run", "print what would happen without invoking codex")
+  .option("--stdio", "use the stdio transport instead of the shared HTTP endpoint (works with the daemon stopped)")
   .action((opts) => {
     if (!opts.dryRun && !codexBinaryAvailable()) {
       console.error("nlm connect codex: `codex` binary not on PATH. Install via `npm i -g @openai/codex` or `brew install codex`.");
       process.exit(1);
     }
     const source = opts.local ? REPO_ROOT : opts.source;
-    const connectOpts = { source, withHooks: Boolean(opts.withHooks), dryRun: Boolean(opts.dryRun) };
+    const connectOpts = {
+      source,
+      withHooks: Boolean(opts.withHooks),
+      dryRun: Boolean(opts.dryRun),
+      transport: opts.stdio ? "stdio" as const : "http" as const,
+    };
     const repair = opts.repair
       ? repairCodex(connectOpts, pluginScriptsDir(REPO_ROOT))
       : null;
@@ -2093,16 +2099,24 @@ connect
   .description("Write the nlm-memory MCP server block into ~/.mcp.json")
   .option("--with-hooks", "also install Claude Code session hooks")
   .option("--dry-run", "print what would happen without changing files")
+  .option("--stdio", "use the stdio transport instead of the shared HTTP endpoint (works with the daemon stopped)")
   .action((opts) => {
+    // A fresh shell has no NLM_MCP_TOKEN exported even though ~/.nlm/.env
+    // holds one; the HTTP block needs it. Mirror `nlm ui`'s lookup.
+    autoloadEnv();
+    const transport = opts.stdio ? "stdio" as const : "http" as const;
     if (opts.dryRun) {
       console.error("nlm connect claude-code (dry run):");
-      console.error(`  write [mcpServers.nlm-memory] to ${mcpConfigPath()}`);
+      console.error(`  write [mcpServers.nlm-memory] (${transport}) to ${mcpConfigPath()}`);
       if (opts.withHooks) console.error("  install 6 Claude Code hooks");
       return;
     }
-    const report = connectClaudeCode({ nlmBinPath: __filename, nodeExecPath: process.execPath });
+    const report = connectClaudeCode({ nlmBinPath: __filename, nodeExecPath: process.execPath, transport });
     const action = report.alreadyPresent ? "updated" : "written";
-    console.error(`nlm: [mcpServers.nlm-memory] ${action} → ${report.mcpConfigPath}`);
+    console.error(`nlm: [mcpServers.nlm-memory] ${action} (${report.transport}) → ${report.mcpConfigPath}`);
+    if (report.migratedFromStdio) {
+      console.error("  migrated from stdio → shared HTTP endpoint (one daemon-backed server for every session).");
+    }
     console.error("  Restart Claude Code to activate the MCP server.");
     if (opts.withHooks) {
       const path = claudeSettingsPath();
@@ -2128,14 +2142,22 @@ connect
   .command("hermes")
   .description("Write the nlm-memory MCP server entry into ~/.hermes/config.yaml")
   .option("--dry-run", "print what would happen without changing files")
+  .option("--stdio", "use the stdio transport instead of the shared HTTP endpoint (works with the daemon stopped)")
   .action((opts) => {
+    // A fresh shell has no NLM_MCP_TOKEN exported even though ~/.nlm/.env
+    // holds one; the HTTP block needs it. Mirror `nlm ui`'s lookup.
+    autoloadEnv();
+    const transport = opts.stdio ? "stdio" as const : "http" as const;
     if (opts.dryRun) {
-      console.error(`nlm connect hermes (dry run): write [mcp_servers.nlm-memory] to ${hermesConfigPath()}`);
+      console.error(`nlm connect hermes (dry run): write [mcp_servers.nlm-memory] (${transport}) to ${hermesConfigPath()}`);
       return;
     }
-    const report = connectHermes({ nlmBinPath: __filename, nodeExecPath: process.execPath, dryRun: false });
+    const report = connectHermes({ nlmBinPath: __filename, nodeExecPath: process.execPath, dryRun: false, transport });
     const action = report.alreadyPresent ? "updated" : "written";
-    console.error(`nlm: [mcp_servers.nlm-memory] ${action} → ${report.configPath}`);
+    console.error(`nlm: [mcp_servers.nlm-memory] ${action} (${report.transport}) → ${report.configPath}`);
+    if (report.migratedFromStdio) {
+      console.error("  migrated from stdio → shared HTTP endpoint (one daemon-backed server for every session).");
+    }
     console.error("  Restart Hermes to activate the MCP server.");
   });
 
@@ -2245,9 +2267,13 @@ connect
 
 connect
   .command("pi")
-  .description("Register the nlm-memory prompt-recall extension in ~/.pi/agent/settings.json")
+  .description("Register the nlm-memory prompt-recall extension + MCP server for pi")
   .option("--dry-run", "print what would happen without changing files")
+  .option("--stdio", "use the stdio transport instead of the shared HTTP endpoint (works with the daemon stopped)")
   .action((opts) => {
+    // The HTTP block needs NLM_MCP_TOKEN, which a fresh shell has not exported.
+    autoloadEnv();
+    const transport = opts.stdio ? "stdio" as const : "http" as const;
     const pluginDir = join(REPO_ROOT, "nlm");
     const report = connectPi({ pluginDir, dryRun: Boolean(opts.dryRun) });
     if (opts.dryRun) {
@@ -2260,6 +2286,19 @@ connect
     } else {
       console.error(`nlm: pi extension registered → ${report.settingsPath}`);
       console.error(`  Packages entry: ${report.pluginDir}`);
+    }
+    // Two different files: the extension supplies the hook, mcp.json supplies
+    // the callable tools. pi core has no MCP concept; pi-mcp-adapter reads it.
+    const mcp = connectPiMcp({
+      transport,
+      nlmBinPath: __filename,
+      nodeExecPath: process.execPath,
+      dryRun: Boolean(opts.dryRun),
+    });
+    const mcpVerb = opts.dryRun ? "would write" : (mcp.alreadyPresent ? "updated" : "written");
+    console.error(`nlm: [mcpServers.nlm-memory] ${mcpVerb} (${mcp.transport}) → ${mcp.mcpConfigPath}`);
+    if (mcp.migratedFromStdio) {
+      console.error("  migrated from stdio → shared HTTP endpoint (one daemon-backed server for every session).");
     }
     console.error("  Restart pi to activate the prompt-recall hook.");
     console.error("  Set NLM_HOOK_MODE=live in ~/.nlm/.env to flip from shadow → live.");
@@ -2274,6 +2313,7 @@ disconnect
   .description("Remove the nlm-memory plugin + marketplace from Codex")
   .option("--with-hooks", "also strip our entries from ~/.codex/hooks.json")
   .option("--dry-run", "print what would happen without invoking codex")
+  .option("--stdio", "use the stdio transport instead of the shared HTTP endpoint (works with the daemon stopped)")
   .action((opts) => {
     if (!opts.dryRun && !codexBinaryAvailable()) {
       console.error("nlm disconnect codex: `codex` binary not on PATH.");

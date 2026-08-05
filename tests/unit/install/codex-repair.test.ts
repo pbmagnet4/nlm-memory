@@ -150,14 +150,30 @@ describe("writeMcpServerToConfig — never duplicates the MCP table", () => {
     expect(txt.match(/\[mcp_servers\.nlm-memory\]/g)).toHaveLength(1);
   });
 
-  it("leaves a hand-authored bare block untouched instead of duplicating", () => {
+  // Behavior change: this block used to be left untouched on the reasoning
+  // that an un-sentineled table "already wires the server." That guard broke
+  // the stdio -> HTTP migration for everyone holding a bare block, which is
+  // most pre-existing installs. It now migrates when the table is recognizably
+  // the plain stdio shape, and still refuses when the user has customized it
+  // (see codex-mcp-migration.test.ts). `--stdio` reverses it.
+  it("migrates a bare stdio block to the shared HTTP endpoint", () => {
     const bare = '[mcp_servers.nlm-memory]\ncommand = "node"\nargs = ["x"]\n\n[mcp_servers.nlm-memory.env]\nNLM_FORMAT = "toon"\n';
     writeFileSync(cfg, bare);
-    expect(writeMcpServerToConfig(cfg)).toBe("skipped-existing");
+    expect(writeMcpServerToConfig(cfg)).toBe("migrated-stdio");
     const txt = readFileSync(cfg, "utf8");
-    // exactly one table, and the user's customization survives
+    // exactly one table, now HTTP, with no stdio remnants left behind
     expect(txt.match(/\[mcp_servers\.nlm-memory\]/g)).toHaveLength(1);
-    expect(txt).toContain('NLM_FORMAT = "toon"');
+    expect(txt).toContain('url = "http://127.0.0.1:3940/mcp"');
+    expect(txt).toContain('bearer_token_env_var = "NLM_MCP_TOKEN"');
+    expect(txt).not.toContain("command =");
+    expect(txt).not.toContain("NLM_FORMAT");
+  });
+
+  it("still refuses to touch a customized block", () => {
+    const custom = '[mcp_servers.nlm-memory]\ncommand = "node"\nargs = ["x"]\nstartup_timeout_ms = 30000\n';
+    writeFileSync(cfg, custom);
+    expect(writeMcpServerToConfig(cfg)).toBe("skipped-existing");
+    expect(readFileSync(cfg, "utf8")).toContain("startup_timeout_ms");
   });
 
   it("refreshes its own sentineled block without duplicating", () => {
