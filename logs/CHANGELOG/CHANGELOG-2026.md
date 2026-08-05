@@ -1,3 +1,11 @@
+## 2026-07-19 - Digest query truncation fix (word-boundary + ellipsis, 60→80)
+
+**Changes:** `truncate()` in `src/core/digest/compose.ts` no longer hard-chops mid-word with no marker (the digest's Top-queries lines ended in fragments like "profile Wr"): budget raised 60→80 chars, cut falls back to the last word boundary past 60% of budget, and an ellipsis is appended. Tests updated + word-boundary case added (6/6 green). Rebuilt; the Mini's npm-linked `nlm` picks it up immediately — no publish.
+
+**Context:** Surfaced while migrating the daily digest to Matrix/Element (#digests room, designed HTML layout in the Whtnxt Agent wrapper `scripts/nlm-digest-notify.sh`). Unpublished to npm — fold into the next release.
+
+_Older entries archived in CHANGELOG-2026.md_
+
 ## 2026-07-03 - Session C: pull-first shipped (#392), exemplar model provenance (#354 FIX decision)
 
 **Changes:** (1) #392 PULL-FIRST SHIPPED (3 commits): promptRecallEnabled default flipped, fresh installs run per-prompt ambient recall OFF (unset/empty = off; NLM_HOOK_PROMPT_RECALL=on opts back in; any already-set value keeps its pre-flip meaning so existing installs are untouched; session-start passive layer unaffected; pi.dev extension and Hermes Agent are not gated by this flag and the docs say so). Agent-contract templates (claude-code + generic) gained four explicit pull triggers: task start, before re-deriving a prior decision, unfamiliar project/entity mentions, post-compaction. Setup output, README, docs/hooks.md, useful-hit-rate methodology all describe the posture truthfully. Verified before merge: the digest hook-silent canary keys on ALL live fires including session-start, so it does not false-alarm under pull-first.
