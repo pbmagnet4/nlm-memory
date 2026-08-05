@@ -32,12 +32,15 @@ import { readStdin, hookModeFromEnv } from "./hook-helpers.js";
 // parseScoreFloor guards against a bad env value: a non-numeric / non-finite /
 // negative input falls back to 0 instead of silently deny-all'ing recall
 // (matchScore >= NaN is always false in select.ts).
-const SCORE_THRESHOLD = parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR"]);
+// Lazy, not module-scope: autoloadEnv() runs inside main(), after imports are
+// evaluated, so an eager read silently ignores ~/.nlm/.env. See recallTimeoutMs
+// in recall-over-http.ts.
+const scoreThreshold = () => parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR"]);
 // Portable per-fire noise floor: drop tail hits below this fraction of the
 // fire's median score. Default 0.9 (calibrated, #284) — trims weak tail recalls
 // while keeping ~97% of cited ones. Only the per-message keyword path runs this;
 // the session-start hybrid path is left unfiltered (unmeasured).
-const RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
+const relativeFloor = () => parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 const PER_FIRE_CAP = 3;
 const PER_CONVERSATION_CAP = 10;
 const PROMPT_PREVIEW_CHARS = 200;
@@ -52,7 +55,9 @@ export function parseHookDeadline(raw: string | undefined, defaultMs = 4000): nu
 // RECALL_TIMEOUT_MS (default 4000ms in recall-over-http.ts) with headroom.
 // Invariant: HOOK_DEADLINE_MS > RECALL_TIMEOUT_MS at defaults. If the outer
 // equals the inner, the deadline fires before post-recall work can complete.
-export const HOOK_DEADLINE_MS = parseHookDeadline(process.env["NLM_HOOK_DEADLINE_MS"], 6000);
+export function hookDeadlineMs(): number {
+  return parseHookDeadline(process.env["NLM_HOOK_DEADLINE_MS"], 6000);
+}
 
 async function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
   if (ms <= 0) return fallback;
@@ -175,7 +180,7 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
     return "";
   }
 
-  const deadline = Date.now() + (deps.deadlineMs ?? HOOK_DEADLINE_MS);
+  const deadline = Date.now() + (deps.deadlineMs ?? hookDeadlineMs());
 
   let fetched: RecallFetchResult = { hits: [], facts: [] };
   try {
@@ -191,8 +196,8 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
   const selected = selectHits({
     hits,
     surfaced,
-    scoreThreshold: SCORE_THRESHOLD,
-    relativeFloor: RELATIVE_FLOOR,
+    scoreThreshold: scoreThreshold(),
+    relativeFloor: relativeFloor(),
     perFireCap: PER_FIRE_CAP,
     perConversationCap: PER_CONVERSATION_CAP,
   });
