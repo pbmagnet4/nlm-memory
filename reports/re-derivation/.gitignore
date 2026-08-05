@@ -1,1 +1,9 @@
+# Corpus-derived artifacts. These carry raw session labels, decision text and
+# transcript excerpts from the operator's own work - client names, venture
+# names, internal hostnames. This repo publishes publicly, so they stay local.
+# Everything here regenerates from the harness plus ~/.nlm/canonical.sqlite.
 judge-cache/
+decision-vectors.jsonl
+sample.jsonl
+labels*.jsonl
+spot-check.md
