@@ -23,9 +23,9 @@ describe("selectSubjects", () => {
   it("orders by fact count descending then subject ascending", () => {
     const out = selectSubjects(
       [
-        { subject: "b", factCount: 5, sessionCount: 3 },
-        { subject: "a", factCount: 9, sessionCount: 4 },
         { subject: "c", factCount: 5, sessionCount: 3 },
+        { subject: "a", factCount: 9, sessionCount: 4 },
+        { subject: "b", factCount: 5, sessionCount: 3 },
       ],
       config,
     );
