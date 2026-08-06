@@ -26,6 +26,18 @@ export interface FactSemanticNeighbor {
   readonly distance: number;
 }
 
+/**
+ * Per-subject aggregate over current facts. Feeds the wiki projection's
+ * page-selection stage. Returns every subject with at least one current
+ * fact; threshold filtering is the caller's job so thresholds stay testable
+ * without a database.
+ */
+export interface SubjectStat {
+  readonly subject: string;
+  readonly factCount: number;
+  readonly sessionCount: number;
+}
+
 /** Pre-filter applied at the storage layer before keyword scoring runs. */
 export interface FactListFilter {
   readonly subject?: string;
@@ -179,6 +191,12 @@ export interface FactStore {
       readonly value: string;
     }>,
   ): Promise<Map<string, number>>;
+
+  /**
+   * Aggregate current (non-superseded, non-retired) facts by subject.
+   * Covered by idx_facts_subject_current.
+   */
+  listSubjectStats(tenantId: string): Promise<ReadonlyArray<SubjectStat>>;
 }
 
 /** Key encoding for corroborationCounts result map. */

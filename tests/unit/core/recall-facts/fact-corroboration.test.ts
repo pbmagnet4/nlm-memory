@@ -12,6 +12,7 @@ import type {
   FactQuery,
   FactSemanticNeighbor,
   FactStore,
+  SubjectStat,
 } from "../../../../src/ports/fact-store.js";
 import type {
   EmbedResult,
@@ -84,6 +85,9 @@ class ScriptedFactStore implements FactStore {
       out.set(key, this.counts.get(key) ?? 1);
     }
     return out;
+  }
+  async listSubjectStats(): Promise<ReadonlyArray<SubjectStat>> {
+    return [];
   }
 }
 

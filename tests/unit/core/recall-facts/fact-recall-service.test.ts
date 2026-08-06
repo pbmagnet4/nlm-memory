@@ -9,6 +9,7 @@ import type {
   FactListFilter,
   FactSemanticNeighbor,
   FactStore,
+  SubjectStat,
 } from "../../../../src/ports/fact-store.js";
 import { StubEmbedder } from "../../../fixtures/llm-stubs.js";
 import type { Fact, FactHistoryChain } from "../../../../src/shared/types.js";
@@ -79,6 +80,9 @@ class InMemoryFactStore implements FactStore {
   }
   async upsertEmbedding(): Promise<void> {}
   async ingestSessionFacts(): Promise<void> {}
+  async listSubjectStats(): Promise<ReadonlyArray<SubjectStat>> {
+    return [];
+  }
 }
 
 

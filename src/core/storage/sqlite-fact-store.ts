@@ -33,6 +33,7 @@ import type {
   FactQuery,
   FactSemanticNeighbor,
   FactStore,
+  SubjectStat,
 } from "@ports/fact-store.js";
 import type { Fact, FactHistoryChain, FactKind } from "@shared/types.js";
 import { batchWinners } from "./fact-batch.js";
@@ -338,6 +339,30 @@ export class SqliteFactStore implements FactStore {
       out.set(`${r.subject} ${r.predicate} ${r.value}`, r.session_count);
     }
     return out;
+  }
+
+  /**
+   * Aggregate current (non-superseded, non-retired) facts by subject.
+   * Covered by idx_facts_subject_current.
+   */
+  async listSubjectStats(tenantId: string): Promise<ReadonlyArray<SubjectStat>> {
+    const tc = tenantClause(tenantId);
+    const rows = this.db
+      .prepare<unknown[], { subject: string; fact_count: number; session_count: number }>(
+        `SELECT subject,
+                COUNT(*) AS fact_count,
+                COUNT(DISTINCT source_session_id) AS session_count
+         FROM facts
+         WHERE superseded_by IS NULL AND retired_at IS NULL AND ${tc.sql}
+         GROUP BY subject
+         ORDER BY fact_count DESC, subject ASC`,
+      )
+      .all(tc.param);
+    return rows.map((r) => ({
+      subject: r.subject,
+      factCount: r.fact_count,
+      sessionCount: r.session_count,
+    }));
   }
 
   /**

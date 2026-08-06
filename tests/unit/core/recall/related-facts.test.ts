@@ -73,6 +73,7 @@ class ScriptedFactStore implements FactStore {
     }
     return out;
   }
+  async listSubjectStats() { return []; }
 }
 
 describe("pickRelatedFacts (Spec G.2)", () => {
@@ -188,6 +189,7 @@ describe("pickRelatedFacts (Spec G.2)", () => {
       async semanticSearch() { return []; }
       async getHistory(): Promise<ReadonlyArray<FactHistoryChain>> { return []; }
       async corroborationCounts() { return new Map<string, number>(); }
+      async listSubjectStats() { return []; }
     }
     const result = await pickRelatedFacts("team_local", [hit("a", ["x"])], new FailingStore());
     expect(result).toEqual([]);

@@ -16,6 +16,7 @@ import type {
   FactQuery,
   FactSemanticNeighbor,
   FactStore,
+  SubjectStat,
 } from "@ports/fact-store.js";
 import type { Fact, FactHistoryChain, FactKind } from "@shared/types.js";
 import { ingestSessionFactsOnClient } from "./pg-fact-ingest.js";
@@ -396,6 +397,13 @@ export class PgFactStore implements FactStore {
       out.set(`${r.subject} ${r.predicate} ${r.value}`, r.session_count);
     }
     return out;
+  }
+
+  async listSubjectStats(_tenantId: string): Promise<ReadonlyArray<SubjectStat>> {
+    throw new Error(
+      "listSubjectStats is not implemented on the Postgres backend; the wiki " +
+        "projection is SQLite-only and the daemon does not start it under PgStorage",
+    );
   }
 }
 
