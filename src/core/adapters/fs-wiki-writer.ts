@@ -39,32 +39,55 @@ export class FsWikiWriter implements WikiWriter {
     return full;
   }
 
+  /**
+   * Runs the expensive adoption scan once per instance, then writes the
+   * sentinel so the root is provably owned before any content write. The
+   * scan itself is not repeated on later calls — that cost is paid once per
+   * writer, matching the daemon's one-writer-per-run lifecycle.
+   */
   private ensureOwned(): void {
-    if (this.ensured) return;
-    if (!existsSync(this.root)) {
-      mkdirSync(this.root, { recursive: true });
-      this.ensured = true;
+    if (this.ensured) {
       return;
     }
-    const entries = readdirSync(this.root);
-    if (entries.length > 0 && !entries.includes(SENTINEL_FILE)) {
-      throw new WikiOwnershipError(
-        `refusing to write into ${this.root}: it holds ${entries.length} entr` +
-          `${entries.length === 1 ? "y" : "ies"} and no ${SENTINEL_FILE} sentinel, ` +
-          `so it is not a directory NLM owns`,
-      );
+    if (!existsSync(this.root)) {
+      mkdirSync(this.root, { recursive: true });
+    } else {
+      const entries = readdirSync(this.root);
+      if (entries.length > 0 && !entries.includes(SENTINEL_FILE)) {
+        throw new WikiOwnershipError(
+          `refusing to write into ${this.root}: it holds ${entries.length} entr` +
+            `${entries.length === 1 ? "y" : "ies"} and no ${SENTINEL_FILE} sentinel, ` +
+            `so it is not a directory NLM owns`,
+        );
+      }
     }
-    this.ensured = true;
-  }
-
-  async write(relPath: string, content: string): Promise<void> {
-    this.ensureOwned();
-    const full = this.resolveWithin(relPath);
-    writeFileSync(full, content, "utf8");
     const sentinel = join(this.root, SENTINEL_FILE);
     if (!existsSync(sentinel)) {
       writeFileSync(sentinel, SENTINEL_BODY, "utf8");
     }
+    this.ensured = true;
+  }
+
+  /**
+   * Cheap re-check for every destructive call after the one-time adoption
+   * scan. If a human deletes the sentinel mid-run, this is what stops the
+   * rest of that run's writes and removes rather than trusting the stale
+   * `ensured` latch.
+   */
+  private verifySentinelPresent(): void {
+    if (!existsSync(join(this.root, SENTINEL_FILE))) {
+      throw new WikiOwnershipError(
+        `refusing to modify ${this.root}: its ${SENTINEL_FILE} sentinel is gone, ` +
+          `so it may no longer be owned by NLM`,
+      );
+    }
+  }
+
+  async write(relPath: string, content: string): Promise<void> {
+    this.ensureOwned();
+    this.verifySentinelPresent();
+    const full = this.resolveWithin(relPath);
+    writeFileSync(full, content, "utf8");
   }
 
   async read(relPath: string): Promise<string | null> {
@@ -75,12 +98,15 @@ export class FsWikiWriter implements WikiWriter {
 
   async remove(relPath: string): Promise<void> {
     this.ensureOwned();
+    this.verifySentinelPresent();
     rmSync(this.resolveWithin(relPath), { force: true });
   }
 
   async list(): Promise<ReadonlyArray<string>> {
     if (!existsSync(this.root)) return [];
-    return readdirSync(this.root).filter((f) => f.endsWith(".md") && f !== SENTINEL_FILE);
+    return readdirSync(this.root, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".md") && entry.name !== SENTINEL_FILE)
+      .map((entry) => entry.name);
   }
 }
 

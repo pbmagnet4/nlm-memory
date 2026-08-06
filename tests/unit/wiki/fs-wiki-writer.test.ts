@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { FsWikiWriter, WikiOwnershipError, SENTINEL_FILE } from "@core/adapters/fs-wiki-writer.js";
@@ -90,6 +90,37 @@ describe("FsWikiWriter", () => {
     mkdirSync(join(root, "sub"));
     const w = new FsWikiWriter(root);
     await expect(w.write("a.md", "hello")).rejects.toBeInstanceOf(WikiOwnershipError);
+  });
+
+  it("rejects a write once the sentinel is deleted mid-run", async () => {
+    const w = new FsWikiWriter(root);
+    await w.write("a.md", "hello");
+    unlinkSync(join(root, SENTINEL_FILE));
+    await expect(w.write("b.md", "world")).rejects.toBeInstanceOf(WikiOwnershipError);
+  });
+
+  it("rejects a remove once the sentinel is deleted mid-run, leaving the target file intact", async () => {
+    const w = new FsWikiWriter(root);
+    await w.write("a.md", "hello");
+    unlinkSync(join(root, SENTINEL_FILE));
+    await expect(w.remove("a.md")).rejects.toBeInstanceOf(WikiOwnershipError);
+    expect(readFileSync(join(root, "a.md"), "utf8")).toBe("hello");
+  });
+
+  it("does not return a directory named like a markdown file from list", async () => {
+    const w = new FsWikiWriter(root);
+    await w.write("a.md", "a");
+    mkdirSync(join(root, "notes.md"));
+    const listed = await w.list();
+    expect(listed).not.toContain("notes.md");
+  });
+
+  it("still adopts a brand new root on first write after the reorder", async () => {
+    const target = join(root, "Fresh");
+    const w = new FsWikiWriter(target);
+    await w.write("a.md", "hello");
+    expect(readFileSync(join(target, "a.md"), "utf8")).toBe("hello");
+    expect(existsSync(join(target, SENTINEL_FILE))).toBe(true);
   });
 });
 
