@@ -22,6 +22,10 @@ describe("slugify", () => {
     expect(slugify("  a // b  ")).toBe("a-b");
   });
 
+  it("collapses adjacent hyphens from replacement and literal hyphens", () => {
+    expect(slugify("foo-/bar")).toBe("foo-bar");
+  });
+
   it("preserves dots and existing hyphens", () => {
     expect(slugify("surface_gemini.py")).toBe("surface-gemini.py");
   });
