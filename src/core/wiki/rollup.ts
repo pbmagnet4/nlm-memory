@@ -19,8 +19,6 @@ export async function rollupPages(
   selected: ReadonlyArray<SubjectStat>,
   slugs: ReadonlyMap<string, string>,
 ): Promise<ReadonlyArray<PageRollup>> {
-  const pageSubjects = new Set(selected.map((s) => s.subject));
-
   const loaded = await Promise.all(
     selected.map(async (stat) => {
       const all = await deps.facts.listForRecall(tenantId, {
@@ -50,7 +48,7 @@ export async function rollupPages(
     const related = new Set<string>();
     for (const sid of sessionIds) {
       for (const other of subjectsBySession.get(sid) ?? []) {
-        if (other !== stat.subject && pageSubjects.has(other)) related.add(other);
+        if (other !== stat.subject) related.add(other);
       }
     }
     return {

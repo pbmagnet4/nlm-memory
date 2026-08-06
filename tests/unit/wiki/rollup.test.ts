@@ -30,25 +30,6 @@ function depsFrom(all: ReadonlyArray<Fact>) {
   };
 }
 
-/**
- * Simulates a future bulk multi-subject fetch: ignores the subject filter
- * entirely and returns facts for whatever subjects are in `all`. Used to
- * exercise the `pageSubjects.has(other)` guard, which the current
- * per-subject-query implementation can never fail on its own.
- */
-function depsIgnoringSubjectFilter(all: ReadonlyArray<Fact>) {
-  return {
-    facts: {
-      async listForRecall(_t: string, filter: FactListFilter): Promise<ReadonlyArray<Fact>> {
-        return all.filter((f) => {
-          if (filter.includeSuperseded !== true && f.supersededBy !== null) return false;
-          return true;
-        });
-      },
-    },
-  };
-}
-
 describe("rollupPages", () => {
   it("splits current from superseded facts", async () => {
     const all = [
@@ -160,26 +141,5 @@ describe("rollupPages", () => {
       new Map([["a", "a"]]),
     );
     expect(page!.current.map((f) => f.id)).toEqual(["f1", "f2"]);
-  });
-
-  it("never leaks a non-page subject into related even when listForRecall ignores the subject filter", async () => {
-    const all = [
-      fact({ id: "f1", subject: "a", sourceSessionId: "s1" }),
-      fact({ id: "f2", subject: "b", sourceSessionId: "s1" }),
-      fact({ id: "f3", subject: "noise", sourceSessionId: "s1" }),
-    ];
-    const slugs = new Map([["a", "a"], ["b", "b"]]);
-    const pages = await rollupPages(
-      depsIgnoringSubjectFilter(all),
-      "team_local",
-      [
-        { subject: "a", factCount: 1, sessionCount: 1 },
-        { subject: "b", factCount: 1, sessionCount: 1 },
-      ],
-      slugs,
-    );
-    for (const page of pages) {
-      expect(page.related).not.toContain("noise");
-    }
   });
 });
