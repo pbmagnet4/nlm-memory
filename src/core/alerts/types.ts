@@ -11,7 +11,9 @@
 export type AlertEventType =
   | "nlm.drift.version_behind"
   | "nlm.health.embedder_cold"
-  | "nlm.job.stalled";
+  | "nlm.job.stalled"
+  | "nlm.wiki.projection_failed"
+  | "nlm.wiki.coverage_drift";
 
 /**
  * Generic across both transition-based event types: `current` is the
@@ -62,10 +64,26 @@ export interface JobAlertEventData {
   readonly message: string;
 }
 
+/**
+ * Wiki projection self-report. `drift` is qualifying-subjects minus
+ * pages-on-disk after a run: positive means pages the corpus earned are
+ * missing, negative means stale pages survived removal. Either direction
+ * means the run did not fully apply, so both fire.
+ */
+export interface WikiAlertEventData {
+  readonly reason: "projection_failed" | "coverage_drift";
+  readonly qualifying: number;
+  readonly onDisk: number;
+  readonly drift: number;
+  readonly message: string;
+}
+
 export type AlertEvent =
   | { readonly type: "nlm.drift.version_behind"; readonly data: AlertEventData }
   | { readonly type: "nlm.health.embedder_cold"; readonly data: AlertEventData }
-  | { readonly type: "nlm.job.stalled"; readonly data: JobAlertEventData };
+  | { readonly type: "nlm.job.stalled"; readonly data: JobAlertEventData }
+  | { readonly type: "nlm.wiki.projection_failed"; readonly data: WikiAlertEventData }
+  | { readonly type: "nlm.wiki.coverage_drift"; readonly data: WikiAlertEventData };
 
 /**
  * Per-producer narrowings of `AlertEvent`. Each transition/builder module

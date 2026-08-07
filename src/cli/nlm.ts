@@ -88,6 +88,9 @@ import { getUpdateStatus } from "../core/update-check/check.js";
 import { checkDriftAndAlert, checkEmbedderAndAlert } from "../core/alerts/check-and-alert.js";
 import { fireAlert } from "../core/alerts/fire-alert.js";
 import { buildJobAlertEvent } from "../core/alerts/job-alert.js";
+import { buildWikiDriftEvent, buildWikiFailureEvent } from "../core/alerts/wiki-alert.js";
+import { projectWiki } from "../core/wiki/project.js";
+import { FsWikiWriter } from "../core/adapters/fs-wiki-writer.js";
 import { JobSupervisor } from "../core/jobs/job-supervisor.js";
 import { realClock, createReprocessSpawnChild } from "./reprocess-job-adapters.js";
 import { connectHermes, disconnectHermes, hermesConfigPath } from "../install/hermes.js";
@@ -150,6 +153,11 @@ function port(): number {
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n) || n < 1 || n > 65_535) return DEFAULT_PORT;
   return n;
+}
+
+function positiveIntEnv(name: string, fallback: number): number {
+  const parsed = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function ollamaUrl(): string {
@@ -696,6 +704,45 @@ program
       const corpusMonitorTimer = setInterval(() => { void runCorpusMonitor(); }, CORPUS_MONITOR_INTERVAL_MS);
       corpusMonitorTimer.unref();
       setTimeout(() => { void runCorpusMonitor(); }, CORPUS_MONITOR_INITIAL_DELAY_MS).unref();
+
+      // Wiki projection: regenerate the generated markdown tree. SQLite only,
+      // same as the corpus monitor. Idempotent, so a run with no corpus change
+      // writes zero bytes. Failure leaves the previous tree untouched and
+      // self-reports on the operator's webhook if one is configured.
+      const wikiDir = process.env["NLM_WIKI_DIR"] ?? join(homedir(), ".nlm", "wiki");
+      const parsedWikiHours = Number.parseInt(process.env["NLM_WIKI_INTERVAL_HOURS"] ?? "6", 10);
+      const WIKI_INTERVAL_MS =
+        (Number.isFinite(parsedWikiHours) && parsedWikiHours > 0 ? parsedWikiHours : 6) * 60 * 60_000;
+      const WIKI_INITIAL_DELAY_MS = 90 * 1000;
+      const wikiConfig = {
+        minFacts: positiveIntEnv("NLM_WIKI_MIN_FACTS", 3),
+        minSessions: positiveIntEnv("NLM_WIKI_MIN_SESSIONS", 3),
+        linkBase: process.env["NLM_WIKI_LINK_BASE"] ?? `http://127.0.0.1:${p}`,
+      };
+
+      const runWikiProjection = async () => {
+        try {
+          const writer = new FsWikiWriter(join(wikiDir, "Memory"));
+          const today = new Date().toISOString().slice(0, 10);
+          const result = await projectWiki({ facts, writer }, DEFAULT_TEAM_ID, wikiConfig, today);
+          if (result.written > 0 || result.removed > 0) {
+            console.error(
+              `[wiki] ${result.written} written, ${result.unchanged} unchanged, ${result.removed} removed`,
+            );
+          }
+          const drift = buildWikiDriftEvent(result);
+          if (drift) await fireAlert(drift);
+        } catch (e) {
+          console.error(`[wiki] error: ${e instanceof Error ? e.message : String(e)}`);
+          await fireAlert(buildWikiFailureEvent(e)).catch(() => {
+            // Self-reporting is best-effort; a webhook outage never escalates.
+          });
+        }
+      };
+
+      const wikiTimer = setInterval(() => { void runWikiProjection(); }, WIKI_INTERVAL_MS);
+      wikiTimer.unref();
+      setTimeout(() => { void runWikiProjection(); }, WIKI_INITIAL_DELAY_MS).unref();
     }
 
     // Memo sweep runs independently of the transcript scheduler — it's the
