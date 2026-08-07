@@ -197,6 +197,14 @@ export interface FactStore {
    * Covered by idx_facts_subject_current.
    */
   listSubjectStats(tenantId: string): Promise<ReadonlyArray<SubjectStat>>;
+
+  /**
+   * Every non-retired fact for the given subjects, current and superseded,
+   * in one query. No limit: callers that need every fact for a subject must
+   * not be silently truncated. Retired facts are always excluded, unlike
+   * listForRecall, because a retired fact is one an operator removed.
+   */
+  listBySubjects(tenantId: string, subjects: ReadonlyArray<string>): Promise<ReadonlyArray<Fact>>;
 }
 
 /** Key encoding for corroborationCounts result map. */

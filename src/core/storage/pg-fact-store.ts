@@ -405,6 +405,13 @@ export class PgFactStore implements FactStore {
         "projection is SQLite-only and the daemon does not start it under PgStorage",
     );
   }
+
+  async listBySubjects(_tenantId: string, _subjects: ReadonlyArray<string>): Promise<ReadonlyArray<Fact>> {
+    throw new Error(
+      "listBySubjects is not implemented on the Postgres backend; the wiki " +
+        "projection is SQLite-only and the daemon does not start it under PgStorage",
+    );
+  }
 }
 
 function rowToFact(row: FactRow): Fact {

@@ -89,6 +89,9 @@ class ScriptedFactStore implements FactStore {
   async listSubjectStats(): Promise<ReadonlyArray<SubjectStat>> {
     return [];
   }
+  async listBySubjects(): Promise<ReadonlyArray<Fact>> {
+    return [];
+  }
 }
 
 class StubLLM implements LLMClient {

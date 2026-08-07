@@ -3,7 +3,7 @@ import { projectWiki } from "@core/wiki/project.js";
 import { MemoryWikiWriter } from "@core/adapters/memory-wiki-writer.js";
 import type { WikiConfig } from "@core/wiki/types.js";
 import type { Fact } from "@shared/types.js";
-import type { FactListFilter, SubjectStat } from "@ports/fact-store.js";
+import type { SubjectStat } from "@ports/fact-store.js";
 
 const config: WikiConfig = { minFacts: 2, minSessions: 2, linkBase: "http://127.0.0.1:3940" };
 const TODAY = "2026-08-06";
@@ -20,6 +20,7 @@ function fact(id: string, subject: string, session: string): Fact {
     createdAt: "2026-01-01T00:00:00.000Z",
     supersededBy: null,
     confidence: 0.9,
+    retiredAt: null,
   } as Fact;
 }
 
@@ -38,8 +39,9 @@ function factsDeps(all: ReadonlyArray<Fact>) {
         sessionCount: new Set(fs.map((f) => f.sourceSessionId)).size,
       }));
     },
-    async listForRecall(_t: string, filter: FactListFilter): Promise<ReadonlyArray<Fact>> {
-      return all.filter((f) => f.subject === filter.subject);
+    async listBySubjects(_t: string, subjects: ReadonlyArray<string>): Promise<ReadonlyArray<Fact>> {
+      const set = new Set(subjects);
+      return all.filter((f) => set.has(f.subject) && f.retiredAt == null);
     },
   };
 }

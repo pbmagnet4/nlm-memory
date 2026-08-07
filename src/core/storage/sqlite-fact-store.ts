@@ -366,6 +366,42 @@ export class SqliteFactStore implements FactStore {
   }
 
   /**
+   * Every non-retired fact for the given subjects, current and superseded,
+   * in one query — the wiki projection's rollup stage calls this once for
+   * all selected subjects instead of fanning out one listForRecall call per
+   * subject. Chunked at 500 subjects per query because SQLite's default
+   * host-parameter limit is 999 and the tenant param takes one slot. No SQL
+   * ORDER BY: chunk boundaries don't align with the requested subject/date
+   * order, so the concatenated rows are sorted once in JS afterward instead.
+   */
+  async listBySubjects(tenantId: string, subjects: ReadonlyArray<string>): Promise<ReadonlyArray<Fact>> {
+    if (subjects.length === 0) return [];
+    const tc = tenantClause(tenantId);
+    const CHUNK_SIZE = 500;
+    const rows: FactRow[] = [];
+    for (let i = 0; i < subjects.length; i += CHUNK_SIZE) {
+      const chunk = subjects.slice(i, i + CHUNK_SIZE);
+      const placeholders = chunk.map(() => "?").join(",");
+      const chunkRows = this.db
+        .prepare<unknown[], FactRow>(
+          `SELECT id, kind, subject, predicate, value, source_session_id,
+                  source_quote, created_at, superseded_by, confidence, retired_at
+           FROM facts
+           WHERE subject IN (${placeholders}) AND retired_at IS NULL AND ${tc.sql}`,
+        )
+        .all(...chunk, tc.param);
+      rows.push(...chunkRows);
+    }
+    rows.sort(
+      (a, b) =>
+        a.subject.localeCompare(b.subject) ||
+        a.created_at.localeCompare(b.created_at) ||
+        a.id.localeCompare(b.id),
+    );
+    return rows.map((r) => this.rowToFact(r));
+  }
+
+  /**
    * Insert (or replace) the embedding row for a fact. Best-effort: callers
    * trap embedder errors so an unreachable Ollama doesn't roll back ingest.
    * vec0 doesn't UPDATE, so this is a DELETE+INSERT pair. Guarded by a

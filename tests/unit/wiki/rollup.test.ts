@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { rollupPages } from "@core/wiki/rollup.js";
 import type { Fact } from "@shared/types.js";
-import type { FactListFilter } from "@ports/fact-store.js";
 
 function fact(over: Partial<Fact> & Pick<Fact, "id" | "subject" | "sourceSessionId">): Fact {
   return {
@@ -12,6 +11,7 @@ function fact(over: Partial<Fact> & Pick<Fact, "id" | "subject" | "sourceSession
     createdAt: "2026-01-01T00:00:00.000Z",
     supersededBy: null,
     confidence: 0.9,
+    retiredAt: null,
     ...over,
   } as Fact;
 }
@@ -19,12 +19,9 @@ function fact(over: Partial<Fact> & Pick<Fact, "id" | "subject" | "sourceSession
 function depsFrom(all: ReadonlyArray<Fact>) {
   return {
     facts: {
-      async listForRecall(_t: string, filter: FactListFilter): Promise<ReadonlyArray<Fact>> {
-        return all.filter((f) => {
-          if (filter.subject !== undefined && f.subject !== filter.subject) return false;
-          if (filter.includeSuperseded !== true && f.supersededBy !== null) return false;
-          return true;
-        });
+      async listBySubjects(_t: string, subjects: ReadonlyArray<string>): Promise<ReadonlyArray<Fact>> {
+        const set = new Set(subjects);
+        return all.filter((f) => set.has(f.subject) && f.retiredAt == null);
       },
     },
   };

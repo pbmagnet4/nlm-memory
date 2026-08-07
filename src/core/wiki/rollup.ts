@@ -10,13 +10,22 @@
  * not exist until P4, so entity wikilinks would render broken on every page;
  * a subject link points at a page this same run produces, and always names
  * the canonical spelling so the link never points at an alias.
+ *
+ * All selected subjects' facts are loaded in a single listBySubjects call
+ * rather than one listForRecall call per subject: better-sqlite3 is
+ * synchronous, so a Promise.all over per-subject queries serializes into one
+ * blocking chain instead of parallelizing, and listForRecall's default
+ * limit + includeSuperseded flag disqualify its partial indexes. See #wiki
+ * rollup perf writeup. listBySubjects also excludes retired facts outright
+ * (listForRecall's includeSuperseded does not), so a retired fact can never
+ * render under Current again.
  */
 import type { FactStore, SubjectStat } from "@ports/fact-store.js";
 import type { Fact } from "@shared/types.js";
 import type { PageRollup } from "./types.js";
 
 export interface RollupDeps {
-  readonly facts: Pick<FactStore, "listForRecall">;
+  readonly facts: Pick<FactStore, "listBySubjects">;
 }
 
 export async function rollupPages(
@@ -29,26 +38,29 @@ export async function rollupPages(
 
   const sortedGroups = [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
 
-  const loaded = await Promise.all(
-    sortedGroups.map(async ([slug, members]) => {
-      const perMember = await Promise.all(
-        members.map((subject) =>
-          deps.facts.listForRecall(tenantId, { subject, includeSuperseded: true }),
-        ),
-      );
-      const deduped = dedupeById(perMember.flat());
-      const current = deduped.filter((f) => f.supersededBy === null);
-      const superseded = deduped.filter((f) => f.supersededBy !== null);
+  const allSubjects = sortedGroups.flatMap(([, members]) => members);
+  const allFacts = await deps.facts.listBySubjects(tenantId, allSubjects);
+  const factsBySubject = new Map<string, Fact[]>();
+  for (const f of allFacts) {
+    const bucket = factsBySubject.get(f.subject);
+    if (bucket) bucket.push(f);
+    else factsBySubject.set(f.subject, [f]);
+  }
 
-      const orderedMembers = members
-        .slice()
-        .sort((a, b) => compareCanonical(a, b, slug, currentFactCountBySubject));
-      const subject = orderedMembers[0]!;
-      const aliases = orderedMembers.slice(1).sort((a, b) => a.localeCompare(b));
+  const loaded = sortedGroups.map(([slug, members]) => {
+    const perMember = members.map((subject) => factsBySubject.get(subject) ?? []);
+    const deduped = dedupeById(perMember.flat());
+    const current = deduped.filter((f) => f.supersededBy === null);
+    const superseded = deduped.filter((f) => f.supersededBy !== null);
 
-      return { slug, subject, aliases, current, superseded };
-    }),
-  );
+    const orderedMembers = members
+      .slice()
+      .sort((a, b) => compareCanonical(a, b, slug, currentFactCountBySubject));
+    const subject = orderedMembers[0]!;
+    const aliases = orderedMembers.slice(1).sort((a, b) => a.localeCompare(b));
+
+    return { slug, subject, aliases, current, superseded };
+  });
 
   const subjectsBySession = new Map<string, Set<string>>();
   for (const { subject, current } of loaded) {

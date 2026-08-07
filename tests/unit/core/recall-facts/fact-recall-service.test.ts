@@ -83,6 +83,10 @@ class InMemoryFactStore implements FactStore {
   async listSubjectStats(): Promise<ReadonlyArray<SubjectStat>> {
     return [];
   }
+  async listBySubjects(_tenantId: string, subjects: ReadonlyArray<string>): Promise<ReadonlyArray<Fact>> {
+    const set = new Set(subjects);
+    return this.facts.filter((f) => set.has(f.subject) && f.retiredAt == null);
+  }
 }
 
 

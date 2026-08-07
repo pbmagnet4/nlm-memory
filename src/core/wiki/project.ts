@@ -17,7 +17,7 @@ import { renderAll } from "./render.js";
 import { planReconcile } from "./reconcile.js";
 
 export interface ProjectDeps {
-  readonly facts: Pick<FactStore, "listSubjectStats" | "listForRecall">;
+  readonly facts: Pick<FactStore, "listSubjectStats" | "listBySubjects">;
   readonly writer: WikiWriter;
 }
 
