@@ -102,4 +102,15 @@ describe("projectWiki", () => {
       projectWiki({ facts: factsDeps(colliding), writer }, "team_local", config, TODAY),
     ).rejects.toThrow(/collision/);
   });
+
+  it("rejects a qualifying subject named log rather than letting the generic log page overwrite it", async () => {
+    const withReservedSubject = [
+      fact("f1", "log", "s1"),
+      fact("f2", "log", "s2"),
+    ];
+    const writer = new MemoryWikiWriter();
+    await expect(
+      projectWiki({ facts: factsDeps(withReservedSubject), writer }, "team_local", config, TODAY),
+    ).rejects.toThrow(/collision/);
+  });
 });

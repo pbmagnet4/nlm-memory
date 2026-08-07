@@ -14,6 +14,14 @@ const UNSAFE = /[^a-z0-9.-]+/g;
 const RUNS = /-{2,}/g;
 const EDGES = /^-+|-+$/g;
 
+/**
+ * Slugs `renderAll` always emits (`index.md`, `log.md`) regardless of the
+ * corpus. A subject that slugs to one of these would silently overwrite the
+ * generated file (or be overwritten by it), so buildSlugMap treats a match
+ * here the same as a subject-vs-subject collision.
+ */
+export const RESERVED_SLUGS = ["index", "log"] as const;
+
 export function slugify(subject: string): string {
   return subject
     .toLowerCase()
@@ -42,6 +50,9 @@ export function buildSlugMap(subjects: ReadonlyArray<string>): ReadonlyMap<strin
   const out = new Map<string, string>();
   for (const subject of subjects) {
     const slug = slugify(subject);
+    if ((RESERVED_SLUGS as ReadonlyArray<string>).includes(slug)) {
+      throw new SlugCollisionError(slug, [subject, `generated file ${slug}.md`]);
+    }
     const existing = bySlug.get(slug);
     if (existing !== undefined && existing !== subject) {
       throw new SlugCollisionError(slug, [existing, subject]);

@@ -57,4 +57,35 @@ describe("buildSlugMap", () => {
   it("does not treat one subject appearing twice as a collision", () => {
     expect(() => buildSlugMap(["a b", "a b"])).not.toThrow();
   });
+
+  it("throws when a subject slugs to the reserved index page", () => {
+    expect(() => buildSlugMap(["index"])).toThrow(SlugCollisionError);
+  });
+
+  it("throws when a subject slugs to the reserved log page", () => {
+    expect(() => buildSlugMap(["log"])).toThrow(SlugCollisionError);
+  });
+
+  it("throws on a reserved-name collision even when the subject isn't already lowercase", () => {
+    expect(() => buildSlugMap(["Index"])).toThrow(SlugCollisionError);
+    expect(() => buildSlugMap(["LOG"])).toThrow(SlugCollisionError);
+  });
+
+  it("names the reserved file in the error so the failure is diagnosable", () => {
+    try {
+      buildSlugMap(["log"]);
+      expect.unreachable("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(SlugCollisionError);
+      const err = e as SlugCollisionError;
+      expect(err.message).toMatch(/log\.md/);
+      expect(err.subjects.some((s) => s.includes("log.md"))).toBe(true);
+    }
+  });
+
+  it("does not reject ordinary near-miss subjects that merely resemble reserved names", () => {
+    expect(() =>
+      buildSlugMap(["changelog", "logging", "blog-post", "index-fix"]),
+    ).not.toThrow();
+  });
 });
