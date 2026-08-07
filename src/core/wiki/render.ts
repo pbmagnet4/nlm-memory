@@ -1,7 +1,12 @@
 /**
- * Pure markdown rendering. No clock, no IO: `today` arrives as a parameter so
- * the same corpus renders byte-identically every run, which is the property
- * reconcile relies on to skip unchanged files.
+ * Pure markdown rendering. No clock, no IO. `today` arrives as a parameter
+ * to renderIndex/renderLog only, so those two generated files' frontmatter
+ * still records when the run happened; a subject page's own frontmatter is
+ * a pure function of its facts, so a run that changes nothing about a
+ * subject writes byte-identical output regardless of what day it runs on.
+ * That per-page idempotence is what reconcile relies on to skip unchanged
+ * files — embedding `today` in every page's frontmatter would defeat it by
+ * making every page differ from the previous run on every UTC day boundary.
  */
 import type { Fact } from "@shared/types.js";
 import type { PageRollup, RenderedPage, WikiConfig } from "./types.js";
@@ -9,12 +14,11 @@ import { slugify } from "./slug.js";
 
 const LOG_LIMIT = 100;
 
-export function renderPage(page: PageRollup, config: WikiConfig, today: string): RenderedPage {
+export function renderPage(page: PageRollup, config: WikiConfig): RenderedPage {
   const lines: string[] = [
     "---",
-    `title: ${page.subject}`,
+    `title: ${JSON.stringify(page.subject)}`,
     "nlm_generated: true",
-    `last_projected: ${today}`,
     `fact_count: ${page.current.length}`,
     `session_count: ${page.sessionIds.length}`,
     `superseded_count: ${page.superseded.length}`,
@@ -101,5 +105,5 @@ export function renderAll(
   config: WikiConfig,
   today: string,
 ): ReadonlyArray<RenderedPage> {
-  return [...pages.map((p) => renderPage(p, config, today)), renderIndex(pages, today), renderLog(pages, today)];
+  return [...pages.map((p) => renderPage(p, config)), renderIndex(pages, today), renderLog(pages, today)];
 }
