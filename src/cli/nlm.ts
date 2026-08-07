@@ -708,41 +708,47 @@ program
       // Wiki projection: regenerate the generated markdown tree. SQLite only,
       // same as the corpus monitor. Idempotent, so a run with no corpus change
       // writes zero bytes. Failure leaves the previous tree untouched and
-      // self-reports on the operator's webhook if one is configured.
-      const wikiDir = process.env["NLM_WIKI_DIR"] ?? join(homedir(), ".nlm", "wiki");
-      const parsedWikiHours = Number.parseInt(process.env["NLM_WIKI_INTERVAL_HOURS"] ?? "6", 10);
-      const WIKI_INTERVAL_MS =
-        (Number.isFinite(parsedWikiHours) && parsedWikiHours > 0 ? parsedWikiHours : 6) * 60 * 60_000;
-      const WIKI_INITIAL_DELAY_MS = 90 * 1000;
-      const wikiConfig = {
-        minFacts: positiveIntEnv("NLM_WIKI_MIN_FACTS", 3),
-        minSessions: positiveIntEnv("NLM_WIKI_MIN_SESSIONS", 3),
-        linkBase: process.env["NLM_WIKI_LINK_BASE"] ?? `http://127.0.0.1:${p}`,
-      };
+      // self-reports on the operator's webhook if one is configured. Opt-in:
+      // nlm-memory is a published public package, so the projection only
+      // registers (timer, directory, log line) when an operator explicitly
+      // sets NLM_WIKI_DIR — an upgrade must never start writing ~500 markdown
+      // files under a stranger's home directory on its own.
+      const wikiDir = process.env["NLM_WIKI_DIR"];
+      if (wikiDir) {
+        const parsedWikiHours = Number.parseInt(process.env["NLM_WIKI_INTERVAL_HOURS"] ?? "6", 10);
+        const WIKI_INTERVAL_MS =
+          (Number.isFinite(parsedWikiHours) && parsedWikiHours > 0 ? parsedWikiHours : 6) * 60 * 60_000;
+        const WIKI_INITIAL_DELAY_MS = 90 * 1000;
+        const wikiConfig = {
+          minFacts: positiveIntEnv("NLM_WIKI_MIN_FACTS", 3),
+          minSessions: positiveIntEnv("NLM_WIKI_MIN_SESSIONS", 3),
+          linkBase: process.env["NLM_WIKI_LINK_BASE"] ?? `http://127.0.0.1:${p}`,
+        };
+        const wikiTarget = join(wikiDir, "Memory");
 
-      const runWikiProjection = async () => {
-        try {
-          const writer = new FsWikiWriter(join(wikiDir, "Memory"));
-          const today = new Date().toISOString().slice(0, 10);
-          const result = await projectWiki({ facts, writer }, DEFAULT_TEAM_ID, wikiConfig, today);
-          if (result.written > 0 || result.removed > 0) {
+        const runWikiProjection = async () => {
+          try {
+            const writer = new FsWikiWriter(wikiTarget);
+            const today = new Date().toISOString().slice(0, 10);
+            const result = await projectWiki({ facts, writer }, DEFAULT_TEAM_ID, wikiConfig, today);
             console.error(
               `[wiki] ${result.written} written, ${result.unchanged} unchanged, ${result.removed} removed`,
             );
+            const drift = buildWikiDriftEvent(result);
+            if (drift) await fireAlert(drift);
+          } catch (e) {
+            console.error(`[wiki] error: ${e instanceof Error ? e.message : String(e)}`);
+            await fireAlert(buildWikiFailureEvent(e)).catch(() => {
+              // Self-reporting is best-effort; a webhook outage never escalates.
+            });
           }
-          const drift = buildWikiDriftEvent(result);
-          if (drift) await fireAlert(drift);
-        } catch (e) {
-          console.error(`[wiki] error: ${e instanceof Error ? e.message : String(e)}`);
-          await fireAlert(buildWikiFailureEvent(e)).catch(() => {
-            // Self-reporting is best-effort; a webhook outage never escalates.
-          });
-        }
-      };
+        };
 
-      const wikiTimer = setInterval(() => { void runWikiProjection(); }, WIKI_INTERVAL_MS);
-      wikiTimer.unref();
-      setTimeout(() => { void runWikiProjection(); }, WIKI_INITIAL_DELAY_MS).unref();
+        console.error(`  wiki: enabled, projecting to ${wikiTarget}`);
+        const wikiTimer = setInterval(() => { void runWikiProjection(); }, WIKI_INTERVAL_MS);
+        wikiTimer.unref();
+        setTimeout(() => { void runWikiProjection(); }, WIKI_INITIAL_DELAY_MS).unref();
+      }
     }
 
     // Memo sweep runs independently of the transcript scheduler — it's the
