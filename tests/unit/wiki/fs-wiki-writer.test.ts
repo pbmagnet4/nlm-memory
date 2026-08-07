@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { FsWikiWriter, WikiOwnershipError, SENTINEL_FILE } from "@core/adapters/fs-wiki-writer.js";
+import { FsWikiWriter, WikiOwnershipError, SENTINEL_FILE, SENTINEL_MARKER } from "@core/adapters/fs-wiki-writer.js";
 import { MemoryWikiWriter } from "@core/adapters/memory-wiki-writer.js";
 
 let root: string;
@@ -37,12 +37,27 @@ describe("FsWikiWriter", () => {
     expect(readFileSync(join(root, "my-notes.md"), "utf8")).toBe("human wrote this");
   });
 
-  it("accepts a non-empty directory that carries its sentinel", async () => {
-    writeFileSync(join(root, SENTINEL_FILE), "owned by nlm");
+  it("refuses a directory with a foreign AGENTS.md lacking the NLM marker, leaving the human file byte-identical", async () => {
+    writeFileSync(join(root, SENTINEL_FILE), "# Agent instructions\n\nBe helpful.\n");
+    writeFileSync(join(root, "my-notes.md"), "human wrote this");
+    const w = new FsWikiWriter(root);
+    await expect(w.write("a.md", "hello")).rejects.toBeInstanceOf(WikiOwnershipError);
+    expect(readFileSync(join(root, "my-notes.md"), "utf8")).toBe("human wrote this");
+    expect(readFileSync(join(root, SENTINEL_FILE), "utf8")).toBe("# Agent instructions\n\nBe helpful.\n");
+  });
+
+  it("accepts a non-empty directory that carries a marked sentinel", async () => {
+    writeFileSync(join(root, SENTINEL_FILE), `${SENTINEL_MARKER}\nowned by nlm\n`);
     writeFileSync(join(root, "old.md"), "previous run");
     const w = new FsWikiWriter(root);
     await w.write("a.md", "hello");
     expect(readFileSync(join(root, "a.md"), "utf8")).toBe("hello");
+  });
+
+  it("writes a marked sentinel on a fresh root", async () => {
+    const w = new FsWikiWriter(root);
+    await w.write("a.md", "hello");
+    expect(readFileSync(join(root, SENTINEL_FILE), "utf8")).toContain(SENTINEL_MARKER);
   });
 
   it("lists only markdown files and excludes the sentinel", async () => {
