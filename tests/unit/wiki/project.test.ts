@@ -120,10 +120,14 @@ describe("projectWiki", () => {
   });
 
   it("merges two spellings of one subject into one page instead of rejecting", async () => {
+    // Both spellings must independently clear config's minFacts=2/minSessions=2
+    // so the group genuinely has two selected members, not one that qualified
+    // and one that selectSubjects already filtered out.
     const colliding = [
       fact("f1", "test-suite", "s1"),
       fact("f2", "test-suite", "s2"),
       fact("f3", "test suite", "s3"),
+      fact("f4", "test suite", "s4"),
     ];
     const writer = new MemoryWikiWriter();
     const result = await projectWiki(
@@ -137,10 +141,14 @@ describe("projectWiki", () => {
   });
 
   it("counts qualifying as pages, not subjects, keeping coverageDrift at zero for a merged corpus", async () => {
+    // Same two-member-group requirement as above: both spellings must clear
+    // the threshold on their own so this exercises a real two-subject merge,
+    // not a singleton group that happens to report qualifying=1 either way.
     const colliding = [
       fact("f1", "test-suite", "s1"),
       fact("f2", "test-suite", "s2"),
       fact("f3", "test suite", "s3"),
+      fact("f4", "test suite", "s4"),
     ];
     const writer = new MemoryWikiWriter();
     const result = await projectWiki(

@@ -88,6 +88,13 @@ export async function rollupPages(
  * tie falls to localeCompare. A strict total order, so sorting members with
  * it and taking the first element is deterministic regardless of input
  * order.
+ *
+ * `a` and `b` are always group members, and every group member is drawn
+ * from `selected` (buildSlugGroups is only ever called on
+ * `selected.map(s => s.subject)`), which is exactly what populates
+ * `currentFactCountBySubject`. The lookup can't miss, so a non-null
+ * assertion documents that instead of a `?? 0` fallback masking a case that
+ * never occurs.
  */
 function compareCanonical(
   a: string,
@@ -95,8 +102,8 @@ function compareCanonical(
   slug: string,
   currentFactCountBySubject: ReadonlyMap<string, number>,
 ): number {
-  const countA = currentFactCountBySubject.get(a) ?? 0;
-  const countB = currentFactCountBySubject.get(b) ?? 0;
+  const countA = currentFactCountBySubject.get(a)!;
+  const countB = currentFactCountBySubject.get(b)!;
   if (countA !== countB) return countB - countA;
   const aIsSlug = a === slug;
   const bIsSlug = b === slug;
