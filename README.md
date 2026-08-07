@@ -401,6 +401,11 @@ recall: prompt / query
 | `NLM_ALERT_WEBHOOK` | — | Set to a URL to enable daemon self-reporting: version-drift and embedder-cold transitions POST a CloudEvents-shaped payload here. Unset means zero network calls. |
 | `NLM_ALERT_WEBHOOK_TOKEN` | — | Optional bearer token sent as `Authorization: Bearer <token>` on every `NLM_ALERT_WEBHOOK` POST. Only used when the webhook is set. |
 | `NLM_JOB_STALL_MINUTES` | `20` | Minutes a daemon-supervised `reprocess` run (see `POST /api/jobs/reprocess`) can go without a progress advance before the supervisor calls it stalled and fires `nlm.job.stalled` via `NLM_ALERT_WEBHOOK`. The same event type also fires with `reason: "exhausted"` (restart budget used up) and `reason: "spawn_failed"` (the child process itself never launched — EMFILE/ENOMEM/bad binary). |
+| `NLM_WIKI_DIR` | — (opt-in, off by default) | The wiki projection is off unless this is set. When set, every `NLM_WIKI_INTERVAL_HOURS` the SQLite-backend daemon rolls up fact subjects that cleared the page threshold into a markdown tree at `<dir>/Memory`, reconciled against the previous run so an unchanged page writes zero bytes. Unset means no timer, no directory, no log line — an upgrade never surprises you with new files under your home directory. A failed run leaves the previous tree untouched and fires `nlm.wiki.projection_failed` via `NLM_ALERT_WEBHOOK`; a run whose written page count doesn't match what the corpus currently qualifies for fires `nlm.wiki.coverage_drift`. Postgres backend: not implemented, daemon never starts it. |
+| `NLM_WIKI_INTERVAL_HOURS` | `6` | How often the wiki projection re-runs once `NLM_WIKI_DIR` is set. |
+| `NLM_WIKI_MIN_FACTS` | `3` | Minimum current (non-superseded, non-retired) fact count a subject needs to earn a wiki page. |
+| `NLM_WIKI_MIN_SESSIONS` | `3` | Minimum distinct contributing sessions a subject needs to earn a wiki page. |
+| `NLM_WIKI_LINK_BASE` | `http://127.0.0.1:<NLM_PORT>` | Base URL a wiki page's session links point at. Override when the vault is synced somewhere the daemon's own loopback address won't resolve. |
 
 ### Changing the classifier from the UI
 
