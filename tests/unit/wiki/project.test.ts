@@ -90,7 +90,7 @@ describe("projectWiki", () => {
     expect([...(await writer.list())].sort()).toEqual(["index.md", "log.md"]);
   });
 
-  it("propagates a slug collision rather than silently dropping a page", async () => {
+  it("merges a subject-vs-subject slug collision into one page rather than throwing", async () => {
     const colliding = [
       fact("f1", "a b", "s1"),
       fact("f2", "a b", "s2"),
@@ -98,9 +98,14 @@ describe("projectWiki", () => {
       fact("f4", "a/b", "s2"),
     ];
     const writer = new MemoryWikiWriter();
-    await expect(
-      projectWiki({ facts: factsDeps(colliding), writer }, "team_local", config, TODAY),
-    ).rejects.toThrow(/collision/);
+    const result = await projectWiki(
+      { facts: factsDeps(colliding), writer },
+      "team_local",
+      config,
+      TODAY,
+    );
+    expect([...(await writer.list())].sort()).toEqual(["a-b.md", "index.md", "log.md"]);
+    expect(result.qualifying).toBe(1);
   });
 
   it("rejects a qualifying subject named log rather than letting the generic log page overwrite it", async () => {
@@ -108,6 +113,49 @@ describe("projectWiki", () => {
       fact("f1", "log", "s1"),
       fact("f2", "log", "s2"),
     ];
+    const writer = new MemoryWikiWriter();
+    await expect(
+      projectWiki({ facts: factsDeps(withReservedSubject), writer }, "team_local", config, TODAY),
+    ).rejects.toThrow(/collision/);
+  });
+
+  it("merges two spellings of one subject into one page instead of rejecting", async () => {
+    const colliding = [
+      fact("f1", "test-suite", "s1"),
+      fact("f2", "test-suite", "s2"),
+      fact("f3", "test suite", "s3"),
+    ];
+    const writer = new MemoryWikiWriter();
+    const result = await projectWiki(
+      { facts: factsDeps(colliding), writer },
+      "team_local",
+      config,
+      TODAY,
+    );
+    expect([...(await writer.list())].sort()).toEqual(["index.md", "log.md", "test-suite.md"]);
+    expect(result.qualifying).toBe(1);
+  });
+
+  it("counts qualifying as pages, not subjects, keeping coverageDrift at zero for a merged corpus", async () => {
+    const colliding = [
+      fact("f1", "test-suite", "s1"),
+      fact("f2", "test-suite", "s2"),
+      fact("f3", "test suite", "s3"),
+    ];
+    const writer = new MemoryWikiWriter();
+    const result = await projectWiki(
+      { facts: factsDeps(colliding), writer },
+      "team_local",
+      config,
+      TODAY,
+    );
+    expect(result.qualifying).toBe(1);
+    expect(result.onDisk).toBe(1);
+    expect(result.coverageDrift).toBe(0);
+  });
+
+  it("still rejects a subject slugging to a reserved name", async () => {
+    const withReservedSubject = [fact("f1", "index", "s1"), fact("f2", "index", "s2")];
     const writer = new MemoryWikiWriter();
     await expect(
       projectWiki({ facts: factsDeps(withReservedSubject), writer }, "team_local", config, TODAY),

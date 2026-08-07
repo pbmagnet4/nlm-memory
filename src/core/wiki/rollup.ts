@@ -1,9 +1,15 @@
 /**
- * Assemble one PageRollup per selected subject.
+ * Assemble one PageRollup per slug group.
+ *
+ * A group with more than one member is a merge: colliding spellings of one
+ * concept, already resolved by buildSlugGroups. This stage picks a canonical
+ * spelling, unions the group's facts (deduplicated by id, since the same
+ * fact must never render twice), and lists the rest as aliases.
  *
  * `related` links co-occurring subjects rather than entities. Entity pages do
  * not exist until P4, so entity wikilinks would render broken on every page;
- * a subject link points at a page this same run produces.
+ * a subject link points at a page this same run produces, and always names
+ * the canonical spelling so the link never points at an alias.
  */
 import type { FactStore, SubjectStat } from "@ports/fact-store.js";
 import type { Fact } from "@shared/types.js";
@@ -17,49 +23,91 @@ export async function rollupPages(
   deps: RollupDeps,
   tenantId: string,
   selected: ReadonlyArray<SubjectStat>,
-  slugs: ReadonlyMap<string, string>,
+  groups: ReadonlyMap<string, ReadonlyArray<string>>,
 ): Promise<ReadonlyArray<PageRollup>> {
+  const currentFactCountBySubject = new Map(selected.map((s) => [s.subject, s.factCount]));
+
+  const sortedGroups = [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
+
   const loaded = await Promise.all(
-    selected.map(async (stat) => {
-      const all = await deps.facts.listForRecall(tenantId, {
-        subject: stat.subject,
-        includeSuperseded: true,
-      });
-      const current = all.filter((f) => f.supersededBy === null);
-      const superseded = all.filter((f) => f.supersededBy !== null);
-      return { stat, current, superseded };
+    sortedGroups.map(async ([slug, members]) => {
+      const perMember = await Promise.all(
+        members.map((subject) =>
+          deps.facts.listForRecall(tenantId, { subject, includeSuperseded: true }),
+        ),
+      );
+      const deduped = dedupeById(perMember.flat());
+      const current = deduped.filter((f) => f.supersededBy === null);
+      const superseded = deduped.filter((f) => f.supersededBy !== null);
+
+      const orderedMembers = members
+        .slice()
+        .sort((a, b) => compareCanonical(a, b, slug, currentFactCountBySubject));
+      const subject = orderedMembers[0]!;
+      const aliases = orderedMembers.slice(1).sort((a, b) => a.localeCompare(b));
+
+      return { slug, subject, aliases, current, superseded };
     }),
   );
 
   const subjectsBySession = new Map<string, Set<string>>();
-  for (const { stat, current } of loaded) {
+  for (const { subject, current } of loaded) {
     for (const f of current) {
       let set = subjectsBySession.get(f.sourceSessionId);
       if (!set) {
         set = new Set<string>();
         subjectsBySession.set(f.sourceSessionId, set);
       }
-      set.add(stat.subject);
+      set.add(subject);
     }
   }
 
-  return loaded.map(({ stat, current, superseded }) => {
+  return loaded.map(({ slug, subject, aliases, current, superseded }) => {
     const sessionIds = [...new Set(current.map((f) => f.sourceSessionId))].sort();
     const related = new Set<string>();
     for (const sid of sessionIds) {
       for (const other of subjectsBySession.get(sid) ?? []) {
-        if (other !== stat.subject) related.add(other);
+        if (other !== subject) related.add(other);
       }
     }
     return {
-      subject: stat.subject,
-      slug: slugs.get(stat.subject) ?? stat.subject,
+      subject,
+      slug,
+      aliases,
       current: sortFacts(current),
       superseded: sortFacts(superseded),
       sessionIds,
       related: [...related].sort(),
     };
   });
+}
+
+/**
+ * Canonical spelling within a group: most current facts wins; a tie where
+ * exactly one spelling equals the slug is broken in its favor; any remaining
+ * tie falls to localeCompare. A strict total order, so sorting members with
+ * it and taking the first element is deterministic regardless of input
+ * order.
+ */
+function compareCanonical(
+  a: string,
+  b: string,
+  slug: string,
+  currentFactCountBySubject: ReadonlyMap<string, number>,
+): number {
+  const countA = currentFactCountBySubject.get(a) ?? 0;
+  const countB = currentFactCountBySubject.get(b) ?? 0;
+  if (countA !== countB) return countB - countA;
+  const aIsSlug = a === slug;
+  const bIsSlug = b === slug;
+  if (aIsSlug !== bIsSlug) return aIsSlug ? -1 : 1;
+  return a.localeCompare(b);
+}
+
+function dedupeById(facts: ReadonlyArray<Fact>): ReadonlyArray<Fact> {
+  const byId = new Map<string, Fact>();
+  for (const f of facts) byId.set(f.id, f);
+  return [...byId.values()];
 }
 
 function sortFacts(facts: ReadonlyArray<Fact>): ReadonlyArray<Fact> {

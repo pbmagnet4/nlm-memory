@@ -2,13 +2,15 @@
  * The projection: select, roll up, render, reconcile.
  *
  * Reads current content through the writer so reconcile can skip unchanged
- * files. A slug collision propagates rather than being swallowed, because the
- * alternative is one page silently overwriting another.
+ * files. Colliding spellings of one subject merge into a single page rather
+ * than throwing (see slug.ts); only a slug that collides with a reserved
+ * generated filename still propagates, because the alternative there is one
+ * page silently overwriting the index or log.
  */
 import type { FactStore } from "@ports/fact-store.js";
 import type { WikiWriter } from "@ports/wiki-writer.js";
 import type { ProjectionResult, WikiConfig } from "./types.js";
-import { buildSlugMap } from "./slug.js";
+import { buildSlugGroups } from "./slug.js";
 import { selectSubjects } from "./select.js";
 import { rollupPages } from "./rollup.js";
 import { renderAll } from "./render.js";
@@ -27,8 +29,8 @@ export async function projectWiki(
 ): Promise<ProjectionResult> {
   const stats = await deps.facts.listSubjectStats(tenantId);
   const selected = selectSubjects(stats, config);
-  const slugs = buildSlugMap(selected.map((s) => s.subject));
-  const pages = await rollupPages(deps, tenantId, selected, slugs);
+  const groups = buildSlugGroups(selected.map((s) => s.subject));
+  const pages = await rollupPages(deps, tenantId, selected, groups);
   const rendered = renderAll(pages, config, today);
 
   const existing = await deps.writer.list();
@@ -49,8 +51,8 @@ export async function projectWiki(
     written: plan.toWrite.length,
     unchanged: plan.unchanged,
     removed: plan.toRemove.length,
-    qualifying: selected.length,
+    qualifying: pages.length,
     onDisk,
-    coverageDrift: selected.length - onDisk,
+    coverageDrift: pages.length - onDisk,
   };
 }

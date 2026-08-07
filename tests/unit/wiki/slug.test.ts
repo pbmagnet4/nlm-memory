@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { slugify, buildSlugMap, SlugCollisionError } from "@core/wiki/slug.js";
+import { slugify, buildSlugGroups, SlugCollisionError } from "@core/wiki/slug.js";
 
 describe("slugify", () => {
   it("passes through an already-safe subject", () => {
@@ -31,49 +31,41 @@ describe("slugify", () => {
   });
 });
 
-describe("buildSlugMap", () => {
-  it("maps every subject to its slug", () => {
-    const map = buildSlugMap(["nlm-memory", "Whtnxt Agent"]);
-    expect(map.get("nlm-memory")).toBe("nlm-memory");
-    expect(map.get("Whtnxt Agent")).toBe("whtnxt-agent");
+describe("buildSlugGroups", () => {
+  it("groups two colliding subjects together, sorted, with both members present", () => {
+    // Supplied out of order (colon spelling first) so a sort-free
+    // implementation would fail this deterministically.
+    const groups = buildSlugGroups(["qwen3.5:4b", "qwen3.5-4b"]);
+    expect(groups.get("qwen3.5-4b")).toEqual(["qwen3.5-4b", "qwen3.5:4b"]);
   });
 
-  it("throws rather than letting one page overwrite another", () => {
-    expect(() => buildSlugMap(["a b", "a/b"])).toThrow(SlugCollisionError);
+  it("does not treat one subject appearing twice as two members", () => {
+    const groups = buildSlugGroups(["a b", "a b"]);
+    expect(groups.get("a-b")).toEqual(["a b"]);
   });
 
-  it("names both colliding subjects in the error", () => {
-    try {
-      buildSlugMap(["a b", "a/b"]);
-      expect.unreachable("should have thrown");
-    } catch (e) {
-      expect(e).toBeInstanceOf(SlugCollisionError);
-      const err = e as SlugCollisionError;
-      expect(err.slug).toBe("a-b");
-      expect([...err.subjects].sort()).toEqual(["a b", "a/b"]);
-    }
-  });
-
-  it("does not treat one subject appearing twice as a collision", () => {
-    expect(() => buildSlugMap(["a b", "a b"])).not.toThrow();
+  it("gives non-colliding subjects their own single-member group", () => {
+    const groups = buildSlugGroups(["nlm-memory", "Whtnxt Agent"]);
+    expect(groups.get("nlm-memory")).toEqual(["nlm-memory"]);
+    expect(groups.get("whtnxt-agent")).toEqual(["Whtnxt Agent"]);
   });
 
   it("throws when a subject slugs to the reserved index page", () => {
-    expect(() => buildSlugMap(["index"])).toThrow(SlugCollisionError);
+    expect(() => buildSlugGroups(["index"])).toThrow(SlugCollisionError);
   });
 
   it("throws when a subject slugs to the reserved log page", () => {
-    expect(() => buildSlugMap(["log"])).toThrow(SlugCollisionError);
+    expect(() => buildSlugGroups(["log"])).toThrow(SlugCollisionError);
   });
 
   it("throws on a reserved-name collision even when the subject isn't already lowercase", () => {
-    expect(() => buildSlugMap(["Index"])).toThrow(SlugCollisionError);
-    expect(() => buildSlugMap(["LOG"])).toThrow(SlugCollisionError);
+    expect(() => buildSlugGroups(["Index"])).toThrow(SlugCollisionError);
+    expect(() => buildSlugGroups(["LOG"])).toThrow(SlugCollisionError);
   });
 
   it("names the reserved file in the error so the failure is diagnosable", () => {
     try {
-      buildSlugMap(["log"]);
+      buildSlugGroups(["log"]);
       expect.unreachable("should have thrown");
     } catch (e) {
       expect(e).toBeInstanceOf(SlugCollisionError);
@@ -85,7 +77,7 @@ describe("buildSlugMap", () => {
 
   it("does not reject ordinary near-miss subjects that merely resemble reserved names", () => {
     expect(() =>
-      buildSlugMap(["changelog", "logging", "blog-post", "index-fix"]),
+      buildSlugGroups(["changelog", "logging", "blog-post", "index-fix"]),
     ).not.toThrow();
   });
 });

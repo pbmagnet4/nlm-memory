@@ -10,6 +10,8 @@ export interface WikiConfig {
 }
 
 export interface PageRollup {
+  /** Canonical spelling, chosen deterministically when a page merges more
+   *  than one colliding spelling. See rollup.ts for the selection rule. */
   readonly subject: string;
   readonly slug: string;
   readonly current: ReadonlyArray<Fact>;
@@ -17,6 +19,8 @@ export interface PageRollup {
   readonly sessionIds: ReadonlyArray<string>;
   /** Other subjects that earned a page and share a session with this one. */
   readonly related: ReadonlyArray<string>;
+  /** Other spellings that merged into this page. Empty when nothing merged. */
+  readonly aliases: ReadonlyArray<string>;
 }
 
 export interface RenderedPage {
@@ -28,6 +32,8 @@ export interface ProjectionResult {
   readonly written: number;
   readonly unchanged: number;
   readonly removed: number;
+  /** Number of pages selection produced, i.e. distinct slug groups — not the
+   *  number of selected subjects, since a merge makes those diverge. */
   readonly qualifying: number;
   readonly onDisk: number;
   /** qualifying minus onDisk after the run. Nonzero means a run failed. */

@@ -29,6 +29,7 @@ function page(over: Partial<PageRollup> = {}): PageRollup {
     superseded: [],
     sessionIds: ["s1"],
     related: [],
+    aliases: [],
     ...over,
   };
 }
@@ -91,6 +92,15 @@ describe("renderPage", () => {
 
   it("is byte-identical across two renders of the same input", () => {
     expect(renderPage(page(), config, TODAY).content).toBe(renderPage(page(), config, TODAY).content);
+  });
+
+  it("omits aliases from frontmatter when the array is empty", () => {
+    expect(renderPage(page(), config, TODAY).content).not.toContain("aliases:");
+  });
+
+  it("emits aliases as a flow sequence when present", () => {
+    const c = renderPage(page({ aliases: ["qwen3.5:4b"] }), config, TODAY).content;
+    expect(c).toContain('aliases: ["qwen3.5:4b"]');
   });
 });
 
