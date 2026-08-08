@@ -9,6 +9,7 @@ import {
   resetEmbedFailureForTests,
 } from "../../src/core/health/embed-failure-state.js";
 import { StubEmbedder, FixedEmbedder } from "../fixtures/llm-stubs.js";
+import { makeFact } from "../fixtures/facts.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 const TENANT = "team_local";
@@ -65,5 +66,19 @@ describe("SQLite ingest embed-failure visibility", () => {
   it("records zero failures on the success path", async () => {
     await storage.sessions.insertSession(TENANT, makeRecord("sess_ok"), new FixedEmbedder());
     expect(embedFailureSnapshot().chunk).toBe(0);
+  });
+
+  it("counts fact-embed failures, still commits the session", async () => {
+    const fact = makeFact({ id: "fact_fail", sourceSessionId: "sess_fact_fail" });
+    await storage.sessions.insertSession(
+      TENANT,
+      makeRecord("sess_fact_fail"),
+      new StubEmbedder({ fail: true }),
+      null,
+      { factStore: storage.facts, facts: [fact] },
+    );
+    expect(embedFailureSnapshot().fact).toBeGreaterThanOrEqual(1);
+    const row = await storage.sessions.getById(TENANT, "sess_fact_fail");
+    expect(row).not.toBeNull();
   });
 });

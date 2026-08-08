@@ -19,6 +19,7 @@ import {
   resetEmbedFailureForTests,
 } from "../../src/core/health/embed-failure-state.js";
 import { StubEmbedder, FixedEmbedder } from "../fixtures/llm-stubs.js";
+import { makeFact } from "../fixtures/facts.js";
 import { usePgTestSchema } from "../helpers/pg-test-schema.js";
 
 const PG_TEST_URL = process.env["NLM_PG_TEST_URL"];
@@ -93,5 +94,19 @@ describe.skipIf(!PG_TEST_URL)("Postgres ingest embed-failure visibility", () => 
   it("records zero failures on the success path", async () => {
     await storage.sessions.insertSession(TENANT, makeRecord("sess_pg_ok"), new FixedEmbedder());
     expect(embedFailureSnapshot().chunk).toBe(0);
+  });
+
+  it("counts fact-embed failures, still commits the session", async () => {
+    const fact = makeFact({ id: "fact_pg_fail", sourceSessionId: "sess_pg_fact_fail" });
+    await storage.sessions.insertSession(
+      TENANT,
+      makeRecord("sess_pg_fact_fail"),
+      new StubEmbedder({ fail: true }),
+      null,
+      { factStore: storage.facts, facts: [fact] },
+    );
+    expect(embedFailureSnapshot().fact).toBeGreaterThanOrEqual(1);
+    const row = await storage.sessions.getById(TENANT, "sess_pg_fact_fail");
+    expect(row).not.toBeNull();
   });
 });
