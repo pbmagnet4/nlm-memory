@@ -48,6 +48,7 @@ import { chunkSessionText } from "@core/embedding/chunk-body.js";
 import { batchWinners } from "./fact-batch.js";
 import { tenantClause } from "@core/tenancy/tenant-clause.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
+import { recordEmbedFailure } from "@core/health/embed-failure-state.js";
 
 export interface SqliteSessionStoreOptions {
   readonly dbPath: string;
@@ -549,9 +550,11 @@ export class SqliteSessionStore implements SessionStore {
         try {
           const { vector } = await embedder.embed(text, "document");
           this.insertChunkEmbedding(record.id, chunkIdx, vector);
-        } catch {
+        } catch (err) {
           // Per-chunk embedder failure must not roll the ingest back or
           // abort subsequent chunks.
+          recordEmbedFailure("chunk");
+          process.stderr.write(`[nlm] embedding chunk failed session=${record.id} chunk=${chunkIdx}: ${String(err)}\n`);
         }
       }
 
@@ -680,10 +683,12 @@ export class SqliteSessionStore implements SessionStore {
       try {
         const { vector } = await embedder.embed(factText, "document");
         await factStore.upsertEmbedding(tenantId, fact.id, vector);
-      } catch {
+      } catch (err) {
         // Per-fact embedding failure must not abort embedding of subsequent
         // facts. The fact row stays current; semantic recall just misses it
         // until a future re-ingest.
+        recordEmbedFailure("fact");
+        process.stderr.write(`[nlm] embedding fact failed fact=${fact.id}: ${String(err)}\n`);
       }
     }
   }
