@@ -30,6 +30,7 @@ import type { ActionOverlay } from "@core/actions/overlay.js";
 import { liveSessionStatus } from "./live-status.js";
 import { tenantClausePg } from "@core/tenancy/tenant-clause.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
+import { recordEmbedFailure } from "@core/health/embed-failure-state.js";
 
 type SessionRow = {
   id: string;
@@ -664,6 +665,7 @@ export class PgSessionStore implements SessionStore {
             [chunkId, record.id, chunkIdx],
           );
         } catch (err) {
+          recordEmbedFailure("chunk");
           process.stderr.write(`[nlm] embedding chunk failed session=${record.id} chunk=${chunkIdx}: ${String(err)}\n`);
         }
       }
@@ -678,8 +680,11 @@ export class PgSessionStore implements SessionStore {
           try {
             const { vector } = await embedder.embed(factText, "document");
             await factSink.factStore.upsertEmbedding(tenantId, fact.id, vector);
-          } catch {
-            // Tolerated; see comment above.
+          } catch (err) {
+            // Tolerated; the fact row stays current, semantic recall misses
+            // it until a future re-ingest.
+            recordEmbedFailure("fact");
+            process.stderr.write(`[nlm] embedding fact failed fact=${fact.id}: ${String(err)}\n`);
           }
         }
       }
