@@ -38,3 +38,4 @@ latest.json
 # Stage A decision-vector cache: 177MB of regenerable embeddings, keyed by
 # sha256(model:text). Delete it and the sampler re-embeds; never commit it.
 reports/re-derivation/decision-vectors.jsonl
+.claude/worktrees/
