@@ -102,18 +102,48 @@ import {
   statSync,
   writeFileSync
 } from "node:fs";
+import { join as join2 } from "node:path";
+
+// src/core/tenancy/tenant-state-path.ts
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-function stateDir() {
-  return process.env["NLM_HOOK_STATE_DIR"] ?? join(homedir(), ".nlm", "hook-state");
+
+// src/core/tenancy/default-team.ts
+var DEFAULT_TEAM_ID = "team_local";
+
+// src/core/tenancy/tenant-state-path.ts
+var TENANTS_DIRNAME = "tenants";
+var SAFE_TENANT_ID = /^[A-Za-z0-9_-]+$/;
+function sanitizeTenantId(tenantId) {
+  if (SAFE_TENANT_ID.test(tenantId)) return tenantId;
+  const sanitized = tenantId.replace(/[^A-Za-z0-9_-]/g, "_") || "unknown";
+  const hash = createHash("sha256").update(tenantId).digest("hex").slice(0, 8);
+  return `${sanitized}_${hash}`;
 }
-function memoPath(conversationId) {
+function stateRoot() {
+  return process.env["NLM_STATE_ROOT"] || join(homedir(), ".nlm");
+}
+function tenantStatePath(tenantId, ...segments) {
+  const base = stateRoot();
+  if (tenantId === DEFAULT_TEAM_ID) return join(base, ...segments);
+  return join(base, TENANTS_DIRNAME, sanitizeTenantId(tenantId), ...segments);
+}
+
+// src/core/hook/memo.ts
+function stateDir(tenantId) {
+  if (tenantId === DEFAULT_TEAM_ID) {
+    return process.env["NLM_HOOK_STATE_DIR"] ?? tenantStatePath(tenantId, "hook-state");
+  }
+  return tenantStatePath(tenantId, "hook-state");
+}
+function memoPath(tenantId, conversationId) {
   const safe = conversationId.replace(/[^A-Za-z0-9_-]/g, "_") || "unknown";
-  return join(stateDir(), `${safe}.json`);
+  return join2(stateDir(tenantId), `${safe}.json`);
 }
-function loadSurfaced(conversationId) {
+function loadSurfaced(tenantId, conversationId) {
   try {
-    const path = memoPath(conversationId);
+    const path = memoPath(tenantId, conversationId);
     if (!existsSync(path)) return /* @__PURE__ */ new Set();
     const parsed = JSON.parse(readFileSync(path, "utf8"));
     if (!Array.isArray(parsed)) return /* @__PURE__ */ new Set();
@@ -125,18 +155,20 @@ function loadSurfaced(conversationId) {
 
 // src/core/hook/cite-memo.ts
 import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import { homedir as homedir2 } from "node:os";
-import { join as join2 } from "node:path";
-function stateDir2() {
-  return process.env["NLM_HOOK_STATE_DIR"] ?? join2(homedir2(), ".nlm", "hook-state");
+import { join as join3 } from "node:path";
+function stateDir2(tenantId) {
+  if (tenantId === DEFAULT_TEAM_ID) {
+    return process.env["NLM_HOOK_STATE_DIR"] ?? tenantStatePath(tenantId, "hook-state");
+  }
+  return tenantStatePath(tenantId, "hook-state");
 }
-function memoPath2(conversationId) {
+function memoPath2(tenantId, conversationId) {
   const safe = conversationId.replace(/[^A-Za-z0-9_-]/g, "_") || "unknown";
-  return join2(stateDir2(), `${safe}.cited.json`);
+  return join3(stateDir2(tenantId), `${safe}.cited.json`);
 }
-function loadCited(conversationId) {
+function loadCited(tenantId, conversationId) {
   try {
-    const path = memoPath2(conversationId);
+    const path = memoPath2(tenantId, conversationId);
     if (!existsSync2(path)) return /* @__PURE__ */ new Set();
     const parsed = JSON.parse(readFileSync2(path, "utf8"));
     if (!Array.isArray(parsed)) return /* @__PURE__ */ new Set();
@@ -145,33 +177,35 @@ function loadCited(conversationId) {
     return /* @__PURE__ */ new Set();
   }
 }
-function recordCited(conversationId, ids) {
+function recordCited(tenantId, conversationId, ids) {
   if (ids.length === 0) return;
   try {
-    const merged = loadCited(conversationId);
+    const merged = loadCited(tenantId, conversationId);
     for (const id of ids) merged.add(id);
-    mkdirSync2(stateDir2(), { recursive: true });
-    writeFileSync2(memoPath2(conversationId), JSON.stringify([...merged]), "utf8");
+    mkdirSync2(stateDir2(tenantId), { recursive: true });
+    writeFileSync2(memoPath2(tenantId, conversationId), JSON.stringify([...merged]), "utf8");
   } catch {
   }
 }
 
 // src/core/recall/miss-log.ts
 import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
-import { dirname, join as join3 } from "node:path";
-import { homedir as homedir3 } from "node:os";
-function defaultLogPath() {
-  return process.env["NLM_MISS_LOG"] ?? join3(homedir3(), ".nlm", "miss-log.jsonl");
+import { dirname } from "node:path";
+function defaultLogPath(tenantId) {
+  if (tenantId === DEFAULT_TEAM_ID) {
+    return process.env["NLM_MISS_LOG"] ?? tenantStatePath(tenantId, "miss-log.jsonl");
+  }
+  return tenantStatePath(tenantId, "miss-log.jsonl");
 }
 function isEnabled() {
   const raw = process.env["NLM_MISS_LOG_ENABLED"];
   if (raw === void 0) return true;
   return raw !== "0" && raw.toLowerCase() !== "false";
 }
-async function appendMisses(entries, logPath) {
+async function appendMisses(tenantId, entries, logPath) {
   if (!isEnabled()) return;
   if (entries.length === 0) return;
-  const path = logPath ?? defaultLogPath();
+  const path = logPath ?? defaultLogPath(tenantId);
   try {
     await mkdir(dirname(path), { recursive: true });
     const ts = (/* @__PURE__ */ new Date()).toISOString();
@@ -244,7 +278,7 @@ function readAllAssistantTurns(transcriptPath) {
 
 // src/llm/env-autoload.ts
 import { readFileSync as readFileSync3, existsSync as existsSync4 } from "node:fs";
-import { homedir as homedir4 } from "node:os";
+import { homedir as homedir2 } from "node:os";
 import { resolve } from "node:path";
 var DEFAULT_SEARCH_PATHS = [
   "~/.nlm/.env",
@@ -253,7 +287,7 @@ var DEFAULT_SEARCH_PATHS = [
   "../../.env"
 ];
 function expandHome(p) {
-  if (p.startsWith("~/")) return resolve(homedir4(), p.slice(2));
+  if (p.startsWith("~/")) return resolve(homedir2(), p.slice(2));
   return p;
 }
 function autoloadEnv(extraPaths = []) {
@@ -294,7 +328,7 @@ function hookAuthHeaders(extra = {}) {
 
 // src/hook/hook-helpers.ts
 import { appendFileSync, mkdirSync as mkdirSync3 } from "node:fs";
-import { homedir as homedir5 } from "node:os";
+import { homedir as homedir3 } from "node:os";
 import { dirname as dirname2, join as join4 } from "node:path";
 function readStdin() {
   return new Promise((resolve2) => {
@@ -319,7 +353,7 @@ function hookModeFromEnv() {
 }
 function appendHookEvent(data) {
   try {
-    const path = process.env["NLM_HOOK_LOG"] ?? join4(homedir5(), ".nlm", "hook-log.jsonl");
+    const path = process.env["NLM_HOOK_LOG"] ?? join4(homedir3(), ".nlm", "hook-log.jsonl");
     mkdirSync3(dirname2(path), { recursive: true });
     appendFileSync(path, `${JSON.stringify(data)}
 `, "utf8");
@@ -343,7 +377,7 @@ async function runStopHook(input, deps) {
       skipped: true
     };
   }
-  const surfaced = loadSurfaced(input.conversationId);
+  const surfaced = loadSurfaced(DEFAULT_TEAM_ID, input.conversationId);
   if (surfaced.size === 0) {
     return {
       conversationId: input.conversationId,
@@ -375,11 +409,12 @@ async function runStopHook(input, deps) {
     toolUses: allToolUses,
     surfacedIds: surfaced
   });
-  const alreadyCited = loadCited(input.conversationId);
+  const alreadyCited = loadCited(DEFAULT_TEAM_ID, input.conversationId);
   const fresh = detected.filter((c) => !alreadyCited.has(c.id));
   const misses = detectMisses({ toolUses: allToolUses, surfacedIds: surfaced });
   if (misses.length > 0) {
     void appendMisses(
+      DEFAULT_TEAM_ID,
       misses.map((m) => ({
         conversationId: input.conversationId,
         missedId: m.id,
@@ -394,7 +429,7 @@ async function runStopHook(input, deps) {
     fresh.map((c) => deps.postCitation(input.conversationId, c.id, c.kind, preview))
   );
   if (fresh.length > 0) {
-    recordCited(input.conversationId, fresh.map((c) => c.id));
+    recordCited(DEFAULT_TEAM_ID, input.conversationId, fresh.map((c) => c.id));
   }
   return {
     conversationId: input.conversationId,

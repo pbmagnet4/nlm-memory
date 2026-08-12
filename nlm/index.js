@@ -464,14 +464,44 @@ function recentConversationContext(transcriptPath, opts = {}) {
 
 // src/core/hook/hook-log.ts
 import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+
+// src/core/tenancy/tenant-state-path.ts
+import { createHash } from "node:crypto";
 import { homedir as homedir2 } from "node:os";
-import { dirname, join } from "node:path";
-function logPath() {
-  return process.env["NLM_HOOK_LOG"] ?? join(homedir2(), ".nlm", "hook-log.jsonl");
+import { join } from "node:path";
+
+// src/core/tenancy/default-team.ts
+var DEFAULT_TEAM_ID = "team_local";
+
+// src/core/tenancy/tenant-state-path.ts
+var TENANTS_DIRNAME = "tenants";
+var SAFE_TENANT_ID = /^[A-Za-z0-9_-]+$/;
+function sanitizeTenantId(tenantId) {
+  if (SAFE_TENANT_ID.test(tenantId)) return tenantId;
+  const sanitized = tenantId.replace(/[^A-Za-z0-9_-]/g, "_") || "unknown";
+  const hash = createHash("sha256").update(tenantId).digest("hex").slice(0, 8);
+  return `${sanitized}_${hash}`;
 }
-function appendHookLog(entry) {
+function stateRoot() {
+  return process.env["NLM_STATE_ROOT"] || join(homedir2(), ".nlm");
+}
+function tenantStatePath(tenantId, ...segments) {
+  const base = stateRoot();
+  if (tenantId === DEFAULT_TEAM_ID) return join(base, ...segments);
+  return join(base, TENANTS_DIRNAME, sanitizeTenantId(tenantId), ...segments);
+}
+
+// src/core/hook/hook-log.ts
+function logPath(tenantId) {
+  if (tenantId === DEFAULT_TEAM_ID) {
+    return process.env["NLM_HOOK_LOG"] ?? tenantStatePath(tenantId, "hook-log.jsonl");
+  }
+  return tenantStatePath(tenantId, "hook-log.jsonl");
+}
+function appendHookLog(tenantId, entry) {
   try {
-    const path = logPath();
+    const path = logPath(tenantId);
     mkdirSync(dirname(path), { recursive: true });
     appendFileSync(path, `${JSON.stringify(entry)}
 `, "utf8");
@@ -489,18 +519,20 @@ import {
   statSync,
   writeFileSync
 } from "node:fs";
-import { homedir as homedir3 } from "node:os";
 import { join as join2 } from "node:path";
-function stateDir() {
-  return process.env["NLM_HOOK_STATE_DIR"] ?? join2(homedir3(), ".nlm", "hook-state");
+function stateDir(tenantId) {
+  if (tenantId === DEFAULT_TEAM_ID) {
+    return process.env["NLM_HOOK_STATE_DIR"] ?? tenantStatePath(tenantId, "hook-state");
+  }
+  return tenantStatePath(tenantId, "hook-state");
 }
-function memoPath(conversationId) {
+function memoPath(tenantId, conversationId) {
   const safe = conversationId.replace(/[^A-Za-z0-9_-]/g, "_") || "unknown";
-  return join2(stateDir(), `${safe}.json`);
+  return join2(stateDir(tenantId), `${safe}.json`);
 }
-function loadSurfaced(conversationId) {
+function loadSurfaced(tenantId, conversationId) {
   try {
-    const path = memoPath(conversationId);
+    const path = memoPath(tenantId, conversationId);
     if (!existsSync3(path)) return /* @__PURE__ */ new Set();
     const parsed = JSON.parse(readFileSync2(path, "utf8"));
     if (!Array.isArray(parsed)) return /* @__PURE__ */ new Set();
@@ -509,12 +541,12 @@ function loadSurfaced(conversationId) {
     return /* @__PURE__ */ new Set();
   }
 }
-function recordSurfaced(conversationId, ids) {
+function recordSurfaced(tenantId, conversationId, ids) {
   try {
-    const merged = loadSurfaced(conversationId);
+    const merged = loadSurfaced(tenantId, conversationId);
     for (const id of ids) merged.add(id);
-    mkdirSync2(stateDir(), { recursive: true });
-    writeFileSync(memoPath(conversationId), JSON.stringify([...merged]), "utf8");
+    mkdirSync2(stateDir(tenantId), { recursive: true });
+    writeFileSync(memoPath(tenantId, conversationId), JSON.stringify([...merged]), "utf8");
   } catch {
   }
 }
@@ -703,7 +735,7 @@ async function runHook(input, deps) {
   const gate = classifyPrompt(input.prompt);
   const preview = input.prompt.slice(0, PROMPT_PREVIEW_CHARS);
   if (gate === "generative" || gate === "skip") {
-    appendHookLog({
+    appendHookLog(DEFAULT_TEAM_ID, {
       ts: (/* @__PURE__ */ new Date()).toISOString(),
       conversationId: input.conversationId,
       promptPreview: preview,
@@ -725,7 +757,7 @@ async function runHook(input, deps) {
     fetched = { hits: [], facts: [] };
   }
   const hits = fetched.hits;
-  const surfaced = loadSurfaced(input.conversationId);
+  const surfaced = loadSurfaced(DEFAULT_TEAM_ID, input.conversationId);
   const selected = selectHits({
     hits,
     surfaced,
@@ -758,7 +790,7 @@ ${h.summary ?? ""}`) }))),
   }
   const block = formatPointerBlock(injected, fetched.facts, fetched.exemplars);
   const estTokens = Math.ceil(block.length / 4);
-  appendHookLog({
+  appendHookLog(DEFAULT_TEAM_ID, {
     ts: (/* @__PURE__ */ new Date()).toISOString(),
     conversationId: input.conversationId,
     promptPreview: preview,
@@ -770,7 +802,7 @@ ${h.summary ?? ""}`) }))),
     ...gateDecisions ? { gateDecisions } : {}
   });
   if (deps.mode === "live" && injected.length > 0) {
-    recordSurfaced(input.conversationId, injected.map((h) => h.id));
+    recordSurfaced(DEFAULT_TEAM_ID, input.conversationId, injected.map((h) => h.id));
     return block;
   }
   return "";
