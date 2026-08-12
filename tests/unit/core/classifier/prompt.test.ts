@@ -34,6 +34,27 @@ describe("isEphemeralSubject", () => {
     }
   });
 
+  it("flags the whole task-<n>-<suffix> family, not just bare task ids", () => {
+    for (const s of [
+      "task-8-task-quality",
+      "task-2-brief.md",
+      "task-5-ats-bump-js-port",
+      "task-3.1",
+      "task-12b",
+      "task-9-implementation",
+      "task-10-pre-period",
+      "task-405",
+    ]) {
+      expect(isEphemeralSubject(s), s).toBe(true);
+    }
+  });
+
+  it("does NOT flag durable subjects that merely start with task", () => {
+    for (const s of ["task-tracking", "task-master", "taskwarrior"]) {
+      expect(isEphemeralSubject(s), s).toBe(false);
+    }
+  });
+
   it("does NOT flag durable project and infrastructure subjects", () => {
     for (const s of [
       "nlm-memory",

@@ -222,7 +222,12 @@ const EPHEMERAL_SUBJECTS = new Set([
   "code-quality",
 ]);
 
-const EPHEMERAL_SUBJECT_PATTERNS = [/^task-\d+(-review)?$/];
+// A numbered work item from one plan — "task-4", "task-3.1", "task-12b",
+// "task-8-task-quality", "task-2-brief.md". The number is only meaningful
+// inside the plan that issued it, so every plan mints a fresh colliding set.
+// Requiring a digit right after "task-" keeps durable subjects that merely
+// start with the word ("task-tracking", "taskwarrior") out of the gate.
+const EPHEMERAL_SUBJECT_PATTERNS = [/^task-\d/];
 
 /**
  * A fact SUBJECT that names a per-run build artifact rather than a durable
