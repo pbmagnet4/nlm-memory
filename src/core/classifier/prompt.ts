@@ -207,6 +207,41 @@ export function isNonAnswerValue(value: string): boolean {
   return NON_ANSWER_SUBSTRINGS.some((p) => v.includes(p));
 }
 
+const EPHEMERAL_SUBJECTS = new Set([
+  "tsc",
+  "typecheck",
+  "test suite",
+  "tests",
+  "test-result",
+  "test-results",
+  "npm test",
+  "commit",
+  "commit-sha",
+  "main",
+  "security-review",
+  "code-quality",
+]);
+
+const EPHEMERAL_SUBJECT_PATTERNS = [/^task-\d+(-review)?$/];
+
+/**
+ * A fact SUBJECT that names a per-run build artifact rather than a durable
+ * entity — "tsc", "test suite", "commit", "task-4-review". Their values are
+ * true only for the session that observed them ("tsc status = clean",
+ * "test suite status = 303 passed"), so each new session asserts a fresh one
+ * and none ever supersedes the last. Left ungated they accumulate as duplicate
+ * active facts (the I5a integrity violation: 56 rows by 2026-08-12, ~16 groups
+ * of pure build noise) and crowd real answers out of recall.
+ *
+ * Sibling of isNonAnswerValue — same call site, same rationale, keyed on
+ * subject instead of value.
+ */
+export function isEphemeralSubject(subject: string): boolean {
+  const s = subject.trim().toLowerCase();
+  if (EPHEMERAL_SUBJECTS.has(s)) return true;
+  return EPHEMERAL_SUBJECT_PATTERNS.some((p) => p.test(s));
+}
+
 function coerceFacts(raw: unknown): CoercedFact[] {
   if (!Array.isArray(raw)) return [];
   const out: CoercedFact[] = [];
@@ -222,6 +257,9 @@ function coerceFacts(raw: unknown): CoercedFact[] {
     // Drop failed-observation / null-result values — they are process noise,
     // not knowledge, and pollute recall at high confidence (NLM #325).
     if (isNonAnswerValue(value)) continue;
+    // Drop per-run build artifacts — durable-looking subjects whose value is
+    // only true for one session, so they never supersede and pile up (I5a).
+    if (isEphemeralSubject(subject)) continue;
     // Closed vocab — drop the fact entirely if the predicate isn't recognized.
     // Pilot data (Phase B.5) showed `other` was 43% of writes and almost all
     // slop; the prompt now instructs the model to leave such observations in

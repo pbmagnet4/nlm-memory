@@ -9,8 +9,51 @@ import {
   CLASSIFIER_SYSTEM_PROMPT,
   PREDICATE_VOCABULARY,
   coerceClassifyResult,
+  isEphemeralSubject,
   isNonAnswerValue,
 } from "../../../../src/core/classifier/prompt.js";
+
+describe("isEphemeralSubject", () => {
+  it("flags per-run build artifacts seen accumulating duplicate active facts", () => {
+    for (const s of [
+      "tsc",
+      "typecheck",
+      "test suite",
+      "tests",
+      "npm test",
+      "test-result",
+      "commit",
+      "commit-sha",
+      "main",
+      "task-2-review",
+      "task-7",
+      "security-review",
+      "code-quality",
+    ]) {
+      expect(isEphemeralSubject(s), s).toBe(true);
+    }
+  });
+
+  it("does NOT flag durable project and infrastructure subjects", () => {
+    for (const s of [
+      "nlm-memory",
+      "nxtos",
+      "qdrant",
+      "gtm-mcp",
+      "navflow-repo",
+      "cronic-repo",
+      "whtnxt",
+      "texas-land-tax",
+    ]) {
+      expect(isEphemeralSubject(s), s).toBe(false);
+    }
+  });
+
+  it("normalizes case and surrounding whitespace before matching", () => {
+    expect(isEphemeralSubject("  TSC  ")).toBe(true);
+    expect(isEphemeralSubject("Test Suite")).toBe(true);
+  });
+});
 
 describe("isNonAnswerValue", () => {
   it("flags failed-observation / null-result values seen polluting the store", () => {
@@ -75,6 +118,21 @@ describe("coerceClassifyResult — facts", () => {
     });
     expect(out.facts).toEqual([
       { kind: "decision", subject: "nlm-memory-ts", predicate: "framework", value: "Hono" },
+    ]);
+  });
+
+  it("drops facts about per-run build artifacts, keeping durable ones", () => {
+    const out = coerceClassifyResult({
+      ...baseFields(),
+      facts: [
+        { kind: "attribute", subject: "tsc", predicate: "status", value: "clean" },
+        { kind: "attribute", subject: "test suite", predicate: "status", value: "303 passed" },
+        { kind: "attribute", subject: "commit", predicate: "version", value: "b2c81c7" },
+        { kind: "attribute", subject: "nlm-memory", predicate: "model", value: "gemma-4-26b-a4b-qat" },
+      ],
+    });
+    expect(out.facts).toEqual([
+      { kind: "attribute", subject: "nlm-memory", predicate: "model", value: "gemma-4-26b-a4b-qat" },
     ]);
   });
 
