@@ -19,6 +19,32 @@ function liveFilledEntry(ts: string): InjectionLogEntry {
   return { ts, mode: "live", gate: "surface", wouldInject: ["hm_abc123"], hits: [{ id: "hm_abc123", score: 1.5 }] };
 }
 
+describe("checkHookInjection — ambient recall disabled", () => {
+  it("stays silent when ambient prompt recall is off, however many empty fires", () => {
+    const entries: InjectionLogEntry[] = Array.from({ length: 40 }, () => liveEmptyEntry(RECENT));
+    const result = checkHookInjection(entries, NOW, false);
+    expect(result.ok).toBe(true);
+    expect(result.message).toBeNull();
+  });
+
+  it("still alarms on the same entries when ambient recall is on", () => {
+    const entries: InjectionLogEntry[] = Array.from({ length: 40 }, () => liveEmptyEntry(RECENT));
+    const result = checkHookInjection(entries, NOW, true);
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("WARN hook injecting nothing");
+  });
+
+  it("defaults to enabled so existing callers keep alarming", () => {
+    const entries: InjectionLogEntry[] = Array.from({ length: 12 }, () => liveEmptyEntry(RECENT));
+    expect(checkHookInjection(entries, NOW).ok).toBe(false);
+  });
+
+  it("suppresses the tier-2 selection alarm too when ambient recall is off", () => {
+    const entries: InjectionLogEntry[] = Array.from({ length: 12 }, () => liveHitsNoInjectEntry(RECENT));
+    expect(checkHookInjection(entries, NOW, false).ok).toBe(true);
+  });
+});
+
 describe("checkHookInjection", () => {
   it("tier 1 alarms when 12 live fires all have empty wouldInject and hits", () => {
     const entries: InjectionLogEntry[] = Array.from({ length: 12 }, () => liveEmptyEntry(RECENT));

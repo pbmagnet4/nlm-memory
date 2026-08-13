@@ -866,7 +866,11 @@ function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
 
   app.get("/api/recall/recent", (c) => {
     const tenantId = c.get("tenantId");
-    const limit = parseLimit(c.req.query("limit"), 50, 200);
+    // Cap raised from 200: consumers strip probe traffic client-side, so the
+    // window has to hold a full day of RAW entries. A host emitting ~800
+    // probes/day filled all 200 rows with probes inside 7h, and the digest
+    // reported "0 queries yesterday" on a day with 27 real ones (2026-08-13).
+    const limit = parseLimit(c.req.query("limit"), 50, 5000);
     const entries = recentQueryLog(
       tenantId,
       limit,

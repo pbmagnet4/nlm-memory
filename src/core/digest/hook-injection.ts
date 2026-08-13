@@ -51,7 +51,16 @@ export interface InjectionCheckResult {
 export function checkHookInjection(
   entries: ReadonlyArray<InjectionLogEntry>,
   now?: Date,
+  ambientRecallEnabled = true,
 ): InjectionCheckResult {
+  // Option B (NLM_HOOK_PROMPT_RECALL=off) disables ambient per-prompt
+  // injection outright, so every fire logs hits: [] / wouldInject: [] by
+  // design — the same reason the gate === "generative" | "skip" fires are
+  // skipped below, applied at the feature level instead of the prompt level.
+  // Without this the canary warns every single morning about a lane the
+  // operator deliberately turned off, which trains them to ignore the digest.
+  if (!ambientRecallEnabled) return { ok: true, message: null };
+
   const cutoff = (now ?? new Date()).getTime() - WINDOW_MS;
 
   let fires = 0;

@@ -80,7 +80,13 @@ export async function runDigest(opts: DigestOptions): Promise<DigestResult> {
   try {
     const [statsRes, recentRes, datasetRes] = await Promise.all([
       fetchJson(`${base}/api/recall/stats`, timeoutMs),
-      fetchJson(`${base}/api/recall/recent?limit=200`, timeoutMs),
+      // The composer strips probe traffic AFTER this fetch, so the limit has to
+      // cover a full day of RAW entries, probes included. At limit=200 a host
+      // emitting ~800 probes/day filled the whole window with probes: the 200
+      // most recent rows spanned 7h, every one a probe, and the digest reported
+      // "0 queries yesterday (none)" on a day with 27 real pull queries
+      // (observed 2026-08-13). Sized for a noisy day, not a quiet one.
+      fetchJson(`${base}/api/recall/recent?limit=5000`, timeoutMs),
       fetchJson(`${base}/api/dataset`, timeoutMs * 2),
     ]);
     stats = statsRes as RecallStats;
@@ -111,7 +117,10 @@ export async function runDigest(opts: DigestOptions): Promise<DigestResult> {
     hookLogPath,
     hookLogExists,
   });
-  const injectionResult = checkHookInjection(hookLog);
+  // "off"/"0"/"false" all disable ambient injection; unset means enabled.
+  const promptRecall = (process.env["NLM_HOOK_PROMPT_RECALL"] ?? "").trim().toLowerCase();
+  const ambientRecallEnabled = !["off", "0", "false", "no"].includes(promptRecall);
+  const injectionResult = checkHookInjection(hookLog, undefined, ambientRecallEnabled);
   const hookAlert =
     [livenessAlert, injectionResult.message].filter(Boolean).join("\n") || null;
 
