@@ -8,6 +8,16 @@
 
 **Next:** Team-NLM program spec (tenancy-by-construction at the store layer, M1-M10 sequencing, a standing cross-tenant leak-test contract) for sign-off, then M1/M2 via SDD. #403's reference-authorship pass. `NLM_ALERT_WEBHOOK` wired into the deploy plist at next release. Monthly recheck on #400's upstream blocker.
 
+## 2026-07-22 - Tenancy schema (M1) landed: teams/tokens, tenant stamps, entity re-key (#407)
+
+**Changes:** Landed the tenancy isolation primitive across both storage lanes. sqlite 034: `teams` + `team_tokens` tables, `tenant_id TEXT NOT NULL DEFAULT 'team_local'` stamps + indexes on sessions/facts/code_exemplars/signals/workstreams/sources/providers. sqlite 035 (no-wrap rebuild): entities re-keyed to composite `(tenant_id, canonical)` with `entity_variants`/`session_entities`/`workstream_entities` re-keyed on composite FKs - a deliberate break from #348's global-entity model. pg 034: same shape with full constraint rigor (backfill -> SET NOT NULL -> FKs -> composite PK swap). Plus a complete table census with per-table tenancy disposition (docs/superpowers/specs/) and a guard test that fails the build if a future `CREATE TABLE` skips the census, and `DEFAULT_TEAM_ID` constant. Design docs and program planning live privately in `.superpowers/sdd/` (not tracked). Suite 2163 pass / 0 fail; build clean.
+
+**Decisions:** The local daemon becomes a single-tenant deployment of the same code path (fixed default team id `team_local`, literal so it works in sqlite column DEFAULTs) - no code fork at the store layer. Constraint rigor is pg-only by design (sqlite ALTER TABLE cannot add NOT NULL + REFERENCES under enforced FKs); isolation is enforced at the store layer (next milestone), not by schema constraints.
+
+**State:** main pushed. pg migration source-verified but NOT executed against a live pg - no `NLM_PG_TEST_URL` instance up (task #408, blocker before store-layer threading is trusted). Gemma reprocess still running in background.
+
+**Next:** Store-layer tenant threading + the cross-tenant leak-test contract, per the private program docs (`.superpowers/sdd/team-nlm-program-spec.md`, disposition inventory in `team-nlm-m2-disposition.md`).
+
 ## 2026-07-19 - Digest query truncation fix (word-boundary + ellipsis, 60→80)
 
 **Changes:** `truncate()` in `src/core/digest/compose.ts` no longer hard-chops mid-word with no marker (the digest's Top-queries lines ended in fragments like "profile Wr"): budget raised 60→80 chars, cut falls back to the last word boundary past 60% of budget, and an ellipsis is appended. Tests updated + word-boundary case added (6/6 green). Rebuilt; the Mini's npm-linked `nlm` picks it up immediately — no publish.
