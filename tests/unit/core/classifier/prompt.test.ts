@@ -58,13 +58,13 @@ describe("isEphemeralSubject", () => {
   it("does NOT flag durable project and infrastructure subjects", () => {
     for (const s of [
       "nlm-memory",
-      "nxtos",
       "qdrant",
-      "gtm-mcp",
-      "navflow-repo",
-      "cronic-repo",
-      "whtnxt",
-      "texas-land-tax",
+      "postgres",
+      "auth-gateway",
+      "billing-service-repo",
+      "checkout-repo",
+      "acme",
+      "customer-portal-rewrite",
     ]) {
       expect(isEphemeralSubject(s), s).toBe(false);
     }

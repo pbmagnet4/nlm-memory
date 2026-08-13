@@ -48,7 +48,20 @@ const RETRY_WAIT_MS = 30_000;
 
 const JUDGE_MODEL = process.env["NLM_EVAL_JUDGE_MODEL"] ?? "google/gemma-4-26b-a4b-qat";
 const SECOND_MODEL = process.env["NLM_EVAL_JUDGE2_MODEL"] ?? "qwen/qwen3.6-35b-a3b";
-const BASE_URL = process.env["NLM_EVAL_JUDGE_BASE_URL"] ?? "http://192.168.1.217:1234/v1";
+// No default: a judge endpoint is operator-specific, and baking one in both
+// leaks the author's host into a public repo and silently points a fresh
+// checkout at an address that does not exist for them.
+function requiredJudgeBaseUrl(): string {
+  const raw = process.env["NLM_EVAL_JUDGE_BASE_URL"];
+  if (!raw) {
+    throw new Error(
+      "NLM_EVAL_JUDGE_BASE_URL is required — the OpenAI-compatible endpoint serving the judge model, " +
+        "e.g. http://localhost:1234/v1 for a local LM Studio.",
+    );
+  }
+  return raw;
+}
+const BASE_URL = requiredJudgeBaseUrl();
 
 function opts(model: string): ChatOptions {
   return {
