@@ -15,6 +15,21 @@ interface ClassifierInfo {
   embedder: { provider: string; model: string; dims: number };
 }
 
+/**
+ * The daemon's active classifier only ever reports "openai" (ClassifierBox
+ * has one generic OpenAI-compatible provider), but a Providers-registry row
+ * for the same endpoint may be kind "openai" (real OpenAI) or
+ * "openai-compatible" (local/self-hosted, e.g. LM Studio) — both ride the
+ * same swap path server-side. Treat both as a match for an active "openai"
+ * classifier so the right row pre-selects and the dirty-check doesn't fire
+ * on page load for a provider that hasn't actually changed.
+ */
+function providerKindMatchesClassifier(kind: string, classifierProvider: string): boolean {
+  if (kind === classifierProvider) return true;
+  if (classifierProvider === "openai") return kind === "openai-compatible";
+  return false;
+}
+
 export function SettingsClassifierPage() {
   const [info, setInfo] = useState<ClassifierInfo | null>(null);
   const [providers, setProviders] = useState<ProviderRow[]>([]);
@@ -36,7 +51,7 @@ export function SettingsClassifierPage() {
       ]);
       setInfo(infoRes);
       setProviders(list);
-      const active = list.find((p) => p.kind === infoRes.provider && p.enabled);
+      const active = list.find((p) => providerKindMatchesClassifier(p.kind, infoRes.provider) && p.enabled);
       const fallback = list.find((p) => p.enabled) ?? list[0] ?? null;
       const selected = active ?? fallback;
       setDraftProviderId(selected ? selected.id : null);
@@ -81,7 +96,7 @@ export function SettingsClassifierPage() {
   const testPassed = test?.ok === true && testedKey === selectionKey;
 
   const dirty = info && draftProvider
-    ? draftProvider.kind !== info.provider || draftModel !== info.model
+    ? !providerKindMatchesClassifier(draftProvider.kind, info.provider) || draftModel !== info.model
     : false;
 
   const canSave = dirty && draftModel.length > 0 && !busy && testPassed;

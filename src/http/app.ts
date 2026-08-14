@@ -1438,13 +1438,18 @@ function registerClassifierRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   app.get("/api/classifier/info", (c) => {
     const provider = deps.classifier?.provider ?? "ollama";
     const model = deps.classifier?.model ?? "qwen3.5:4b";
+    const openAiSwapAvailable = deps.classifier?.openAiSwapAvailable ?? false;
     return c.json({
       provider,
       model,
-      available_providers: ["deepseek", "ollama"] as const,
+      available_providers: openAiSwapAvailable
+        ? (["deepseek", "ollama", "openai"] as const)
+        : (["deepseek", "ollama"] as const),
+      openai_swap_available: openAiSwapAvailable,
       env_present: {
         deepseek: Boolean(process.env["DEEPSEEK_API_KEY"]),
         ollama: true,
+        openai: openAiSwapAvailable,
       },
       default_models: {
         deepseek: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat"],
@@ -1459,9 +1464,16 @@ function registerClassifierRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     const body = (await c.req.json().catch(() => null)) as { provider?: string; model?: string } | null;
     const provider = body?.provider;
     const model = body?.model;
-    if (provider !== "deepseek" && provider !== "ollama") {
+    // "openai-compatible" (the Providers-registry kind for local/self-hosted
+    // endpoints like LM Studio) and "openai" (the registry's real-OpenAI kind)
+    // both ride ClassifierBox's single "openai" ClassifierProvider — both are
+    // just DeepSeekClient against a baseUrl. That baseUrl is fixed at daemon
+    // startup (NLM_CLASSIFIER_BASE_URL), so this swap is model selection
+    // only, never endpoint selection.
+    const isOpenAiKind = provider === "openai" || provider === "openai-compatible";
+    if (provider !== "deepseek" && provider !== "ollama" && !isOpenAiKind) {
       return c.json(
-        { error: "runtime swap supports 'deepseek' or 'ollama'; 'openai' is set via NLM_CLASSIFIER env + restart" },
+        { error: "runtime swap supports 'deepseek', 'ollama', 'openai', or 'openai-compatible'" },
         400,
       );
     }
@@ -1471,7 +1483,18 @@ function registerClassifierRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     if (provider === "deepseek" && !process.env["DEEPSEEK_API_KEY"]) {
       return c.json({ error: "DEEPSEEK_API_KEY not set — cannot swap to deepseek" }, 400);
     }
-    deps.classifier.swap(provider as ClassifierProvider, model);
+    if (isOpenAiKind && !deps.classifier.openAiSwapAvailable) {
+      return c.json(
+        {
+          error:
+            "provider 'openai' has no baseUrl configured — set NLM_CLASSIFIER=openai and " +
+            "NLM_CLASSIFIER_BASE_URL, then restart the daemon before swapping models on it",
+        },
+        400,
+      );
+    }
+    const classifierProvider: ClassifierProvider = isOpenAiKind ? "openai" : provider;
+    deps.classifier.swap(classifierProvider, model);
     return c.json({ provider: deps.classifier.provider, model: deps.classifier.model });
   });
 }

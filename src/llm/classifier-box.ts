@@ -57,6 +57,11 @@ export class ClassifierBox implements LLMClient {
 
   get provider(): ClassifierProvider { return this.providerName; }
   get model(): string { return this.modelName; }
+  /** Whether the 'openai' provider (any OpenAI-compatible endpoint, e.g. LM
+   *  Studio) can be swapped to at runtime — it rides the baseUrl fixed at
+   *  daemon startup, so swapping is only model selection, not endpoint
+   *  selection. */
+  get openAiSwapAvailable(): boolean { return this.baseUrl !== undefined; }
 
   swap(provider: ClassifierProvider, model: string): void {
     this.inner = this.construct(provider, model);

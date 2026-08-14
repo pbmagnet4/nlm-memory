@@ -16,6 +16,7 @@ import type { SqliteFactStore } from "../../src/core/storage/sqlite-fact-store.j
 import type { SqliteSessionStore } from "../../src/core/storage/sqlite-session-store.js";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { createApp } from "../../src/http/app.js";
+import { ClassifierBox } from "../../src/llm/classifier-box.js";
 type AppInstance = ReturnType<typeof createApp>;
 import type { Session } from "../../src/shared/types.js";
 import type { JobSnapshot } from "../../src/core/jobs/job-supervisor.js";
@@ -1531,5 +1532,93 @@ describe("HTTP adapter: POST /api/ingest classifier provenance wiring", () => {
     expect(sess!.classifierProvider).toBe("ollama");
     expect(sess!.classifierModel).toBe("deepseek-r1:7b");
     expect(sess!.classifierConfidence).toBeCloseTo(0.9);
+  });
+});
+
+describe("HTTP adapter: POST /api/classifier openai/openai-compatible swap", () => {
+  const minimalDeps = {
+    recall: { search: async () => ({ query: "", mode: "keyword", limit: 0, total: 0, results: [] }) },
+    store: {},
+  };
+
+  it("swaps to a new model on the 'openai' provider kind when a baseUrl is already configured", async () => {
+    const classifier = new ClassifierBox({
+      provider: "openai",
+      model: "google/gemma-4-26b-a4b-qat",
+      baseUrl: "http://lm-studio.example:1234/v1",
+    });
+    const app = createApp({ ...minimalDeps, classifier } as never);
+
+    const res = await app.request("/api/classifier", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: "openai", model: "meta/muse-glimmer" }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { provider: string; model: string };
+    expect(body.provider).toBe("openai");
+    expect(body.model).toBe("meta/muse-glimmer");
+    expect(classifier.model).toBe("meta/muse-glimmer");
+  });
+
+  it("accepts the 'openai-compatible' provider kind from the Providers registry as an alias for 'openai'", async () => {
+    const classifier = new ClassifierBox({
+      provider: "openai",
+      model: "google/gemma-4-26b-a4b-qat",
+      baseUrl: "http://lm-studio.example:1234/v1",
+    });
+    const app = createApp({ ...minimalDeps, classifier } as never);
+
+    const res = await app.request("/api/classifier", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: "openai-compatible", model: "meta/muse-glimmer" }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { provider: string; model: string };
+    expect(body.provider).toBe("openai");
+    expect(classifier.model).toBe("meta/muse-glimmer");
+  });
+
+  it("rejects an openai-kind swap when the classifier was never configured with a baseUrl", async () => {
+    const classifier = new ClassifierBox({ provider: "ollama", model: "qwen3.5:4b" });
+    const app = createApp({ ...minimalDeps, classifier } as never);
+
+    const res = await app.request("/api/classifier", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: "openai", model: "meta/muse-glimmer" }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/baseUrl/);
+    expect(classifier.provider).toBe("ollama");
+  });
+
+  it("reports openai_swap_available and includes 'openai' in available_providers once baseUrl is configured", async () => {
+    const classifier = new ClassifierBox({
+      provider: "openai",
+      model: "google/gemma-4-26b-a4b-qat",
+      baseUrl: "http://lm-studio.example:1234/v1",
+    });
+    const app = createApp({ ...minimalDeps, classifier } as never);
+
+    const res = await app.request("/api/classifier/info");
+    const body = (await res.json()) as { openai_swap_available: boolean; available_providers: string[] };
+    expect(body.openai_swap_available).toBe(true);
+    expect(body.available_providers).toContain("openai");
+  });
+
+  it("omits 'openai' from available_providers and reports openai_swap_available false without a baseUrl", async () => {
+    const classifier = new ClassifierBox({ provider: "ollama", model: "qwen3.5:4b" });
+    const app = createApp({ ...minimalDeps, classifier } as never);
+
+    const res = await app.request("/api/classifier/info");
+    const body = (await res.json()) as { openai_swap_available: boolean; available_providers: string[] };
+    expect(body.openai_swap_available).toBe(false);
+    expect(body.available_providers).not.toContain("openai");
   });
 });
