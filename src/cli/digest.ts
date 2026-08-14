@@ -24,6 +24,8 @@ import { readHookRecallLog } from "@core/recall/hook-recall-log.js";
 import { readCitationLog } from "@core/recall/citation-log.js";
 import { checkHookLiveness, type SessionRow, type HookLogEntry } from "@core/digest/hook-liveness.js";
 import { checkHookInjection } from "@core/digest/hook-injection.js";
+import { checkHookVersionParity } from "@core/digest/hook-version-parity.js";
+import { NLM_VERSION } from "@shared/version.js";
 import { hookAuthHeaders } from "../hook/hook-auth.js";
 import { computeOutcomeCoverage, type OutcomeCoverage } from "@core/outcome/coverage.js";
 import { loadOutcomeCoverageInput } from "@core/storage/sqlite-outcome-store.js";
@@ -121,8 +123,11 @@ export async function runDigest(opts: DigestOptions): Promise<DigestResult> {
   const promptRecall = (process.env["NLM_HOOK_PROMPT_RECALL"] ?? "").trim().toLowerCase();
   const ambientRecallEnabled = !["off", "0", "false", "no"].includes(promptRecall);
   const injectionResult = checkHookInjection(hookLog, undefined, ambientRecallEnabled);
+  // Liveness proves hooks fired; parity proves the CURRENT hooks fired. The
+  // second is what catches an install still pointing at a stale dist/.
+  const versionAlert = checkHookVersionParity(hookLog, NLM_VERSION);
   const hookAlert =
-    [livenessAlert, injectionResult.message].filter(Boolean).join("\n") || null;
+    [livenessAlert, injectionResult.message, versionAlert].filter(Boolean).join("\n") || null;
 
   // True cited-precision over the 7-day window (the honest "was recall useful"
   // metric). Best-effort: a log-read failure must not break the digest.

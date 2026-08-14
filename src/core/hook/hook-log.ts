@@ -16,6 +16,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { tenantStatePath } from "@core/tenancy/tenant-state-path.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
+import { NLM_VERSION } from "@shared/version.js";
 import type { PromptClass } from "./gate.js";
 
 export interface HookLogEntry {
@@ -27,6 +28,11 @@ export interface HookLogEntry {
   readonly wouldInject: ReadonlyArray<string>;
   readonly estTokens: number;
   readonly mode: "shadow" | "live";
+  /**
+   * The hook build that wrote this line. Lets the digest assert the hooks
+   * actually running match the installed version — liveness alone cannot.
+   */
+  readonly v?: string;
   /** Per-candidate relevance-gate decisions, when the recall gate ran. */
   readonly gateDecisions?: ReadonlyArray<{ readonly id: string; readonly gate: "relevant" | "irrelevant" }>;
 }
@@ -43,7 +49,7 @@ export function appendHookLog(tenantId: string, entry: HookLogEntry): void {
     const path = logPath(tenantId);
     mkdirSync(dirname(path), { recursive: true });
     // Sync I/O: hook is a short-lived process — async write could be lost on exit.
-    appendFileSync(path, `${JSON.stringify(entry)}\n`, "utf8");
+    appendFileSync(path, `${JSON.stringify({ ...entry, v: NLM_VERSION })}\n`, "utf8");
   } catch {
     // Telemetry failure must never break the hook.
   }

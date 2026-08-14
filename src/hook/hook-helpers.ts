@@ -2,6 +2,7 @@ import { appendFileSync, mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { NLM_VERSION } from "@shared/version.js";
 
 /**
  * "Am I the entry point?" for a hook module, tolerant of symlinked installs.
@@ -59,7 +60,7 @@ export function appendHookEvent(data: Record<string, unknown>): void {
   try {
     const path = process.env["NLM_HOOK_LOG"] ?? join(homedir(), ".nlm", "hook-log.jsonl");
     mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(path, `${JSON.stringify(data)}\n`, "utf8");
+    appendFileSync(path, `${JSON.stringify({ ...data, v: NLM_VERSION })}\n`, "utf8");
   } catch {
     // Telemetry failure must never break the hook.
   }
