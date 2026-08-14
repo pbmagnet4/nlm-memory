@@ -34,7 +34,17 @@ export function parseRecallTimeout(raw: string | undefined): number {
   return Number.isFinite(n) && n > 0 ? n : 4000;
 }
 
-export const RECALL_TIMEOUT_MS = parseRecallTimeout(process.env["NLM_HOOK_RECALL_TIMEOUT_MS"]);
+/**
+ * Read at call time, not module scope. Hook entrypoints call autoloadEnv()
+ * inside main(), which runs AFTER every import has been evaluated — so a
+ * module-scope read captures the environment before ~/.nlm/.env is loaded and
+ * silently ignores anything set there. Same hazard the MCP servers avoid by
+ * importing a side-effect env module first; a lazy read is immune to import
+ * order entirely. Keep every env-derived hook knob lazy for this reason.
+ */
+export function recallTimeoutMs(): number {
+  return parseRecallTimeout(process.env["NLM_HOOK_RECALL_TIMEOUT_MS"]);
+}
 
 export interface RecallOverHttpResult {
   readonly hits: ReadonlyArray<RecallHitInput>;
@@ -61,7 +71,7 @@ export async function recallOverHttp(
   try {
     const extra: Record<string, string> = { "x-recall-source": "hook" };
     if (runtime) extra["x-recall-runtime"] = runtime;
-    const res = await fetchWithTimeout(url, { headers: hookAuthHeaders(extra) }, RECALL_TIMEOUT_MS);
+    const res = await fetchWithTimeout(url, { headers: hookAuthHeaders(extra) }, recallTimeoutMs());
     if (!res.ok) return { hits: [], facts: [], exemplars: [] };
     type RecallBody = {
       results?: ReadonlyArray<{

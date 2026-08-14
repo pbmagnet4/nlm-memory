@@ -30,10 +30,13 @@ import { DEFAULT_NLM_PORT } from "../shared/net.js";
 // NLM_RECALL_SCORE_FLOOR is shared with the keyword-mode prompt hook; the
 // calibrated keyword floor (2.0, raw BM25) would deny-all here on the 0..1
 // scale, so it is opt-in only. parseScoreFloor guards a bad env value.
-const SCORE_THRESHOLD = parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR"]);
+// Lazy, not module-scope: autoloadEnv() runs inside main(), after imports are
+// evaluated, so an eager read silently ignores ~/.nlm/.env. See recallTimeoutMs
+// in recall-over-http.ts.
+const scoreThreshold = () => parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR"]);
 // The relative floor IS scale-invariant (ratio to the fire median), so it
 // applies cleanly to this hybrid path too — parity with the per-message hook.
-const RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
+const relativeFloor = () => parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 const PER_FIRE_CAP = 3;
 const PER_CONVERSATION_CAP = 10;
 const RECALL_TIMEOUT_MS = 2000;
@@ -68,8 +71,8 @@ export async function runHook(
   const selected = selectHits({
     hits,
     surfaced,
-    scoreThreshold: SCORE_THRESHOLD,
-    relativeFloor: RELATIVE_FLOOR,
+    scoreThreshold: scoreThreshold(),
+    relativeFloor: relativeFloor(),
     perFireCap: PER_FIRE_CAP,
     perConversationCap: PER_CONVERSATION_CAP,
   });

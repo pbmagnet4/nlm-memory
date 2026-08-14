@@ -155,10 +155,10 @@ function medianScore(hits) {
   return sorted[Math.floor(sorted.length / 2)] ?? 0;
 }
 function selectHits(params) {
-  const { hits, surfaced, scoreThreshold, perFireCap, perConversationCap, relativeFloor = 0 } = params;
-  const relCut = relativeFloor > 0 ? relativeFloor * medianScore(hits) : 0;
+  const { hits, surfaced, scoreThreshold: scoreThreshold2, perFireCap, perConversationCap, relativeFloor: relativeFloor2 = 0 } = params;
+  const relCut = relativeFloor2 > 0 ? relativeFloor2 * medianScore(hits) : 0;
   const eligible = hits.filter(
-    (h) => h.matchScore >= scoreThreshold && h.matchScore >= relCut && !surfaced.has(h.id)
+    (h) => h.matchScore >= scoreThreshold2 && h.matchScore >= relCut && !surfaced.has(h.id)
   );
   const budget = Math.max(0, perConversationCap - surfaced.size);
   const limit = Math.min(perFireCap, budget);
@@ -404,7 +404,9 @@ function parseRecallTimeout(raw) {
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? n : 4e3;
 }
-var RECALL_TIMEOUT_MS = parseRecallTimeout(process.env["NLM_HOOK_RECALL_TIMEOUT_MS"]);
+function recallTimeoutMs() {
+  return parseRecallTimeout(process.env["NLM_HOOK_RECALL_TIMEOUT_MS"]);
+}
 async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword") {
   const query = extractRecallQuery(prompt);
   if (query === null) return { hits: [], facts: [], exemplars: [] };
@@ -418,7 +420,7 @@ async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword")
   try {
     const extra = { "x-recall-source": "hook" };
     if (runtime) extra["x-recall-runtime"] = runtime;
-    const res = await fetchWithTimeout(url, { headers: hookAuthHeaders(extra) }, RECALL_TIMEOUT_MS);
+    const res = await fetchWithTimeout(url, { headers: hookAuthHeaders(extra) }, recallTimeoutMs());
     if (!res.ok) return { hits: [], facts: [], exemplars: [] };
     let body;
     try {
@@ -452,11 +454,11 @@ async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword")
 }
 
 // src/hook/session-start-hook.ts
-var SCORE_THRESHOLD = parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR"]);
-var RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
+var scoreThreshold = () => parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR"]);
+var relativeFloor = () => parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 var PER_FIRE_CAP = 3;
 var PER_CONVERSATION_CAP = 10;
-var RECALL_TIMEOUT_MS2 = 2e3;
+var RECALL_TIMEOUT_MS = 2e3;
 async function runHook(input, deps) {
   let hits = [];
   try {
@@ -468,8 +470,8 @@ async function runHook(input, deps) {
   const selected = selectHits({
     hits,
     surfaced,
-    scoreThreshold: SCORE_THRESHOLD,
-    relativeFloor: RELATIVE_FLOOR,
+    scoreThreshold: scoreThreshold(),
+    relativeFloor: relativeFloor(),
     perFireCap: PER_FIRE_CAP,
     perConversationCap: PER_CONVERSATION_CAP
   });
@@ -501,7 +503,7 @@ async function fetchFailureModeBlock(repo) {
   try {
     const res = await fetchWithTimeout(url, {
       headers: hookAuthHeaders({ "x-recall-source": "session-start-hook" })
-    }, RECALL_TIMEOUT_MS2);
+    }, RECALL_TIMEOUT_MS);
     if (!res.ok) return "";
     const body = await res.json();
     return typeof body.block === "string" ? body.block : "";

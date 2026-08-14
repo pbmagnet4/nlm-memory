@@ -24,6 +24,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { isStdioBlock, piMcpEntry, type McpTransport } from "./mcp-block.js";
 
 export interface ConnectPiOptions {
   /** Absolute path to the plugin-pi/ directory shipped with nlm-memory. */
@@ -56,6 +57,67 @@ export function piAgentDir(): string {
 
 export function piSettingsPath(): string {
   return join(piAgentDir(), "settings.json");
+}
+
+/**
+ * pi's MCP servers live in a separate file from settings.json — pi core has
+ * no MCP concept; the pi-mcp-adapter extension reads this one.
+ */
+export function piMcpConfigPath(): string {
+  return process.env["NLM_PI_MCP_CONFIG"] ?? join(piAgentDir(), "mcp.json");
+}
+
+export interface PiMcpReport {
+  readonly mcpConfigPath: string;
+  readonly alreadyPresent: boolean;
+  readonly migratedFromStdio: boolean;
+  readonly transport: McpTransport;
+  readonly written: boolean;
+}
+
+/**
+ * Register nlm-memory as an MCP server for pi. Separate from connectPi's
+ * extension registration: the extension supplies the prompt-recall hook, this
+ * supplies the callable tools. A user wants both, but they are different
+ * files and either can exist without the other.
+ */
+export function connectPiMcp(opts: {
+  readonly transport?: McpTransport;
+  readonly nlmBinPath?: string;
+  readonly nodeExecPath?: string;
+  readonly port?: string;
+  readonly dryRun?: boolean;
+}): PiMcpReport {
+  const mcpConfigPath = piMcpConfigPath();
+  const transport: McpTransport = opts.transport ?? "http";
+
+  let config: { mcpServers?: Record<string, unknown>; [k: string]: unknown } = {};
+  if (existsSync(mcpConfigPath)) {
+    try {
+      config = JSON.parse(readFileSync(mcpConfigPath, "utf8"));
+    } catch {
+      throw new Error(`pi mcp.json at ${mcpConfigPath} is not valid JSON`);
+    }
+  }
+  const servers = (config.mcpServers ?? {}) as Record<string, unknown>;
+  const alreadyPresent = "nlm-memory" in servers;
+  const migratedFromStdio = transport === "http" && alreadyPresent && isStdioBlock(servers["nlm-memory"]);
+
+  const entry = piMcpEntry({
+    transport,
+    ...(opts.nlmBinPath ? { nlmBinPath: opts.nlmBinPath } : {}),
+    ...(opts.nodeExecPath ? { nodeExecPath: opts.nodeExecPath } : {}),
+    ...(opts.port ? { port: opts.port } : {}),
+  });
+
+  if (!opts.dryRun) {
+    servers["nlm-memory"] = entry;
+    config.mcpServers = servers;
+    mkdirSync(dirname(mcpConfigPath), { recursive: true });
+    writeFileSync(mcpConfigPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  }
+
+  return { mcpConfigPath, alreadyPresent, migratedFromStdio, transport, written: !opts.dryRun };
 }
 
 function readSettings(path: string): PiSettings {

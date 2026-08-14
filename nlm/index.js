@@ -223,7 +223,9 @@ function parseRecallTimeout(raw) {
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? n : 4e3;
 }
-var RECALL_TIMEOUT_MS = parseRecallTimeout(process.env["NLM_HOOK_RECALL_TIMEOUT_MS"]);
+function recallTimeoutMs() {
+  return parseRecallTimeout(process.env["NLM_HOOK_RECALL_TIMEOUT_MS"]);
+}
 async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword") {
   const query = extractRecallQuery(prompt);
   if (query === null) return { hits: [], facts: [], exemplars: [] };
@@ -237,7 +239,7 @@ async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword")
   try {
     const extra = { "x-recall-source": "hook" };
     if (runtime) extra["x-recall-runtime"] = runtime;
-    const res = await fetchWithTimeout(url, { headers: hookAuthHeaders(extra) }, RECALL_TIMEOUT_MS);
+    const res = await fetchWithTimeout(url, { headers: hookAuthHeaders(extra) }, recallTimeoutMs());
     if (!res.ok) return { hits: [], facts: [], exemplars: [] };
     let body;
     try {
@@ -614,10 +616,10 @@ function medianScore(hits) {
   return sorted[Math.floor(sorted.length / 2)] ?? 0;
 }
 function selectHits(params) {
-  const { hits, surfaced, scoreThreshold, perFireCap, perConversationCap, relativeFloor = 0 } = params;
-  const relCut = relativeFloor > 0 ? relativeFloor * medianScore(hits) : 0;
+  const { hits, surfaced, scoreThreshold: scoreThreshold2, perFireCap, perConversationCap, relativeFloor: relativeFloor2 = 0 } = params;
+  const relCut = relativeFloor2 > 0 ? relativeFloor2 * medianScore(hits) : 0;
   const eligible = hits.filter(
-    (h) => h.matchScore >= scoreThreshold && h.matchScore >= relCut && !surfaced.has(h.id)
+    (h) => h.matchScore >= scoreThreshold2 && h.matchScore >= relCut && !surfaced.has(h.id)
   );
   const budget = Math.max(0, perConversationCap - surfaced.size);
   const limit = Math.min(perFireCap, budget);
@@ -687,8 +689,8 @@ ${candidate}` }
 }
 
 // src/hook/prompt-recall-hook.ts
-var SCORE_THRESHOLD = parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR"]);
-var RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
+var scoreThreshold = () => parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR"]);
+var relativeFloor = () => parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 var PER_FIRE_CAP = 3;
 var PER_CONVERSATION_CAP = 10;
 var PROMPT_PREVIEW_CHARS = 200;
@@ -697,7 +699,9 @@ function parseHookDeadline(raw, defaultMs = 4e3) {
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? n : defaultMs;
 }
-var HOOK_DEADLINE_MS = parseHookDeadline(process.env["NLM_HOOK_DEADLINE_MS"], 6e3);
+function hookDeadlineMs() {
+  return parseHookDeadline(process.env["NLM_HOOK_DEADLINE_MS"], 6e3);
+}
 async function withDeadline(p, ms, fallback) {
   if (ms <= 0) return fallback;
   let timer;
@@ -747,7 +751,7 @@ async function runHook(input, deps) {
     });
     return "";
   }
-  const deadline = Date.now() + (deps.deadlineMs ?? HOOK_DEADLINE_MS);
+  const deadline = Date.now() + (deps.deadlineMs ?? hookDeadlineMs());
   let fetched = { hits: [], facts: [] };
   try {
     fetched = normalizeRecall(
@@ -761,8 +765,8 @@ async function runHook(input, deps) {
   const selected = selectHits({
     hits,
     surfaced,
-    scoreThreshold: SCORE_THRESHOLD,
-    relativeFloor: RELATIVE_FLOOR,
+    scoreThreshold: scoreThreshold(),
+    relativeFloor: relativeFloor(),
     perFireCap: PER_FIRE_CAP,
     perConversationCap: PER_CONVERSATION_CAP
   });

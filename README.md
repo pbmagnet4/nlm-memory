@@ -137,7 +137,18 @@ Parent-to-subagent links need no hook: the adapter derives them from the runtime
 
 ### 2. MCP — explicit tools any agent can call
 
-Container-hosted agents (Hermes WebUI, Codex CLI, etc.) hit the Streamable-HTTP `POST /mcp` endpoint with `Authorization: Bearer ${NLM_MCP_TOKEN}`. Stdio MCP is also supported for Claude Code via `~/.mcp.json`.
+**Streamable-HTTP `POST /mcp` is the default transport on every runtime.** `nlm connect <runtime>` writes it for you:
+
+```json
+{ "type": "http", "url": "http://127.0.0.1:3940/mcp",
+  "headers": { "Authorization": "Bearer ${NLM_MCP_TOKEN}" } }
+```
+
+One daemon-backed server answers every session on every surface. The endpoint is stateless — a fresh transport and server per request, no session affinity — so it scales from a single laptop to a hosted multi-tenant deployment without changing shape, and the team is resolved from the bearer token rather than assumed. Nothing but the daemon touches the corpus.
+
+Stdio remains available via `nlm connect <runtime> --stdio`. Its one advantage is that it builds its own stack and so works with the daemon stopped. The trade is real: a process per session, each opening the SQLite corpus directly, and no multi-tenancy (the stdio path is pinned to the single local team). Prefer HTTP unless you specifically need to run without a daemon.
+
+Re-running `nlm connect` on an install that predates this default rewrites the old stdio block in place, so upgrades carry over rather than silently keeping the per-session shape.
 
 ---
 
@@ -292,7 +303,7 @@ Daemon binds `127.0.0.1:3940` (override with `NLM_PORT`). Selected endpoints:
 | POST | `/api/data/restore` | Bearer/Origin | Stage a snapshot for apply-on-restart |
 | POST | `/api/citation/explicit` | Bearer/Origin | Log an explicit session citation (the route backing the `cite_session` MCP tool; payload `{id, conversation_id?, reason?}`) |
 | POST | `/api/hook/pre-compact` | Bearer/Origin | Hook endpoint; flushes the surfaced-IDs memo |
-| ALL | `/mcp` | Bearer required | Streamable-HTTP MCP transport for container agents |
+| ALL | `/mcp` | Bearer required | Streamable-HTTP MCP transport — the default for every runtime; stateless, team resolved from the token |
 | GET | `/api/recall-code` | Bearer/Origin | Semantic code-exemplar search — `?q=`, `?repo=`, `?lang=`, `?k=`, `?negatives=0`. Requires `NLM_CODE_EXEMPLARS_ENABLED=1`. |
 | POST | `/api/exemplar` | Bearer/Origin | Direct code-exemplar push (capture also happens automatically from code-bearing signals). Requires the flag. |
 | POST | `/api/jobs/reprocess` | Bearer/Origin | Start a daemon-supervised `reprocess` run (body: optional `{args: string[]}`, forwarded verbatim as CLI flags). 202 + snapshot on start, 409 + snapshot if one's already active. Backs `nlm reprocess --daemon`. |

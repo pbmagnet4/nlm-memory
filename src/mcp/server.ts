@@ -53,8 +53,14 @@ const SERVER_NAME = "nlm-memory-mcp-server";
 const SERVER_VERSION = "0.5.9";
 
 /** TOON encoding cuts token usage on large recall payloads. Opt in via
- *  NLM_FORMAT=toon in the MCP server's env (see .mcp.json). Defaults to JSON. */
-const USE_TOON = process.env.NLM_FORMAT === "toon";
+ *  NLM_FORMAT=toon. Defaults to JSON.
+ *
+ *  Read at call time, not module scope: on the HTTP transport this module is
+ *  imported by the daemon long before buildStack() calls autoloadEnv(), so an
+ *  eager read would capture the environment before ~/.nlm/.env was loaded and
+ *  silently ignore the setting. Only the stdio path, where the runtime passes
+ *  env directly to the child, would have worked. */
+const useToon = (): boolean => process.env.NLM_FORMAT === "toon";
 
 export interface McpDeps {
   readonly recall: RecallService;
@@ -95,7 +101,7 @@ export interface ToolResult {
 }
 
 function format(data: unknown): string {
-  if (USE_TOON) {
+  if (useToon()) {
     try {
       return toonEncode(data);
     } catch {
