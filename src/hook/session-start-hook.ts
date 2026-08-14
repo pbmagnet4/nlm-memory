@@ -12,7 +12,6 @@
  * memo writes, same NLM_HOOK_MODE semantics.
  */
 
-import { pathToFileURL } from "node:url";
 import { appendHookLog } from "@core/hook/hook-log.js";
 import { loadSurfaced, recordSurfaced } from "@core/hook/memo.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
@@ -22,7 +21,7 @@ import { autoloadEnv } from "../llm/env-autoload.js";
 import { hookAuthHeaders } from "./hook-auth.js";
 import { parseScoreFloor, parseRelativeFloor } from "./score-floor.js";
 import { recallOverHttp } from "./recall-over-http.js";
-import { readStdin, hookModeFromEnv, fetchWithTimeout } from "./hook-helpers.js";
+import { readStdin, hookModeFromEnv, fetchWithTimeout, isMainModule } from "./hook-helpers.js";
 import { DEFAULT_NLM_PORT } from "../shared/net.js";
 
 // This hook recalls in hybrid mode, whose matchScore is normalized to 0..1
@@ -165,6 +164,6 @@ async function main(): Promise<void> {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url, process.argv[1])) {
   void main();
 }

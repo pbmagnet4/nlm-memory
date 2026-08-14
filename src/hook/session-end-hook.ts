@@ -12,11 +12,10 @@
  * with no output, so the hook can never block Claude Code shutdown.
  */
 
-import { pathToFileURL } from "node:url";
 import { clearSurfaced } from "@core/hook/memo.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import { clearCited } from "@core/hook/cite-memo.js";
-import { readStdin, hookModeFromEnv, appendHookEvent } from "./hook-helpers.js";
+import { readStdin, hookModeFromEnv, appendHookEvent, isMainModule } from "./hook-helpers.js";
 
 export interface SessionEndResult {
   readonly conversationId: string;
@@ -53,6 +52,6 @@ async function main(): Promise<void> {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url, process.argv[1])) {
   void main();
 }

@@ -12,7 +12,6 @@
  * Stop hook can never block Claude Code's response.
  */
 
-import { pathToFileURL } from "node:url";
 import {
   detectCitations,
   type CitationKind,
@@ -28,7 +27,7 @@ import {
 } from "@core/hook/transcript.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
 import { hookAuthHeaders } from "./hook-auth.js";
-import { readStdin, fetchWithTimeout, hookModeFromEnv, appendHookEvent } from "./hook-helpers.js";
+import { readStdin, fetchWithTimeout, hookModeFromEnv, appendHookEvent, isMainModule } from "./hook-helpers.js";
 import { DEFAULT_NLM_PORT } from "../shared/net.js";
 
 const RESPONSE_PREVIEW_CHARS = 200;
@@ -216,6 +215,6 @@ async function main(): Promise<void> {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url, process.argv[1])) {
   void main();
 }

@@ -10,7 +10,6 @@
  * share this entrypoint without polluting query logs.
  */
 
-import { pathToFileURL } from "node:url";
 import { classifyPrompt } from "@core/hook/gate.js";
 import { recentConversationContext, topicalWordCount } from "./recent-context.js";
 import { appendHookLog } from "@core/hook/hook-log.js";
@@ -22,7 +21,7 @@ import { autoloadEnv } from "../llm/env-autoload.js";
 import { recallOverHttp } from "./recall-over-http.js";
 import { parseScoreFloor, parseRelativeFloor } from "./score-floor.js";
 import { makeOllamaGate, parseRecallGateMode } from "./recall-gate.js";
-import { readStdin, hookModeFromEnv } from "./hook-helpers.js";
+import { readStdin, hookModeFromEnv, isMainModule } from "./hook-helpers.js";
 
 // Keyword recall returns raw BM25 scores (unbounded, not the 0..1 hybrid
 // scale). FTS5 MATCH already gates relevance — only lexically-matching
@@ -297,6 +296,6 @@ async function main(): Promise<void> {
 }
 
 // Run main() only when invoked directly as a script, not when imported by tests.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url, process.argv[1])) {
   void main();
 }

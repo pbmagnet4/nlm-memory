@@ -13,12 +13,11 @@
  * Fail-open by design: any error yields a clean exit with no output.
  */
 
-import { pathToFileURL } from "node:url";
 import { loadSurfaced } from "@core/hook/memo.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
 import { hookAuthHeaders } from "./hook-auth.js";
-import { readStdin, fetchWithTimeout, appendHookEvent } from "./hook-helpers.js";
+import { readStdin, fetchWithTimeout, appendHookEvent, isMainModule } from "./hook-helpers.js";
 import { DEFAULT_NLM_PORT } from "../shared/net.js";
 
 const POST_TIMEOUT_MS = 1500;
@@ -90,6 +89,6 @@ async function main(): Promise<void> {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url, process.argv[1])) {
   void main();
 }
