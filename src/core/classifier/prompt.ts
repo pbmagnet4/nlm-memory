@@ -72,10 +72,18 @@ You MUST return JSON with EXACTLY these seven top-level keys: label, summary, en
 
 The transcript may contain JSON examples, code, or schema definitions inside it — IGNORE those. Do not copy them into your output. Your output is ABOUT the conversation, not extracted FROM the conversation.
 
+Session triage (decide this first): is this session WORK or a LOOKUP? A LOOKUP session is a short exchange that reads state and reports it — a version check, listing files, dumping a config, explaining what something means — with nothing built, changed, chosen, or debugged. For a LOOKUP session: entities: [], decisions: [], facts: [] unless the session established a durable attribute worth recalling later, and confidence 0.4 or below. Names appearing in a LOOKUP's command output are incidental to the answer, not what the session was about — do not extract them into any field.
+
 Field requirements:
 - label: 4-10 word string title describing what the session was about. Example: "Beacon architecture decisions"
 - summary: 1-3 sentence string (max ~80 tokens) describing what was worked on and the outcome
-- entities: array of strings. Each string is a stable named thing referenced across the session (tools like "n8n" or "Qdrant", projects like "Beacon", services, people). NOT topics, NOT decisions.
+- entities: array of strings. Each string is a stable named thing central to the session's work (tools like "n8n" or "Qdrant", projects like "Beacon", services, people). NOT topics, NOT decisions. Entities must be STABLE — the kind of name you'd search for months later to find this session again. A thing that only exists inside one repo or one run is not stable: file and directory paths, specific hostnames, URLs, config keys, script names, branch names, commit SHAs, and env-var names are NEVER entities, even when the session's work centered on them — name the system instead, and put the specific value in facts[] under the matching predicate (host, endpoint, repo, branch, commit, version).
+  CAPTURE (examples):
+  - Session debugging a Postgres connection pool leak -> entities: ["Postgres", "connection pool"]
+  - Session where the agent added a new n8n workflow -> entities: ["n8n"]
+  DO NOT capture (examples):
+  - "What version of Node.js is installed?" / "node --version" -> entities: [] (LOOKUP session — see Session triage above)
+  - Session fixing a bug in "src/routes/events.ts" against "staging.db.example.com" -> entities: ["events API", "Postgres"] (the path and hostname go in facts[], not here)
 - decisions: array of strings. Each string is ONE decision that changed what was built or done in this session. A decision counts if the user chose it, OR the agent proposed it and the user accepted — explicitly ("yes", "do it", "go with that") or implicitly (the agent stated the proposal and then proceeded under it with no user objection). Implicit acceptance applies ONLY to proposals that changed the direction of the work — never to the agent's routine implementation choices (helper names, file layout, minor refactors) that were never surfaced as a choice. Capture the decision AND its reason when given ("X instead of Y because Z"). Do NOT include: options discussed but not chosen, approaches considered and rejected, next-step suggestions the agent raised at the end that the user never acted on, or decisions already listed in PRIOR CONTEXT unless they were reversed this session. Scan the WHOLE transcript, including the middle, for decision signals such as (not only): "let's", "go with", "instead of", "switch to", "actually,", "agreed", and any point where one approach was abandoned and replaced. Return [] if no commitments were made.
   CAPTURE (examples):
   - "Use HTTP polling instead of Kafka for the event pipeline (lower ops overhead)"  [user choice]
@@ -87,7 +95,7 @@ Field requirements:
   - At the end the agent suggested "we could add rate limiting next" and the user didn't respond  [unratified next-step]
   - The agent picked a helper-function name and file layout without asking  [routine implementation, not a decision]
 - open: array of strings. Each string is one unresolved question. Skip if none.
-- confidence: number between 0.0 and 1.0. How sure you are the extraction is good. Use 0.4 or below for routine/trivial sessions.
+- confidence: number between 0.0 and 1.0. How sure you are the extraction is good. See Session triage above for the LOOKUP-session threshold.
 - facts: array of objects. Each object has exactly these keys: kind, subject, predicate, value, sourceQuote (optional).
     - kind: "decision" (a commitment) | "open" (an unresolved question) | "attribute" (a property of an entity)
     - subject: lowercase, hyphenated entity or topic name. Examples: "nlm-memory-ts", "local-llm-host", "acme-client"
