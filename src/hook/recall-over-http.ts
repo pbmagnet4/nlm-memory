@@ -46,11 +46,27 @@ export function recallTimeoutMs(): number {
   return parseRecallTimeout(process.env["NLM_HOOK_RECALL_TIMEOUT_MS"]);
 }
 
+/**
+ * Why the recall returned what it did. Without this, a timed-out recall and a
+ * genuinely-empty one are the same empty object, so a dead recall path reads
+ * as "nothing relevant" on every diagnostic surface — the failure that hid a
+ * two-week hook outage behind a healthy-looking digest.
+ */
+export type RecallOutcome = "ok" | "timeout" | "unreachable" | "http-error" | "skipped";
+
 export interface RecallOverHttpResult {
   readonly hits: ReadonlyArray<RecallHitInput>;
   readonly facts: ReadonlyArray<PointerFact>;
   readonly exemplars: ReadonlyArray<PointerExemplar>;
+  readonly outcome: RecallOutcome;
 }
+
+const emptyResult = (outcome: RecallOutcome): RecallOverHttpResult => ({
+  hits: [],
+  facts: [],
+  exemplars: [],
+  outcome,
+});
 
 export async function recallOverHttp(
   prompt: string,
@@ -59,7 +75,7 @@ export async function recallOverHttp(
   mode: "keyword" | "hybrid" = "keyword",
 ): Promise<RecallOverHttpResult> {
   const query = extractRecallQuery(prompt);
-  if (query === null) return { hits: [], facts: [], exemplars: [] };
+  if (query === null) return emptyResult("skipped");
   const portValue = process.env["NLM_PORT"] ?? DEFAULT_NLM_PORT;
   const url =
     // 127.0.0.1, not localhost: each hook is a fresh process with no connection
@@ -72,7 +88,7 @@ export async function recallOverHttp(
     const extra: Record<string, string> = { "x-recall-source": "hook" };
     if (runtime) extra["x-recall-runtime"] = runtime;
     const res = await fetchWithTimeout(url, { headers: hookAuthHeaders(extra) }, recallTimeoutMs());
-    if (!res.ok) return { hits: [], facts: [], exemplars: [] };
+    if (!res.ok) return emptyResult("http-error");
     type RecallBody = {
       results?: ReadonlyArray<{
         id: string;
@@ -98,7 +114,7 @@ export async function recallOverHttp(
     try {
       body = (await res.json()) as RecallBody;
     } catch {
-      return { hits: [], facts: [], exemplars: [] };
+      return emptyResult("http-error");
     }
     const hits = (body.results ?? []).map((r) => ({
       id: r.id,
@@ -119,8 +135,11 @@ export async function recallOverHttp(
       repo: e.repo,
       taskContext: e.taskContext,
     }));
-    return { hits, facts, exemplars };
-  } catch {
-    return { hits: [], facts: [], exemplars: [] };
+    return { hits, facts, exemplars, outcome: "ok" };
+  } catch (err) {
+    // fetchWithTimeout aborts on the deadline, which surfaces as AbortError.
+    // Anything else reaching here is a transport failure (refused, DNS, reset).
+    const aborted = err instanceof Error && err.name === "AbortError";
+    return emptyResult(aborted ? "timeout" : "unreachable");
   }
 }

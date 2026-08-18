@@ -20,7 +20,7 @@ import { selectHits, type RecallHitInput } from "@core/hook/select.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
 import { hookAuthHeaders } from "./hook-auth.js";
 import { parseScoreFloor, parseRelativeFloor } from "./score-floor.js";
-import { recallOverHttp } from "./recall-over-http.js";
+import { recallOverHttp, type RecallOutcome } from "./recall-over-http.js";
 import { readStdin, hookModeFromEnv, fetchWithTimeout, isMainModule } from "./hook-helpers.js";
 import { DEFAULT_NLM_PORT } from "../shared/net.js";
 
@@ -42,6 +42,11 @@ const RECALL_TIMEOUT_MS = 2000;
 
 export type HookMode = "shadow" | "live";
 
+export interface SessionStartRecall {
+  readonly hits: ReadonlyArray<RecallHitInput>;
+  readonly outcome: RecallOutcome;
+}
+
 export interface SessionStartInput {
   readonly conversationId: string;
   readonly query: string;
@@ -49,7 +54,7 @@ export interface SessionStartInput {
 
 export interface RunSessionStartDeps {
   readonly mode: HookMode;
-  readonly recall: (query: string, conversationId?: string) => Promise<ReadonlyArray<RecallHitInput>>;
+  readonly recall: (query: string, conversationId?: string) => Promise<SessionStartRecall>;
 }
 
 /** Orchestration. Returns the text to emit on stdout ("" for nothing). */
@@ -58,8 +63,11 @@ export async function runHook(
   deps: RunSessionStartDeps,
 ): Promise<string> {
   let hits: ReadonlyArray<RecallHitInput> = [];
+  let recallOutcome: RecallOutcome = "unreachable";
   try {
-    hits = await deps.recall(input.query, input.conversationId);
+    const fetched = await deps.recall(input.query, input.conversationId);
+    hits = fetched.hits;
+    recallOutcome = fetched.outcome;
   } catch {
     hits = [];
   }
@@ -87,6 +95,7 @@ export async function runHook(
     wouldInject: selected.map((h) => h.id),
     estTokens,
     mode: deps.mode,
+    recallOutcome,
   });
 
   if (deps.mode === "live" && selected.length > 0) {
@@ -151,8 +160,10 @@ async function main(): Promise<void> {
         { conversationId, query },
         {
           mode,
-          recall: async (q, cid) =>
-            (await recallOverHttp(q, "claude-code", cid === "unknown" ? undefined : cid, "hybrid")).hits,
+          recall: async (q, cid) => {
+            const r = await recallOverHttp(q, "claude-code", cid === "unknown" ? undefined : cid, "hybrid");
+            return { hits: r.hits, outcome: r.outcome };
+          },
         },
       ),
       mode === "live" ? fetchFailureModeBlock(workingDirectory) : Promise.resolve(""),

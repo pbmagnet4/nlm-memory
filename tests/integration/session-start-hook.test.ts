@@ -13,6 +13,8 @@ const hits = (...ids: string[]): ReadonlyArray<RecallHitInput> =>
     matchScore: 0.9 - i * 0.01,
   }));
 
+const ok = (...ids: string[]) => ({ hits: hits(...ids), outcome: "ok" as const });
+
 describe("session-start runHook", () => {
   let tmp: string;
 
@@ -31,7 +33,7 @@ describe("session-start runHook", () => {
   it("shadow mode logs to hook-log but returns no stdout", async () => {
     const out = await runHook(
       { conversationId: "c1", query: "nlm-memory-ts recall" },
-      { mode: "shadow", recall: async () => hits("sess_a") },
+      { mode: "shadow", recall: async () => ok("sess_a") },
     );
     expect(out).toBe("");
     const log = readFileSync(join(tmp, "hook-log.jsonl"), "utf8").trim();
@@ -45,7 +47,7 @@ describe("session-start runHook", () => {
   it("shadow mode does not write the memo", async () => {
     await runHook(
       { conversationId: "c1", query: "nlm-memory-ts" },
-      { mode: "shadow", recall: async () => hits("sess_a") },
+      { mode: "shadow", recall: async () => ok("sess_a") },
     );
     expect(existsSync(join(tmp, "state", "c1.json"))).toBe(false);
   });
@@ -53,7 +55,7 @@ describe("session-start runHook", () => {
   it("live mode returns the pointer block and writes the memo", async () => {
     const out = await runHook(
       { conversationId: "c1", query: "nlm-memory-ts recall" },
-      { mode: "live", recall: async () => hits("sess_a", "sess_b") },
+      { mode: "live", recall: async () => ok("sess_a", "sess_b") },
     );
     expect(out).toContain("## Possibly-relevant prior sessions (nlm-memory)");
     expect(out).toContain("sess_a");
@@ -64,7 +66,7 @@ describe("session-start runHook", () => {
   });
 
   it("live mode dedups: a second fire does not re-surface the same session", async () => {
-    const deps = { mode: "live" as const, recall: async () => hits("sess_a") };
+    const deps = { mode: "live" as const, recall: async () => ok("sess_a") };
     const first = await runHook({ conversationId: "c1", query: "nlm-memory-ts" }, deps);
     expect(first).toContain("sess_a");
     const second = await runHook({ conversationId: "c1", query: "nlm-memory-ts" }, deps);
@@ -88,7 +90,7 @@ describe("session-start runHook", () => {
     for (const mode of ["shadow", "live"] as const) {
       const out = await runHook(
         { conversationId: `c-${mode}`, query: "nlm-memory-ts" },
-        { mode, recall: async () => [] },
+        { mode, recall: async () => ok() },
       );
       expect(out).toBe("");
     }
@@ -97,7 +99,7 @@ describe("session-start runHook", () => {
   it("hook-log entry has promptPreview set to the query", async () => {
     await runHook(
       { conversationId: "c1", query: "example-agent session recall" },
-      { mode: "shadow", recall: async () => hits("sess_x") },
+      { mode: "shadow", recall: async () => ok("sess_x") },
     );
     const entry = JSON.parse(
       readFileSync(join(tmp, "hook-log.jsonl"), "utf8").trim(),
@@ -113,7 +115,7 @@ describe("session-start runHook", () => {
         mode: "live",
         recall: async () => {
           await new Promise((r) => setTimeout(r, 50));
-          return hits("sess_y");
+          return ok("sess_y");
         },
       },
     );
@@ -125,12 +127,12 @@ describe("session-start runHook", () => {
     // First fire surfaces sess_a
     await runHook(
       { conversationId: "c1", query: "nlm-memory-ts" },
-      { mode: "live", recall: async () => hits("sess_a") },
+      { mode: "live", recall: async () => ok("sess_a") },
     );
     // Second fire surfaces sess_b (sess_a already in memo — deduped out, sess_b is new)
     const second = await runHook(
       { conversationId: "c1", query: "nlm-memory-ts" },
-      { mode: "live", recall: async () => hits("sess_a", "sess_b") },
+      { mode: "live", recall: async () => ok("sess_a", "sess_b") },
     );
     expect(second).toContain("sess_b");
     expect(second).not.toContain("sess_a");

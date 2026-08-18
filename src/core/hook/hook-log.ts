@@ -33,6 +33,9 @@ export interface HookLogEntry {
    * actually running match the installed version — liveness alone cannot.
    */
   readonly v?: string;
+  /** Why recall returned what it did. Absent on gate-skipped fires (no recall ran).
+   *  Without it, `hits: []` cannot be told apart from a recall that timed out. */
+  readonly recallOutcome?: "ok" | "timeout" | "unreachable" | "http-error" | "skipped";
   /** Per-candidate relevance-gate decisions, when the recall gate ran. */
   readonly gateDecisions?: ReadonlyArray<{ readonly id: string; readonly gate: "relevant" | "irrelevant" }>;
 }

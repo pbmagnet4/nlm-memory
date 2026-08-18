@@ -18,7 +18,7 @@ import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import { formatPointerBlock, type PointerExemplar, type PointerFact } from "@core/hook/pointer-block.js";
 import { selectHits, type RecallHitInput } from "@core/hook/select.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
-import { recallOverHttp } from "./recall-over-http.js";
+import { recallOverHttp, type RecallOutcome } from "./recall-over-http.js";
 import { parseScoreFloor, parseRelativeFloor } from "./score-floor.js";
 import { makeOllamaGate, parseRecallGateMode } from "./recall-gate.js";
 import { readStdin, hookModeFromEnv, isMainModule } from "./hook-helpers.js";
@@ -123,6 +123,7 @@ export interface RecallFetchResult {
   readonly hits: ReadonlyArray<RecallHitInput>;
   readonly facts: ReadonlyArray<PointerFact>;
   readonly exemplars?: ReadonlyArray<PointerExemplar>;
+  readonly outcome?: RecallOutcome;
 }
 
 export type GateMode = "shadow" | "live";
@@ -181,13 +182,20 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
 
   const deadline = Date.now() + (deps.deadlineMs ?? hookDeadlineMs());
 
-  let fetched: RecallFetchResult = { hits: [], facts: [] };
+  // The outer deadline and the inner HTTP timeout are separate budgets; both
+  // yield an empty result, so both must name themselves or the log conflates
+  // them with a real miss.
+  let fetched: RecallFetchResult = { hits: [], facts: [], outcome: "timeout" };
   try {
     fetched = normalizeRecall(
-      await withDeadline(deps.recall(buildRecallQuery(input)), deadline - Date.now(), { hits: [], facts: [] }),
+      await withDeadline(
+        deps.recall(buildRecallQuery(input)),
+        deadline - Date.now(),
+        { hits: [], facts: [], outcome: "timeout" },
+      ),
     );
   } catch {
-    fetched = { hits: [], facts: [] };
+    fetched = { hits: [], facts: [], outcome: "unreachable" };
   }
   const hits = fetched.hits;
 
@@ -239,6 +247,7 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
     wouldInject: injected.map((h) => h.id),
     estTokens,
     mode: deps.mode,
+    ...(fetched.outcome ? { recallOutcome: fetched.outcome } : {}),
     ...(gateDecisions ? { gateDecisions } : {}),
   });
 
