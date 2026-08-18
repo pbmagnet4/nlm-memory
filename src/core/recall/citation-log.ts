@@ -89,14 +89,16 @@ export async function readCitationLog(
   return results;
 }
 
+/** Returns whether the citation was actually written. A dropped citation must
+ *  not be reported as logged — callers surface this to the agent. */
 export async function appendCitation(
   tenantId: string,
   entry: CitationEntry,
   logPath: string = defaultLogPath(tenantId),
-): Promise<void> {
+): Promise<boolean> {
   // Drop unattributable / fixture citations at the source so the log stays a
   // clean training + metric substrate (see isAttributableConversationId).
-  if (!isAttributableConversationId(entry.conversationId)) return;
+  if (!isAttributableConversationId(entry.conversationId)) return false;
   try {
     await mkdir(dirname(logPath), { recursive: true });
     const payload = {
@@ -109,8 +111,10 @@ export async function appendCitation(
         : {}),
     };
     await appendFile(logPath, JSON.stringify(payload) + "\n", "utf8");
+    return true;
   } catch {
     // Telemetry failure must never break the call path.
+    return false;
   }
 }
 

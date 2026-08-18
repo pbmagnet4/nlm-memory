@@ -787,15 +787,27 @@ export async function citeSessionHandler(
     return err(new Error(`id must be at least ${MIN_CITE_ID_LEN} characters`));
   }
   try {
-    await appendCitation(tenantId, {
-      // Agents rarely pass conversation_id; resolve it server-side from the
-      // surfaced-memo so the citation joins to its hook fire (NLM #345).
-      conversationId: input.conversation_id ?? resolveConversationForSession(tenantId, input.id) ?? "mcp_tool",
+    // Agents rarely pass conversation_id, so resolve it server-side. The
+    // surfaced-memo only knows sessions the recall HOOK injected, which is
+    // empty whenever ambient recall is off or failing — that gap silently
+    // unattributed every pull-driven citation. Fall back to the same
+    // transcript scan the recall handlers use: the runtime has already
+    // written this cite_session tool_use (carrying `id`) to the transcript
+    // before this handler runs, so the id is a reliable join key.
+    const conversationId =
+      input.conversation_id ??
+      resolveConversationForSession(tenantId, input.id) ??
+      resolveConversationByQuery(input.id) ??
+      "mcp_tool";
+    const logged = await appendCitation(tenantId, {
+      conversationId,
       citedId: input.id,
       kind: "tool_use",
       ...(input.reason !== undefined ? { responsePreview: input.reason } : {}),
     });
-    return ok({ logged: true, id: input.id });
+    // An unattributable citation is dropped by the write path; reporting it as
+    // logged would make a dead telemetry path look healthy.
+    return ok({ logged, id: input.id, ...(logged ? {} : { reason: "unattributable_conversation" }) });
   } catch (e) {
     return err(e);
   }
