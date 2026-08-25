@@ -104,8 +104,9 @@ import { reembedCorpusPg } from "../core/embedding/pg-embed-backfill.js";
 import { backfillExemplarEmbeddings } from "../core/exemplars/embed-backfill.js";
 import { backfillFactEmbeddings } from "../core/facts/embed-backfill.js";
 import { warmCodeEmbedder } from "../core/exemplars/warm-embedder.js";
-import { markWarm } from "../core/health/warmup-state.js";
+import { markWarm, markWarmFailure } from "../core/health/warmup-state.js";
 import { setLaneHealth } from "../core/health/embedding-lane-state.js";
+import { retryUntilWarm } from "../core/health/warmup-retry.js";
 import { setCorpusSnapshot, corpusSnapshot } from "../core/health/corpus-state.js";
 import { computeCorpusStats, sqliteCorpusStatsDeps, parseCorpusThresholds, thresholdState } from "../core/metrics/corpus-stats.js";
 import { computeReDerivationRate, sqliteReDerivationDeps } from "../core/metrics/re-derivation.js";
@@ -543,10 +544,19 @@ program
     warmCodeEmbedder(codeEmb);
     void reconcileEmbeddingLanes(storage, embedder, codeEmb).catch(() => {});
 
-    void embedder
-      .embed("warmup init", "query")
-      .then(() => markWarm("textEmbedder"))
-      .catch(() => {});
+    // Retried, not one-shot. A single attempt with a swallowed catch latched
+    // this stage cold for the whole uptime whenever the backend was not yet
+    // servable, which is the normal case when the embedder host is started by
+    // hand after a reboot.
+    void retryUntilWarm({
+      attempt: () => embedder.embed("warmup init", "query"),
+      onSuccess: () => {
+        markWarm("textEmbedder");
+        setLaneHealth("prose", "ok");
+      },
+      onFailure: (reason, attempt) => markWarmFailure("textEmbedder", reason, attempt),
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms).unref?.()),
+    });
 
     setImmediate(() => {
       void recall
