@@ -1,8 +1,5 @@
 #!/usr/bin/env node
 
-// src/hook/stop-hook.ts
-import { pathToFileURL } from "node:url";
-
 // src/core/hook/citation-detect.ts
 var MIN_ID_LEN = 6;
 function detectCitations(input) {
@@ -327,9 +324,134 @@ function hookAuthHeaders(extra = {}) {
 }
 
 // src/hook/hook-helpers.ts
-import { appendFileSync, mkdirSync as mkdirSync3 } from "node:fs";
+import { appendFileSync, mkdirSync as mkdirSync3, realpathSync } from "node:fs";
 import { homedir as homedir3 } from "node:os";
 import { dirname as dirname2, join as join4 } from "node:path";
+import { pathToFileURL } from "node:url";
+
+// package.json
+var package_default = {
+  name: "nlm-memory",
+  version: "0.21.5",
+  description: "Local-first non-linear memory operating system for AI operators.",
+  type: "module",
+  license: "Apache-2.0",
+  engines: {
+    node: ">=22.0.0"
+  },
+  repository: {
+    type: "git",
+    url: "git+https://github.com/pbmagnet4/nlm-memory.git"
+  },
+  homepage: "https://github.com/pbmagnet4/nlm-memory#readme",
+  bugs: {
+    url: "https://github.com/pbmagnet4/nlm-memory/issues"
+  },
+  keywords: [
+    "ai",
+    "memory",
+    "mcp",
+    "claude-code",
+    "codex",
+    "hermes",
+    "local-first",
+    "recall",
+    "session-memory"
+  ],
+  files: [
+    "dist",
+    "migrations",
+    "fixtures",
+    "templates",
+    "plugin",
+    "plugin-hermes-agent",
+    "nlm",
+    "assets",
+    "LICENSE",
+    "README.md"
+  ],
+  bin: {
+    nlm: "dist/cli/nlm.js"
+  },
+  scripts: {
+    dev: "tsx watch src/cli/nlm.ts start",
+    start: "node dist/cli/nlm.js start",
+    "build:server": "tsc -p tsconfig.json && tsc-alias -p tsconfig.json",
+    "build:ui": "vite build --config src/ui/vite.config.ts",
+    "build:codex-plugin": "node scripts/build-codex-plugin.mjs",
+    build: "npm run build:server && npm run build:ui && npm run build:codex-plugin",
+    prepare: "[ -d src ] && npm run build || true",
+    "ui:dev": "vite --config src/ui/vite.config.ts",
+    test: "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:pg": "vitest run .pg.test.ts --test-timeout=20000",
+    typecheck: "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json && tsc -p tsconfig.scripts.json",
+    "bench:longmemeval": "tsx scripts/longmemeval/run-harness.ts",
+    "bench:classifier": "tsx scripts/longmemeval/run-harness.ts --classifier",
+    "bench:compare": "tsx scripts/longmemeval/compare-classifiers.ts",
+    "eval:signals": "tsx scripts/eval/signals-eval.ts",
+    "eval:classifier": "tsx scripts/eval/classifier-eval.ts",
+    "eval:fact-recall": "tsx scripts/eval/fact-recall-eval.ts",
+    "eval:recall-impact-replay": "tsx scripts/eval/recall-impact-replay.ts",
+    "eval:code-exemplar": "tsx scripts/eval/code-exemplar-eval.ts",
+    "eval:reranker": "tsx scripts/eval/reranker-ablation.ts",
+    "eval:floor": "tsx scripts/eval/floor-calibration.ts",
+    "eval:matcher": "tsx scripts/eval/tune-matcher.ts",
+    "eval:naming": "tsx scripts/eval/tune-naming.ts",
+    "eval:rederiv-sample": "tsx scripts/eval/re-derivation-sample.ts",
+    "eval:rederiv-label": "tsx scripts/eval/re-derivation-label.ts",
+    "eval:rederiv-calibrate": "tsx scripts/eval/re-derivation-calibrate.ts"
+  },
+  dependencies: {
+    "@clack/prompts": "^1.4.0",
+    "@hono/node-server": "^2.0.3",
+    "@huggingface/transformers": "4.2.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@toon-format/toon": "^2.3.0",
+    "better-sqlite3": "^13.0.1",
+    commander: "^15.0.0",
+    hono: "^4.6.0",
+    pg: "^8.21.0",
+    pgvector: "^0.3.0",
+    "sqlite-vec": "^0.1.6",
+    yaml: "^2.9.0",
+    zod: "^4.4.3"
+  },
+  devDependencies: {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.20.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    esbuild: "^0.28.0",
+    react: "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-router-dom": "^6.30.3",
+    "tsc-alias": "^1.8.17",
+    tsx: "^4.19.0",
+    typescript: "^6.0.3",
+    vite: "^8.0.16",
+    vitest: "^4.1.8"
+  }
+};
+
+// src/shared/version.ts
+var NLM_VERSION = package_default.version;
+
+// src/hook/hook-helpers.ts
+function isMainModule(metaUrl, argv1) {
+  if (!argv1) return false;
+  let resolved;
+  try {
+    resolved = realpathSync(argv1);
+  } catch {
+    return false;
+  }
+  return metaUrl === pathToFileURL(resolved).href;
+}
 function readStdin() {
   return new Promise((resolve2) => {
     let data = "";
@@ -355,7 +477,7 @@ function appendHookEvent(data) {
   try {
     const path = process.env["NLM_HOOK_LOG"] ?? join4(homedir3(), ".nlm", "hook-log.jsonl");
     mkdirSync3(dirname2(path), { recursive: true });
-    appendFileSync(path, `${JSON.stringify(data)}
+    appendFileSync(path, `${JSON.stringify({ ...data, v: NLM_VERSION })}
 `, "utf8");
   } catch {
   }
@@ -481,7 +603,7 @@ async function main() {
   } catch {
   }
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url, process.argv[1])) {
   void main();
 }
 export {
