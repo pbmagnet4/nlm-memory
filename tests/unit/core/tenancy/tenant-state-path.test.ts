@@ -11,6 +11,20 @@ function shortHash(raw: string): string {
 }
 
 describe("tenantStatePath", () => {
+  // These cases assert the DEFAULT (~/.nlm) resolution, so they must own the
+  // variable rather than inherit whatever the runner set. The suite now pins
+  // NLM_STATE_ROOT to a tmpdir (vitest.config.ts) to keep tests out of the
+  // operator's live store; without this the default-path assertions would read
+  // that pin and fail.
+  const outerRoot = process.env["NLM_STATE_ROOT"];
+  beforeEach(() => {
+    delete process.env["NLM_STATE_ROOT"];
+  });
+  afterEach(() => {
+    if (outerRoot === undefined) delete process.env["NLM_STATE_ROOT"];
+    else process.env["NLM_STATE_ROOT"] = outerRoot;
+  });
+
   it("returns the legacy ~/.nlm path for the default team", () => {
     expect(tenantStatePath(DEFAULT_TEAM_ID, "query_log.jsonl")).toBe(
       join(homedir(), ".nlm", "query_log.jsonl"),

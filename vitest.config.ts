@@ -1,5 +1,17 @@
 import { defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// Every tenant state file (query_log, hook-log, memo state, ...) resolves under
+// NLM_STATE_ROOT, defaulting to ~/.nlm. Without this the suite writes into the
+// operator's live store: one run of tests/integration/http.test.ts appended 5
+// rows to the real query_log.jsonl. That pollution was diagnosed as a rogue
+// overnight health prober (~800/day) and cost weeks, because the fixture query
+// strings ("probe", "beacon", "smoke") look exactly like a liveness check.
+// Individual tests that set NLM_QUERY_LOG still win; this is the floor.
+const TEST_STATE_ROOT = mkdtempSync(join(tmpdir(), "nlm-test-state-"));
 
 export default defineConfig({
   test: {
@@ -12,6 +24,7 @@ export default defineConfig({
     // tests that want to exercise rewrite=true flip the env or set the field.
     env: {
       NLM_RECALL_REWRITE_DEFAULT: "false",
+      NLM_STATE_ROOT: TEST_STATE_ROOT,
     },
     coverage: {
       provider: "v8",
