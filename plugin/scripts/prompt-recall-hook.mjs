@@ -1,8 +1,5 @@
 #!/usr/bin/env node
 
-// src/hook/prompt-recall-hook.ts
-import { pathToFileURL } from "node:url";
-
 // src/core/hook/gate.ts
 var LEADING_FILLER = /^(please|can you|could you|would you|will you|i need you to|i'd like you to|i want you to|i would like you to|help me|let's|lets|hey|ok|okay)\b[\s,]*/i;
 var GENERATIVE_OPENER = /^(write|draft|create|compose|generate|brainstorm|design|outline|sketch|invent|rename|come up with)\b/i;
@@ -547,6 +544,18 @@ function extractRecallQuery(prompt) {
 }
 
 // src/hook/hook-helpers.ts
+import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync3, realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+function isMainModule(metaUrl, argv1) {
+  if (!argv1) return false;
+  let resolved;
+  try {
+    resolved = realpathSync(argv1);
+  } catch {
+    return false;
+  }
+  return metaUrl === pathToFileURL(resolved).href;
+}
 function readStdin() {
   return new Promise((resolve2) => {
     let data = "";
@@ -582,9 +591,15 @@ function parseRecallTimeout(raw) {
 function recallTimeoutMs() {
   return parseRecallTimeout(process.env["NLM_HOOK_RECALL_TIMEOUT_MS"]);
 }
-async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword") {
+var emptyResult = (outcome) => ({
+  hits: [],
+  facts: [],
+  exemplars: [],
+  outcome
+});
+async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword", source = "hook") {
   const query = extractRecallQuery(prompt);
-  if (query === null) return { hits: [], facts: [], exemplars: [] };
+  if (query === null) return emptyResult("skipped");
   const portValue = process.env["NLM_PORT"] ?? DEFAULT_NLM_PORT;
   const url = (
     // 127.0.0.1, not localhost: each hook is a fresh process with no connection
@@ -593,15 +608,15 @@ async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword")
     `http://127.0.0.1:${portValue}/api/recall?q=${encodeURIComponent(query)}&mode=${mode}&limit=${RECALL_LIMIT}&withFacts=true&withExemplars=true` + (conversationId ? `&conversation_id=${encodeURIComponent(conversationId)}` : "")
   );
   try {
-    const extra = { "x-recall-source": "hook" };
+    const extra = { "x-recall-source": source };
     if (runtime) extra["x-recall-runtime"] = runtime;
     const res = await fetchWithTimeout(url, { headers: hookAuthHeaders(extra) }, recallTimeoutMs());
-    if (!res.ok) return { hits: [], facts: [], exemplars: [] };
+    if (!res.ok) return emptyResult("http-error");
     let body;
     try {
       body = await res.json();
     } catch {
-      return { hits: [], facts: [], exemplars: [] };
+      return emptyResult("http-error");
     }
     const hits = (body.results ?? []).map((r) => ({
       id: r.id,
@@ -622,9 +637,10 @@ async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword")
       repo: e.repo,
       taskContext: e.taskContext
     }));
-    return { hits, facts, exemplars };
-  } catch {
-    return { hits: [], facts: [], exemplars: [] };
+    return { hits, facts, exemplars, outcome: "ok" };
+  } catch (err) {
+    const aborted = err instanceof Error && err.name === "AbortError";
+    return emptyResult(aborted ? "timeout" : "unreachable");
   }
 }
 
@@ -754,13 +770,17 @@ async function runHook(input, deps) {
     return "";
   }
   const deadline = Date.now() + (deps.deadlineMs ?? hookDeadlineMs());
-  let fetched = { hits: [], facts: [] };
+  let fetched = { hits: [], facts: [], outcome: "timeout" };
   try {
     fetched = normalizeRecall(
-      await withDeadline(deps.recall(buildRecallQuery(input)), deadline - Date.now(), { hits: [], facts: [] })
+      await withDeadline(
+        deps.recall(buildRecallQuery(input)),
+        deadline - Date.now(),
+        { hits: [], facts: [], outcome: "timeout" }
+      )
     );
   } catch {
-    fetched = { hits: [], facts: [] };
+    fetched = { hits: [], facts: [], outcome: "unreachable" };
   }
   const hits = fetched.hits;
   const surfaced = loadSurfaced(DEFAULT_TEAM_ID, input.conversationId);
@@ -805,6 +825,7 @@ ${h.summary ?? ""}`) }))),
     wouldInject: injected.map((h) => h.id),
     estTokens,
     mode: deps.mode,
+    ...fetched.outcome ? { recallOutcome: fetched.outcome } : {},
     ...gateDecisions ? { gateDecisions } : {}
   });
   if (deps.mode === "live" && injected.length > 0) {
@@ -840,7 +861,7 @@ async function main() {
   } catch {
   }
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url, process.argv[1])) {
   void main();
 }
 export {

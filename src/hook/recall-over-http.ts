@@ -68,11 +68,19 @@ const emptyResult = (outcome: RecallOutcome): RecallOverHttpResult => ({
   outcome,
 });
 
+/**
+ * `source` is the recall-precision bucket this fire is attributed to. It must
+ * name the CALLER, not the transport: prompt recall queries a real user prompt
+ * while session-start queries a derived project name, so blending them under
+ * one label hides two very different achievable ceilings behind one number.
+ * Defaults to "hook" because prompt recall is the majority caller.
+ */
 export async function recallOverHttp(
   prompt: string,
   runtime?: string,
   conversationId?: string,
   mode: "keyword" | "hybrid" = "keyword",
+  source = "hook",
 ): Promise<RecallOverHttpResult> {
   const query = extractRecallQuery(prompt);
   if (query === null) return emptyResult("skipped");
@@ -85,7 +93,7 @@ export async function recallOverHttp(
     `?q=${encodeURIComponent(query)}&mode=${mode}&limit=${RECALL_LIMIT}&withFacts=true&withExemplars=true` +
     (conversationId ? `&conversation_id=${encodeURIComponent(conversationId)}` : "");
   try {
-    const extra: Record<string, string> = { "x-recall-source": "hook" };
+    const extra: Record<string, string> = { "x-recall-source": source };
     if (runtime) extra["x-recall-runtime"] = runtime;
     const res = await fetchWithTimeout(url, { headers: hookAuthHeaders(extra) }, recallTimeoutMs());
     if (!res.ok) return emptyResult("http-error");

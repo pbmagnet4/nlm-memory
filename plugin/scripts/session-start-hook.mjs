@@ -1,8 +1,5 @@
 #!/usr/bin/env node
 
-// src/hook/session-start-hook.ts
-import { pathToFileURL } from "node:url";
-
 // src/core/hook/hook-log.ts
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -372,6 +369,18 @@ function extractRecallQuery(prompt) {
 }
 
 // src/hook/hook-helpers.ts
+import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync3, realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+function isMainModule(metaUrl, argv1) {
+  if (!argv1) return false;
+  let resolved;
+  try {
+    resolved = realpathSync(argv1);
+  } catch {
+    return false;
+  }
+  return metaUrl === pathToFileURL(resolved).href;
+}
 function readStdin() {
   return new Promise((resolve2) => {
     let data = "";
@@ -407,9 +416,15 @@ function parseRecallTimeout(raw) {
 function recallTimeoutMs() {
   return parseRecallTimeout(process.env["NLM_HOOK_RECALL_TIMEOUT_MS"]);
 }
-async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword") {
+var emptyResult = (outcome) => ({
+  hits: [],
+  facts: [],
+  exemplars: [],
+  outcome
+});
+async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword", source = "hook") {
   const query = extractRecallQuery(prompt);
-  if (query === null) return { hits: [], facts: [], exemplars: [] };
+  if (query === null) return emptyResult("skipped");
   const portValue = process.env["NLM_PORT"] ?? DEFAULT_NLM_PORT;
   const url = (
     // 127.0.0.1, not localhost: each hook is a fresh process with no connection
@@ -418,15 +433,15 @@ async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword")
     `http://127.0.0.1:${portValue}/api/recall?q=${encodeURIComponent(query)}&mode=${mode}&limit=${RECALL_LIMIT}&withFacts=true&withExemplars=true` + (conversationId ? `&conversation_id=${encodeURIComponent(conversationId)}` : "")
   );
   try {
-    const extra = { "x-recall-source": "hook" };
+    const extra = { "x-recall-source": source };
     if (runtime) extra["x-recall-runtime"] = runtime;
     const res = await fetchWithTimeout(url, { headers: hookAuthHeaders(extra) }, recallTimeoutMs());
-    if (!res.ok) return { hits: [], facts: [], exemplars: [] };
+    if (!res.ok) return emptyResult("http-error");
     let body;
     try {
       body = await res.json();
     } catch {
-      return { hits: [], facts: [], exemplars: [] };
+      return emptyResult("http-error");
     }
     const hits = (body.results ?? []).map((r) => ({
       id: r.id,
@@ -447,9 +462,10 @@ async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword")
       repo: e.repo,
       taskContext: e.taskContext
     }));
-    return { hits, facts, exemplars };
-  } catch {
-    return { hits: [], facts: [], exemplars: [] };
+    return { hits, facts, exemplars, outcome: "ok" };
+  } catch (err) {
+    const aborted = err instanceof Error && err.name === "AbortError";
+    return emptyResult(aborted ? "timeout" : "unreachable");
   }
 }
 
@@ -461,8 +477,11 @@ var PER_CONVERSATION_CAP = 10;
 var RECALL_TIMEOUT_MS = 2e3;
 async function runHook(input, deps) {
   let hits = [];
+  let recallOutcome = "unreachable";
   try {
-    hits = await deps.recall(input.query, input.conversationId);
+    const fetched = await deps.recall(input.query, input.conversationId);
+    hits = fetched.hits;
+    recallOutcome = fetched.outcome;
   } catch {
     hits = [];
   }
@@ -485,7 +504,8 @@ async function runHook(input, deps) {
     hits: hits.map((h) => ({ id: h.id, score: h.matchScore })),
     wouldInject: selected.map((h) => h.id),
     estTokens,
-    mode: deps.mode
+    mode: deps.mode,
+    recallOutcome
   });
   if (deps.mode === "live" && selected.length > 0) {
     recordSurfaced(DEFAULT_TEAM_ID, input.conversationId, selected.map((h) => h.id));
@@ -531,7 +551,16 @@ async function main() {
         { conversationId, query },
         {
           mode,
-          recall: async (q, cid) => (await recallOverHttp(q, "claude-code", cid === "unknown" ? void 0 : cid, "hybrid")).hits
+          recall: async (q, cid) => {
+            const r = await recallOverHttp(
+              q,
+              "claude-code",
+              cid === "unknown" ? void 0 : cid,
+              "hybrid",
+              "session-start-hook"
+            );
+            return { hits: r.hits, outcome: r.outcome };
+          }
         }
       ),
       mode === "live" ? fetchFailureModeBlock(workingDirectory) : Promise.resolve("")
@@ -541,7 +570,7 @@ async function main() {
   } catch {
   }
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url, process.argv[1])) {
   void main();
 }
 export {

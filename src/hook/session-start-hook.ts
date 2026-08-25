@@ -161,7 +161,13 @@ async function main(): Promise<void> {
         {
           mode,
           recall: async (q, cid) => {
-            const r = await recallOverHttp(q, "claude-code", cid === "unknown" ? undefined : cid, "hybrid");
+            const r = await recallOverHttp(
+              q,
+              "claude-code",
+              cid === "unknown" ? undefined : cid,
+              "hybrid",
+              "session-start-hook",
+            );
             return { hits: r.hits, outcome: r.outcome };
           },
         },
