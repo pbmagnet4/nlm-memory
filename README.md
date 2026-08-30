@@ -543,12 +543,18 @@ npm run dev            # hot-reload daemon
 npm run ui:dev         # hot-reload UI at localhost:5173 (proxies /api to :3940)
 npm test               # 2,000+ tests across 240 files
 npm run typecheck
+npm run verify:codex-release  # verify Codex plugin and shared MCP entrypoint
 node dist/cli/nlm.js doctor    # pre-publish: verify DB invariants (exit 1 on violations)
 ```
 
 Architecture: hexagonal. `src/core/` knows about ports (interfaces), not adapters. `src/cli/nlm.ts` is the composition root — the only file that wires concrete implementations (`SqliteSessionStore`, `OllamaClient`, `Hono`, `StdioServerTransport`). Adapters in `src/core/adapters/` are one-way: they parse runtime-specific session formats into NLM's canonical shape; nothing in the runtime sees NLM.
 
 `dist/` is built on install via the `prepare` script (runs automatically on `npm install` from git or registry) and packed into the published tarball via the `files` field. Not tracked in git.
+
+Releases run `verify:codex-release -- --check-packed` after the distributable
+build and before publishing. It checks the Codex plugin manifest, lifecycle
+hook attribution, the `nlm mcp` shared MCP entrypoint, and the files npm will
+actually ship.
 
 ---
 

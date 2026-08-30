@@ -35,6 +35,12 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Build distributable
+        run: npm run build
+
+      - name: Verify Codex release contract
+        run: npm run verify:codex-release -- --check-packed
+
       - name: Verify tag matches package.json version
         run: |
           PKG_VERSION="v$(node -p "require('./package.json').version")"

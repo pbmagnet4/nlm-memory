@@ -2,11 +2,30 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { writeLegacyHooks } from "../../../src/install/codex.js";
+import { codexHasEffectiveMcpServer, writeLegacyHooks } from "../../../src/install/codex.js";
 
 const ROOT = resolve(__dirname, "../../..");
 
 describe("Codex plugin distribution", () => {
+  it("recognizes an MCP server contributed by Codex's effective plugin config", () => {
+    const calls: ReadonlyArray<string>[] = [];
+    const configured = codexHasEffectiveMcpServer("nlm-memory", (args) => {
+      calls.push(args);
+      return { status: 0, stdout: "", stderr: "" };
+    });
+
+    expect(configured).toBe(true);
+    expect(calls).toEqual([["mcp", "get", "nlm-memory"]]);
+  });
+
+  it("reports an absent effective MCP server without parsing command output", () => {
+    expect(codexHasEffectiveMcpServer("nlm-memory", () => ({
+      status: 1,
+      stdout: "",
+      stderr: "not found",
+    }))).toBe(false);
+  });
+
   it("keeps plugin metadata aligned with the public package", () => {
     const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf8")) as {
       version: string;
@@ -27,6 +46,18 @@ describe("Codex plugin distribution", () => {
     expect(plugin.repository).not.toContain("nlm-memory-ts");
     expect(plugin.homepage).toContain("nlm-memory");
     expect(plugin.homepage).not.toContain("nlm-memory-ts");
+  });
+
+  it("ships a release-owned Codex compatibility gate", () => {
+    const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf8")) as {
+      scripts: Record<string, string>;
+    };
+    const workflow = readFileSync(resolve(ROOT, ".github/workflows/release.yml"), "utf8");
+
+    expect(pkg.scripts["verify:codex-release"]).toBe("node scripts/verify-codex-release.mjs");
+    expect(readFileSync(resolve(ROOT, "scripts/verify-codex-release.mjs"), "utf8"))
+      .toContain("plugin MCP must launch the package's `nlm mcp` stdio server");
+    expect(workflow).toContain("npm run verify:codex-release -- --check-packed");
   });
 
   it("marks packaged Codex hooks with Codex runtime attribution", () => {

@@ -82,6 +82,20 @@ function runCodex(args: ReadonlyArray<string>): CodexCommandResult {
   };
 }
 
+/**
+ * Ask Codex for its effective MCP configuration, including plugin-provided
+ * servers that are not materialized in ~/.codex/config.toml.
+ *
+ * The exit status is sufficient and avoids parsing or echoing configuration
+ * output that may contain environment-variable names or other user settings.
+ */
+export function codexHasEffectiveMcpServer(
+  name: string,
+  runner: (args: ReadonlyArray<string>) => CodexCommandResult = runCodex,
+): boolean {
+  return runner(["mcp", "get", name]).status === 0;
+}
+
 export function codexBinaryAvailable(): boolean {
   const r = spawnSync("codex", ["--version"], { encoding: "utf8" });
   return r.status === 0;

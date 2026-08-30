@@ -55,6 +55,7 @@ import { buildEmbedder as _buildEmbedder } from "../llm/build-embedder.js";
 import { addHook, buildHookCommand, removeHook } from "../core/hook/claude-settings.js";
 import {
   codexBinaryAvailable,
+  codexHasEffectiveMcpServer,
   connectCodex,
   disconnectCodex,
   repairCodex,
@@ -2705,6 +2706,13 @@ async function gatherInstallProbe(): Promise<InstallProbe> {
     // Match the marketplace suffix, not the bare name: a [projects."…/nlm-memory-ts"]
     // trust entry is Codex's registry (not nlm's), so it must not trip this check.
     codexStale = txt.includes("@nlm-memory-ts");
+  }
+  // Codex plugins contribute MCP servers to the effective configuration
+  // without writing a table into config.toml. Prefer Codex's own resolved
+  // view so `nlm verify` does not report a healthy plugin install as unwired.
+  if (!codexMcp && codexBinaryAvailable()) {
+    codexPresent = true;
+    codexMcp = codexHasEffectiveMcpServer("nlm-memory");
   }
 
   const envPath = join(homedir(), ".nlm", ".env");
