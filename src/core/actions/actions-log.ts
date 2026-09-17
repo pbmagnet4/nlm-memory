@@ -132,10 +132,22 @@ export function subjectTenantPredicate(tenantId: string, alias = "actions"): { s
   const sessionTc = tenantClause(tenantId, "s.tenant_id");
   const entityTc = tenantClause(tenantId, "e.tenant_id");
   const prefixTc = tenantClause(tenantId, "sp.tenant_id");
+  // The prefix arm splits subject_id on '::' and looks the parent up by equality
+  // rather than `subject_id LIKE sp.id || '::%'`. The LIKE form builds its
+  // pattern from a column, so sqlite cannot use the sessions primary key and
+  // full-scans every session once per action row. On a 15k-session store that
+  // read the 378MB sessions table 16 times and took 9.6s inside a synchronous
+  // better-sqlite3 .all(), which blocks the event loop and made the whole daemon
+  // unreachable (NLM #457). Equality seeks the PK instead.
+  //
+  // Equivalent because no session id contains '::' (they are `<runtime>_<uuid>`),
+  // so the first separator always ends the parent id. When subject_id has no
+  // '::' at all, instr returns 0 and substr(x, 1, -1) is '', which matches no
+  // session - the same miss the LIKE produced.
   const sql = `(
     EXISTS (SELECT 1 FROM sessions s WHERE s.id = ${alias}.subject_id AND ${sessionTc.sql})
     OR EXISTS (SELECT 1 FROM entities e WHERE e.canonical = ${alias}.subject_id AND ${entityTc.sql})
-    OR EXISTS (SELECT 1 FROM sessions sp WHERE ${alias}.subject_id LIKE sp.id || '::%' AND ${prefixTc.sql})
+    OR EXISTS (SELECT 1 FROM sessions sp WHERE sp.id = substr(${alias}.subject_id, 1, instr(${alias}.subject_id, '::') - 1) AND ${prefixTc.sql})
     OR ${alias}.subject_type NOT IN ${RESOLVABLE_SUBJECT_TYPES}
   )`;
   return { sql, params: [sessionTc.param, entityTc.param, prefixTc.param] };

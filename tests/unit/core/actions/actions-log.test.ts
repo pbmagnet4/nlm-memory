@@ -117,4 +117,49 @@ describe("actions-log", () => {
       expect(undoAction(db, T, id)).not.toBeNull();
     });
   });
+
+  // The prefix arm of subjectTenantPredicate resolves `<sessionId>::<child>`
+  // subjects to their parent session. It was a correlated LIKE that scanned
+  // every session per action row (NLM #457); it is now a PK equality seek on
+  // the substring before the first '::'. Nothing covered this arm when it was
+  // rewritten, so these pin the behaviour that had to be preserved.
+  describe("session-prefixed subjects (#457)", () => {
+    const seedSession = (db: ReturnType<SqliteStorage["sessions"]["rawDb"]>, id: string, tenant: string) => {
+      db.prepare("INSERT OR IGNORE INTO teams (id, name) VALUES (?, ?)").run(tenant, tenant);
+      db.prepare(
+        "INSERT INTO sessions (id, tenant_id, runtime, started_at, label, summary, status, created_at, updated_at) " +
+          "VALUES (?, ?, 'claude-code', datetime('now'), ?, '', 'active', datetime('now'), datetime('now'))",
+      ).run(id, tenant, id);
+    };
+
+    it("resolves a '<sessionId>::<child>' subject to its parent session's tenant", () => {
+      const db = storage.sessions.rawDb();
+      seedSession(db, "cc_sess_a", T);
+      writeAction(db, T, { kind: "dismiss", subjectType: "open_question", subjectId: "cc_sess_a::open_1" });
+      expect(listActions(db, T, { subjectId: "cc_sess_a::open_1" })).toHaveLength(1);
+    });
+
+    it("does not leak a session-prefixed subject to another tenant", () => {
+      const db = storage.sessions.rawDb();
+      seedSession(db, "cc_sess_b", T);
+      db.prepare("INSERT OR IGNORE INTO teams (id, name) VALUES (?, ?)").run("team_other", "Other Team");
+      writeAction(db, T, { kind: "dismiss", subjectType: "open_question", subjectId: "cc_sess_b::open_1" });
+      expect(listActions(db, "team_other", { subjectId: "cc_sess_b::open_1" })).toHaveLength(0);
+    });
+
+    it("does not resolve a prefix that matches no session", () => {
+      const db = storage.sessions.rawDb();
+      writeAction(db, T, { kind: "dismiss", subjectType: "open_question", subjectId: "cc_nosuch::open_1" });
+      expect(listActions(db, T, { subjectId: "cc_nosuch::open_1" })).toHaveLength(0);
+    });
+
+    it("does not treat a bare session id as a prefixed child, or match on a partial id", () => {
+      const db = storage.sessions.rawDb();
+      seedSession(db, "cc_sess_c", T);
+      // 'cc_sess' is a strict prefix of the real id but is not a session itself,
+      // so the arm must miss rather than match on a truncated id.
+      writeAction(db, T, { kind: "dismiss", subjectType: "open_question", subjectId: "cc_sess::open_1" });
+      expect(listActions(db, T, { subjectId: "cc_sess::open_1" })).toHaveLength(0);
+    });
+  });
 });
