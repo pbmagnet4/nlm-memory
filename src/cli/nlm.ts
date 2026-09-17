@@ -763,6 +763,39 @@ program
       }
     }
 
+    // Exemplar embed-backfill: repairs code_exemplars rows whose vector was
+    // dropped by a cold CodeRankEmbed on first capture (see
+    // core/exemplars/embed-backfill.ts). SQLite only, same constraint as the
+    // corpus monitor above — discovery reads code_exemplars_vec directly via
+    // dbPath(). Daily cadence: the drop is a rare cold-embedder race, not a
+    // steady leak, so this just keeps recall_code from silently degrading
+    // between operator-run `nlm embed-backfill --exemplars` passes.
+    if (!(storage instanceof PgStorage) && process.env["NLM_CODE_EXEMPLARS_ENABLED"] === "1") {
+      const EXEMPLAR_BACKFILL_INTERVAL_MS = 24 * 60 * 60 * 1000;
+      const EXEMPLAR_BACKFILL_INITIAL_DELAY_MS = 120 * 1000;
+      const runExemplarBackfill = async () => {
+        try {
+          const report = await backfillExemplarEmbeddings({
+            tenantId: DEFAULT_TEAM_ID,
+            dbPath: dbPath(),
+            embedder: buildCodeEmbedder(),
+            store: storage.exemplars,
+          });
+          if (report.succeeded > 0 || report.failed > 0) {
+            console.error(
+              `[exemplar-backfill] ${report.succeeded}/${report.total} repaired (${report.failed} failed)`,
+            );
+          }
+        } catch (e) {
+          console.error(`[exemplar-backfill] error: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      };
+      const exemplarBackfillTimer = setInterval(() => { void runExemplarBackfill(); }, EXEMPLAR_BACKFILL_INTERVAL_MS);
+      exemplarBackfillTimer.unref();
+      setTimeout(() => { void runExemplarBackfill(); }, EXEMPLAR_BACKFILL_INITIAL_DELAY_MS).unref();
+      console.error("  exemplar-backfill: enabled, repair sweep every 24h");
+    }
+
     // Memo sweep runs independently of the transcript scheduler — it's the
     // backstop for SessionEnd hook unreliability (crashes, kill -9, IDE
     // force-close don't fire SessionEnd, so memo files would otherwise
