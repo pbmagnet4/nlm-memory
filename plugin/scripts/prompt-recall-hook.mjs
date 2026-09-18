@@ -269,6 +269,7 @@ var package_default = {
     "build:server": "tsc -p tsconfig.json && tsc-alias -p tsconfig.json",
     "build:ui": "vite build --config src/ui/vite.config.ts",
     "build:codex-plugin": "node scripts/build-codex-plugin.mjs",
+    "verify:codex-release": "node scripts/verify-codex-release.mjs",
     build: "npm run build:server && npm run build:ui && npm run build:codex-plugin",
     prepare: "[ -d src ] && npm run build || true",
     "ui:dev": "vite --config src/ui/vite.config.ts",
