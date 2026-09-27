@@ -34,7 +34,7 @@ import { defaultDbPath as defaultHermesAgentDbPath } from "../adapters/hermes-ag
 import { defaultDbPath as defaultOpenCodeDbPath } from "../adapters/opencode.js";
 import { defaultUserDir as defaultWindsurfUserDir } from "../adapters/windsurf.js";
 
-export type SourceKind = "claude-code" | "codex" | "hermes" | "hermes-agent" | "aider" | "cursor" | "windsurf" | "opencode" | "pi" | "jsonl-generic" | "webhook";
+export type SourceKind = "claude-code" | "codex" | "hermes" | "hermes-agent" | "muse" | "aider" | "cursor" | "windsurf" | "opencode" | "pi" | "jsonl-generic" | "webhook";
 
 export interface SourceRow {
   readonly id: number;
@@ -258,6 +258,10 @@ export class SourceRegistry implements SourceRegistryPort {
       ?? join(homedir(), ".hermes", "sessions");
     const piPath = process.env["PI_SESSIONS_PATH"]
       ?? join(homedir(), ".pi", "agent", "sessions");
+    const museDataHome = process.env["XDG_DATA_HOME"]
+      ?? join(homedir(), ".local", "share");
+    const musePath = process.env["NLM_MUSE_SESSIONS_PATH"]
+      ?? join(museDataHome, "muse", "sessions");
 
     const openCodeDbPath = defaultOpenCodeDbPath();
     const hermesAgentDbPath = defaultHermesAgentDbPath();
@@ -293,6 +297,13 @@ export class SourceRegistry implements SourceRegistryPort {
         pathOrUrl: hermesAgentDbPath,
         runtimeLabel: "hermes-agent/1.0",
         enabled: existsSync(hermesAgentDbPath),
+      },
+      {
+        kind: "muse",
+        name: "Muse",
+        pathOrUrl: musePath,
+        runtimeLabel: "muse/1.0",
+        enabled: existsSync(musePath),
       },
       {
         kind: "aider",
