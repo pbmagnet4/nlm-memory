@@ -68,6 +68,9 @@ import { codexConfigPath } from "../install/codex.js";
 import { hardenNlmDirPermissions } from "../install/nlm-dir-perms.js";
 import { embeddingModelPresent, ensureMcpToken, ollamaModelPresent } from "../install/ollama.js";
 import { connectCursor, disconnectCursor } from "../install/cursor.js";
+import { connectLocalSource, type LocalSourceSpec } from "../install/local-source.js";
+import { defaultDbPath as openCodeDefaultDbPath } from "../core/adapters/opencode.js";
+import { defaultSessionsPath as museDefaultSessionsPath } from "../core/adapters/muse.js";
 import {
   describeRemove,
   describeUpsert,
@@ -2369,23 +2372,57 @@ connect
 connect
   .command("opencode")
   .description("Register OpenCode as an nlm source (reads opencode.db directly) and optionally install rules nudge")
+  .option("--db-path <path>", "override path to opencode.db")
   .option("--with-rules", "also install global rules nudge at ~/.config/opencode/AGENTS.md")
   .option("--dry-run", "print what would happen without changing files")
-  .action((opts) => {
+  .action(async (opts) => {
+    const spec = {
+      kind: "opencode" as const,
+      name: "OpenCode",
+      runtimeLabel: "opencode/1.0",
+      path: (opts.dbPath as string | undefined) ?? openCodeDefaultDbPath(),
+    };
+    await connectLocalSourceCommand(spec, Boolean(opts.dryRun));
     if (opts.dryRun) {
-      console.error("nlm connect opencode (dry run):");
-      console.error("  OpenCode adapter is already wired via migrations/010_sources_opencode.sql — no source-registry mutation required");
-      if (opts.withRules) console.error("  install global rules nudge at ~/.config/opencode/AGENTS.md");
+      if (opts.withRules) console.error("  also install global rules nudge at ~/.config/opencode/AGENTS.md");
       return;
     }
-    console.error("nlm: OpenCode source already registered (see migration 010). No source-registry changes needed.");
     if (opts.withRules) {
       const rules = installOpencodeRules();
       console.error(`  ${describeUpsert("OpenCode", rules)}`);
-    } else {
-      console.error("  Pass --with-rules to install the recall nudge at ~/.config/opencode/AGENTS.md");
     }
   });
+
+connect
+  .command("muse")
+  .description("Register Muse as an nlm source (reads its session store directly — no files installed)")
+  .option("--sessions-path <path>", "override path to the Muse sessions directory")
+  .option("--dry-run", "print what would happen without changing files")
+  .action(async (opts) => {
+    await connectLocalSourceCommand({
+      kind: "muse",
+      name: "Muse",
+      runtimeLabel: "muse/1.0",
+      path: (opts.sessionsPath as string | undefined) ?? museDefaultSessionsPath(),
+    }, Boolean(opts.dryRun));
+  });
+
+async function connectLocalSourceCommand(spec: LocalSourceSpec, dryRun: boolean): Promise<void> {
+  const storage = SqliteStorage.create({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
+  await storage.init();
+  try {
+    const report = await connectLocalSource(storage.sources, DEFAULT_TEAM_ID, spec, { dryRun });
+    const missing = report.exists ? "" : " (not found yet)";
+    if (dryRun) {
+      console.error(`nlm connect ${spec.kind} (dry run): register source at ${report.path}${missing}`);
+      return;
+    }
+    console.error(`nlm: ${spec.name} source ${report.action} → ${report.path}${missing}`);
+    console.error("  restart the daemon to start scanning it");
+  } finally {
+    await storage.close();
+  }
+}
 
 connect
   .command("pi")

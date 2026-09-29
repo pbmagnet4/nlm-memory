@@ -51,7 +51,7 @@ interface Turn {
   readonly timestamp: string;
 }
 
-function defaultSessionsPath(): string {
+export function defaultSessionsPath(): string {
   const dataHome = process.env["XDG_DATA_HOME"] || join(homedir(), ".local", "share");
   return join(dataHome, "muse", "sessions");
 }
