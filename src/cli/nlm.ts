@@ -22,6 +22,7 @@
  *   nlm disconnect claude-code — remove MCP block from ~/.mcp.json
  *   nlm disconnect codex       — remove Codex plugin
  *   nlm digest   — print a daily-activity digest (or --telegram to post)
+ *   nlm reconcile-facts — retire live facts contradicting an authorities file
  *   nlm init     - print (or write) the agent recall contract snippet
  */
 
@@ -41,6 +42,12 @@ import type { SourceRegistryPort } from "../core/sources/source-registry.js";
 import { SqliteStorage } from "../core/storage/sqlite-storage.js";
 import { PgStorage } from "../core/storage/pg-storage.js";
 import { applyPendingRestore, stageRestore } from "../core/storage/db-restore.js";
+import {
+  applyRetirements,
+  findContradictions,
+  formatReport,
+  loadAuthorities,
+} from "../core/facts/reconcile-facts.js";
 import { listBackupDates, resolveBackup, runRollingBackup } from "../core/storage/backup-rotation.js";
 import { createApp } from "../http/app.js";
 import { createMcpServer, listMergeSuggestionsHandler, mergeWorkstreamsHandler, rebindSessionHandler, recallWorkstreamHandler, renameWorkstreamHandler, retireWorkstreamHandler } from "../mcp/server.js";
@@ -1330,6 +1337,51 @@ program
       reason: opts.reason,
       yes: Boolean(opts.yes),
     });
+  });
+
+program
+  .command("reconcile-facts")
+  .description("Find live facts that contradict an authorities file (dry run unless --apply)")
+  .requiredOption("--authorities <file>", "JSON file of authoritative values and deleted files")
+  .option("--apply", "retire the findings (backs up the DB first)")
+  .option("-l, --limit <n>", "max facts changed per run", (v) => Number.parseInt(v, 10), 100)
+  .option("--json", "emit the report as JSON")
+  .action(async (opts) => {
+    if (process.env["NLM_PG_URL"]) {
+      console.error("nlm reconcile-facts: the Postgres backend is not supported yet");
+      process.exit(1);
+    }
+    const storage = SqliteStorage.create({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
+    try {
+      const db = storage.rawDb();
+      const findings = findContradictions(db, loadAuthorities(opts.authorities as string));
+      const limit = opts.limit as number;
+      const applied = opts.apply ? await applyRetirements(db, dbPath(), findings, limit) : null;
+      if (opts.json) {
+        process.stdout.write(
+          JSON.stringify(
+            {
+              applied: Boolean(opts.apply),
+              total: findings.length,
+              findings,
+              retired: applied?.retired.map((f) => f.factId) ?? [],
+              backupPath: applied?.backupPath ?? null,
+            },
+            null,
+            2,
+          ) + "\n",
+        );
+        return;
+      }
+      console.log(formatReport(findings, limit));
+      if (applied) {
+        console.log(`retired ${applied.retired.length} fact(s); backup: ${applied.backupPath ?? "none"}`);
+      } else {
+        console.log("dry run: nothing written (pass --apply to retire)");
+      }
+    } finally {
+      await storage.close();
+    }
   });
 
 program
