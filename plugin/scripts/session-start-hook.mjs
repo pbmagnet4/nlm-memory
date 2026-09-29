@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+// src/hook/session-start-hook.ts
+import { execFileSync } from "node:child_process";
+
 // src/core/hook/hook-log.ts
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -33,7 +36,7 @@ function tenantStatePath(tenantId, ...segments) {
 // package.json
 var package_default = {
   name: "nlm-memory",
-  version: "0.21.5",
+  version: "0.21.7",
   description: "Local-first non-linear memory operating system for AI operators.",
   type: "module",
   license: "Apache-2.0",
@@ -644,9 +647,29 @@ async function fetchFailureModeBlock(repo) {
     return "";
   }
 }
-function buildQuery(workingDirectory, projectName) {
+var GIT_TIMEOUT_MS = 300;
+var RECENT_COMMITS = 3;
+function git(cwd, args) {
+  try {
+    return execFileSync("git", ["-C", cwd, ...args], {
+      encoding: "utf8",
+      timeout: GIT_TIMEOUT_MS,
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+function readGitContext(workingDirectory) {
+  if (!workingDirectory) return "";
+  const branch = git(workingDirectory, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const subjects = git(workingDirectory, ["log", `-${RECENT_COMMITS}`, "--format=%s"]);
+  const branchWords = branch === "HEAD" ? "" : branch.replace(/[/_-]+/g, " ");
+  return [branchWords, subjects.replace(/\n/g, " ")].filter(Boolean).join(" ");
+}
+function buildQuery(workingDirectory, projectName, gitContext) {
   const dirTail = workingDirectory.split("/").filter(Boolean).at(-1) ?? "";
-  const parts = [dirTail, projectName].filter(Boolean);
+  const parts = [dirTail, projectName, gitContext].filter(Boolean);
   return parts.join(" ").trim() || "session start";
 }
 async function main() {
@@ -657,7 +680,7 @@ async function main() {
     const conversationId = typeof payload.session_id === "string" ? payload.session_id : "unknown";
     const workingDirectory = typeof payload.cwd === "string" ? payload.cwd : typeof payload.working_directory === "string" ? payload.working_directory : "";
     const projectName = typeof payload.project_name === "string" ? payload.project_name : "";
-    const query = buildQuery(workingDirectory, projectName);
+    const query = buildQuery(workingDirectory, projectName, readGitContext(workingDirectory));
     const mode = hookModeFromEnv();
     const [out, failureModes] = await Promise.all([
       runHook(
@@ -687,6 +710,8 @@ if (isMainModule(import.meta.url, process.argv[1])) {
   void main();
 }
 export {
+  buildQuery,
   composeSessionStartOutput,
+  readGitContext,
   runHook
 };
