@@ -28,6 +28,7 @@ import type {
   DetectionResult,
   DiscoverOptions,
   SessionChunk,
+  SourceStat,
   TranscriptAdapter,
 } from "@ports/transcript-adapter.js";
 import { durationMinutes, normalizeTimestamp } from "./common.js";
@@ -195,7 +196,7 @@ export class OpenCodeAdapter implements TranscriptAdapter {
           )
           .all();
       }
-      return rows.map((r) => r.id);
+      return rows.map((r) => this.sourceKey(r.id));
     } catch {
       return [];
     } finally {
@@ -203,7 +204,39 @@ export class OpenCodeAdapter implements TranscriptAdapter {
     }
   }
 
-  async parseSession(sessionId: string): Promise<SessionChunk | null> {
+  /**
+   * `<dbPath>::<sessionId>`, the key discover() emits and chunk.sourcePath
+   * carries, so scanOnce's adapter_state lookup matches what it recorded.
+   */
+  private sourceKey(sessionId: string): string {
+    return `${this.dbPath}::${sessionId}`;
+  }
+
+  private sessionIdOf(source: string): string {
+    const sep = source.lastIndexOf("::");
+    return sep === -1 ? source : source.slice(sep + 2);
+  }
+
+  stat(source: string): SourceStat | null {
+    if (!existsSync(this.dbPath)) return null;
+    let db: Database.Database | undefined;
+    try {
+      db = new Database(this.dbPath, { readonly: true });
+      const row = db
+        .prepare<[string], { time_updated: number }>("SELECT time_updated FROM session WHERE id = ?")
+        .get(this.sessionIdOf(source));
+      // time_updated moves whenever the session gains messages, so it doubles
+      // as the change marker scanOnce compares against adapter_state.
+      return row ? { mtimeMs: row.time_updated, size: row.time_updated } : null;
+    } catch {
+      return null;
+    } finally {
+      db?.close();
+    }
+  }
+
+  async parseSession(source: string): Promise<SessionChunk | null> {
+    const sessionId = this.sessionIdOf(source);
     if (!existsSync(this.dbPath)) return null;
     let db: Database.Database | undefined;
     try {

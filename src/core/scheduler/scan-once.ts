@@ -26,6 +26,7 @@ import type Database from "better-sqlite3";
 import type { Pool } from "pg";
 import type {
   SessionChunk,
+  SourceStat,
   TranscriptAdapter,
 } from "@ports/transcript-adapter.js";
 
@@ -36,6 +37,16 @@ export interface ScanResult {
 }
 
 export const MAX_CLASSIFY_FAILURES = 3;
+
+/** Adapter-provided stat for non-file sources, else the file's; null when unreadable. */
+function statSource(adapter: TranscriptAdapter, source: string): SourceStat | null {
+  if (adapter.stat) return adapter.stat(source);
+  try {
+    return statSync(source);
+  } catch {
+    return null;
+  }
+}
 
 interface AdapterStateRow {
   source_path: string;
@@ -62,13 +73,8 @@ export async function scanOnce(
   const files = await adapter.discover();
 
   for (const path of files) {
-    let st;
-    try {
-      st = statSync(path);
-    } catch {
-      // Inaccessible file - skip and continue scan.
-      continue;
-    }
+    const st = statSource(adapter, path);
+    if (!st) continue;
     const age = now - st.mtimeMs;
     if (age < idleMs) continue;
 
@@ -169,13 +175,8 @@ export async function scanOncePg(
 
   for (const sourcePath of paths) {
     // Bug 1 fix: mtime gate — skip files still being written
-    let st;
-    try {
-      st = statSync(sourcePath);
-    } catch {
-      // Inaccessible file - skip and continue scan.
-      continue;
-    }
+    const st = statSource(adapter, sourcePath);
+    if (!st) continue;
     if (now - st.mtimeMs < idleMs) continue;
 
     const state = stateMap.get(sourcePath);

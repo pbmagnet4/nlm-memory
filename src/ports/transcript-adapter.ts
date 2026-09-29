@@ -60,4 +60,17 @@ export interface TranscriptAdapter {
 
   /** Parse one transcript into a SessionChunk, or null if it's empty/garbage. */
   parseSession(path: string): Promise<SessionChunk | null>;
+
+  /**
+   * For adapters whose discovered sources are not files (rows in a runtime's
+   * own database). scanOnce uses it in place of statSync: `mtimeMs` drives
+   * the idle gate, `size` is a change marker compared against adapter_state.
+   * Null means the source is gone.
+   */
+  stat?(source: string): SourceStat | null;
+}
+
+export interface SourceStat {
+  readonly mtimeMs: number;
+  readonly size: number;
 }
