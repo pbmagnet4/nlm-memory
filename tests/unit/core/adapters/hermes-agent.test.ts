@@ -360,3 +360,38 @@ describe("HermesAgentAdapter through scanOnce", () => {
     }
   });
 });
+
+describe("HermesAgentAdapter source filtering", () => {
+  const setSource = (id: string, source: string) =>
+    db.prepare("UPDATE sessions SET source = ? WHERE id = ?").run(source, id);
+
+  it("skips cron sessions by default", async () => {
+    addSession(db, { id: "sess_cli" });
+    addSession(db, { id: "sess_cron" });
+    setSource("sess_cron", "cron");
+
+    const keys = await new HermesAgentAdapter({ dbPath }).discover();
+    expect(keys).toEqual([`${dbPath}::sess_cli`]);
+  });
+
+  it("uses the configured exclusions instead of the default", async () => {
+    addSession(db, { id: "sess_cron" });
+    addSession(db, { id: "sess_acp" });
+    setSource("sess_cron", "cron");
+    setSource("sess_acp", "acp");
+
+    const keys = await new HermesAgentAdapter({ dbPath, excludeSources: ["acp"] }).discover();
+    expect(keys).toEqual([`${dbPath}::sess_cron`]);
+  });
+
+  it("still discovers sessions from a schema with no source column", async () => {
+    db.close();
+    rmSync(dbPath);
+    db = new Database(dbPath);
+    db.exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, started_at REAL NOT NULL, ended_at REAL);
+             CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, content TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL);`);
+    db.prepare("INSERT INTO sessions (id, started_at) VALUES ('sess_old_schema', 1)").run();
+
+    expect(await new HermesAgentAdapter({ dbPath }).discover()).toEqual([`${dbPath}::sess_old_schema`]);
+  });
+});

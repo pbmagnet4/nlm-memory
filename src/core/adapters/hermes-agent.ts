@@ -35,7 +35,14 @@ const TOOL_RESULT_PREVIEW_CHARS = 240;
 
 export interface HermesAgentAdapterOptions {
   readonly dbPath?: string;
+  /**
+   * Session `source` values to skip. Machine-driven runs (cron jobs, agent
+   * protocol loops) are mostly repetitive and flood recall. Default: cron.
+   */
+  readonly excludeSources?: ReadonlyArray<string>;
 }
+
+const DEFAULT_EXCLUDED_SOURCES: ReadonlyArray<string> = ["cron"];
 
 interface Turn {
   readonly role: "user" | "assistant" | "tool";
@@ -140,9 +147,11 @@ export class HermesAgentAdapter implements TranscriptAdapter {
   readonly transcriptKind = "hermes-agent-sqlite";
 
   private readonly dbPath: string;
+  private readonly excludeSources: ReadonlyArray<string>;
 
   constructor(opts: HermesAgentAdapterOptions = {}) {
     this.dbPath = opts.dbPath ?? defaultDbPath();
+    this.excludeSources = opts.excludeSources ?? DEFAULT_EXCLUDED_SOURCES;
   }
 
   detect(): DetectionResult {
@@ -162,21 +171,25 @@ export class HermesAgentAdapter implements TranscriptAdapter {
     let db: Database.Database | undefined;
     try {
       db = new Database(this.dbPath, { readonly: true });
-      let rows: { id: string }[];
+      // Older state.db schemas have no `source` column; nothing to filter there.
+      const hasSource = db
+        .prepare<[], { name: string }>("SELECT name FROM pragma_table_info('sessions')")
+        .all()
+        .some((c) => c.name === "source");
+      const clauses: string[] = [];
+      const params: (string | number)[] = [];
       if (options?.since) {
-        const sinceTs = options.since.getTime() / 1000;
-        rows = db
-          .prepare<[number], { id: string }>(
-            `SELECT id FROM sessions WHERE started_at >= ? ORDER BY started_at ASC`,
-          )
-          .all(sinceTs);
-      } else {
-        rows = db
-          .prepare<[], { id: string }>(
-            `SELECT id FROM sessions ORDER BY started_at ASC`,
-          )
-          .all();
+        clauses.push("started_at >= ?");
+        params.push(options.since.getTime() / 1000);
       }
+      if (hasSource && this.excludeSources.length > 0) {
+        clauses.push(`COALESCE(source, '') NOT IN (${this.excludeSources.map(() => "?").join(", ")})`);
+        params.push(...this.excludeSources);
+      }
+      const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+      const rows = db
+        .prepare<(string | number)[], { id: string }>(`SELECT id FROM sessions ${where} ORDER BY started_at ASC`)
+        .all(...params);
       return rows.map((r) => this.sourceKey(r.id));
     } catch {
       return [];
