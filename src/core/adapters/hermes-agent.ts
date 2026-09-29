@@ -26,6 +26,7 @@ import type {
   DetectionResult,
   DiscoverOptions,
   SessionChunk,
+  SourceStat,
   TranscriptAdapter,
 } from "@ports/transcript-adapter.js";
 import { durationMinutes, normalizeTimestamp, safeSessionId } from "./common.js";
@@ -176,7 +177,7 @@ export class HermesAgentAdapter implements TranscriptAdapter {
           )
           .all();
       }
-      return rows.map((r) => r.id);
+      return rows.map((r) => this.sourceKey(r.id));
     } catch {
       return [];
     } finally {
@@ -184,7 +185,44 @@ export class HermesAgentAdapter implements TranscriptAdapter {
     }
   }
 
-  async parseSession(sessionId: string): Promise<SessionChunk | null> {
+  /**
+   * `<dbPath>::<sessionId>`, the key discover() emits and chunk.sourcePath
+   * carries, so scanOnce's adapter_state lookup matches what it recorded.
+   */
+  private sourceKey(sessionId: string): string {
+    return `${this.dbPath}::${sessionId}`;
+  }
+
+  private sessionIdOf(source: string): string {
+    const sep = source.lastIndexOf("::");
+    return sep === -1 ? source : source.slice(sep + 2);
+  }
+
+  stat(source: string): SourceStat | null {
+    if (!existsSync(this.dbPath)) return null;
+    let db: Database.Database | undefined;
+    try {
+      db = new Database(this.dbPath, { readonly: true });
+      const row = db
+        .prepare<[string], { last: number | null; n: number; started: number | null }>(
+          `SELECT MAX(m.timestamp) AS last, COUNT(m.id) AS n, s.started_at AS started
+           FROM sessions s LEFT JOIN messages m ON m.session_id = s.id
+           WHERE s.id = ? GROUP BY s.id`,
+        )
+        .get(this.sessionIdOf(source));
+      if (!row) return null;
+      // Timestamps are Unix seconds. The message count is the change marker:
+      // it only moves when the session gains messages.
+      return { mtimeMs: (row.last ?? row.started ?? 0) * 1000, size: row.n };
+    } catch {
+      return null;
+    } finally {
+      db?.close();
+    }
+  }
+
+  async parseSession(source: string): Promise<SessionChunk | null> {
+    const sessionId = this.sessionIdOf(source);
     if (!existsSync(this.dbPath)) return null;
     let db: Database.Database | undefined;
     try {
