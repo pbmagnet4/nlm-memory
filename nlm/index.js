@@ -197,7 +197,7 @@ import { pathToFileURL } from "node:url";
 // package.json
 var package_default = {
   name: "nlm-memory",
-  version: "0.21.8",
+  version: "0.21.9",
   description: "Local-first non-linear memory operating system for AI operators.",
   type: "module",
   license: "Apache-2.0",
