@@ -73,15 +73,18 @@ function ports(value: string): number[] {
   return (value.match(/\d+/g) ?? []).map(Number);
 }
 
+/**
+ * `host:port` via the WHATWG URL parser only. One parser, so a value can't
+ * read one way to this check and another way to whatever consumes it.
+ */
 function hostPort(value: string): string | null {
   try {
     const u = new URL(value.includes("://") ? value : `http://${value}`);
-    if (u.hostname && u.port) return `${u.hostname}:${u.port}`.toLowerCase();
+    if (u.username || u.password) return null;
+    return u.hostname && u.port ? `${u.hostname}:${u.port}`.toLowerCase() : null;
   } catch {
-    // not URL-shaped; fall through to the regex
+    return null;
   }
-  const m = /([a-z0-9.-]+):(\d{1,5})/i.exec(value);
-  return m ? `${m[1]}:${m[2]}`.toLowerCase() : null;
 }
 
 function contradicts(predicate: string, factValue: string, authorityValue: string): boolean {
@@ -91,10 +94,10 @@ function contradicts(predicate: string, factValue: string, authorityValue: strin
     return have.length > 0 && !have.includes(want);
   }
   if (predicate === "host" || predicate === "url" || predicate === "endpoint") {
+    // Prose values ("the Pro on :7803") aren't comparable; never retire on a guess.
     const a = hostPort(authorityValue);
-    const f = hostPort(factValue);
-    if (a && f) return a !== f;
-    return !factValue.toLowerCase().includes(authorityValue.toLowerCase());
+    const f = hostPort(factValue.trim());
+    return a !== null && f !== null && a !== f;
   }
   return factValue.trim().toLowerCase() !== authorityValue.trim().toLowerCase();
 }

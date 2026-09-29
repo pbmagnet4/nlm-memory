@@ -94,6 +94,16 @@ describe("reconcile-facts", () => {
     expect(ok).not.toBe(bad);
   });
 
+  it("never flags a host value it cannot parse as host:port", () => {
+    const file: AuthoritiesFile = {
+      authorities: [{ aliases: ["svc"], predicate: "host", value: "host.example:8000", source: "s" }],
+      deleted_files: [],
+    };
+    seed("svc", "host", "the build box on :8010");
+    seed("svc", "host", "http://user@host.example:8010");
+    expect(findContradictions(db(), file)).toHaveLength(0);
+  });
+
   it("dead_reference matches subjects that start with the deleted name", () => {
     const id = seed("old-script.sh cron entry", "schedule", "daily");
     expect(findContradictions(db(), authorities).map((f) => f.factId)).toEqual([id]);
