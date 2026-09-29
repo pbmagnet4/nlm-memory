@@ -7,7 +7,8 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { MuseAdapter } from "../../../../src/core/adapters/muse.js";
+import { MuseAdapter, museRuntimeSessionId } from "../../../../src/core/adapters/muse.js";
+import { deriveSubagentMeta } from "../../../../src/core/adapters/claude-code.js";
 
 const FIXTURES = resolve(__dirname, "../../../fixtures/muse");
 
@@ -88,5 +89,17 @@ describe("MuseAdapter.discover", () => {
   it("missing root discovers nothing", async () => {
     const adapter = new MuseAdapter({ sessionsPath: join(dir, "nope") });
     expect(await adapter.discover()).toEqual([]);
+  });
+});
+
+describe("museRuntimeSessionId", () => {
+  it("uses the session directory for a top-level session", () => {
+    expect(museRuntimeSessionId("/s/2026/09/17/01a0-top/session.jsonl")).toBe("01a0-top");
+  });
+
+  it("encodes a subagent run as <parent>/agent-<id> so it links to its parent", () => {
+    const id = museRuntimeSessionId("/s/2026/09/17/01a0-top/subagent/29b5-sub/session.jsonl");
+    expect(id).toBe("01a0-top/agent-29b5-sub");
+    expect(deriveSubagentMeta(id, "")).toEqual({ persona: null, parentSessionId: "01a0-top" });
   });
 });

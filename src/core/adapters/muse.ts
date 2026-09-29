@@ -56,6 +56,20 @@ export function defaultSessionsPath(): string {
   return join(dataHome, "muse", "sessions");
 }
 
+/**
+ * Subagent runs live at `<parent>/subagent/<id>/session.jsonl`. They take the
+ * `<parent>/agent-<id>` shape claude-code uses, so deriveSubagentMeta links
+ * them to their parent instead of ingesting them as standalone sessions.
+ */
+export function museRuntimeSessionId(path: string): string {
+  const sessionDir = dirname(path);
+  const container = dirname(sessionDir);
+  if (basename(container) === "subagent") {
+    return `${basename(dirname(container))}/agent-${basename(sessionDir)}`;
+  }
+  return basename(sessionDir);
+}
+
 /** Muse `recorded_at` is microseconds; common.normalizeTimestamp wants ms. */
 function museTimestamp(ts: unknown): string {
   if (typeof ts === "number" && Number.isFinite(ts) && ts > 0) {
@@ -160,7 +174,7 @@ export class MuseAdapter implements TranscriptAdapter {
     const duration = durationMinutes(startedAt, endedAt);
     const label = provisionalLabel(turns);
 
-    const runtimeSessionId = basename(dirname(path));
+    const runtimeSessionId = museRuntimeSessionId(path);
     const chunk: SessionChunk = {
       id: safeSessionId("muse", runtimeSessionId),
       runtime: this.runtimeVersion,
