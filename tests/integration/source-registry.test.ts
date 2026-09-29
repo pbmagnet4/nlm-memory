@@ -34,12 +34,12 @@ describe("SourceRegistry", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("starts empty and seeds nine presets", async () => {
+  it("starts empty and seeds ten presets", async () => {
     expect(await registry.list(T)).toEqual([]);
     await registry.seedDefaults(T);
     const rows = await registry.list(T);
     expect(rows.map((r) => r.kind)).toEqual([
-      "claude-code", "codex", "hermes", "hermes-agent", "aider", "cursor", "windsurf", "opencode", "pi",
+      "claude-code", "codex", "hermes", "hermes-agent", "muse", "aider", "cursor", "windsurf", "opencode", "pi",
     ]);
     expect(rows.every((r) => r.runtimeLabel.endsWith("/1.0"))).toBe(true);
   });
@@ -47,7 +47,7 @@ describe("SourceRegistry", () => {
   it("seedDefaults is idempotent", async () => {
     await registry.seedDefaults(T);
     await registry.seedDefaults(T);
-    expect((await registry.list(T)).length).toBe(9);
+    expect((await registry.list(T)).length).toBe(10);
   });
 
   // M4: seedDefaults(DEFAULT_TEAM_ID) is exactly what nlm.ts's buildStack()
