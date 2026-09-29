@@ -12,6 +12,7 @@
  * memo writes, same NLM_HOOK_MODE semantics.
  */
 
+import { execFileSync } from "node:child_process";
 import { appendHookLog } from "@core/hook/hook-log.js";
 import { loadSurfaced, recordSurfaced } from "@core/hook/memo.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
@@ -126,10 +127,38 @@ async function fetchFailureModeBlock(repo: string): Promise<string> {
   }
 }
 
+const GIT_TIMEOUT_MS = 300;
+const RECENT_COMMITS = 3;
+
+function git(cwd: string, args: ReadonlyArray<string>): string {
+  try {
+    return execFileSync("git", ["-C", cwd, ...args], {
+      encoding: "utf8",
+      timeout: GIT_TIMEOUT_MS,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Branch name plus recent commit subjects. A bare directory name is often a
+ * single word ("nlm-memory"), which the recall query extractor rejects as too
+ * short, so SessionStart surfaced nothing for most repos.
+ */
+export function readGitContext(workingDirectory: string): string {
+  if (!workingDirectory) return "";
+  const branch = git(workingDirectory, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const subjects = git(workingDirectory, ["log", `-${RECENT_COMMITS}`, "--format=%s"]);
+  const branchWords = branch === "HEAD" ? "" : branch.replace(/[/_-]+/g, " ");
+  return [branchWords, subjects.replace(/\n/g, " ")].filter(Boolean).join(" ");
+}
+
 /** Derive a best-effort query from SessionStart payload fields. */
-function buildQuery(workingDirectory: string, projectName: string): string {
+export function buildQuery(workingDirectory: string, projectName: string, gitContext: string): string {
   const dirTail = workingDirectory.split("/").filter(Boolean).at(-1) ?? "";
-  const parts = [dirTail, projectName].filter(Boolean);
+  const parts = [dirTail, projectName, gitContext].filter(Boolean);
   return parts.join(" ").trim() || "session start";
 }
 
@@ -153,7 +182,7 @@ async function main(): Promise<void> {
           : "";
     const projectName =
       typeof payload.project_name === "string" ? payload.project_name : "";
-    const query = buildQuery(workingDirectory, projectName);
+    const query = buildQuery(workingDirectory, projectName, readGitContext(workingDirectory));
     const mode: HookMode = hookModeFromEnv();
     const [out, failureModes] = await Promise.all([
       runHook(
