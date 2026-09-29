@@ -2,8 +2,8 @@
  * OpenCode adapter.
  *
  * Reads the OpenCode SQLite database at:
- *   macOS: ~/Library/Application Support/opencode/opencode.db
- *   Linux: $XDG_DATA_HOME/opencode/opencode.db (default ~/.local/share/opencode/opencode.db)
+ *   $XDG_DATA_HOME/opencode/opencode.db (default ~/.local/share/opencode/opencode.db)
+ *   macOS falls back to ~/Library/Application Support/opencode/opencode.db
  *
  * Unlike the JSONL-based adapters, OpenCode stores all sessions and messages
  * in a single SQLite file. `discover()` queries the sessions table and returns
@@ -84,11 +84,13 @@ type PartData = TextPartData | ToolPartData | { readonly type: string };
 
 export function defaultDbPath(): string {
   if (process.env["OPENCODE_DB_PATH"]) return process.env["OPENCODE_DB_PATH"];
-  if (process.platform === "darwin") {
+  const xdg = process.env["XDG_DATA_HOME"] ?? join(homedir(), ".local", "share");
+  const xdgPath = join(xdg, "opencode", "opencode.db");
+  // OpenCode uses the XDG path on macOS too; Application Support is only a fallback.
+  if (process.platform === "darwin" && !existsSync(xdgPath)) {
     return join(homedir(), "Library", "Application Support", "opencode", "opencode.db");
   }
-  const xdg = process.env["XDG_DATA_HOME"] ?? join(homedir(), ".local", "share");
-  return join(xdg, "opencode", "opencode.db");
+  return xdgPath;
 }
 
 function readGitBranch(directory: string): string {

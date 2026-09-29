@@ -6,12 +6,12 @@
  * with better-sqlite3 in readonly mode.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { OpenCodeAdapter } from "../../../../src/core/adapters/opencode.js";
+import { OpenCodeAdapter, defaultDbPath } from "../../../../src/core/adapters/opencode.js";
 
 // ── Schema helpers ────────────────────────────────────────────────────────────
 
@@ -350,5 +350,34 @@ describe("OpenCodeAdapter metadata", () => {
     expect(adapter.name).toBe("opencode");
     expect(adapter.runtimeVersion).toBe("opencode/1.0");
     expect(adapter.transcriptKind).toBe("opencode-sqlite");
+  });
+});
+
+describe("defaultDbPath", () => {
+  let dataHome: string;
+  const saved = { xdg: process.env["XDG_DATA_HOME"], explicit: process.env["OPENCODE_DB_PATH"] };
+
+  beforeEach(() => {
+    dataHome = mkdtempSync(join(tmpdir(), "nlm-oc-xdg-"));
+    process.env["XDG_DATA_HOME"] = dataHome;
+    delete process.env["OPENCODE_DB_PATH"];
+  });
+
+  afterEach(() => {
+    rmSync(dataHome, { recursive: true, force: true });
+    if (saved.xdg === undefined) delete process.env["XDG_DATA_HOME"];
+    else process.env["XDG_DATA_HOME"] = saved.xdg;
+    if (saved.explicit !== undefined) process.env["OPENCODE_DB_PATH"] = saved.explicit;
+  });
+
+  it("prefers the XDG data path when opencode.db exists there, on every platform", () => {
+    mkdirSync(join(dataHome, "opencode"));
+    writeFileSync(join(dataHome, "opencode", "opencode.db"), "");
+    expect(defaultDbPath()).toBe(join(dataHome, "opencode", "opencode.db"));
+  });
+
+  it("honours OPENCODE_DB_PATH over everything", () => {
+    process.env["OPENCODE_DB_PATH"] = "/explicit/opencode.db";
+    expect(defaultDbPath()).toBe("/explicit/opencode.db");
   });
 });
