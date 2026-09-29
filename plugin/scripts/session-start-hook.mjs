@@ -36,7 +36,7 @@ function tenantStatePath(tenantId, ...segments) {
 // package.json
 var package_default = {
   name: "nlm-memory",
-  version: "0.21.9",
+  version: "0.21.10",
   description: "Local-first non-linear memory operating system for AI operators.",
   type: "module",
   license: "Apache-2.0",
