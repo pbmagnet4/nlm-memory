@@ -236,6 +236,22 @@ export function isPathShapedEntity(canonical: string): boolean {
   return false;
 }
 
+/**
+ * Split an id list into chunks that fit SQLite's bound-variable cap
+ * (SQLITE_LIMIT_VARIABLE_NUMBER, 32,766 in the bundled better-sqlite3).
+ * Sized so even double-bound IN queries (session_edges binds the chunk
+ * twice) stay under the cap.
+ */
+const IN_QUERY_CHUNK_SIZE = 400;
+
+function chunkIds(ids: ReadonlyArray<string>): string[][] {
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += IN_QUERY_CHUNK_SIZE) {
+    chunks.push(ids.slice(i, i + IN_QUERY_CHUNK_SIZE));
+  }
+  return chunks;
+}
+
 function projectFromDb(db: Database.Database, dbPath: string, tenantId: string, includePaths: boolean): DatasetResponse {
   const sessionsTc = tenantClause(tenantId);
   const sessionRows = db
@@ -254,36 +270,47 @@ function projectFromDb(db: Database.Database, dbPath: string, tenantId: string, 
   // are already sourced from the tenant-filtered sessions query above, so a
   // plain IN is sufficient (mirrors SqliteSessionStore.loadMarkers/
   // loadSessionEdges, which take an already tenant-resolved id list).
+  //
+  // Chunked: SQLite caps a statement at 32,766 bound variables
+  // (SQLITE_LIMIT_VARIABLE_NUMBER in the bundled better-sqlite3), and these
+  // id lists grow with the corpus — past it, GET /api/dataset 500s with
+  // "too many SQL variables" (2026-10-01, 18,868 sessions). The edges query
+  // binds the chunk twice, so the chunk size stays far under half the cap.
   const sessionIds = sessionRows.map((s) => s.id);
-  const sessionIdPlaceholders = sessionIds.map(() => "?").join(",");
 
   const entitiesBySession = new Map<string, string[]>();
-  for (const r of db
-    .prepare<unknown[], EntityRow>(
-      `SELECT session_id, entity_canonical FROM session_entities WHERE session_id IN (${sessionIdPlaceholders}) ORDER BY session_id`,
-    )
-    .all(...sessionIds)) {
-    const list = entitiesBySession.get(r.session_id);
-    if (list) list.push(r.entity_canonical);
-    else entitiesBySession.set(r.session_id, [r.entity_canonical]);
+  for (const idChunk of chunkIds(sessionIds)) {
+    const placeholders = idChunk.map(() => "?").join(",");
+    for (const r of db
+      .prepare<unknown[], EntityRow>(
+        `SELECT session_id, entity_canonical FROM session_entities WHERE session_id IN (${placeholders}) ORDER BY session_id`,
+      )
+      .all(...idChunk)) {
+      const list = entitiesBySession.get(r.session_id);
+      if (list) list.push(r.entity_canonical);
+      else entitiesBySession.set(r.session_id, [r.entity_canonical]);
+    }
   }
 
   const decisionsBySession = new Map<string, string[]>();
   const openBySession = new Map<string, { id: string; text: string }[]>();
-  for (const r of db
-    .prepare<unknown[], MarkerRow>(
-      `SELECT session_id, kind, text, position FROM markers WHERE session_id IN (${sessionIdPlaceholders}) ORDER BY session_id, position`,
-    )
-    .all(...sessionIds)) {
-    if (r.kind === "decision") {
-      const list = decisionsBySession.get(r.session_id);
-      if (list) list.push(r.text);
-      else decisionsBySession.set(r.session_id, [r.text]);
-    } else {
-      const id = openQuestionId(r.session_id, r.text);
-      const list = openBySession.get(r.session_id);
-      if (list) list.push({ id, text: r.text });
-      else openBySession.set(r.session_id, [{ id, text: r.text }]);
+  for (const idChunk of chunkIds(sessionIds)) {
+    const placeholders = idChunk.map(() => "?").join(",");
+    for (const r of db
+      .prepare<unknown[], MarkerRow>(
+        `SELECT session_id, kind, text, position FROM markers WHERE session_id IN (${placeholders}) ORDER BY session_id, position`,
+      )
+      .all(...idChunk)) {
+      if (r.kind === "decision") {
+        const list = decisionsBySession.get(r.session_id);
+        if (list) list.push(r.text);
+        else decisionsBySession.set(r.session_id, [r.text]);
+      } else {
+        const id = openQuestionId(r.session_id, r.text);
+        const list = openBySession.get(r.session_id);
+        if (list) list.push({ id, text: r.text });
+        else openBySession.set(r.session_id, [{ id, text: r.text }]);
+      }
     }
   }
 
@@ -292,20 +319,23 @@ function projectFromDb(db: Database.Database, dbPath: string, tenantId: string, 
   const replacesBy = new Map<string, string>();
   const replacedByBy = new Map<string, string>();
   const continuesBy = new Map<string, string>();
-  for (const r of db
-    .prepare<unknown[], EdgeRow>(
-      `SELECT from_session, to_session, kind FROM session_edges
-       WHERE from_session IN (${sessionIdPlaceholders}) OR to_session IN (${sessionIdPlaceholders})`,
-    )
-    .all(...sessionIds, ...sessionIds)) {
-    if (r.kind === "supersedes") {
-      supersedesBy.set(r.from_session, r.to_session);
-      supersededByBy.set(r.to_session, r.from_session);
-    } else if (r.kind === "replaces") {
-      replacesBy.set(r.from_session, r.to_session);
-      replacedByBy.set(r.to_session, r.from_session);
-    } else if (r.kind === "continues") {
-      continuesBy.set(r.from_session, r.to_session);
+  for (const idChunk of chunkIds(sessionIds)) {
+    const placeholders = idChunk.map(() => "?").join(",");
+    for (const r of db
+      .prepare<unknown[], EdgeRow>(
+        `SELECT from_session, to_session, kind FROM session_edges
+         WHERE from_session IN (${placeholders}) OR to_session IN (${placeholders})`,
+      )
+      .all(...idChunk, ...idChunk)) {
+      if (r.kind === "supersedes") {
+        supersedesBy.set(r.from_session, r.to_session);
+        supersededByBy.set(r.to_session, r.from_session);
+      } else if (r.kind === "replaces") {
+        replacesBy.set(r.from_session, r.to_session);
+        replacedByBy.set(r.to_session, r.from_session);
+      } else if (r.kind === "continues") {
+        continuesBy.set(r.from_session, r.to_session);
+      }
     }
   }
 
