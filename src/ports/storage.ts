@@ -10,6 +10,7 @@
 import type { CodeExemplarStore } from "./code-exemplar-store.js";
 import type { EntityStore } from "./entity-store.js";
 import type { FactStore } from "./fact-store.js";
+import type { LearnerStore } from "./learner-store.js";
 import type { SessionStore } from "./session-store.js";
 import type { SignalStore } from "./signal-store.js";
 import type { WorkstreamStore } from "./workstream-store.js";
@@ -26,6 +27,8 @@ export interface Storage {
   readonly exemplars: CodeExemplarStore;
   readonly workstreams: WorkstreamStore;
   readonly entities: EntityStore;
+  /** Learner evidence (Gnos-style concept tracking; spec 2026-10-06). */
+  readonly learners: LearnerStore;
   /** Transcript-source registry (claude-code/hermes/webhook/…). */
   readonly sources: SourceRegistryPort;
   /** LLM-provider registry (ollama/deepseek/openai/…). */

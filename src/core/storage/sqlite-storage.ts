@@ -16,6 +16,7 @@ import { SqliteCodeExemplarStore } from "./sqlite-code-exemplar-store.js";
 import { SqliteEmbeddingConfigStore } from "./sqlite-embedding-config.js";
 import { SqliteEntityStore } from "./sqlite-entity-store.js";
 import { SqliteFactStore } from "./sqlite-fact-store.js";
+import { SqliteLearnerStore } from "./sqlite-learner-store.js";
 import { SqliteSessionStore } from "./sqlite-session-store.js";
 import { SqliteSignalStore } from "./sqlite-signal-store.js";
 import { SqliteWorkstreamStore } from "./sqlite-workstream-store.js";
@@ -35,6 +36,7 @@ export class SqliteStorage implements Storage {
   readonly exemplars: SqliteCodeExemplarStore;
   readonly workstreams: SqliteWorkstreamStore;
   readonly entities: SqliteEntityStore;
+  readonly learners: SqliteLearnerStore;
   readonly embeddingConfig: SqliteEmbeddingConfigStore;
   readonly sources: SourceRegistry;
   readonly providers: ProviderRegistry;
@@ -47,6 +49,7 @@ export class SqliteStorage implements Storage {
     exemplars: SqliteCodeExemplarStore,
     workstreams: SqliteWorkstreamStore,
     entities: SqliteEntityStore,
+    learners: SqliteLearnerStore,
     embeddingConfig: SqliteEmbeddingConfigStore,
     sources: SourceRegistry,
     providers: ProviderRegistry,
@@ -58,6 +61,7 @@ export class SqliteStorage implements Storage {
     this.exemplars = exemplars;
     this.workstreams = workstreams;
     this.entities = entities;
+    this.learners = learners;
     this.embeddingConfig = embeddingConfig;
     this.sources = sources;
     this.providers = providers;
@@ -72,11 +76,12 @@ export class SqliteStorage implements Storage {
     const exemplars = new SqliteCodeExemplarStore(db);
     const workstreams = new SqliteWorkstreamStore(db);
     const entities = new SqliteEntityStore(db);
+    const learners = new SqliteLearnerStore(db);
     const embeddingConfig = new SqliteEmbeddingConfigStore(db);
     const sources = new SourceRegistry(db);
     const providers = new ProviderRegistry(db);
     const teamTokens = new TeamTokenStore(db);
-    return new SqliteStorage(sessions, facts, signals, exemplars, workstreams, entities, embeddingConfig, sources, providers, teamTokens);
+    return new SqliteStorage(sessions, facts, signals, exemplars, workstreams, entities, learners, embeddingConfig, sources, providers, teamTokens);
   }
 
   async init(): Promise<void> {

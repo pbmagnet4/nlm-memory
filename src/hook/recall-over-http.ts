@@ -14,7 +14,7 @@
  */
 
 import type { RecallHitInput } from "@core/hook/select.js";
-import type { PointerExemplar, PointerFact } from "@core/hook/pointer-block.js";
+import type { PointerConcept, PointerExemplar, PointerFact } from "@core/hook/pointer-block.js";
 import { hookAuthHeaders } from "./hook-auth.js";
 import { extractRecallQuery } from "@core/hook/query-extract.js";
 import { fetchWithTimeout } from "./hook-helpers.js";
@@ -58,6 +58,7 @@ export interface RecallOverHttpResult {
   readonly hits: ReadonlyArray<RecallHitInput>;
   readonly facts: ReadonlyArray<PointerFact>;
   readonly exemplars: ReadonlyArray<PointerExemplar>;
+  readonly concepts: ReadonlyArray<PointerConcept>;
   readonly outcome: RecallOutcome;
 }
 
@@ -65,6 +66,7 @@ const emptyResult = (outcome: RecallOutcome): RecallOverHttpResult => ({
   hits: [],
   facts: [],
   exemplars: [],
+  concepts: [],
   outcome,
 });
 
@@ -90,7 +92,7 @@ export async function recallOverHttp(
     // reuse, and Node resolves localhost to IPv6 ::1 first — a measured ~50-300ms
     // per-fire connect penalty vs ~3ms on the explicit IPv4 loopback.
     `http://127.0.0.1:${portValue}/api/recall` +
-    `?q=${encodeURIComponent(query)}&mode=${mode}&limit=${RECALL_LIMIT}&withFacts=true&withExemplars=true` +
+    `?q=${encodeURIComponent(query)}&mode=${mode}&limit=${RECALL_LIMIT}&withFacts=true&withExemplars=true&withConcepts=true` +
     (conversationId ? `&conversation_id=${encodeURIComponent(conversationId)}` : "");
   try {
     const extra: Record<string, string> = { "x-recall-source": source };
@@ -116,6 +118,12 @@ export async function recallOverHttp(
         lang: string | null;
         repo: string;
         taskContext: string;
+      }>;
+      relatedConcepts?: ReadonlyArray<{
+        concept: string;
+        status: string;
+        attemptCount: number;
+        nextStep: string | null;
       }>;
     };
     let body: RecallBody;
@@ -143,7 +151,13 @@ export async function recallOverHttp(
       repo: e.repo,
       taskContext: e.taskContext,
     }));
-    return { hits, facts, exemplars, outcome: "ok" };
+    const concepts = (body.relatedConcepts ?? []).map((c) => ({
+      concept: c.concept,
+      status: c.status,
+      attemptCount: c.attemptCount,
+      nextStep: c.nextStep,
+    }));
+    return { hits, facts, exemplars, concepts, outcome: "ok" };
   } catch (err) {
     // fetchWithTimeout aborts on the deadline, which surfaces as AbortError.
     // Anything else reaching here is a transport failure (refused, DNS, reset).

@@ -125,6 +125,14 @@ export interface RecallQuery {
    */
   readonly withRelatedExemplars?: boolean;
   /**
+   * If true, RecallService attaches a `relatedConcepts` array of learner
+   * concept statuses for enrollments bound to the top hits' workstreams.
+   * Defaults to true for the HTTP hook caller; other callers opt in via
+   * `?withConcepts=true`. Disable globally via NLM_HOOK_INJECT_CONCEPTS=false.
+   * Spec 2026-10-06 (learner evidence).
+   */
+  readonly withRelatedConcepts?: boolean;
+  /**
    * If true, superseded sessions are included in recall results, down-ranked
    * and carrying a `supersededBy` pointer to their successor. Replaced
    * sessions (mechanical re-ingest noise) are excluded regardless. Off by
@@ -190,6 +198,13 @@ export interface RecallResult {
    * alongside session pointers and facts.
    */
   readonly relatedExemplars?: ReadonlyArray<RelatedExemplar>;
+  /**
+   * Optional learner-concept rows for enrollments bound to the top hits'
+   * workstreams. Present only when the caller requested
+   * `withRelatedConcepts`. The pointer-block formatter renders these as a
+   * "Learning state" section. Spec 2026-10-06 (learner evidence).
+   */
+  readonly relatedConcepts?: ReadonlyArray<RelatedConcept>;
 }
 
 /**
@@ -283,6 +298,14 @@ export interface RelatedFact {
   readonly predicate: string;
   readonly value: string;
   readonly corroborationCount: number;
+}
+
+export interface RelatedConcept {
+  readonly concept: string;
+  readonly status: "exposed" | "practicing" | "demonstrated" | "retained";
+  readonly attemptCount: number;
+  /** Owning enrollment's latest next_step (shared across its concepts). */
+  readonly nextStep: string | null;
 }
 
 export interface FactHistoryChain {

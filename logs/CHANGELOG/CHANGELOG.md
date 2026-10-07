@@ -2,6 +2,15 @@
 
 Session-level log per session protocol. Cap: 10 entries — archive older to `CHANGELOG-YYYY.md` when exceeded.
 
+
+## 2026-10-06 - Learner evidence shipped (M0–M6): Gnos-style concept tracking across recall, MCP, and UI
+
+**Changes:** new learner-evidence subsystem (spec `docs/superpowers/specs/2026-10-06-learner-evidence-design.md`, SDD-lite with briefs/reports in `.superpowers/sdd/learner-*`). Storage: sqlite `037` + pg `036` (`learners`, `enrollments`, `learning_events`, all STAMP; learner PK is composite `(tenant_id, id)`), `LearnerStore` port with sqlite/pg impls wired into `Storage`, 20-test backend contract both lanes. Core: Gnos evidence-validation + deterministic summary port (exposed/practicing/demonstrated/retained, demotion on failure, never "mastered"), service orchestration. MCP: `learner_enroll/record/summary/complete_course` on both transports. Recall: `relatedConcepts` through RecallService → `/api/recall` (`?withConcepts`, hook-automatic) → hook → `## Learning state` pointer section (fail-open, kill switch `NLM_HOOK_INJECT_CONCEPTS`). UI: `GET /api/learner/by-session/:id` + drawer section. Eval: summary conformance suite, isolation negatives both lanes, real-store end-to-end recall test; precision-gate entry deliberately declined (deterministic rule path, no scored retrieval to regress — see M6 report). All gates green: typecheck, 42 unit + 20/20 contract + hook/http suites, stdio tool smoke, `build:ui`.
+
+**Decisions:** dedicated store over Fact overload (attempts don't fit triples); summaries computed never stored; enrollment binds a workstream id at enroll; no plan-blob table (ref+fingerprint only, mismatch blocks writes); explicit record only, no classifier extraction in v1; cold-start mitigation is read-time unrecorded-session listing (SessionEnd is fail-open/client-side, wrong surface); drawer text rows over chips (design system forbids new badge families); standalone Learning page deferred.
+
+**State:** uncommitted working tree on `fix/dataset-sqlite-variable-limit` (branch creation blocked by claims-guard — needs Edward's `!` path); commit should land on a new `feat/learner-evidence` branch. Daemon/UI-bundle deploy untouched (manual `scp dist/ui/…` per CLAUDE.md when ready). CHANGELOG now 13/10 — archive pass overdue (pre-existing breach, not this build's).
+
 ## 2026-08-25 - The 0.21.5 "embedder regression" does not exist; source attribution, test isolation, warmup retry
 
 **Corrections first, because three open diagnoses were wrong and the wrong ones cost the most time.**

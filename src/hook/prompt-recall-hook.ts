@@ -15,7 +15,7 @@ import { recentConversationContext, topicalWordCount } from "./recent-context.js
 import { appendHookLog } from "@core/hook/hook-log.js";
 import { loadSurfaced, recordSurfaced } from "@core/hook/memo.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
-import { formatPointerBlock, type PointerExemplar, type PointerFact } from "@core/hook/pointer-block.js";
+import { formatPointerBlock, type PointerConcept, type PointerExemplar, type PointerFact } from "@core/hook/pointer-block.js";
 import { selectHits, type RecallHitInput } from "@core/hook/select.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
 import { recallOverHttp, type RecallOutcome } from "./recall-over-http.js";
@@ -123,6 +123,7 @@ export interface RecallFetchResult {
   readonly hits: ReadonlyArray<RecallHitInput>;
   readonly facts: ReadonlyArray<PointerFact>;
   readonly exemplars?: ReadonlyArray<PointerExemplar>;
+  readonly concepts?: ReadonlyArray<PointerConcept>;
   readonly outcome?: RecallOutcome;
 }
 
@@ -235,7 +236,7 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
     }
   }
 
-  const block = formatPointerBlock(injected, fetched.facts, fetched.exemplars);
+  const block = formatPointerBlock(injected, fetched.facts, fetched.exemplars, fetched.concepts ?? []);
   const estTokens = Math.ceil(block.length / 4);
 
   appendHookLog(DEFAULT_TEAM_ID, {

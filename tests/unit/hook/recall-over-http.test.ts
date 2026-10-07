@@ -1,7 +1,7 @@
 // tests/unit/hook/recall-over-http.test.ts
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { extractRecallQuery } from "../../../src/core/hook/query-extract.js";
-import { parseRecallTimeout } from "../../../src/hook/recall-over-http.js";
+import { parseRecallTimeout, recallOverHttp } from "../../../src/hook/recall-over-http.js";
 
 describe("parseRecallTimeout", () => {
   it("defaults to 4000 when env is unset", () => {
@@ -33,5 +33,42 @@ describe("recall-over-http query filtering", () => {
     const q = extractRecallQuery("nlm-memory dependency upgrade Wave 2");
     expect(typeof q).toBe("string");
     expect((q as string).length).toBeGreaterThan(0);
+  });
+});
+
+describe("recallOverHttp relatedConcepts mapping", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubFetch(body: unknown): string[] {
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      urls.push(url);
+      return { ok: true, json: async () => body } as Response;
+    });
+    return urls;
+  }
+
+  it("maps relatedConcepts and requests withConcepts", async () => {
+    const urls = stubFetch({
+      results: [],
+      relatedConcepts: [
+        { concept: "math.chain-rule", status: "practicing", attemptCount: 2, nextStep: "Compare." },
+      ],
+    });
+    const res = await recallOverHttp("nlm-memory dependency upgrade Wave 2");
+    expect(urls[0]).toContain("withConcepts=true");
+    expect(res.concepts).toEqual([
+      { concept: "math.chain-rule", status: "practicing", attemptCount: 2, nextStep: "Compare." },
+    ]);
+    expect(res.outcome).toBe("ok");
+  });
+
+  it("tolerates old servers without the field", async () => {
+    stubFetch({ results: [] });
+    const res = await recallOverHttp("nlm-memory dependency upgrade Wave 2");
+    expect(res.concepts).toEqual([]);
+    expect(res.outcome).toBe("ok");
   });
 });
