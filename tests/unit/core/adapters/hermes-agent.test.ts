@@ -12,6 +12,10 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { HermesAgentAdapter } from "../../../../src/core/adapters/hermes-agent.js";
+import { recordClassified, scanOnce } from "../../../../src/core/scheduler/scan-once.js";
+import { SqliteStorage } from "../../../../src/core/storage/sqlite-storage.js";
+
+const MIGRATIONS_DIR = join(__dirname, "../../../../migrations");
 
 // ── Schema helpers ────────────────────────────────────────────────────────────
 
@@ -131,7 +135,7 @@ describe("HermesAgentAdapter.discover", () => {
 
     const adapter = new HermesAgentAdapter({ dbPath });
     const ids = await adapter.discover();
-    expect(ids).toEqual(["sess_a", "sess_b"]);
+    expect(ids).toEqual([`${dbPath}::sess_a`, `${dbPath}::sess_b`]);
   });
 
   it("respects the since option using started_at", async () => {
@@ -143,8 +147,8 @@ describe("HermesAgentAdapter.discover", () => {
     const adapter = new HermesAgentAdapter({ dbPath });
     const cutoff = new Date((now - 7200) * 1000);
     const ids = await adapter.discover({ since: cutoff });
-    expect(ids).toContain("sess_new");
-    expect(ids).not.toContain("sess_old");
+    expect(ids).toContain(`${dbPath}::sess_new`);
+    expect(ids).not.toContain(`${dbPath}::sess_old`);
   });
 
   it("returns empty array when DB is absent", async () => {
@@ -325,5 +329,69 @@ describe("HermesAgentAdapter metadata", () => {
     expect(adapter.name).toBe("hermes-agent");
     expect(adapter.runtimeVersion).toBe("hermes-agent/1.0");
     expect(adapter.transcriptKind).toBe("hermes-agent-sqlite");
+  });
+});
+
+describe("HermesAgentAdapter through scanOnce", () => {
+  it("yields an idle session once, skips it unchanged, and picks it up again when it grows", async () => {
+    const hourAgo = Date.now() / 1000 - 3600;
+    addSession(db, { id: "sess_scan", startedAt: hourAgo - 60 });
+    addMessage(db, { sessionId: "sess_scan", role: "user", content: "sync the profile databases", timestamp: hourAgo - 30 });
+    addMessage(db, { sessionId: "sess_scan", role: "assistant", content: "snapshotting each state.db", timestamp: hourAgo });
+
+    const store = mkdtempSync(join(tmpdir(), "nlm-ha-scan-"));
+    const storage = SqliteStorage.create({ dbPath: join(store, "nlm.sqlite"), migrationsDir: MIGRATIONS_DIR });
+    await storage.init();
+    try {
+      const adapter = new HermesAgentAdapter({ dbPath });
+      const first = await scanOnce(adapter, 15, storage.rawDb());
+      expect(first).toHaveLength(1);
+      const { chunk, fileSize } = first[0]!;
+      expect(chunk.sourcePath).toBe(`${dbPath}::sess_scan`);
+      recordClassified(storage.rawDb(), adapter.name, chunk.sourcePath, chunk.id, fileSize);
+
+      expect(await scanOnce(adapter, 15, storage.rawDb())).toHaveLength(0);
+
+      addMessage(db, { sessionId: "sess_scan", role: "user", content: "and one more", timestamp: hourAgo + 60 });
+      expect(await scanOnce(adapter, 15, storage.rawDb())).toHaveLength(1);
+    } finally {
+      await storage.close();
+      rmSync(store, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("HermesAgentAdapter source filtering", () => {
+  const setSource = (id: string, source: string) =>
+    db.prepare("UPDATE sessions SET source = ? WHERE id = ?").run(source, id);
+
+  it("skips cron sessions by default", async () => {
+    addSession(db, { id: "sess_cli" });
+    addSession(db, { id: "sess_cron" });
+    setSource("sess_cron", "cron");
+
+    const keys = await new HermesAgentAdapter({ dbPath }).discover();
+    expect(keys).toEqual([`${dbPath}::sess_cli`]);
+  });
+
+  it("uses the configured exclusions instead of the default", async () => {
+    addSession(db, { id: "sess_cron" });
+    addSession(db, { id: "sess_acp" });
+    setSource("sess_cron", "cron");
+    setSource("sess_acp", "acp");
+
+    const keys = await new HermesAgentAdapter({ dbPath, excludeSources: ["acp"] }).discover();
+    expect(keys).toEqual([`${dbPath}::sess_cron`]);
+  });
+
+  it("still discovers sessions from a schema with no source column", async () => {
+    db.close();
+    rmSync(dbPath);
+    db = new Database(dbPath);
+    db.exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, started_at REAL NOT NULL, ended_at REAL);
+             CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, content TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL);`);
+    db.prepare("INSERT INTO sessions (id, started_at) VALUES ('sess_old_schema', 1)").run();
+
+    expect(await new HermesAgentAdapter({ dbPath }).discover()).toEqual([`${dbPath}::sess_old_schema`]);
   });
 });

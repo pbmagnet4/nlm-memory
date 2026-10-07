@@ -1,0 +1,8 @@
+{"record_type": "event", "recorded_at": 1790509000000000, "payload_type": "runtime.session.metadata", "payload": {"kind": "metadata", "record": {"workspace_root": "/tmp/proj", "model": "muse-test-1"}}}
+{"record_type": "event", "recorded_at": 1790509001000000, "payload_type": "runtime.user_intent.accepted", "payload": {"surface": "main", "refill_blocks": [{"kind": "text", "text": "Wire up the gateway"}]}}
+{"record_type": "event", "recorded_at": 1790509002000000, "payload_type": "runtime.session", "payload": {"kind": "run", "event": {"kind": "assistant_tool_calls_committed", "tool_calls": [{"name": "bash"}, {"name": "read_file"}]}}}
+{"record_type": "event", "recorded_at": 1790509003000000, "payload_type": "runtime.session", "payload": {"kind": "run", "event": {"kind": "tool_result_batch_committed", "results": [{"text": "gateway listening on :4000"}]}}}
+{"record_type": "event", "recorded_at": 1790509004000000, "payload_type": "runtime.session", "payload": {"kind": "run", "event": {"kind": "assistant_message_committed", "text": "Gateway is live."}}}
+{"record_type": "event", "recorded_at": 1790509005000000, "payload_type": "runtime.session", "payload": {"kind": "run", "event": {"kind": "reasoning_committed", "text": "internal deliberation"}}}
+{"record_type": "event", "recorded_at": 1790509006000000, "payload_type": "runtime.session", "payload": {"kind": "run", "event": {"kind": "model_user_messages", "messages": ["<skill-body>secret</skill-body>"]}}}
+{"record_type": "event", "recorded_at": 1790509007000000, "payload_type": "runtime.user_intent.accepted", "payload": {"surface": "steering", "refill_blocks": [{"kind": "text", "text": "internal nudge"}]}}

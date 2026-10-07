@@ -16,6 +16,7 @@ import { CursorAdapter } from "./cursor.js";
 import { HermesAdapter } from "./hermes.js";
 import { HermesAgentAdapter } from "./hermes-agent.js";
 import { JsonlGenericAdapter, type JsonlGenericConfig } from "./jsonl-generic.js";
+import { MuseAdapter } from "./muse.js";
 import { OpenCodeAdapter } from "./opencode.js";
 import { PiAdapter } from "./pi.js";
 import { WindsurfAdapter } from "./windsurf.js";
@@ -42,10 +43,17 @@ export function adapterFromSource(source: SourceRow): TranscriptAdapter | null {
       return source.pathOrUrl
         ? new HermesAdapter({ sessionsPath: source.pathOrUrl })
         : new HermesAdapter();
-    case "hermes-agent":
+    case "hermes-agent": {
+      const exclude = source.parseConfig["excludeSources"];
+      return new HermesAgentAdapter({
+        ...(source.pathOrUrl ? { dbPath: source.pathOrUrl } : {}),
+        ...(Array.isArray(exclude) ? { excludeSources: exclude.filter((x): x is string => typeof x === "string") } : {}),
+      });
+    }
+    case "muse":
       return source.pathOrUrl
-        ? new HermesAgentAdapter({ dbPath: source.pathOrUrl })
-        : new HermesAgentAdapter();
+        ? new MuseAdapter({ sessionsPath: source.pathOrUrl })
+        : new MuseAdapter();
     case "opencode":
       return source.pathOrUrl
         ? new OpenCodeAdapter({ dbPath: source.pathOrUrl })

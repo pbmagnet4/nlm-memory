@@ -102,3 +102,46 @@ describe("resolveConversationByQuery", () => {
     expect(result).toBeNull();
   });
 });
+
+describe("resolveConversationByQuery across runtimes", () => {
+  let home: string;
+  const saved = { HOME: process.env["HOME"], XDG: process.env["XDG_DATA_HOME"], CC: process.env["NLM_CLAUDE_PROJECTS_ROOT"] };
+  const restore = (k: string, v: string | undefined) => (v === undefined ? delete process.env[k] : (process.env[k] = v));
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "nlm-resolve-rt-"));
+    process.env["HOME"] = home;
+    delete process.env["XDG_DATA_HOME"];
+    delete process.env["NLM_CLAUDE_PROJECTS_ROOT"];
+  });
+
+  afterEach(() => {
+    restore("HOME", saved.HOME);
+    restore("XDG_DATA_HOME", saved.XDG);
+    restore("NLM_CLAUDE_PROJECTS_ROOT", saved.CC);
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const write = (rel: string, body: string) => {
+    const full = join(home, rel);
+    mkdirSync(join(full, ".."), { recursive: true });
+    writeFileSync(full, body);
+  };
+
+  it("attributes a Muse transcript to muse:<session dir>", () => {
+    write(".local/share/muse/sessions/2026/09/29/01a0-muse-conv/session.jsonl", '{"cite":"cc_cited-session-0001"}\n');
+    expect(resolveConversationByQuery("cc_cited-session-0001")).toBe("muse:01a0-muse-conv");
+  });
+
+  it("attributes Codex and pi transcripts with their runtime prefix", () => {
+    write(".codex/sessions/2026/09/29/rollout-abc.jsonl", '{"q":"codex query string here"}\n');
+    write(".pi/agent/sessions/proj/2026-09-29_xyz.jsonl", '{"q":"pi query string here"}\n');
+    expect(resolveConversationByQuery("codex query string here")).toBe("codex:rollout-abc");
+    expect(resolveConversationByQuery("pi query string here")).toBe("pi:2026-09-29_xyz");
+  });
+
+  it("keeps Claude Code conversations as bare ids", () => {
+    write(".claude/projects/-proj/9f1c-claude-conv.jsonl", '{"q":"claude code query string"}\n');
+    expect(resolveConversationByQuery("claude code query string")).toBe("9f1c-claude-conv");
+  });
+});

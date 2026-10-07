@@ -332,7 +332,7 @@ import { pathToFileURL } from "node:url";
 // package.json
 var package_default = {
   name: "nlm-memory",
-  version: "0.21.5",
+  version: "0.21.10",
   description: "Local-first non-linear memory operating system for AI operators.",
   type: "module",
   license: "Apache-2.0",
@@ -379,6 +379,7 @@ var package_default = {
     "build:server": "tsc -p tsconfig.json && tsc-alias -p tsconfig.json",
     "build:ui": "vite build --config src/ui/vite.config.ts",
     "build:codex-plugin": "node scripts/build-codex-plugin.mjs",
+    "verify:codex-release": "node scripts/verify-codex-release.mjs",
     build: "npm run build:server && npm run build:ui && npm run build:codex-plugin",
     prepare: "[ -d src ] && npm run build || true",
     "ui:dev": "vite --config src/ui/vite.config.ts",

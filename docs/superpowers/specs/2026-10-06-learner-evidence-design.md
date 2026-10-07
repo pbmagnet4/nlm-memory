@@ -46,9 +46,12 @@ through an explicit record call, never through ingest classification.
    (bound to the enrollment's workstream since the last event) via a read-time join.
    No SessionEnd write path: SessionEnd is a fail-open client surface
    (`src/hook/session-end-hook.ts:26`) with no transcript access.
-7. **Migrations: sqlite `037`, pg `036`.** Numbering is independent per lane
-   (pg latest is `035`; sqlite latest is `036` with a pre-existing 030/031 gap that
-   is not ours to fill). New tables are STAMP per `034`: sqlite
+7. **Migrations: sqlite `039`, pg `037`.** Numbering is independent per lane
+   (pg latest is `036`; sqlite latest is `038`, with a pre-existing 030/031 gap that
+   is not ours to fill). Renumbered from the as-built 037/036 after main's
+   covering-index sqlite 037 and sources-muse sqlite 038 / pg 036 landed
+   mid-branch — the migrator keys on version number, so duplicates silently skip.
+   New tables are STAMP per `034`: sqlite
    `tenant_id TEXT NOT NULL DEFAULT 'team_local'` without REFERENCES (SQLite forbids
    ADD COLUMN + REFERENCES + non-NULL default under enforced FKs,
    `migrations/034_tenancy_teams_and_stamps.sql:3-5`); pg with a real FK to
@@ -134,7 +137,7 @@ enrichment, same rule as `get_session`'s outcome attach).
 
 | Milestone | Scope | Gate |
 |---|---|---|
-| M0 | Migrations 037/036 + census + pg test bump | migrate clean both lanes; census test green |
+| M0 | Migrations 039/037 + census + pg test bump | migrate clean both lanes; census test green |
 | M1 | Port + both stores + contract tests | contract suite green sqlite + pg |
 | M2 | Validation + summary + service | typecheck; unit incl. Gnos fixtures |
 | M3 | 4 MCP tools + wiring + footer | MCP tests; stdio smoke |

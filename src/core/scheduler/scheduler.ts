@@ -68,6 +68,7 @@ const DEFAULT_INTERVAL_MS = 30 * 60 * 1000; // 30 min, matches Python default
 const DEFAULT_CLASSIFY_TIMEOUT_MS = 120_000;
 const DEFAULT_CONFIDENCE_FLOOR = 0.3;
 const DEFAULT_IDLE_MINUTES = 15;
+const SUBAGENT_RUNTIMES: ReadonlySet<string> = new Set(["claude-code", "muse"]);
 const DEFAULT_EXEMPLAR_MAX_PER_BUCKET = 50;
 const BODY_CAP = 200_000;
 
@@ -300,10 +301,11 @@ export class ScanScheduler {
         }
 
         // Task #352 phase 2: stamp agent_persona/parent_session_id at classify
-        // time. claude-code encodes subagent lineage in runtimeSessionId +
-        // label (deriveSubagentMeta reverses that encoding); every other
-        // adapter has no subagent concept, so persona is just the runtime name.
-        const subagentMeta = adapter.name === "claude-code"
+        // time. claude-code and muse encode subagent lineage in
+        // runtimeSessionId + label (deriveSubagentMeta reverses that encoding);
+        // every other adapter has no subagent concept, so persona is just the
+        // runtime name.
+        const subagentMeta = SUBAGENT_RUNTIMES.has(adapter.name)
           ? deriveSubagentMeta(chunk.runtimeSessionId, chunk.label)
           : { persona: adapter.name, parentSessionId: null };
 

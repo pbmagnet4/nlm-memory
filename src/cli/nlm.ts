@@ -22,6 +22,7 @@
  *   nlm disconnect claude-code — remove MCP block from ~/.mcp.json
  *   nlm disconnect codex       — remove Codex plugin
  *   nlm digest   — print a daily-activity digest (or --telegram to post)
+ *   nlm reconcile-facts — retire live facts contradicting an authorities file
  *   nlm init     - print (or write) the agent recall contract snippet
  */
 
@@ -41,6 +42,12 @@ import type { SourceRegistryPort } from "../core/sources/source-registry.js";
 import { SqliteStorage } from "../core/storage/sqlite-storage.js";
 import { PgStorage } from "../core/storage/pg-storage.js";
 import { applyPendingRestore, stageRestore } from "../core/storage/db-restore.js";
+import {
+  applyRetirements,
+  findContradictions,
+  formatReport,
+  loadAuthorities,
+} from "../core/facts/reconcile-facts.js";
 import { listBackupDates, resolveBackup, runRollingBackup } from "../core/storage/backup-rotation.js";
 import { createApp } from "../http/app.js";
 import { createMcpServer, listMergeSuggestionsHandler, mergeWorkstreamsHandler, rebindSessionHandler, recallWorkstreamHandler, renameWorkstreamHandler, retireWorkstreamHandler } from "../mcp/server.js";
@@ -68,6 +75,9 @@ import { codexConfigPath } from "../install/codex.js";
 import { hardenNlmDirPermissions } from "../install/nlm-dir-perms.js";
 import { embeddingModelPresent, ensureMcpToken, ollamaModelPresent } from "../install/ollama.js";
 import { connectCursor, disconnectCursor } from "../install/cursor.js";
+import { connectLocalSource, type LocalSourceSpec } from "../install/local-source.js";
+import { defaultDbPath as openCodeDefaultDbPath } from "../core/adapters/opencode.js";
+import { defaultSessionsPath as museDefaultSessionsPath } from "../core/adapters/muse.js";
 import {
   describeRemove,
   describeUpsert,
@@ -766,6 +776,39 @@ program
       }
     }
 
+    // Exemplar embed-backfill: repairs code_exemplars rows whose vector was
+    // dropped by a cold CodeRankEmbed on first capture (see
+    // core/exemplars/embed-backfill.ts). SQLite only, same constraint as the
+    // corpus monitor above — discovery reads code_exemplars_vec directly via
+    // dbPath(). Daily cadence: the drop is a rare cold-embedder race, not a
+    // steady leak, so this just keeps recall_code from silently degrading
+    // between operator-run `nlm embed-backfill --exemplars` passes.
+    if (!(storage instanceof PgStorage) && process.env["NLM_CODE_EXEMPLARS_ENABLED"] === "1") {
+      const EXEMPLAR_BACKFILL_INTERVAL_MS = 24 * 60 * 60 * 1000;
+      const EXEMPLAR_BACKFILL_INITIAL_DELAY_MS = 120 * 1000;
+      const runExemplarBackfill = async () => {
+        try {
+          const report = await backfillExemplarEmbeddings({
+            tenantId: DEFAULT_TEAM_ID,
+            dbPath: dbPath(),
+            embedder: buildCodeEmbedder(),
+            store: storage.exemplars,
+          });
+          if (report.succeeded > 0 || report.failed > 0) {
+            console.error(
+              `[exemplar-backfill] ${report.succeeded}/${report.total} repaired (${report.failed} failed)`,
+            );
+          }
+        } catch (e) {
+          console.error(`[exemplar-backfill] error: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      };
+      const exemplarBackfillTimer = setInterval(() => { void runExemplarBackfill(); }, EXEMPLAR_BACKFILL_INTERVAL_MS);
+      exemplarBackfillTimer.unref();
+      setTimeout(() => { void runExemplarBackfill(); }, EXEMPLAR_BACKFILL_INITIAL_DELAY_MS).unref();
+      console.error("  exemplar-backfill: enabled, repair sweep every 24h");
+    }
+
     // Memo sweep runs independently of the transcript scheduler — it's the
     // backstop for SessionEnd hook unreliability (crashes, kill -9, IDE
     // force-close don't fire SessionEnd, so memo files would otherwise
@@ -1297,6 +1340,51 @@ program
       reason: opts.reason,
       yes: Boolean(opts.yes),
     });
+  });
+
+program
+  .command("reconcile-facts")
+  .description("Find live facts that contradict an authorities file (dry run unless --apply)")
+  .requiredOption("--authorities <file>", "JSON file of authoritative values and deleted files")
+  .option("--apply", "retire the findings (backs up the DB first)")
+  .option("-l, --limit <n>", "max facts changed per run", (v) => Number.parseInt(v, 10), 100)
+  .option("--json", "emit the report as JSON")
+  .action(async (opts) => {
+    if (process.env["NLM_PG_URL"]) {
+      console.error("nlm reconcile-facts: the Postgres backend is not supported yet");
+      process.exit(1);
+    }
+    const storage = SqliteStorage.create({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
+    try {
+      const db = storage.rawDb();
+      const findings = findContradictions(db, loadAuthorities(opts.authorities as string));
+      const limit = opts.limit as number;
+      const applied = opts.apply ? await applyRetirements(db, dbPath(), findings, limit) : null;
+      if (opts.json) {
+        process.stdout.write(
+          JSON.stringify(
+            {
+              applied: Boolean(opts.apply),
+              total: findings.length,
+              findings,
+              retired: applied?.retired.map((f) => f.factId) ?? [],
+              backupPath: applied?.backupPath ?? null,
+            },
+            null,
+            2,
+          ) + "\n",
+        );
+        return;
+      }
+      console.log(formatReport(findings, limit));
+      if (applied) {
+        console.log(`retired ${applied.retired.length} fact(s); backup: ${applied.backupPath ?? "none"}`);
+      } else {
+        console.log("dry run: nothing written (pass --apply to retire)");
+      }
+    } finally {
+      await storage.close();
+    }
   });
 
 program
@@ -2340,23 +2428,57 @@ connect
 connect
   .command("opencode")
   .description("Register OpenCode as an nlm source (reads opencode.db directly) and optionally install rules nudge")
+  .option("--db-path <path>", "override path to opencode.db")
   .option("--with-rules", "also install global rules nudge at ~/.config/opencode/AGENTS.md")
   .option("--dry-run", "print what would happen without changing files")
-  .action((opts) => {
+  .action(async (opts) => {
+    const spec = {
+      kind: "opencode" as const,
+      name: "OpenCode",
+      runtimeLabel: "opencode/1.0",
+      path: (opts.dbPath as string | undefined) ?? openCodeDefaultDbPath(),
+    };
+    await connectLocalSourceCommand(spec, Boolean(opts.dryRun));
     if (opts.dryRun) {
-      console.error("nlm connect opencode (dry run):");
-      console.error("  OpenCode adapter is already wired via migrations/010_sources_opencode.sql — no source-registry mutation required");
-      if (opts.withRules) console.error("  install global rules nudge at ~/.config/opencode/AGENTS.md");
+      if (opts.withRules) console.error("  also install global rules nudge at ~/.config/opencode/AGENTS.md");
       return;
     }
-    console.error("nlm: OpenCode source already registered (see migration 010). No source-registry changes needed.");
     if (opts.withRules) {
       const rules = installOpencodeRules();
       console.error(`  ${describeUpsert("OpenCode", rules)}`);
-    } else {
-      console.error("  Pass --with-rules to install the recall nudge at ~/.config/opencode/AGENTS.md");
     }
   });
+
+connect
+  .command("muse")
+  .description("Register Muse as an nlm source (reads its session store directly — no files installed)")
+  .option("--sessions-path <path>", "override path to the Muse sessions directory")
+  .option("--dry-run", "print what would happen without changing files")
+  .action(async (opts) => {
+    await connectLocalSourceCommand({
+      kind: "muse",
+      name: "Muse",
+      runtimeLabel: "muse/1.0",
+      path: (opts.sessionsPath as string | undefined) ?? museDefaultSessionsPath(),
+    }, Boolean(opts.dryRun));
+  });
+
+async function connectLocalSourceCommand(spec: LocalSourceSpec, dryRun: boolean): Promise<void> {
+  const storage = SqliteStorage.create({ dbPath: dbPath(), migrationsDir: MIGRATIONS_DIR });
+  await storage.init();
+  try {
+    const report = await connectLocalSource(storage.sources, DEFAULT_TEAM_ID, spec, { dryRun });
+    const missing = report.exists ? "" : " (not found yet)";
+    if (dryRun) {
+      console.error(`nlm connect ${spec.kind} (dry run): register source at ${report.path}${missing}`);
+      return;
+    }
+    console.error(`nlm: ${spec.name} source ${report.action} → ${report.path}${missing}`);
+    console.error("  restart the daemon to start scanning it");
+  } finally {
+    await storage.close();
+  }
+}
 
 connect
   .command("pi")

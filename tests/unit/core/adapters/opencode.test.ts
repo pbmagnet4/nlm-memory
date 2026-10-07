@@ -6,12 +6,16 @@
  * with better-sqlite3 in readonly mode.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { OpenCodeAdapter } from "../../../../src/core/adapters/opencode.js";
+import { OpenCodeAdapter, defaultDbPath } from "../../../../src/core/adapters/opencode.js";
+import { recordClassified, scanOnce } from "../../../../src/core/scheduler/scan-once.js";
+import { SqliteStorage } from "../../../../src/core/storage/sqlite-storage.js";
+
+const MIGRATIONS_DIR = join(__dirname, "../../../../migrations");
 
 // ── Schema helpers ────────────────────────────────────────────────────────────
 
@@ -168,8 +172,8 @@ describe("OpenCodeAdapter.discover", () => {
 
     const adapter = new OpenCodeAdapter({ dbPath });
     const ids = await adapter.discover();
-    expect(ids).toContain("sess_a");
-    expect(ids).toContain("sess_b");
+    expect(ids).toContain(`${dbPath}::sess_a`);
+    expect(ids).toContain(`${dbPath}::sess_b`);
     expect(ids.length).toBe(2);
   });
 
@@ -180,8 +184,8 @@ describe("OpenCodeAdapter.discover", () => {
 
     const adapter = new OpenCodeAdapter({ dbPath });
     const ids = await adapter.discover();
-    expect(ids).toContain("sess_live");
-    expect(ids).not.toContain("sess_archived");
+    expect(ids).toContain(`${dbPath}::sess_live`);
+    expect(ids).not.toContain(`${dbPath}::sess_archived`);
   });
 
   it("respects the since option", async () => {
@@ -194,8 +198,8 @@ describe("OpenCodeAdapter.discover", () => {
     const adapter = new OpenCodeAdapter({ dbPath });
     const cutoff = new Date(old + 1);
     const ids = await adapter.discover({ since: cutoff });
-    expect(ids).toContain("sess_new");
-    expect(ids).not.toContain("sess_old");
+    expect(ids).toContain(`${dbPath}::sess_new`);
+    expect(ids).not.toContain(`${dbPath}::sess_old`);
   });
 
   it("returns empty array when DB is absent", async () => {
@@ -350,5 +354,63 @@ describe("OpenCodeAdapter metadata", () => {
     expect(adapter.name).toBe("opencode");
     expect(adapter.runtimeVersion).toBe("opencode/1.0");
     expect(adapter.transcriptKind).toBe("opencode-sqlite");
+  });
+});
+
+describe("defaultDbPath", () => {
+  let dataHome: string;
+  const saved = { xdg: process.env["XDG_DATA_HOME"], explicit: process.env["OPENCODE_DB_PATH"] };
+
+  beforeEach(() => {
+    dataHome = mkdtempSync(join(tmpdir(), "nlm-oc-xdg-"));
+    process.env["XDG_DATA_HOME"] = dataHome;
+    delete process.env["OPENCODE_DB_PATH"];
+  });
+
+  afterEach(() => {
+    rmSync(dataHome, { recursive: true, force: true });
+    if (saved.xdg === undefined) delete process.env["XDG_DATA_HOME"];
+    else process.env["XDG_DATA_HOME"] = saved.xdg;
+    if (saved.explicit !== undefined) process.env["OPENCODE_DB_PATH"] = saved.explicit;
+  });
+
+  it("prefers the XDG data path when opencode.db exists there, on every platform", () => {
+    mkdirSync(join(dataHome, "opencode"));
+    writeFileSync(join(dataHome, "opencode", "opencode.db"), "");
+    expect(defaultDbPath()).toBe(join(dataHome, "opencode", "opencode.db"));
+  });
+
+  it("honours OPENCODE_DB_PATH over everything", () => {
+    process.env["OPENCODE_DB_PATH"] = "/explicit/opencode.db";
+    expect(defaultDbPath()).toBe("/explicit/opencode.db");
+  });
+});
+
+describe("OpenCodeAdapter through scanOnce", () => {
+  it("yields each idle session once, then skips it until it changes", async () => {
+    const updated = Date.now() - 3600_000;
+    addSession(db, { id: "sess_scan", timeCreated: updated - 60_000, timeUpdated: updated });
+    addMessage(db, "sess_scan", "msg_1", "user", updated - 50_000);
+    addTextPart(db, "sess_scan", "msg_1", "wire the opencode adapter into the scheduler");
+    addMessage(db, "sess_scan", "msg_2", "assistant", updated - 40_000);
+    addTextPart(db, "sess_scan", "msg_2", "done, it now goes through scanOnce");
+    db.close();
+
+    const store = mkdtempSync(join(tmpdir(), "nlm-oc-scan-"));
+    const storage = SqliteStorage.create({ dbPath: join(store, "nlm.sqlite"), migrationsDir: MIGRATIONS_DIR });
+    await storage.init();
+    try {
+      const adapter = new OpenCodeAdapter({ dbPath });
+      const first = await scanOnce(adapter, 15, storage.rawDb());
+      expect(first).toHaveLength(1);
+      const { chunk, fileSize } = first[0]!;
+      expect(chunk.sourcePath).toBe(`${dbPath}::sess_scan`);
+
+      recordClassified(storage.rawDb(), adapter.name, chunk.sourcePath, chunk.id, fileSize);
+      expect(await scanOnce(adapter, 15, storage.rawDb())).toHaveLength(0);
+    } finally {
+      await storage.close();
+      rmSync(store, { recursive: true, force: true });
+    }
   });
 });

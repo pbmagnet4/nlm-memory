@@ -222,7 +222,7 @@ function tenantStatePath(tenantId, ...segments) {
 // package.json
 var package_default = {
   name: "nlm-memory",
-  version: "0.21.5",
+  version: "0.21.10",
   description: "Local-first non-linear memory operating system for AI operators.",
   type: "module",
   license: "Apache-2.0",
@@ -269,6 +269,7 @@ var package_default = {
     "build:server": "tsc -p tsconfig.json && tsc-alias -p tsconfig.json",
     "build:ui": "vite build --config src/ui/vite.config.ts",
     "build:codex-plugin": "node scripts/build-codex-plugin.mjs",
+    "verify:codex-release": "node scripts/verify-codex-release.mjs",
     build: "npm run build:server && npm run build:ui && npm run build:codex-plugin",
     prepare: "[ -d src ] && npm run build || true",
     "ui:dev": "vite --config src/ui/vite.config.ts",
@@ -411,8 +412,8 @@ function truncateSummary(s, max = 200) {
   }
   return window + " ...";
 }
-function formatPointerBlock(hits, facts = [], exemplars = []) {
-  if (hits.length === 0 && facts.length === 0 && exemplars.length === 0) return "";
+function formatPointerBlock(hits, facts = [], exemplars = [], concepts = []) {
+  if (hits.length === 0 && facts.length === 0 && exemplars.length === 0 && concepts.length === 0) return "";
   const out = [];
   if (hits.length > 0) {
     out.push("## Possibly-relevant prior sessions (nlm-memory)");
@@ -441,7 +442,19 @@ function formatPointerBlock(hits, facts = [], exemplars = []) {
       out.push(`- [${e.outcome}] ${langPart}${e.repo} - ${truncateSummary(e.taskContext)}`);
     }
   }
-  const tools = exemplars.length > 0 ? "NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved), recall_code (pull the full code for a related exemplar)." : "NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved).";
+  if (concepts.length > 0) {
+    if (out.length > 0) out.push("");
+    out.push("## Learning state (nlm-memory)");
+    for (const c of concepts) {
+      const n = c.attemptCount === 1 ? "1 attempt" : `${c.attemptCount} attempts`;
+      out.push(`- [${c.status}] ${c.concept} (${n})`);
+    }
+    const nextSteps = [...new Set(concepts.map((c) => c.nextStep).filter((s) => !!s))].slice(0, 2);
+    for (const next of nextSteps) {
+      out.push(`Next: ${truncateSummary(next, 120)}`);
+    }
+  }
+  const tools = exemplars.length > 0 ? "NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved), recall_code (pull the full code for a related exemplar), learner_summary (concept mastery + next step)." : "NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved), learner_summary (concept mastery + next step).";
   out.push(tools);
   return out.join("\n");
 }
@@ -707,6 +720,7 @@ var emptyResult = (outcome) => ({
   hits: [],
   facts: [],
   exemplars: [],
+  concepts: [],
   outcome
 });
 async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword", source = "hook") {
@@ -717,7 +731,7 @@ async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword",
     // 127.0.0.1, not localhost: each hook is a fresh process with no connection
     // reuse, and Node resolves localhost to IPv6 ::1 first — a measured ~50-300ms
     // per-fire connect penalty vs ~3ms on the explicit IPv4 loopback.
-    `http://127.0.0.1:${portValue}/api/recall?q=${encodeURIComponent(query)}&mode=${mode}&limit=${RECALL_LIMIT}&withFacts=true&withExemplars=true` + (conversationId ? `&conversation_id=${encodeURIComponent(conversationId)}` : "")
+    `http://127.0.0.1:${portValue}/api/recall?q=${encodeURIComponent(query)}&mode=${mode}&limit=${RECALL_LIMIT}&withFacts=true&withExemplars=true&withConcepts=true` + (conversationId ? `&conversation_id=${encodeURIComponent(conversationId)}` : "")
   );
   try {
     const extra = { "x-recall-source": source };
@@ -749,7 +763,13 @@ async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword",
       repo: e.repo,
       taskContext: e.taskContext
     }));
-    return { hits, facts, exemplars, outcome: "ok" };
+    const concepts = (body.relatedConcepts ?? []).map((c) => ({
+      concept: c.concept,
+      status: c.status,
+      attemptCount: c.attemptCount,
+      nextStep: c.nextStep
+    }));
+    return { hits, facts, exemplars, concepts, outcome: "ok" };
   } catch (err) {
     const aborted = err instanceof Error && err.name === "AbortError";
     return emptyResult(aborted ? "timeout" : "unreachable");
@@ -926,7 +946,7 @@ ${h.summary ?? ""}`) }))),
       injected = selected.filter((h) => !drop.has(h.id));
     }
   }
-  const block = formatPointerBlock(injected, fetched.facts, fetched.exemplars);
+  const block = formatPointerBlock(injected, fetched.facts, fetched.exemplars, fetched.concepts ?? []);
   const estTokens = Math.ceil(block.length / 4);
   appendHookLog(DEFAULT_TEAM_ID, {
     ts: (/* @__PURE__ */ new Date()).toISOString(),
