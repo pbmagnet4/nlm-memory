@@ -33,6 +33,14 @@ export interface PointerExemplar {
   readonly taskContext: string;
 }
 
+export interface PointerConcept {
+  readonly concept: string;
+  readonly status: string;
+  readonly attemptCount: number;
+  /** Owning enrollment's latest next_step (shared across its concepts). */
+  readonly nextStep: string | null;
+}
+
 export function truncateSummary(s: string, max = 200): string {
   if (s.length <= max) return s;
   const window = s.slice(0, max);
@@ -58,8 +66,9 @@ export function formatPointerBlock(
   hits: ReadonlyArray<PointerHit>,
   facts: ReadonlyArray<PointerFact> = [],
   exemplars: ReadonlyArray<PointerExemplar> = [],
+  concepts: ReadonlyArray<PointerConcept> = [],
 ): string {
-  if (hits.length === 0 && facts.length === 0 && exemplars.length === 0) return "";
+  if (hits.length === 0 && facts.length === 0 && exemplars.length === 0 && concepts.length === 0) return "";
   const out: string[] = [];
   if (hits.length > 0) {
     out.push("## Possibly-relevant prior sessions (nlm-memory)");
@@ -88,9 +97,21 @@ export function formatPointerBlock(
       out.push(`- [${e.outcome}] ${langPart}${e.repo} - ${truncateSummary(e.taskContext)}`);
     }
   }
+  if (concepts.length > 0) {
+    if (out.length > 0) out.push("");
+    out.push("## Learning state (nlm-memory)");
+    for (const c of concepts) {
+      const n = c.attemptCount === 1 ? "1 attempt" : `${c.attemptCount} attempts`;
+      out.push(`- [${c.status}] ${c.concept} (${n})`);
+    }
+    const nextSteps = [...new Set(concepts.map((c) => c.nextStep).filter((s): s is string => !!s))].slice(0, 2);
+    for (const next of nextSteps) {
+      out.push(`Next: ${truncateSummary(next, 120)}`);
+    }
+  }
   const tools = exemplars.length > 0
-    ? "NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved), recall_code (pull the full code for a related exemplar)."
-    : "NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved).";
+    ? "NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved), recall_code (pull the full code for a related exemplar), learner_summary (concept mastery + next step)."
+    : "NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved), learner_summary (concept mastery + next step).";
   out.push(tools);
   return out.join("\n");
 }

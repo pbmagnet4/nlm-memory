@@ -1,0 +1,4 @@
+## Task 1 — core JobSupervisor
+
+`src/core/jobs/job-supervisor.ts`: class or closure managing one run. API: `start(args: string[])` (throws/refuses if active), `stop()`, `snapshot()` → the health `job` block shape, plus an `onEvent` callback port for alert firing (`{kind: "stalled" | "exhausted", ...}`). Injected ports: `spawnChild(args) → {onLine(cb), onExit(cb), kill()}`, clock. Restart policy + stall timer per the design above (stall check on a coarse `setInterval` behind the clock port). Parse progress lines with the exact `[N/total]` regex from reprocess's verbose output — verify the real format in `src/core/ingest/reprocess.ts` first and note it in the report. Unit tests (fake spawner + fake clock): normal completion; exit-with-work-remaining restarts; 3 no-progress restarts → exhausted event, no 4th spawn; progress resets the counter; stall event fires once per episode; stop() kills and goes idle; snapshot shapes for idle/running/stalled.
+

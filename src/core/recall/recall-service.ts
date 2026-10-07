@@ -33,6 +33,7 @@ import { detectQueryShape } from "./query-shape.js";
 import { recencyMultiplier } from "./recency.js";
 import { pickRelatedFacts } from "./related-facts.js";
 import { pickRelatedExemplars } from "./related-exemplars.js";
+import { pickRelatedConcepts } from "./related-concepts.js";
 import { RewriteCache } from "./rewrite-cache.js";
 import { tokenSet } from "./tokenize.js";
 import { tiebreakFactor } from "./metadata-tiebreaker.js";
@@ -50,6 +51,12 @@ const EMBED_DEADLINE_MS = parseEmbedDeadline(process.env["NLM_RECALL_EMBED_DEADL
 
 function isFactInjectionEnabled(): boolean {
   const raw = process.env["NLM_HOOK_INJECT_FACTS"];
+  if (raw === undefined) return true;
+  return raw !== "0" && raw.toLowerCase() !== "false";
+}
+
+function isConceptInjectionEnabled(): boolean {
+  const raw = process.env["NLM_HOOK_INJECT_CONCEPTS"];
   if (raw === undefined) return true;
   return raw !== "0" && raw.toLowerCase() !== "false";
 }
@@ -85,6 +92,15 @@ export interface RecallServiceDeps {
    * no-op. Injected by buildStack(); tests can stub with a plain fn.
    */
   readonly resolveWorkstreamMembers?: (idOrLabel: string) => Promise<ReadonlyArray<string>>;
+  /**
+   * Learner-evidence recall (spec 2026-10-06): when present, search() can
+   * attach `relatedConcepts` for callers that request `withRelatedConcepts`.
+   * Optional like factStore — lightweight callers omit it.
+   */
+  readonly learnerDeps?: {
+    readonly learners: import("@ports/learner-store.js").LearnerStore;
+    readonly sessions: Pick<import("@ports/session-store.js").SessionStore, "getWorkstreamIds">;
+  };
 }
 
 export class RecallService {
@@ -267,6 +283,16 @@ export class RecallService {
       const relatedFacts = await pickRelatedFacts(tenantId, result.results, this.deps.factStore);
       if (relatedFacts.length > 0) {
         result = { ...result, relatedFacts };
+      }
+    }
+
+    // 6a. Learner-evidence recall (spec 2026-10-06). Same posture as facts:
+    //     opt-in flag + wired deps + kill switch; the picker itself is
+    //     fail-open so recall never breaks because of concept lookup.
+    if (input.withRelatedConcepts === true && this.deps.learnerDeps && isConceptInjectionEnabled()) {
+      const relatedConcepts = await pickRelatedConcepts(tenantId, result.results, this.deps.learnerDeps);
+      if (relatedConcepts.length > 0) {
+        result = { ...result, relatedConcepts };
       }
     }
 

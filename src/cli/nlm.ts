@@ -399,6 +399,7 @@ async function buildStack() {
     store,
     llm: embedder,
     factStore: facts,
+    learnerDeps: { learners: storage.learners, sessions: store },
     exemplarStore: storage.exemplars,
     codeEmbedder: buildCodeEmbedder(),
     installScope: scope,
@@ -518,6 +519,7 @@ program
         classifierDescriptor: { provider: classifier.provider, model: classifier.model },
       },
       signalStore: signals,
+      learnerRecall: { learners: storage.learners, sessions: store },
       installScope: scope,
       // Signal scope inheritance (NLM_SCOPE_STAMP): a signal with only a
       // session_id inherits that session's stamped scope at ingest.
@@ -548,6 +550,7 @@ program
               sessionScopeReader: store,
               workDigest: { store, topicProvider: loadTopicProvider(), workstreams: storage.workstreams, ...workDigestEnv() },
               workstreams: { store: storage.workstreams, sessions: store, facts: facts, exemplars: storage.exemplars },
+              learners: { store: storage.learners, workstreams: storage.workstreams, sessions: store },
             },
           }
         : {}),
@@ -1717,6 +1720,7 @@ program
         sessionScopeReader: store,
         workDigest: { store, topicProvider: loadTopicProvider(), workstreams: storage.workstreams, ...workDigestEnv() },
         workstreams: { store: storage.workstreams, sessions: store, facts: facts, exemplars: storage.exemplars },
+        learners: { store: storage.learners, workstreams: storage.workstreams, sessions: store },
         // Tier-B outcome rollup (#352 phase 2) only has a SQLite adapter today;
         // PgStorage deployments skip get_session's `outcome` field until parity lands.
         ...(storage instanceof SqliteStorage ? { outcomeDb: storage.rawDb() } : {}),

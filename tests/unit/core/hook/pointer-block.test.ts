@@ -156,3 +156,35 @@ describe("formatPointerBlock — code exemplars section", () => {
     expect(formatPointerBlock([], [], [])).toBe("");
   });
 });
+
+describe("formatPointerBlock — learning state section", () => {
+  it("renders concepts plus deduped next steps after exemplars", () => {
+    const out = formatPointerBlock(
+      [],
+      [],
+      [],
+      [
+        { concept: "math.product-rule", status: "practicing", attemptCount: 2, nextStep: "Compare u=3x+1." },
+        { concept: "math.chain-rule", status: "demonstrated", attemptCount: 1, nextStep: "Compare u=3x+1." },
+      ],
+    );
+    expect(out).toContain("## Learning state (nlm-memory)");
+    expect(out).toContain("- [practicing] math.product-rule (2 attempts)");
+    expect(out).toContain("- [demonstrated] math.chain-rule (1 attempt)");
+    expect(out.match(/Next: Compare u=3x\+1\./g)).toHaveLength(1);
+  });
+
+  it("omits the section when there are no concepts", () => {
+    const out = formatPointerBlock([{ id: "s1", label: "L", startedAt: "2026-06-19T00:00:00Z" }], [], [], []);
+    expect(out).not.toContain("Learning state");
+  });
+
+  it("renders the block for concepts alone", () => {
+    const out = formatPointerBlock(
+      [], [], [],
+      [{ concept: "math.chain-rule", status: "exposed", attemptCount: 0, nextStep: null }],
+    );
+    expect(out).toContain("## Learning state (nlm-memory)");
+    expect(out).not.toContain("Next:");
+  });
+});

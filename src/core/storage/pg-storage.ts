@@ -13,6 +13,7 @@ import type { Storage } from "@ports/storage.js";
 import { runMigrationsPg } from "./pg-migrate.js";
 import { PgEntityStore } from "./pg-entity-store.js";
 import { PgFactStore } from "./pg-fact-store.js";
+import { PgLearnerStore } from "./pg-learner-store.js";
 import { PgSessionStore } from "./pg-session-store.js";
 import { PgSignalStore } from "./pg-signal-store.js";
 import { PgCodeExemplarStore } from "./pg-code-exemplar-store.js";
@@ -34,6 +35,7 @@ export class PgStorage implements Storage {
   readonly exemplars: PgCodeExemplarStore;
   readonly workstreams: PgWorkstreamStore;
   readonly entities: PgEntityStore;
+  readonly learners: PgLearnerStore;
   readonly embeddingConfig: PgEmbeddingConfigStore;
   readonly sources: PgSourceRegistry;
   readonly providers: PgProviderRegistry;
@@ -50,6 +52,7 @@ export class PgStorage implements Storage {
     this.exemplars = new PgCodeExemplarStore(pool);
     this.workstreams = new PgWorkstreamStore(pool);
     this.entities = new PgEntityStore(pool);
+    this.learners = new PgLearnerStore(pool);
     this.embeddingConfig = new PgEmbeddingConfigStore(pool);
     this.sources = new PgSourceRegistry(pool);
     this.providers = new PgProviderRegistry(pool);

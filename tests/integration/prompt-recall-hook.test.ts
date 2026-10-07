@@ -58,6 +58,25 @@ describe("runHook", () => {
     expect([...memo].sort()).toEqual(["sess_a", "sess_b"]);
   });
 
+  it("live mode injects fetched concepts as a Learning state section", async () => {
+    const out = await runHook(
+      { prompt: "what did we decide about pgvector", conversationId: "c1" },
+      {
+        mode: "live",
+        recall: async () => ({
+          hits: hits("sess_a"),
+          facts: [],
+          concepts: [
+            { concept: "math.chain-rule", status: "practicing", attemptCount: 2, nextStep: "Compare u=3x+1." },
+          ],
+        }),
+      },
+    );
+    expect(out).toContain("## Learning state (nlm-memory)");
+    expect(out).toContain("[practicing] math.chain-rule (2 attempts)");
+    expect(out).toContain("Next: Compare u=3x+1.");
+  });
+
   it("recall gate shadow logs decisions without changing injection", async () => {
     const out = await runHook(
       { prompt: "what did we decide about pgvector", conversationId: "c1" },

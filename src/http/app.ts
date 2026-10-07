@@ -54,6 +54,9 @@ import { formatPointerBlock, type PointerExemplar } from "@core/hook/pointer-blo
 import type { FactRecallService } from "@core/recall-facts/fact-recall-service.js";
 import { factRecallStats, logFactQuery } from "@core/recall-facts/fact-query-log.js";
 import type { FactStore } from "@ports/fact-store.js";
+import type { LearnerStore } from "@ports/learner-store.js";
+import type { RecallHit } from "@shared/types.js";
+import { pickRelatedConcepts } from "@core/recall/related-concepts.js";
 import { buildDataset } from "@core/dataset/build-dataset.js";
 import { ClassifierBox, type ClassifierProvider } from "../llm/classifier-box.js";
 import {
@@ -144,6 +147,11 @@ export interface HttpDeps {
   readonly sources?: SourceRegistry | PgSourceRegistry;
   /** Providers registry — exposes /api/providers CRUD for the desktop UI. */
   readonly providers?: ProviderRegistry | PgProviderRegistry;
+  /** Wire to enable GET /api/learner/by-session/:id. When omitted, the route 404s. */
+  readonly learnerRecall?: {
+    readonly learners: LearnerStore;
+    readonly sessions: Pick<SessionStore, "getWorkstreamIds">;
+  };
   /** Wire to enable POST /api/ingest. When omitted, push ingest is disabled. */
   readonly ingest?: IngestDeps;
   /** Static embedder info — embeddings are always Ollama in this build (DeepSeek has no /embed). */
@@ -805,6 +813,18 @@ function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
       withRelatedFacts = true;
     }
 
+    // Learner evidence (spec 2026-10-06): `?withConcepts=true` (or hook
+    // source = automatic) attaches a relatedConcepts array. Same posture
+    // as facts; empty when no enrollments match, so non-learner callers
+    // see zero behavior change.
+    const conceptsParam = c.req.query("withConcepts");
+    let withRelatedConcepts: boolean | undefined;
+    if (conceptsParam !== undefined) {
+      withRelatedConcepts = conceptsParam === "true" || conceptsParam === "1";
+    } else if (source === "hook") {
+      withRelatedConcepts = true;
+    }
+
     // Spec §E: `?withExemplars=true` attaches relatedExemplars (passive code exemplar recall).
     const withExemplars = c.req.query("withExemplars") === "true";
 
@@ -823,6 +843,7 @@ function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
       ...(kind !== undefined ? { kind: kind as RecallKindFilter } : {}),
       ...(rewrite !== undefined ? { rewrite } : {}),
       ...(withRelatedFacts !== undefined ? { withRelatedFacts } : {}),
+      ...(withRelatedConcepts !== undefined ? { withRelatedConcepts } : {}),
       ...(withExemplars ? { withRelatedExemplars: true } : {}),
       ...(includeSuperseded !== undefined ? { includeSuperseded } : {}),
     };
@@ -1697,6 +1718,32 @@ function registerSessionRoute(app: Hono<AppEnv>, deps: HttpDeps): void {
       return c.json({ error: `session ${id} not found` }, 404);
     }
     return c.json(session);
+  });
+
+  // Learner strip data for the session drawer (spec 2026-10-06 M5): concept
+  // rows for enrollments bound to this session's workstream, reusing the
+  // same picker the recall hook uses. Always 200 with possibly-empty arrays
+  // once the session resolves — the UI hides the section when empty.
+  app.get("/api/learner/by-session/:id", async (c) => {
+    const tenantId = c.get("tenantId");
+    if (!deps.learnerRecall) {
+      return c.json({ error: "learner recall not wired" }, 404);
+    }
+    const id = c.req.param("id");
+    const session = await deps.store.getById(tenantId, id);
+    if (!session) {
+      return c.json({ error: `session ${id} not found` }, 404);
+    }
+    const concepts = await pickRelatedConcepts(tenantId, [{ id } as RecallHit], deps.learnerRecall);
+    const wsMap = await deps.learnerRecall.sessions.getWorkstreamIds(tenantId, [id]);
+    const wsId = wsMap.get(id);
+    const enrollments = wsId
+      ? await deps.learnerRecall.learners.listEnrollmentsByWorkstreams(tenantId, [wsId])
+      : [];
+    return c.json({
+      enrollments: enrollments.map((e) => ({ learnerId: e.learnerId, courseId: e.courseId, status: e.status })),
+      concepts,
+    });
   });
 
   // Post-hoc supersedence write path. Mirrors the `mark_superseded` MCP tool

@@ -37,6 +37,13 @@ import { stampSignalScope, type SessionScopeReader } from "@core/signals/stamp-s
 import type { SignalStore } from "@ports/signal-store.js";
 import { deriveOutcome } from "@core/outcome/rollup.js";
 import { buildSqliteOutcomeDeps } from "@core/storage/sqlite-outcome-store.js";
+import {
+  completeLearnerCourse,
+  enrollCourse,
+  getCourseSummary,
+  recordLearningEvent,
+} from "@core/learner/service.js";
+import { truncateSummary } from "@core/hook/pointer-block.js";
 import type {
   FactKind,
   FactRecallQuery,
@@ -86,6 +93,12 @@ export interface McpDeps {
     readonly sessions: Pick<SessionStore, "listSessionIdsByWorkstreams">;
     readonly facts: Pick<FactStore, "listBySessions">;
     readonly exemplars: Pick<import("@ports/code-exemplar-store.js").CodeExemplarStore, "listBySessions">;
+  };
+  /** Wire to enable the learner_* tools (Gnos-style concept tracking; spec 2026-10-06). */
+  readonly learners?: {
+    readonly store: import("@ports/learner-store.js").LearnerStore;
+    readonly workstreams: Pick<import("@ports/workstream-store.js").WorkstreamStore, "getById" | "findByNormalizedLabel">;
+    readonly sessions: Pick<SessionStore, "listSessionIdsByWorkstreams" | "getByIds">;
   };
   /**
    * Raw SQLite handle for the Tier-B outcome rollup (#352 phase 2). Wire to
@@ -908,6 +921,218 @@ export async function listMergeSuggestionsHandler(
   }
 }
 
+const LEARNER_ENROLL_DESCRIPTION = `\
+Enroll a learner in a course, binding the enrollment to a workstream so later
+sessions resolve their learning state at recall time. The course plan itself
+stays with the caller — NLM stores only its reference, revision, and
+fingerprint, and refuses writes when a re-enrolled plan differs.`;
+
+const LEARNER_RECORD_DESCRIPTION = `\
+Record a learning event: concepts covered plus per-concept attempts (task,
+response, result/help/kind), an interpretation, and the next step. Identical
+event ids are safe no-ops; conflicting ids fail rather than rewriting
+history. A submitted exercise is not evidence until recorded here.`;
+
+const LEARNER_SUMMARY_DESCRIPTION = `\
+Summarize what a learner has demonstrably learned in a course: per-concept
+status (exposed/practicing/demonstrated/retained), the latest next step, and
+sessions bound to the enrollment's workstream since the last recorded event
+(unrecorded candidates — record them with learner_record, don't assume).`;
+
+const LEARNER_COMPLETE_DESCRIPTION = `\
+Mark a learner's course completed. Preserves completion history and actual
+evidence; untaught or untested topics stay explicitly marked.`;
+
+export interface LearnerEnrollToolInput {
+  learner: string;
+  label?: string;
+  course: string;
+  workstream: string;
+  plan_ref: string;
+  plan_revision: number;
+  plan_fingerprint: string;
+}
+
+export interface LearnerRecordAttemptInput {
+  concept: string;
+  task: string;
+  response: string;
+  result: "correct" | "partial" | "incorrect";
+  help: "none" | "hint" | "worked-example";
+  kind: "application" | "retrieval" | "transfer";
+}
+
+export interface LearnerRecordEventInput {
+  id: string;
+  date: string;
+  covered: string[];
+  attempts: LearnerRecordAttemptInput[];
+  interpretation: string;
+  next_step: string;
+}
+
+export interface LearnerRecordToolInput {
+  learner: string;
+  course: string;
+  event: LearnerRecordEventInput;
+}
+
+export interface LearnerSummaryToolInput {
+  learner: string;
+  course?: string;
+  limit?: number;
+}
+
+export interface LearnerCompleteToolInput {
+  learner: string;
+  course: string;
+}
+
+const LEARNER_SUMMARY_DEFAULT_LIMIT = 50;
+const LEARNER_UNRECORDED_CAP = 10;
+
+export async function learnerEnrollHandler(
+  deps: McpDeps,
+  tenantId: string,
+  input: LearnerEnrollToolInput,
+): Promise<ToolResult> {
+  if (!deps.learners) return okText("learner tools are not available in this deployment.");
+  try {
+    const enrollment = await enrollCourse(
+      { learners: deps.learners.store, workstreams: deps.learners.workstreams },
+      tenantId,
+      {
+        learnerId: input.learner,
+        ...(input.label !== undefined ? { learnerLabel: input.label } : {}),
+        courseId: input.course,
+        workstream: input.workstream,
+        planRef: input.plan_ref,
+        planRevision: input.plan_revision,
+        planFingerprint: input.plan_fingerprint,
+      },
+    );
+    return okText(
+      `Enrolled ${input.learner} in ${input.course} (${enrollment.status}, plan rev ${enrollment.planRevision}).`,
+    );
+  } catch (e) {
+    return err(e);
+  }
+}
+
+export async function learnerRecordHandler(
+  deps: McpDeps,
+  tenantId: string,
+  input: LearnerRecordToolInput,
+): Promise<ToolResult> {
+  if (!deps.learners) return okText("learner tools are not available in this deployment.");
+  try {
+    const result = await recordLearningEvent(
+      { learners: deps.learners.store, workstreams: deps.learners.workstreams },
+      tenantId, input.learner, input.course, {
+      id: input.event.id,
+      date: input.event.date,
+      covered: input.event.covered,
+      attempts: input.event.attempts,
+      interpretation: input.event.interpretation,
+      nextStep: input.event.next_step,
+    });
+    return result === "inserted"
+      ? okText(`Recorded event ${input.event.id} for ${input.learner}/${input.course}.`)
+      : okText(`Event ${input.event.id} already recorded (identical) — no change.`);
+  } catch (e) {
+    return err(e);
+  }
+}
+
+export async function learnerSummaryHandler(
+  deps: McpDeps,
+  tenantId: string,
+  input: LearnerSummaryToolInput,
+): Promise<ToolResult> {
+  if (!deps.learners) return okText("learner tools are not available in this deployment.");
+  try {
+    let course = input.course?.trim() ? input.course.trim() : undefined;
+    if (!course) {
+      const enrollments = await deps.learners.store.listEnrollments(tenantId, input.learner);
+      const active = enrollments.filter((e) => e.status === "active");
+      if (active.length === 0) return okText(`No active enrollments for learner ${input.learner}.`);
+      if (active.length > 1) {
+        return okText(
+          `Multiple active courses for ${input.learner}; specify course: ${active.map((e) => e.courseId).join(", ")}.`,
+        );
+      }
+      course = active[0]!.courseId;
+    }
+    const summary = await getCourseSummary(
+      { learners: deps.learners.store, workstreams: deps.learners.workstreams },
+      tenantId,
+      input.learner,
+      course,
+    );
+    if (!summary) return okText(`No enrollment for learner ${input.learner} in course ${course}.`);
+
+    const lines: string[] = [];
+    lines.push(
+      `LEARNER ${summary.learnerId} · ${summary.courseId} (${summary.status}, rev ${summary.planRevision}, ${summary.eventCount} events)`,
+    );
+    const limit = input.limit ?? LEARNER_SUMMARY_DEFAULT_LIMIT;
+    const concepts = summary.concepts.slice(0, Math.max(0, limit));
+    if (concepts.length === 0) {
+      lines.push("(no concepts recorded yet)");
+    } else {
+      lines.push("CONCEPTS:");
+      for (const c of concepts) {
+        const n = c.attemptCount === 1 ? "1 attempt" : `${c.attemptCount} attempts`;
+        lines.push(`  - [${c.status}] ${c.concept} (${n})`);
+      }
+      if (summary.concepts.length > concepts.length) {
+        lines.push(`  (+${summary.concepts.length - concepts.length} more — raise limit)`);
+      }
+    }
+    lines.push(`Next: ${summary.nextStep ? truncateSummary(summary.nextStep) : "(none recorded)"}`);
+
+    if (summary.workstreamId) {
+      const ids = await deps.learners.sessions.listSessionIdsByWorkstreams(tenantId, [summary.workstreamId]);
+      if (ids.length > 0) {
+        const sessions = await deps.learners.sessions.getByIds(tenantId, ids);
+        const cutoff = summary.lastEventDate ?? "";
+        const unrecorded = sessions
+          .filter((s) => s.startedAt.slice(0, 10) > cutoff)
+          .sort((a, b) => (a.startedAt < b.startedAt ? -1 : 1))
+          .slice(0, LEARNER_UNRECORDED_CAP);
+        if (unrecorded.length > 0) {
+          lines.push(`Unrecorded sessions (${unrecorded.length}):`);
+          for (const s of unrecorded) {
+            lines.push(`  - ${s.id} · ${truncateSummary(s.label, 80)} (${s.startedAt.slice(0, 10)})`);
+          }
+        }
+      }
+    }
+    return okText(lines.join("\n"));
+  } catch (e) {
+    return err(e);
+  }
+}
+
+export async function learnerCompleteHandler(
+  deps: McpDeps,
+  tenantId: string,
+  input: LearnerCompleteToolInput,
+): Promise<ToolResult> {
+  if (!deps.learners) return okText("learner tools are not available in this deployment.");
+  try {
+    await completeLearnerCourse(
+      { learners: deps.learners.store, workstreams: deps.learners.workstreams },
+      tenantId,
+      input.learner,
+      input.course,
+    );
+    return okText(`Marked ${input.course} completed for ${input.learner}.`);
+  } catch (e) {
+    return err(e);
+  }
+}
+
 /**
  * The composition root for the MCP surface (program spec §4.6 "M2 threading
  * semantics until M3"): `tenantId` is required here, not defaulted, and
@@ -1404,6 +1629,85 @@ export function createMcpServer(deps: McpDeps, tenantId: string): McpServer {
         const res = await exemplarStore.setVerdict(tenantId, a.exemplar_id, patch, "human");
         return { content: [{ type: "text", text: JSON.stringify({ exemplar_id: a.exemplar_id, status: res.status }) }] } as never;
       },
+    );
+  }
+
+  if (deps.learners) {
+    server.registerTool(
+      "learner_enroll",
+      {
+        title: "Enroll Learner in Course",
+        description: LEARNER_ENROLL_DESCRIPTION,
+        inputSchema: {
+          learner: z.string().min(1).describe("Learner id (lowercase slug). Auto-created on first enroll."),
+          label: z.string().optional().describe("Display label for a new learner; defaults to the id."),
+          course: z.string().min(1).describe("Course id (lowercase slug)."),
+          workstream: z.string().min(1).describe("Workstream id or label to bind the enrollment to."),
+          plan_ref: z.string().min(1).describe("Caller-side course plan reference (NLM stores the ref, not the plan)."),
+          plan_revision: z.number().int().min(1).describe("Plan revision; a changed plan must bump, never silently upsert."),
+          plan_fingerprint: z.string().min(1).describe("Plan content fingerprint; mismatch blocks writes until reconciled."),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      },
+      async (args) => learnerEnrollHandler(deps, tenantId, args as never) as never,
+    );
+
+    server.registerTool(
+      "learner_record",
+      {
+        title: "Record Learning Event",
+        description: LEARNER_RECORD_DESCRIPTION,
+        inputSchema: {
+          learner: z.string().min(1).describe("Learner id."),
+          course: z.string().min(1).describe("Course id."),
+          event: z.object({
+            id: z.string().min(1).describe("Event id (lowercase slug, unique per enrollment)."),
+            date: z.string().describe("ISO date YYYY-MM-DD, never in the future."),
+            covered: z.array(z.string()).describe("Concept ids covered (subject.concept)."),
+            attempts: z.array(z.object({
+              concept: z.string().describe("Concept id attempted."),
+              task: z.string().min(1).describe("The task given."),
+              response: z.string().min(1).describe("Short excerpt of the learner's response."),
+              result: z.enum(["correct", "partial", "incorrect"]),
+              help: z.enum(["none", "hint", "worked-example"]),
+              kind: z.enum(["application", "retrieval", "transfer"]),
+            })).describe("Per-concept attempts (may be empty for an untested lesson)."),
+            interpretation: z.string().describe("Tentative explanation of the evidence (may be empty)."),
+            next_step: z.string().min(1).describe("What the next teacher should try or ask."),
+          }).describe("The learning event to record."),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      },
+      async (args) => learnerRecordHandler(deps, tenantId, args as never) as never,
+    );
+
+    server.registerTool(
+      "learner_summary",
+      {
+        title: "Summarize Learner Progress",
+        description: LEARNER_SUMMARY_DESCRIPTION,
+        inputSchema: {
+          learner: z.string().min(1).describe("Learner id."),
+          course: z.string().optional().describe("Course id. Omit only when exactly one active enrollment exists."),
+          limit: z.number().int().min(1).max(200).optional().describe("Max concepts to list (default 50)."),
+        },
+        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      },
+      async (args) => learnerSummaryHandler(deps, tenantId, args as never) as never,
+    );
+
+    server.registerTool(
+      "learner_complete_course",
+      {
+        title: "Complete Learner Course",
+        description: LEARNER_COMPLETE_DESCRIPTION,
+        inputSchema: {
+          learner: z.string().min(1).describe("Learner id."),
+          course: z.string().min(1).describe("Course id."),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      },
+      async (args) => learnerCompleteHandler(deps, tenantId, args as never) as never,
     );
   }
 

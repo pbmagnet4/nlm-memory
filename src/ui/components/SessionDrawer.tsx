@@ -34,8 +34,21 @@ interface SessionDrawerProps {
   nextSessionId?: string | null;
 }
 
+interface LearnerConcept {
+  concept: string;
+  status: string;
+  attemptCount: number;
+  nextStep: string | null;
+}
+
+interface LearningState {
+  enrollments: { learnerId: string; courseId: string; status: string }[];
+  concepts: LearnerConcept[];
+}
+
 export function SessionDrawer({ sessionId, onClose, entityColor, onNavigate, prevSessionId, nextSessionId }: SessionDrawerProps) {
   const [session, setSession] = useState<SessionDetail | null>(null);
+  const [learning, setLearning] = useState<LearningState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -61,7 +74,25 @@ export function SessionDrawer({ sessionId, onClose, entityColor, onNavigate, pre
 
   useEffect(() => {
     setSession(null);
+    setLearning(null);
     setError(null);
+    // Learner strip: fail-silent by design — a missing enrollment or a
+    // failed fetch hides the section instead of breaking the drawer.
+    fetch(`/api/learner/by-session/${encodeURIComponent(sessionId)}`)
+      .then(async (r) => {
+        if (!r.ok) return;
+        const raw = (await r.json()) as {
+          enrollments?: { learnerId: string; courseId: string; status: string }[];
+          concepts?: LearnerConcept[];
+        };
+        if (Array.isArray(raw.concepts) && raw.concepts.length > 0) {
+          setLearning({
+            enrollments: Array.isArray(raw.enrollments) ? raw.enrollments : [],
+            concepts: raw.concepts,
+          });
+        }
+      })
+      .catch(() => {});
     fetch(`/api/session/${encodeURIComponent(sessionId)}`)
       .then(async (r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -221,6 +252,27 @@ export function SessionDrawer({ sessionId, onClose, entityColor, onNavigate, pre
               <>
                 <h4 className="drawer-section">Summary</h4>
                 <p className="drawer-paragraph">{session.summary}</p>
+              </>
+            )}
+            {learning && learning.concepts.length > 0 && (
+              <>
+                <h4 className="drawer-section">
+                  Learning state
+                  {learning.enrollments.length > 0 && (
+                    <span className="muted"> · {learning.enrollments.map((e) => `${e.learnerId}/${e.courseId}`).join(", ")}</span>
+                  )}
+                </h4>
+                <ul className="drawer-list">
+                  {learning.concepts.map((c) => (
+                    <li key={c.concept}>
+                      <span className="mono small">[{c.status}]</span> {c.concept}{" "}
+                      <span className="muted">({c.attemptCount} {c.attemptCount === 1 ? "attempt" : "attempts"})</span>
+                    </li>
+                  ))}
+                </ul>
+                {[...new Set(learning.concepts.map((c) => c.nextStep).filter((s): s is string => !!s))].slice(0, 2).map((next, i) => (
+                  <p key={i} className="drawer-paragraph">Next: {next}</p>
+                ))}
               </>
             )}
             {session.decisions.length > 0 && (
