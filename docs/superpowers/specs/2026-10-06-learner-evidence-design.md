@@ -4,7 +4,7 @@
 Every load-bearing claim carries a code citation, verified against the tree on 2026-10-06.
 **Date:** 2026-10-06
 **Method:** SDD-lite. This spec is the governing doc; task briefs exist for M0/M1/M3/M4
-(`.superpowers/sdd/learner-*.md`) with reports on landing. No program-spec tier: single
+(`docs/superpowers/records/learner-evidence/learner-*.md`) with reports on landing. No program-spec tier: single
 feature, additive, no cross-cutting enforcement. Precedent: Team NLM program spec
 (`.superpowers/sdd/team-nlm-program-spec.md`).
 **Source inspiration:** [Gnos](https://github.com/madhvantyagi/Gnos) (MIT) —
