@@ -63,6 +63,20 @@ for (const path of REQUIRED_PLUGIN_FILES) {
   if (!existsSync(absolute) || !statSync(absolute).isFile()) fail(`missing built distribution file ${path}`);
 }
 
+/**
+ * File paths from `npm pack --dry-run --json` output. npm runs the `prepare`
+ * lifecycle before packing, and its stdout (vite build banners, progress
+ * lines) lands ahead of the JSON payload on the same stream -- parse from the
+ * first `[`, not from byte zero, or every release with build output fails
+ * with a JSON syntax error (seen live on v0.21.11).
+ */
+export function packedFiles(stdout) {
+  const stripped = stdout.replace(/\[[0-9;?]*[ -/]*[@-~]/g, "");
+  const start = stripped.search(/^\s*\[/m);
+  if (start === -1) throw new Error("no JSON payload in npm pack output");
+  return new Set(JSON.parse(stripped.slice(start))[0]?.files?.map((entry) => entry.path));
+}
+
 if (checkPackedPayload) {
   const packed = spawnSync("npm", ["pack", "--dry-run", "--json"], {
     cwd: ROOT,
@@ -72,7 +86,7 @@ if (checkPackedPayload) {
     fail(`npm pack --dry-run failed: ${packed.stderr.trim() || packed.stdout.trim()}`);
   } else {
     try {
-      const files = new Set(JSON.parse(packed.stdout)[0]?.files?.map((entry) => entry.path));
+      const files = packedFiles(packed.stdout);
       for (const path of REQUIRED_PACKED_FILES) {
         if (!files.has(path)) fail(`published tarball would omit ${path}`);
       }
