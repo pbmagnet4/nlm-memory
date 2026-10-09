@@ -110,8 +110,6 @@ const PARAPHRASE_CACHE = join(homedir(), ".cache", "nlm-fact-recall", "paraphras
  */
 async function paraphraseGold(
   facts: ReadonlyArray<Fact>,
-  ollamaUrl: string,
-  model: string,
   refresh: boolean,
 ): Promise<GoldQuery[]> {
   mkdirSync(dirname(PARAPHRASE_CACHE), { recursive: true });
@@ -129,7 +127,7 @@ async function paraphraseGold(
   for (const f of facts) {
     let query = cache.get(f.id);
     if (query === undefined) {
-      query = await generateQuestion(f, ollamaUrl, model);
+      query = await generateQuestion(f);
       appendFileSync(PARAPHRASE_CACHE, JSON.stringify({ factId: f.id, query }) + "\n");
       generated += 1;
     }
@@ -139,22 +137,29 @@ async function paraphraseGold(
   return out;
 }
 
-async function generateQuestion(fact: Fact, ollamaUrl: string, model: string): Promise<string> {
-  const res = await fetch(`${ollamaUrl}/api/chat`, {
+/** Question writer: the configured classifier lane (NLM_CLASSIFIER_BASE_URL /
+ *  NLM_CLASSIFIER_MODEL / NLM_CLASSIFIER_API_KEY), an OpenAI-compatible gateway. */
+async function generateQuestion(fact: Fact): Promise<string> {
+  const base = (process.env["NLM_CLASSIFIER_BASE_URL"] ?? "").replace(/\/+$/, "");
+  const model = process.env["NLM_CLASSIFIER_MODEL"];
+  if (!base || !model) throw new Error("--gold=paraphrase needs NLM_CLASSIFIER_BASE_URL and NLM_CLASSIFIER_MODEL");
+  const url = base.endsWith("/v1") ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+  const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env["NLM_CLASSIFIER_API_KEY"] ?? "local"}`,
+    },
     body: JSON.stringify({
       model,
-      stream: false,
-      think: false,
-      format: { type: "object", properties: { question: { type: "string" } }, required: ["question"] },
-      options: { temperature: 0.3 },
+      temperature: 0.3,
+      max_tokens: 3000,
       messages: [
         {
           role: "system",
           content:
             "You write the natural question a user would later ask to recall a past decision. " +
-            "Output JSON {\"question\": \"...\"}. The question must be about the topic but MUST NOT " +
+            "Reply with the question only, one line. It must be about the topic but MUST NOT " +
             "contain or paraphrase the answer itself — recall is being tested.",
         },
         {
@@ -164,9 +169,11 @@ async function generateQuestion(fact: Fact, ollamaUrl: string, model: string): P
       ],
     }),
   });
-  const data = (await res.json()) as { message?: { content?: string } };
-  const parsed = JSON.parse(data.message?.content ?? "{}") as { question?: string };
-  return (parsed.question ?? `${fact.subject} ${fact.predicate}`).trim();
+  if (!res.ok) throw new Error(`question writer ${url} -> ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const data = (await res.json()) as { choices?: ReadonlyArray<{ message?: { content?: string } }> };
+  const question = (data.choices?.[0]?.message?.content ?? "").trim().split("\n").pop()?.trim() ?? "";
+  if (!question) throw new Error(`question writer returned no text for fact ${fact.id}`);
+  return question;
 }
 
 /** Copy the corpus (+ WAL/SHM if present) into a throwaway sandbox dir. */
@@ -295,22 +302,6 @@ async function main(): Promise<void> {
   const sb = sandboxCopy(args.dbPath);
   const storage = SqliteStorage.create({ dbPath: sb.path, migrationsDir: MIGRATIONS_DIR });
   const embedder = buildEmbedder();
-  if (args.reembedFacts) {
-    storage.sessions.rawDb().prepare("DELETE FROM fact_embeddings").run();
-    const t = Date.now();
-    const rep = await backfillFactEmbeddings({
-      tenantId: DEFAULT_TEAM_ID,
-      dbPath: sb.path,
-      embedder,
-      store: storage.facts,
-      onProgress: (i, total) => {
-        if (i % 2000 === 0) console.error(`  reembed facts ${i}/${total}`);
-      },
-    });
-    console.error(
-      `fact-recall-eval: reembedded ${rep.succeeded}/${rep.total} facts (${rep.failed} failed) in ${Math.round((Date.now() - t) / 1000)}s`,
-    );
-  }
   const factRecall = new FactRecallService({ factStore: storage.facts, llm: embedder });
 
   // Candidate pool: current decision facts at/above the recall confidence floor.
@@ -327,9 +318,25 @@ async function main(): Promise<void> {
 
   const queries =
     args.gold === "paraphrase"
-      ? await paraphraseGold(gold, "http://localhost:11434", "qwen3.5:4b", args.refresh)
+      ? await paraphraseGold(gold, args.refresh)
       : topicGold(gold);
 
+  if (args.reembedFacts) {
+    storage.sessions.rawDb().prepare("DELETE FROM fact_embeddings").run();
+    const t = Date.now();
+    const rep = await backfillFactEmbeddings({
+      tenantId: DEFAULT_TEAM_ID,
+      dbPath: sb.path,
+      embedder,
+      store: storage.facts,
+      onProgress: (i, total) => {
+        if (i % 2000 === 0) console.error(`  reembed facts ${i}/${total}`);
+      },
+    });
+    console.error(
+      `fact-recall-eval: reembedded ${rep.succeeded}/${rep.total} facts (${rep.failed} failed) in ${Math.round((Date.now() - t) / 1000)}s`,
+    );
+  }
   const allMetrics: ModeMetrics[] = [];
   for (const mode of args.modes) {
     let found = 0;
