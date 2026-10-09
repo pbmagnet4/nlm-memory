@@ -48,6 +48,25 @@ export const EMBED_PREFIXES: Record<EmbeddingKind, string> = {
   document: "search_document: ",
 };
 
+// EmbeddingGemma's retrieval prompts, from the model's
+// config_sentence_transformers.json. Like nomic's prefixes they are part of
+// the training contract.
+export const EMBEDDINGGEMMA_PREFIXES: Record<EmbeddingKind, string> = {
+  query: "task: search result | query: ",
+  document: "title: none | text: ",
+};
+
+export function isEmbeddingGemma(model: string): boolean {
+  return model.includes("embeddinggemma");
+}
+
+/** Prose-lane prompt for `model`: EmbeddingGemma's prompts for that family,
+ *  nomic's search_query/search_document prefixes otherwise. */
+export function buildEmbedPrompt(text: string, kind: EmbeddingKind, model: string): string {
+  const prefixes = isEmbeddingGemma(model) ? EMBEDDINGGEMMA_PREFIXES : EMBED_PREFIXES;
+  return `${prefixes[kind]}${text.slice(0, MAX_EMBED_CHARS)}`;
+}
+
 export function l2Normalize(vec: Float32Array): Float32Array {
   let sumSq = 0;
   for (let i = 0; i < vec.length; i++) {
@@ -127,8 +146,7 @@ export class OllamaClient implements LLMClient {
     // search_query:/search_document: prefix is part of the training
     // contract; omitting it or using the wrong one degrades retrieval
     // quality measurably. MAX_EMBED_CHARS matches the Python ceiling.
-    const truncated = text.slice(0, MAX_EMBED_CHARS);
-    const prompt = `${EMBED_PREFIXES[kind]}${truncated}`;
+    const prompt = buildEmbedPrompt(text, kind, this.embedModel);
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);

@@ -16,6 +16,11 @@
  *
  * Run: npx tsx scripts/eval/fact-recall-eval.ts [--limit=80] [--probe=50]
  *        [--modes=keyword,semantic,hybrid] [--db=<path>] [--json=<out>]
+ *        [--reembed-facts]
+ *
+ * The embedder is the configured lane (buildEmbedder). --reembed-facts drops
+ * the sandbox's fact vectors and rebuilds them with that embedder first, so an
+ * A/B arm on a different embed model is scored in its own vector space.
  */
 
 import {
@@ -32,7 +37,9 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SqliteStorage } from "@core/storage/sqlite-storage.js";
-import { OllamaClient } from "../../src/llm/ollama-client.js";
+import { buildEmbedder } from "../../src/llm/build-embedder.js";
+import { backfillFactEmbeddings } from "@core/facts/embed-backfill.js";
+import type { LLMClient } from "@ports/llm-client.js";
 import { FactRecallService } from "@core/recall-facts/fact-recall-service.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import type { Fact, RecallMode } from "@shared/types.js";
@@ -51,6 +58,7 @@ interface Args {
   gold: GoldMode;
   refresh: boolean;
   precision: boolean;
+  reembedFacts: boolean;
 }
 
 interface GoldQuery {
@@ -75,6 +83,7 @@ function parseArgs(argv: string[]): Args {
     gold: (get("gold") ?? "topic") as GoldMode,
     refresh: argv.includes("--refresh"),
     precision: argv.includes("--precision"),
+    reembedFacts: argv.includes("--reembed-facts"),
   };
 }
 
@@ -220,7 +229,7 @@ interface PrecisionMetrics {
 async function precisionArm(
   storage: { facts: { insertMany(tenantId: string, f: ReadonlyArray<Fact>): Promise<void>; upsertEmbedding(tenantId: string, id: string, v: Float32Array): Promise<void> }; sessions: { rawDb(): { prepare(sql: string): { run(...args: unknown[]): void } } } },
   factRecall: FactRecallService,
-  embedder: OllamaClient,
+  embedder: LLMClient,
   gold: ReadonlyArray<Fact>,
   modes: ReadonlyArray<RecallMode>,
   probe: number,
@@ -285,7 +294,23 @@ async function main(): Promise<void> {
 
   const sb = sandboxCopy(args.dbPath);
   const storage = SqliteStorage.create({ dbPath: sb.path, migrationsDir: MIGRATIONS_DIR });
-  const embedder = new OllamaClient({});
+  const embedder = buildEmbedder();
+  if (args.reembedFacts) {
+    storage.sessions.rawDb().prepare("DELETE FROM fact_embeddings").run();
+    const t = Date.now();
+    const rep = await backfillFactEmbeddings({
+      tenantId: DEFAULT_TEAM_ID,
+      dbPath: sb.path,
+      embedder,
+      store: storage.facts,
+      onProgress: (i, total) => {
+        if (i % 2000 === 0) console.error(`  reembed facts ${i}/${total}`);
+      },
+    });
+    console.error(
+      `fact-recall-eval: reembedded ${rep.succeeded}/${rep.total} facts (${rep.failed} failed) in ${Math.round((Date.now() - t) / 1000)}s`,
+    );
+  }
   const factRecall = new FactRecallService({ factStore: storage.facts, llm: embedder });
 
   // Candidate pool: current decision facts at/above the recall confidence floor.
