@@ -140,6 +140,16 @@ async function paraphraseGold(
 /** Question writer: the configured classifier lane (NLM_CLASSIFIER_BASE_URL /
  *  NLM_CLASSIFIER_MODEL / NLM_CLASSIFIER_API_KEY), an OpenAI-compatible gateway. */
 async function generateQuestion(fact: Fact): Promise<string> {
+  // The lane's thinking models intermittently return empty content; a retry
+  // of the same prompt answers normally.
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const question = await writeQuestionOnce(fact);
+    if (question) return question;
+  }
+  throw new Error(`question writer returned no text for fact ${fact.id} after 3 attempts`);
+}
+
+async function writeQuestionOnce(fact: Fact): Promise<string> {
   const base = (process.env["NLM_CLASSIFIER_BASE_URL"] ?? "").replace(/\/+$/, "");
   const model = process.env["NLM_CLASSIFIER_MODEL"];
   if (!base || !model) throw new Error("--gold=paraphrase needs NLM_CLASSIFIER_BASE_URL and NLM_CLASSIFIER_MODEL");
@@ -171,9 +181,7 @@ async function generateQuestion(fact: Fact): Promise<string> {
   });
   if (!res.ok) throw new Error(`question writer ${url} -> ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const data = (await res.json()) as { choices?: ReadonlyArray<{ message?: { content?: string } }> };
-  const question = (data.choices?.[0]?.message?.content ?? "").trim().split("\n").pop()?.trim() ?? "";
-  if (!question) throw new Error(`question writer returned no text for fact ${fact.id}`);
-  return question;
+  return (data.choices?.[0]?.message?.content ?? "").trim().split("\n").pop()?.trim() ?? "";
 }
 
 /** Copy the corpus (+ WAL/SHM if present) into a throwaway sandbox dir. */
