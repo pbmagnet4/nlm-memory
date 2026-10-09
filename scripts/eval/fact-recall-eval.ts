@@ -16,11 +16,13 @@
  *
  * Run: npx tsx scripts/eval/fact-recall-eval.ts [--limit=80] [--probe=50]
  *        [--modes=keyword,semantic,hybrid] [--db=<path>] [--json=<out>]
- *        [--reembed-facts]
+ *        [--reembed-facts] [--boost-caps=default,1]
  *
  * The embedder is the configured lane (buildEmbedder). --reembed-facts drops
  * the sandbox's fact vectors and rebuilds them with that embedder first, so an
  * A/B arm on a different embed model is scored in its own vector space.
+ * --boost-caps scores each listed NLM_FACT_CORROBORATION_BOOST_CAP over the
+ * same vectors (1 = boost off), isolating the score-scale-sensitive boost.
  */
 
 import {
@@ -55,10 +57,11 @@ interface Args {
   modes: RecallMode[];
   dbPath: string;
   jsonOut: string | null;
-  gold: GoldMode;
+  golds: GoldMode[];
   refresh: boolean;
   precision: boolean;
   reembedFacts: boolean;
+  boostCaps: string[];
 }
 
 interface GoldQuery {
@@ -80,10 +83,11 @@ function parseArgs(argv: string[]): Args {
     modes: modesRaw.split(",").map((m) => m.trim() as RecallMode),
     dbPath: get("db") ?? join(homedir(), ".nlm", "canonical.sqlite"),
     jsonOut: get("json") ?? null,
-    gold: (get("gold") ?? "topic") as GoldMode,
+    golds: (get("gold") ?? "topic").split(",").map((g) => g.trim() as GoldMode),
     refresh: argv.includes("--refresh"),
     precision: argv.includes("--precision"),
     reembedFacts: argv.includes("--reembed-facts"),
+    boostCaps: (get("boost-caps") ?? "default").split(",").map((c) => c.trim()),
   };
 }
 
@@ -209,6 +213,8 @@ function sample(facts: ReadonlyArray<Fact>, count: number): ReadonlyArray<Fact> 
 }
 
 interface ModeMetrics {
+  gold: GoldMode;
+  boostCap: string;
   mode: RecallMode;
   n: number;
   found: number;
@@ -321,13 +327,13 @@ async function main(): Promise<void> {
   });
   const gold = sample(pool, args.limit);
   console.error(
-    `fact-recall-eval: ${pool.length} current decision facts; sampled ${gold.length} gold (mode=${args.gold})`,
+    `fact-recall-eval: ${pool.length} current decision facts; sampled ${gold.length} gold (modes=${args.golds.join(",")})`,
   );
 
-  const queries =
-    args.gold === "paraphrase"
-      ? await paraphraseGold(gold, args.refresh)
-      : topicGold(gold);
+  const queriesByGold = new Map<GoldMode, GoldQuery[]>();
+  for (const g of args.golds) {
+    queriesByGold.set(g, g === "paraphrase" ? await paraphraseGold(gold, args.refresh) : topicGold(gold));
+  }
 
   if (args.reembedFacts) {
     storage.sessions.rawDb().prepare("DELETE FROM fact_embeddings").run();
@@ -346,39 +352,54 @@ async function main(): Promise<void> {
     );
   }
   const allMetrics: ModeMetrics[] = [];
-  for (const mode of args.modes) {
-    let found = 0;
-    let r1 = 0;
-    let r3 = 0;
-    let r5 = 0;
-    let rankSum = 0;
-    for (const q of queries) {
-      const res = await factRecall.search(DEFAULT_TEAM_ID, { query: q.query, mode, limit: args.probe });
-      const idx = res.results.findIndex((h) => h.id === q.goldId);
-      if (idx >= 0) {
-        const rank = idx + 1;
-        found += 1;
-        rankSum += rank;
-        if (rank <= 1) r1 += 1;
-        if (rank <= 3) r3 += 1;
-        if (rank <= 5) r5 += 1;
+  const defaultCap = process.env["NLM_FACT_CORROBORATION_BOOST_CAP"];
+  for (const [goldMode, queries] of queriesByGold) {
+    for (const cap of args.boostCaps) {
+      if (cap === "default") {
+        if (defaultCap === undefined) delete process.env["NLM_FACT_CORROBORATION_BOOST_CAP"];
+        else process.env["NLM_FACT_CORROBORATION_BOOST_CAP"] = defaultCap;
+      } else {
+        process.env["NLM_FACT_CORROBORATION_BOOST_CAP"] = cap;
+      }
+      for (const mode of args.modes) {
+        let found = 0;
+        let r1 = 0;
+        let r3 = 0;
+        let r5 = 0;
+        let rankSum = 0;
+        for (const q of queries) {
+          const res = await factRecall.search(DEFAULT_TEAM_ID, { query: q.query, mode, limit: args.probe });
+          const idx = res.results.findIndex((h) => h.id === q.goldId);
+          if (idx >= 0) {
+            const rank = idx + 1;
+            found += 1;
+            rankSum += rank;
+            if (rank <= 1) r1 += 1;
+            if (rank <= 3) r3 += 1;
+            if (rank <= 5) r5 += 1;
+          }
+        }
+        const m: ModeMetrics = {
+          gold: goldMode,
+          boostCap: cap,
+          mode,
+          n: queries.length,
+          found,
+          r1: pct(r1, queries.length),
+          r3: pct(r3, queries.length),
+          r5: pct(r5, queries.length),
+          meanRankWhenFound: found === 0 ? 0 : Math.round((rankSum / found) * 100) / 100,
+        };
+        allMetrics.push(m);
+        console.error(
+          `  ${goldMode.padEnd(10)} cap=${cap.padEnd(7)} ${mode.padEnd(9)} R@1 ${String(m.r1).padStart(5)}%  R@3 ${String(m.r3).padStart(5)}%  ` +
+            `R@5 ${String(m.r5).padStart(5)}%  found ${found}/${m.n}  meanRank ${m.meanRankWhenFound}`,
+        );
       }
     }
-    const m: ModeMetrics = {
-      mode,
-      n: queries.length,
-      found,
-      r1: pct(r1, queries.length),
-      r3: pct(r3, queries.length),
-      r5: pct(r5, queries.length),
-      meanRankWhenFound: found === 0 ? 0 : Math.round((rankSum / found) * 100) / 100,
-    };
-    allMetrics.push(m);
-    console.error(
-      `  ${mode.padEnd(9)} R@1 ${String(m.r1).padStart(5)}%  R@3 ${String(m.r3).padStart(5)}%  ` +
-        `R@5 ${String(m.r5).padStart(5)}%  found ${found}/${m.n}  meanRank ${m.meanRankWhenFound}`,
-    );
   }
+  if (defaultCap === undefined) delete process.env["NLM_FACT_CORROBORATION_BOOST_CAP"];
+  else process.env["NLM_FACT_CORROBORATION_BOOST_CAP"] = defaultCap;
 
   let precisionMetrics: PrecisionMetrics[] | undefined;
   if (args.precision) {
