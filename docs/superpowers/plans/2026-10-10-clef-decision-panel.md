@@ -14,10 +14,12 @@
 
 | ID | Where Clef might help | Today | Zero-shot spike (n small, untuned) |
 |---|---|---|---|
-| H1 | Pre-injection recall gate (`src/hook/recall-gate.ts`), hot path on every prompt | `qwen3.5:4b` via Ollama; keeps 96% of informed injections, skips 25% of off-topic | 77 gold rows (24 informed): threshold 0.2 keeps 100% and skips 17%; threshold 0.3 keeps 92% and skips 32%; 0.43 s per call |
+| H1 | Pre-injection recall gate (`src/hook/recall-gate.ts`), hot path on every prompt | `qwen3.5:4b` via Ollama. Measured on these same 77 rows (design spec 2026-06-23): conservative point keeps 96% of informed and skips 25% of off-topic; balanced point keeps 67% and skips 60% | 77 gold rows (24 informed): threshold 0.2 keeps 100% and skips 17%; threshold 0.3 keeps 92% and skips 32%; 0.43 s per call |
 | H2 | Ingest triage panel: session kind (`choice`), importance (`score` 0 to 3), flags (`noul`), then skip or route the generative classifier call | Gemma 12B at 12 s (trivial) to 44 s (substantive) per session; self-reported confidence missed 1 of 4 trivial sessions | 20 synthetic sessions: `score` gap 0.6 on a 0 to 3 scale vs 0.08 for `noul` on 0 to 1 |
 | H3 | Cheap faithfulness judge for `classifier-eval.ts` (is this decision or entity supported by the transcript) | Large-LLM judge in `scripts/eval/judge.ts` | 40 of 40 foreign decisions rejected, 31 of 32 genuine extras accepted |
 | H4 | session-close: task status (`choice`: Done, In Progress, Blocked, unchanged) and capture triage (`choice`: synthesis, operational action, skip) | Generative scan in `session-close/scripts/scan.py` | not tested |
+
+Two limits on H1 are known up front. The gold label says whether the response used the context, not whether the context was on topic, so some "unused" rows are relevant and the achievable skip rate is capped. And the design spec puts the gate's total payoff at about 18% fewer injected tokens and precision 31% to 37%, so H1 is a modest win even if Clef is better.
 
 Falsified and not pursued: using Clef to filter Gemma's "false" decisions. The fixture eval scores decision precision by word overlap with 1 or 2 reference decisions, so most "unmatched" decisions were real.
 
@@ -31,6 +33,8 @@ Falsified and not pursued: using Clef to filter Gemma's "false" decisions. The f
 - Clef silently drops the tail of long state (a marker at about 20k tokens was found, at about 30k it was missed). Cap state at `MAX_TRANSCRIPT_CHARS` (15,000) using `truncateTranscript` from `src/core/classifier/prompt.ts`.
 - Tune on the tune half only. Report numbers from the holdout half only. The split is a fixed hash of the row id (Task 2).
 - No fine-tuning and no Cloudflare RL service in this plan. Decide that separately from the memo.
+- Every label, audit and spot check is done by the session's frontier model reading the material. Nothing is handed to the operator as a manual step.
+- Test files follow the repo convention `tests/unit/scripts/`.
 - Task tracking: nxttasks T533 (property nlm-memory, project Recall). Every commit carries a `Work-Id: T533` trailer.
 
 ## Review Focus
@@ -50,7 +54,7 @@ Falsified and not pursued: using Clef to filter Gemma's "false" decisions. The f
 - Create `scripts/eval/clef-triage.ts`: H2 experiment and calibration.
 - Create `scripts/eval/clef-judge-agreement.ts`: H3 experiment.
 - Create `scripts/eval/clef-session-close.ts`: H4 experiment.
-- Create `tests/unit/eval/clef-client.test.ts`, `tests/unit/eval/clef-stats.test.ts`, `tests/unit/eval/clef-panels.test.ts`.
+- Create `tests/unit/scripts/clef-client.test.ts`, `tests/unit/scripts/clef-stats.test.ts`, `tests/unit/scripts/clef-panels.test.ts`.
 - Create `docs/clef-decision-panel-findings.md`: the memo (Task 9).
 
 ---
@@ -59,7 +63,7 @@ Falsified and not pursued: using Clef to filter Gemma's "false" decisions. The f
 
 **Files:**
 - Create: `scripts/eval/lib/clef-client.ts`
-- Test: `tests/unit/eval/clef-client.test.ts`
+- Test: `tests/unit/scripts/clef-client.test.ts`
 
 **Interfaces:**
 - Produces: `askClef(state: unknown, questions: Record<string, ClefQuestion>, opts: ClefOptions): Promise<{ answers: Record<string, ClefAnswer>; ms: number }>` (throws on HTTP error, timeout, or reply missing `answers`) and `askClefOrNull(...)` with the same arguments returning `null` instead of throwing.
@@ -67,7 +71,7 @@ Falsified and not pursued: using Clef to filter Gemma's "false" decisions. The f
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-// tests/unit/eval/clef-client.test.ts
+// tests/unit/scripts/clef-client.test.ts
 import { describe, it, expect } from "vitest";
 import { askClef, askClefOrNull } from "../../../scripts/eval/lib/clef-client.js";
 
@@ -108,7 +112,7 @@ describe("clef client", () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `npx vitest run tests/unit/eval/clef-client.test.ts`
+Run: `npx vitest run tests/unit/scripts/clef-client.test.ts`
 Expected: FAIL, module `clef-client.js` not found.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -165,13 +169,13 @@ export async function askClefOrNull(
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `npx vitest run tests/unit/eval/clef-client.test.ts`
+Run: `npx vitest run tests/unit/scripts/clef-client.test.ts`
 Expected: PASS (3 tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/eval/lib/clef-client.ts tests/unit/eval/clef-client.test.ts
+git add scripts/eval/lib/clef-client.ts tests/unit/scripts/clef-client.test.ts
 git commit -m "eval: add fail-open Clef client
 
 Work-Id: T533"
@@ -183,18 +187,18 @@ Work-Id: T533"
 
 **Files:**
 - Create: `scripts/eval/lib/clef-stats.ts`, `scripts/eval/lib/clef-panels.ts`
-- Test: `tests/unit/eval/clef-stats.test.ts`, `tests/unit/eval/clef-panels.test.ts`
+- Test: `tests/unit/scripts/clef-stats.test.ts`, `tests/unit/scripts/clef-panels.test.ts`
 
 **Interfaces:**
 - Consumes: `ClefQuestion` from Task 1; `truncateTranscript`, `MAX_TRANSCRIPT_CHARS` from `src/core/classifier/prompt.ts`.
-- Produces: `splitOf(id: string): "tune" | "holdout"`; `sweep(rows: {score:number; positive:boolean}[], thresholds: number[]): {threshold:number; positiveKept:number; negativeSkipped:number}[]` (a row is kept when `score >= threshold`; `positive` means must keep); `wilson(k: number, n: number): [number, number]`; `brier(rows: {p:number; y:boolean}[]): number`; `capState(text: string): string`; `recallGateQuestions(variant: "noul" | "noulCriteria" | "score"): Record<string, ClefQuestion>` (single question id `q`); `triageQuestions(): Record<string, ClefQuestion>` with ids `kind`, `importance`, `decision`, `abandoned`, `failure`, `unfinished`.
+- Produces: `splitOf(id: string): "tune" | "holdout"`; `sweep(rows: {score:number; positive:boolean}[], thresholds: number[]): {threshold:number; positiveKept:number; negativeSkipped:number}[]` (a row is kept when `score >= threshold`; `positive` means must keep); `wilson(k: number, n: number): [number, number]`; `brier(rows: {p:number; y:boolean}[]): number`; `auc(rows: {score:number; positive:boolean}[]): number` (probability a random positive outscores a random negative, ties count half, NaN when a class is empty); `capState(text: string): string`; `recallGateQuestions(variant: "noul" | "noulCriteria" | "score"): Record<string, ClefQuestion>` (single question id `q`); `triageQuestions(): Record<string, ClefQuestion>` with ids `kind`, `importance`, `decision`, `abandoned`, `failure`, `unfinished`.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
-// tests/unit/eval/clef-stats.test.ts
+// tests/unit/scripts/clef-stats.test.ts
 import { describe, it, expect } from "vitest";
-import { splitOf, sweep, wilson, brier } from "../../../scripts/eval/lib/clef-stats.js";
+import { splitOf, sweep, wilson, brier, auc } from "../../../scripts/eval/lib/clef-stats.js";
 
 describe("clef stats", () => {
   it("splits deterministically and roughly evenly", () => {
@@ -221,6 +225,12 @@ describe("clef stats", () => {
     expect(lo2).toBeGreaterThan(lo);
   });
 
+  it("auc is 1 for perfect separation and 0.5 for ties", () => {
+    expect(auc([{ score: 0.9, positive: true }, { score: 0.1, positive: false }])).toBe(1);
+    expect(auc([{ score: 0.5, positive: true }, { score: 0.5, positive: false }])).toBe(0.5);
+    expect(Number.isNaN(auc([{ score: 0.5, positive: true }]))).toBe(true);
+  });
+
   it("brier is zero for perfect and 0.25 for coin flips", () => {
     expect(brier([{ p: 1, y: true }, { p: 0, y: false }])).toBe(0);
     expect(brier([{ p: 0.5, y: true }, { p: 0.5, y: false }])).toBe(0.25);
@@ -229,7 +239,7 @@ describe("clef stats", () => {
 ```
 
 ```ts
-// tests/unit/eval/clef-panels.test.ts
+// tests/unit/scripts/clef-panels.test.ts
 import { describe, it, expect } from "vitest";
 import { capState, recallGateQuestions, triageQuestions } from "../../../scripts/eval/lib/clef-panels.js";
 import { MAX_TRANSCRIPT_CHARS } from "../../../src/core/classifier/prompt.js";
@@ -262,7 +272,7 @@ describe("clef panels", () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `npx vitest run tests/unit/eval/clef-stats.test.ts tests/unit/eval/clef-panels.test.ts`
+Run: `npx vitest run tests/unit/scripts/clef-stats.test.ts tests/unit/scripts/clef-panels.test.ts`
 Expected: FAIL, modules not found.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -296,6 +306,15 @@ export function wilson(k: number, n: number, z = 1.96): [number, number] {
   const c = p + (z * z) / (2 * n);
   const m = z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n));
   return [(c - m) / d, (c + m) / d];
+}
+
+export function auc(rows: ReadonlyArray<{ score: number; positive: boolean }>): number {
+  const pos = rows.filter((r) => r.positive);
+  const neg = rows.filter((r) => !r.positive);
+  if (pos.length === 0 || neg.length === 0) return Number.NaN;
+  let wins = 0;
+  for (const p of pos) for (const n of neg) wins += p.score > n.score ? 1 : p.score === n.score ? 0.5 : 0;
+  return wins / (pos.length * neg.length);
 }
 
 export function brier(rows: ReadonlyArray<{ p: number; y: boolean }>): number {
@@ -377,7 +396,7 @@ export function triageQuestions(): Record<string, ClefQuestion> {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `npx vitest run tests/unit/eval/clef-stats.test.ts tests/unit/eval/clef-panels.test.ts`
+Run: `npx vitest run tests/unit/scripts/clef-stats.test.ts tests/unit/scripts/clef-panels.test.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Run the live truncation canary and record the cutoff**
@@ -404,7 +423,7 @@ Replace `/ABS/PATH/TO/WORKTREE` with the absolute worktree path before running. 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add scripts/eval/lib/clef-stats.ts scripts/eval/lib/clef-panels.ts tests/unit/eval/clef-stats.test.ts tests/unit/eval/clef-panels.test.ts
+git add scripts/eval/lib/clef-stats.ts scripts/eval/lib/clef-panels.ts tests/unit/scripts/clef-stats.test.ts tests/unit/scripts/clef-panels.test.ts
 git commit -m "eval: add Clef stats helpers and panels
 
 Work-Id: T533"
@@ -431,7 +450,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { askClef } from "./lib/clef-client.js";
 import { capState, recallGateQuestions } from "./lib/clef-panels.js";
-import { splitOf, sweep, wilson } from "./lib/clef-stats.js";
+import { auc, splitOf, sweep, wilson } from "./lib/clef-stats.js";
 
 const dataDir = (process.env["NLM_EVAL_DATA_DIR"] ?? join(homedir(), ".nlm", "eval")).replace(/^~/, homedir());
 const env = Object.fromEntries(readFileSync(join(homedir(), ".nlm", ".env"), "utf8").split("\n")
@@ -457,7 +476,7 @@ writeFileSync(join(dataDir, `clef-recall-gate-${variant}.json`), JSON.stringify(
 for (const half of ["tune", "holdout"] as const) {
   const part = scored.filter((s) => splitOf(s.id) === half);
   const pos = part.filter((s) => s.positive).length;
-  console.log(`\n${variant} ${half}: ${part.length} rows, ${pos} informed${pos < 30 ? " (indicative only, under 30)" : ""}`);
+  console.log(`\n${variant} ${half}: ${part.length} rows, ${pos} informed${pos < 30 ? " (indicative only, under 30)" : ""}, AUC ${auc(part).toFixed(3)}`);
   for (const t of sweep(part, THRESHOLDS)) {
     const kept = Math.round(t.positiveKept * pos);
     const [lo] = wilson(kept, pos);
@@ -481,11 +500,48 @@ for v in noul noulCriteria score; do npx tsx scripts/eval/clef-recall-gate.ts $v
 
 Expected: three tables. Choose the threshold from the **tune** rows only (best off-topic skip rate with informed kept at or above 96%), then read that threshold's **holdout** line. Write both into the memo.
 
-- [ ] **Step 4: Shuffle-invariance check for batched candidates**
+- [ ] **Step 4: Paired baseline from the shipped gate on the same rows**
 
-Add to the script a second mode. When `process.argv[3] === "batch"`, group rows in sets of 5, put the five candidates in one `state` as `candidates: {c0..c4}` and ask five questions `c0..c4` ("Is candidate cN relevant to the prompt?") in one call, then repeat with the candidates reversed. Print the maximum absolute difference per candidate between the two orders and the speedup against five single calls. Acceptance: maximum difference under 0.05 and a speedup of at least 2x. If the difference is larger, H1 must use one call per candidate.
+The shipped gate's published numbers come from these same 77 rows, but rerun it so both models are compared on the same tune and holdout halves. `qwen3.5:4b` is installed in local Ollama.
 
-- [ ] **Step 5: Commit**
+Run: `npx tsx scripts/eval/gate-feasibility.ts --model=qwen3.5:4b`
+Record its conservative and balanced operating points on the holdout half, and compare the two operating curves (Clef's sweep against those two points) rather than one number. The spike suggested Clef holds 88% informed kept while skipping 57%; the shipped gate's curve implies roughly 35% at that retention. That rests on 3 informed rows, so it is a lead, not a result.
+
+- [ ] **Step 5: Shuffle-invariance check for batched candidates**
+
+Append to `scripts/eval/clef-recall-gate.ts`:
+
+```ts
+if (process.argv[3] === "batch") {
+  const questionsFor = (n: number): Record<string, ClefQuestion> =>
+    Object.fromEntries(Array.from({ length: n }, (_, i) => [`c${i}`,
+      { type: "noul", instructions: `Is candidate c${i} relevant to the user's prompt?` } as ClefQuestion]));
+  let maxDiff = 0;
+  let singleMs = 0;
+  let batchMs = 0;
+  for (let i = 0; i + 5 <= rows.length; i += 5) {
+    const group = rows.slice(i, i + 5);
+    const ask = async (g: Row[]) => {
+      const state = { user_prompt: capState(g[0]!.prompt), candidates: Object.fromEntries(g.map((r, k) => [`c${k}`, capState(r.context)])) };
+      return askClef(state, questionsFor(g.length), opts);
+    };
+    const fwd = await ask(group);
+    const rev = await ask([...group].reverse());
+    batchMs += fwd.ms;
+    group.forEach((_, k) => {
+      const a = fwd.answers[`c${k}`]!;
+      const b = rev.answers[`c${group.length - 1 - k}`]!;
+      if (a.type === "noul" && b.type === "noul") maxDiff = Math.max(maxDiff, Math.abs(a.noul - b.noul));
+    });
+    for (const r of group) singleMs += (await askClef({ user_prompt: capState(r.prompt), prior_session_context: capState(r.context) }, recallGateQuestions("noul"), opts)).ms;
+  }
+  console.log(`batch: max order difference ${maxDiff.toFixed(3)}, batched ${batchMs} ms vs ${singleMs} ms single`);
+}
+```
+
+Add `import type { ClefQuestion } from "./lib/clef-client.js";` at the top. Run `npx tsx scripts/eval/clef-recall-gate.ts noul batch`. Acceptance: maximum difference under 0.05 and the batched time at most half of the single-call time. If either fails, H1 must use one call per candidate.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add scripts/eval/clef-recall-gate.ts
@@ -504,7 +560,7 @@ The gold has 24 informed rows, so any rate has a wide interval. This task stops 
 - Read first: `scripts/eval/hook-usefulness.ts`, `scripts/eval/lib/usefulness-judge.ts`, `docs/eval-signals.md`
 - Output: `$NLM_EVAL_DATA_DIR/gold-usefulness-v2.jsonl` (outside the repo)
 
-- [ ] **Step 1: Read how `gold-usefulness.jsonl` was built** (headers of the two scripts above) and write down the exact command that produces more `(prompt, context, response, gold)` rows from real hook injections.
+- [ ] **Step 1: Read how `gold-usefulness.jsonl` was built** (headers of the two scripts above) and write down the exact command that produces more `(prompt, context, response, gold)` rows from real hook injections. Also settle provenance: 64 of the 77 current rows have no `labeler` field (13 say `frontier-claude-opus`), while the docs call the whole set frontier-labeled. Check the commit that expanded it (`git log -S"gold-usefulness"`) and record who labeled the 64. If a Qwen-family model did, relabel those rows with the frontier model before using them as gold (Review Focus 3).
 - [ ] **Step 2: Produce rows until there are at least 150 total with at least 60 informed.** Label with the existing frontier-labeler path; do not label with a Qwen-family model (Review Focus 3).
 - [ ] **Step 3: Audit 30 rows by hand** against the response text. Record agreement with the labeler. If agreement is under 85%, stop and report; the gold is not trustworthy enough.
 - [ ] **Step 4: Rerun Task 3 on the new file** by pointing the script at `gold-usefulness-v2.jsonl` (change the filename constant, one line) and record the holdout numbers in the memo.
@@ -523,10 +579,10 @@ The gold has 24 informed rows, so any rate has a wide interval. This task stops 
 - Consumes: `askClef`, `triageQuestions`, `capState`, `splitOf`, `sweep`, `wilson`, `brier`.
 - Gold row: `{ id, runtime, body, audited: { importance: 0 | 1 | 2 | 3, kind: string, worthClassifying: boolean } }`.
 
-- [ ] **Step 1: Select 120 real sessions** with `build-classifier-gold.ts --n 120` (stratified by runtime and length). Output stays in the data dir.
-- [ ] **Step 2: Label with a first pass from a non-Qwen model**, then audit at least 40 rows by hand, including every row where the two disagree. Only audited rows enter the gold. Record labeler-vs-audit agreement.
+- [ ] **Step 1: Select 120 real sessions** with `npx tsx scripts/eval/build-classifier-gold.ts --n=120 --out=$NLM_EVAL_DATA_DIR/triage` (stratified by runtime and length, seeded; flags use the `--key=value` form). Output stays in the data dir.
+- [ ] **Step 2: Label with a first pass from a non-Qwen model**, then the frontier model audits at least 40 rows by reading them, including every row where the two disagree. Only audited rows enter the gold. Record labeler-vs-audit agreement; if it is under 85%, relabel before going on.
 - [ ] **Step 3: Write `clef-triage.ts`.** For each gold row call `askClef({ session: capState(body) }, triageQuestions(), opts)` once. Save every answer. Report on the holdout half: importance accuracy within one level, `kind` accuracy, and for the gate `worthClassifying = importance >= 2`: use `sweep` on the importance score, then print `positiveKept` with a Wilson lower bound, the share of sessions skipped, and the seconds saved per 100 sessions using the measured Gemma latencies (12 s trivial, 44 s other, from the 2026-10-09 baseline run).
-- [ ] **Step 4: Calibration comparison.** Run the production classifier on the same sessions (reuse `scripts/eval/lib/chat-client.ts`) and compare `brier()` of its self-reported `confidence` against Clef's `importance` score (rescaled to 0..1) as predictors of `worthClassifying`. Print both.
+- [ ] **Step 4: Calibration comparison.** Run the production classifier on the same sessions (call `chatOnce` from `scripts/eval/lib/chat-client.ts` with `CLASSIFIER_SYSTEM_PROMPT` and `buildUserPrompt(capState(body), "")`, parse with `stripJsonFences` and `coerceClassifyResult` from `src/core/classifier/prompt.ts`, as the production path does) and compare `brier()` of its self-reported `confidence` against Clef's `importance` score (rescaled to 0..1) as predictors of `worthClassifying`. Print both.
 - [ ] **Step 5: Run and commit**
 
 ```bash
@@ -545,9 +601,9 @@ Work-Id: T533"
 - Create: `scripts/eval/clef-judge-agreement.ts`
 - Read first: `scripts/eval/judge.ts` (verdict cache keyed by model and prompt), `scripts/eval/extraction-scoring.ts`
 
-- [ ] **Step 1: Collect pairs.** From the judge's verdict cache and the gold bodies, list every `(transcript, extracted decision or entity, existing verdict)` the large judge has already scored. Count them; need at least 100.
+- [ ] **Step 1: Rebuild pairs.** The verdict cache stores only `(sha256 key, model, reply)`, so pairs cannot be read back from it. Instead rerun the classification step of `classifier-eval.ts` on the gold bodies (its `ClassifierCache` makes repeats free), build each `(transcript, decision)` judge prompt exactly as that script does (`DECISION_PRECISION_SYSTEM` plus its user prompt builder), and look up the verdict with `JudgeCache` under the same key. Keep pairs that hit. Need at least 100 hits; if fewer, run the judge on the misses once and note the cost.
 - [ ] **Step 2: For each pair ask Clef** `noul`: "Is this statement supported by the transcript as a decision made in it?" (use the tuned wording from the 2026-10-10 notes: a chosen approach, tool, design or action taken, not something only discussed or from another session). One call per pair.
-- [ ] **Step 3: Report on the holdout half** the agreement with the existing verdict, the confusion matrix, and the time per verdict. Adopt only if agreement is at least 90% (threshold below).
+- [ ] **Step 3: Report on the holdout half** the agreement with the existing verdict, the confusion matrix, and the time per verdict. Agreement with a judge is not accuracy, and the existing judge is likely Qwen-family like Clef. So the frontier model also reads every disagreement against the transcript and records which side was right. Adopt only if agreement is at least 90% (threshold below) and Clef is right on at least half of the audited disagreements.
 - [ ] **Step 4: Commit**
 
 ```bash
@@ -561,13 +617,13 @@ Work-Id: T533"
 
 ### Task 7: H4 session-close panel
 
-Past session-close outcomes cannot be joined to sessions: in the vault log only about 6 of 925 session-close lines carry a full session id. Labels therefore come from an audit, not from history.
+Past session-close outcomes cannot be joined to sessions: in the vault log only 25 of 925 session-close lines carry a session id, and only 2 of those resolve to an NLM session. Labels therefore come from an audit, not from history.
 
 **Files:**
 - Create: `scripts/eval/clef-session-close.ts`
 - Read first: `~/.config/nxt/skills/skills.d/session-close/references/capture-rubric.md`, `scripts/scan.py` (its output contract: `will_capture`, `task_resolution`, `considered_but_skipping`)
 
-- [ ] **Step 1: Build 40 cases** from recent real sessions. Each case: transcript (capped), the open tasks that were visible at session start (use `nxttasks list --property <p>` output as it was), and an audited answer for each task (`Done`, `In Progress`, `Blocked`, `unchanged`) and each candidate capture item (`synthesis`, `operational`, `skip`). Candidate items come from the existing scanner's output so the comparison is on the same items.
+- [ ] **Step 1: Build 40 cases** from recent real sessions. Each case: transcript (capped), the open tasks as they stood at session start (`nxttasks list` only shows now, so reconstruct from `nxttasks history <id> --json` using the session's start time), and an audited answer for each task (`Done`, `In Progress`, `Blocked`, `unchanged`) and each candidate capture item (`synthesis`, `operational`, `skip`), judged by the frontier model reading the transcript. Candidate items come from the existing scanner's output so the comparison is on the same items.
 - [ ] **Step 2: Ask Clef one call per case** with a `choice` question per open task and per candidate item, criteria taken verbatim from the rubric text.
 - [ ] **Step 3: Report on the holdout half:** task-status agreement, capture-triage recall for audited `synthesis` and `operational` items, and call time against the scanner's time for the same case.
 - [ ] **Step 4: Commit**
@@ -604,14 +660,14 @@ Work-Id: T533"
 |---|---|
 | H1 recall gate | informed kept is at least 96% and off-topic skipped is at least 40%, at p95 latency under 1.5 s through the hook path, and Task 4 reached 60 informed rows |
 | H2 triage | zero audited-substantive sessions skipped and at least 20% of sessions skipped; calibration Brier no worse than the classifier's own confidence |
-| H3 judge | agreement with the existing judge at least 90% on at least 100 pairs |
+| H3 judge | agreement with the existing judge at least 90% on at least 100 pairs, and Clef right on at least half of the audited disagreements |
 | H4 session-close | task-status agreement at least 90% and capture-triage recall at least 95% |
 
 - [ ] **Step 3: For each adopted hypothesis, list the integration steps** (hook change, shadow mode first, fail-open, rollback) as a separate follow-up plan. Do not implement in this plan.
 - [ ] **Step 4: Run the repo gate and land**
 
 ```bash
-npm run typecheck && npx vitest run tests/unit/eval
+npm run typecheck && npx vitest run tests/unit/scripts/clef-client.test.ts tests/unit/scripts/clef-stats.test.ts tests/unit/scripts/clef-panels.test.ts
 git add docs/clef-decision-panel-findings.md
 git commit -m "docs: Clef decision panel findings
 
