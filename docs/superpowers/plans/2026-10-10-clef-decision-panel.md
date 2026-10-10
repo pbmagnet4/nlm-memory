@@ -10,6 +10,10 @@
 
 **Spec:** the Hypotheses section of this document. Evidence so far lives in the 2026-10-10 session notes: Gemma's weak decision precision was a reference-list artifact, so Clef has nothing to fix there, `score` questions separated trivial from substantive sessions better than `noul`, six questions cost one read (1.07 s vs 4.77 s), and a zero-shot spike on the recall-gate gold looked promising, but no gate is live (see H1).
 
+## Status (2026-10-10)
+
+Done: Task 1 (client), Task 2 (stats, panels, canary), Task 5 (H2 triage run on 120 real sessions, calibration comparison incomplete). Results are in `docs/clef-decision-panel-findings.md`. Not built: Task 3 (a scratch spike stands in for it), Task 4 (skipped, push recall is off), Tasks 6 to 8.
+
 ## Hypotheses
 
 | ID | Where Clef might help | Today | Zero-shot spike (n small, untuned) |
@@ -672,7 +676,7 @@ git add docs/clef-decision-panel-findings.md
 git commit -m "docs: Clef decision panel findings
 
 Work-Id: T533"
-nxtgit land --cwd /Users/echalupa/.nxtos/worktrees/nlm-memory-a158d07b
+nxtgit land --cwd <task worktree>
 ```
 
 ## Self-Review
