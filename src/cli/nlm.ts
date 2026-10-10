@@ -131,6 +131,7 @@ import { DAEMON_PKILL_PATTERN, planRestart, executeRestartPlan, type ExecuteRest
 import { isDevBuild, updateCheckCachePath } from "./upgrade-helpers.js";
 import { applyEnvAssignment } from "./config-env.js";
 import { adapterFromSource } from "../core/adapters/from-source.js";
+import { findCurrentSession, runtimeAdapterNames, sessionIdFromEnvironment } from "../core/transcript/current-session.js";
 import type { TranscriptAdapter } from "../ports/transcript-adapter.js";
 import type { LLMClient } from "../ports/llm-client.js";
 import { runDigest } from "./digest.js";
@@ -460,6 +461,49 @@ program
   .name("nlm")
   .description("Local-first memory operating system for AI operators")
   .version(pkg.version);
+
+const transcriptCmd = program
+  .command("transcript")
+  .description("Read normalized transcripts from the registered runtime sources");
+
+transcriptCmd
+  .command("current")
+  .description("Print the current runtime session as normalized JSON (session-close's scanner input)")
+  .option("--runtime <name>", "auto, claude-code, codex, hermes, muse, opencode, or pi", "auto")
+  .option("--session-id <id>", "exact runtime session ID (default: the runtime's session env var, else newest in --cwd)")
+  .option("--cwd <path>", "project directory for the newest-session fallback", process.cwd())
+  .option("--since-min <n>", "newest-session lookback in minutes", (v) => Number.parseInt(v, 10), 1440)
+  .action(async (opts: { runtime: string; sessionId?: string; cwd: string; sinceMin: number }) => {
+    autoloadEnv();
+    if (!Number.isFinite(opts.sinceMin) || opts.sinceMin < 1) {
+      throw new Error("--since-min must be a positive integer");
+    }
+    const adapterNames = runtimeAdapterNames(opts.runtime, process.env);
+    const sessionId = opts.sessionId ?? sessionIdFromEnvironment(adapterNames, process.env);
+    const storage = await buildStorage(dbPath());
+    try {
+      await storage.sources.seedDefaults(DEFAULT_TEAM_ID);
+      const allowed = adapterNames ? new Set(adapterNames) : null;
+      const adapters = (await storage.sources.list(DEFAULT_TEAM_ID))
+        .map((row) => adapterFromSource(row))
+        .filter((a): a is TranscriptAdapter => a !== null && (!allowed || allowed.has(a.name)));
+      const result = await findCurrentSession({
+        adapters,
+        ...(sessionId ? { sessionId } : {}),
+        cwd: opts.cwd,
+        since: new Date(Date.now() - opts.sinceMin * 60_000),
+      });
+      if (!result) {
+        const runtime = opts.runtime === "auto" ? "a registered runtime" : opts.runtime;
+        throw new Error(`no ${runtime} transcript found ${sessionId ? `with session ID ${sessionId}` : `for ${opts.cwd}`}`);
+      }
+      process.stdout.write(
+        JSON.stringify({ schemaVersion: 1, adapter: result.adapterName, selection: result.selection, session: result.session }) + "\n",
+      );
+    } finally {
+      await storage.close();
+    }
+  });
 
 program
   .command("start")
