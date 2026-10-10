@@ -16,6 +16,13 @@
  *
  * Run: npx tsx scripts/eval/fact-recall-eval.ts [--limit=80] [--probe=50]
  *        [--modes=keyword,semantic,hybrid] [--db=<path>] [--json=<out>]
+ *        [--reembed-facts] [--boost-caps=default,1]
+ *
+ * The embedder is the configured lane (buildEmbedder). --reembed-facts drops
+ * the sandbox's fact vectors and rebuilds them with that embedder first, so an
+ * A/B arm on a different embed model is scored in its own vector space.
+ * --boost-caps scores each listed NLM_FACT_CORROBORATION_BOOST_CAP over the
+ * same vectors (1 = boost off), isolating the score-scale-sensitive boost.
  */
 
 import {
@@ -32,7 +39,9 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SqliteStorage } from "@core/storage/sqlite-storage.js";
-import { OllamaClient } from "../../src/llm/ollama-client.js";
+import { buildEmbedder } from "../../src/llm/build-embedder.js";
+import { backfillFactEmbeddings } from "@core/facts/embed-backfill.js";
+import type { LLMClient } from "@ports/llm-client.js";
 import { FactRecallService } from "@core/recall-facts/fact-recall-service.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import type { Fact, RecallMode } from "@shared/types.js";
@@ -48,9 +57,11 @@ interface Args {
   modes: RecallMode[];
   dbPath: string;
   jsonOut: string | null;
-  gold: GoldMode;
+  golds: GoldMode[];
   refresh: boolean;
   precision: boolean;
+  reembedFacts: boolean;
+  boostCaps: string[];
 }
 
 interface GoldQuery {
@@ -72,9 +83,11 @@ function parseArgs(argv: string[]): Args {
     modes: modesRaw.split(",").map((m) => m.trim() as RecallMode),
     dbPath: get("db") ?? join(homedir(), ".nlm", "canonical.sqlite"),
     jsonOut: get("json") ?? null,
-    gold: (get("gold") ?? "topic") as GoldMode,
+    golds: (get("gold") ?? "topic").split(",").map((g) => g.trim() as GoldMode),
     refresh: argv.includes("--refresh"),
     precision: argv.includes("--precision"),
+    reembedFacts: argv.includes("--reembed-facts"),
+    boostCaps: (get("boost-caps") ?? "default").split(",").map((c) => c.trim()),
   };
 }
 
@@ -101,8 +114,6 @@ const PARAPHRASE_CACHE = join(homedir(), ".cache", "nlm-fact-recall", "paraphras
  */
 async function paraphraseGold(
   facts: ReadonlyArray<Fact>,
-  ollamaUrl: string,
-  model: string,
   refresh: boolean,
 ): Promise<GoldQuery[]> {
   mkdirSync(dirname(PARAPHRASE_CACHE), { recursive: true });
@@ -120,7 +131,7 @@ async function paraphraseGold(
   for (const f of facts) {
     let query = cache.get(f.id);
     if (query === undefined) {
-      query = await generateQuestion(f, ollamaUrl, model);
+      query = await generateQuestion(f);
       appendFileSync(PARAPHRASE_CACHE, JSON.stringify({ factId: f.id, query }) + "\n");
       generated += 1;
     }
@@ -130,22 +141,39 @@ async function paraphraseGold(
   return out;
 }
 
-async function generateQuestion(fact: Fact, ollamaUrl: string, model: string): Promise<string> {
-  const res = await fetch(`${ollamaUrl}/api/chat`, {
+/** Question writer: the configured classifier lane (NLM_CLASSIFIER_BASE_URL /
+ *  NLM_CLASSIFIER_MODEL / NLM_CLASSIFIER_API_KEY), an OpenAI-compatible gateway. */
+async function generateQuestion(fact: Fact): Promise<string> {
+  // The lane's thinking models intermittently return empty content; a retry
+  // of the same prompt answers normally.
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const question = await writeQuestionOnce(fact);
+    if (question) return question;
+  }
+  throw new Error(`question writer returned no text for fact ${fact.id} after 3 attempts`);
+}
+
+async function writeQuestionOnce(fact: Fact): Promise<string> {
+  const base = (process.env["NLM_CLASSIFIER_BASE_URL"] ?? "").replace(/\/+$/, "");
+  const model = process.env["NLM_CLASSIFIER_MODEL"];
+  if (!base || !model) throw new Error("--gold=paraphrase needs NLM_CLASSIFIER_BASE_URL and NLM_CLASSIFIER_MODEL");
+  const url = base.endsWith("/v1") ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+  const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env["NLM_CLASSIFIER_API_KEY"] ?? "local"}`,
+    },
     body: JSON.stringify({
       model,
-      stream: false,
-      think: false,
-      format: { type: "object", properties: { question: { type: "string" } }, required: ["question"] },
-      options: { temperature: 0.3 },
+      temperature: 0.3,
+      max_tokens: 3000,
       messages: [
         {
           role: "system",
           content:
             "You write the natural question a user would later ask to recall a past decision. " +
-            "Output JSON {\"question\": \"...\"}. The question must be about the topic but MUST NOT " +
+            "Reply with the question only, one line. It must be about the topic but MUST NOT " +
             "contain or paraphrase the answer itself — recall is being tested.",
         },
         {
@@ -155,9 +183,9 @@ async function generateQuestion(fact: Fact, ollamaUrl: string, model: string): P
       ],
     }),
   });
-  const data = (await res.json()) as { message?: { content?: string } };
-  const parsed = JSON.parse(data.message?.content ?? "{}") as { question?: string };
-  return (parsed.question ?? `${fact.subject} ${fact.predicate}`).trim();
+  if (!res.ok) throw new Error(`question writer ${url} -> ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const data = (await res.json()) as { choices?: ReadonlyArray<{ message?: { content?: string } }> };
+  return (data.choices?.[0]?.message?.content ?? "").trim().split("\n").pop()?.trim() ?? "";
 }
 
 /** Copy the corpus (+ WAL/SHM if present) into a throwaway sandbox dir. */
@@ -185,6 +213,8 @@ function sample(facts: ReadonlyArray<Fact>, count: number): ReadonlyArray<Fact> 
 }
 
 interface ModeMetrics {
+  gold: GoldMode;
+  boostCap: string;
   mode: RecallMode;
   n: number;
   found: number;
@@ -220,7 +250,7 @@ interface PrecisionMetrics {
 async function precisionArm(
   storage: { facts: { insertMany(tenantId: string, f: ReadonlyArray<Fact>): Promise<void>; upsertEmbedding(tenantId: string, id: string, v: Float32Array): Promise<void> }; sessions: { rawDb(): { prepare(sql: string): { run(...args: unknown[]): void } } } },
   factRecall: FactRecallService,
-  embedder: OllamaClient,
+  embedder: LLMClient,
   gold: ReadonlyArray<Fact>,
   modes: ReadonlyArray<RecallMode>,
   probe: number,
@@ -285,7 +315,7 @@ async function main(): Promise<void> {
 
   const sb = sandboxCopy(args.dbPath);
   const storage = SqliteStorage.create({ dbPath: sb.path, migrationsDir: MIGRATIONS_DIR });
-  const embedder = new OllamaClient({});
+  const embedder = buildEmbedder();
   const factRecall = new FactRecallService({ factStore: storage.facts, llm: embedder });
 
   // Candidate pool: current decision facts at/above the recall confidence floor.
@@ -297,48 +327,79 @@ async function main(): Promise<void> {
   });
   const gold = sample(pool, args.limit);
   console.error(
-    `fact-recall-eval: ${pool.length} current decision facts; sampled ${gold.length} gold (mode=${args.gold})`,
+    `fact-recall-eval: ${pool.length} current decision facts; sampled ${gold.length} gold (modes=${args.golds.join(",")})`,
   );
 
-  const queries =
-    args.gold === "paraphrase"
-      ? await paraphraseGold(gold, "http://localhost:11434", "qwen3.5:4b", args.refresh)
-      : topicGold(gold);
+  const queriesByGold = new Map<GoldMode, GoldQuery[]>();
+  for (const g of args.golds) {
+    queriesByGold.set(g, g === "paraphrase" ? await paraphraseGold(gold, args.refresh) : topicGold(gold));
+  }
 
-  const allMetrics: ModeMetrics[] = [];
-  for (const mode of args.modes) {
-    let found = 0;
-    let r1 = 0;
-    let r3 = 0;
-    let r5 = 0;
-    let rankSum = 0;
-    for (const q of queries) {
-      const res = await factRecall.search(DEFAULT_TEAM_ID, { query: q.query, mode, limit: args.probe });
-      const idx = res.results.findIndex((h) => h.id === q.goldId);
-      if (idx >= 0) {
-        const rank = idx + 1;
-        found += 1;
-        rankSum += rank;
-        if (rank <= 1) r1 += 1;
-        if (rank <= 3) r3 += 1;
-        if (rank <= 5) r5 += 1;
-      }
-    }
-    const m: ModeMetrics = {
-      mode,
-      n: queries.length,
-      found,
-      r1: pct(r1, queries.length),
-      r3: pct(r3, queries.length),
-      r5: pct(r5, queries.length),
-      meanRankWhenFound: found === 0 ? 0 : Math.round((rankSum / found) * 100) / 100,
-    };
-    allMetrics.push(m);
+  if (args.reembedFacts) {
+    storage.sessions.rawDb().prepare("DELETE FROM fact_embeddings").run();
+    const t = Date.now();
+    const rep = await backfillFactEmbeddings({
+      tenantId: DEFAULT_TEAM_ID,
+      dbPath: sb.path,
+      embedder,
+      store: storage.facts,
+      onProgress: (i, total) => {
+        if (i % 2000 === 0) console.error(`  reembed facts ${i}/${total}`);
+      },
+    });
     console.error(
-      `  ${mode.padEnd(9)} R@1 ${String(m.r1).padStart(5)}%  R@3 ${String(m.r3).padStart(5)}%  ` +
-        `R@5 ${String(m.r5).padStart(5)}%  found ${found}/${m.n}  meanRank ${m.meanRankWhenFound}`,
+      `fact-recall-eval: reembedded ${rep.succeeded}/${rep.total} facts (${rep.failed} failed) in ${Math.round((Date.now() - t) / 1000)}s`,
     );
   }
+  const allMetrics: ModeMetrics[] = [];
+  const defaultCap = process.env["NLM_FACT_CORROBORATION_BOOST_CAP"];
+  for (const [goldMode, queries] of queriesByGold) {
+    for (const cap of args.boostCaps) {
+      if (cap === "default") {
+        if (defaultCap === undefined) delete process.env["NLM_FACT_CORROBORATION_BOOST_CAP"];
+        else process.env["NLM_FACT_CORROBORATION_BOOST_CAP"] = defaultCap;
+      } else {
+        process.env["NLM_FACT_CORROBORATION_BOOST_CAP"] = cap;
+      }
+      for (const mode of args.modes) {
+        let found = 0;
+        let r1 = 0;
+        let r3 = 0;
+        let r5 = 0;
+        let rankSum = 0;
+        for (const q of queries) {
+          const res = await factRecall.search(DEFAULT_TEAM_ID, { query: q.query, mode, limit: args.probe });
+          const idx = res.results.findIndex((h) => h.id === q.goldId);
+          if (idx >= 0) {
+            const rank = idx + 1;
+            found += 1;
+            rankSum += rank;
+            if (rank <= 1) r1 += 1;
+            if (rank <= 3) r3 += 1;
+            if (rank <= 5) r5 += 1;
+          }
+        }
+        const m: ModeMetrics = {
+          gold: goldMode,
+          boostCap: cap,
+          mode,
+          n: queries.length,
+          found,
+          r1: pct(r1, queries.length),
+          r3: pct(r3, queries.length),
+          r5: pct(r5, queries.length),
+          meanRankWhenFound: found === 0 ? 0 : Math.round((rankSum / found) * 100) / 100,
+        };
+        allMetrics.push(m);
+        console.error(
+          `  ${goldMode.padEnd(10)} cap=${cap.padEnd(7)} ${mode.padEnd(9)} R@1 ${String(m.r1).padStart(5)}%  R@3 ${String(m.r3).padStart(5)}%  ` +
+            `R@5 ${String(m.r5).padStart(5)}%  found ${found}/${m.n}  meanRank ${m.meanRankWhenFound}`,
+        );
+      }
+    }
+  }
+  if (defaultCap === undefined) delete process.env["NLM_FACT_CORROBORATION_BOOST_CAP"];
+  else process.env["NLM_FACT_CORROBORATION_BOOST_CAP"] = defaultCap;
 
   let precisionMetrics: PrecisionMetrics[] | undefined;
   if (args.precision) {

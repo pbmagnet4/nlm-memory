@@ -1,7 +1,9 @@
 /**
  * LongMemEval-S baseline harness for NLM.
  *
- * Body-only ingest (skip classifier) + local Ollama nomic-embed-text. For
+ * Body-only ingest (skip classifier) + the configured embedder
+ * (NLM_EMBED_PROVIDER / NLM_EMBED_BASE_URL / NLM_EMBED_MODEL, via
+ * buildEmbedder — the same lane the daemon uses). For
  * each evaluation instance: spin up an in-memory NLM corpus loaded with
  * the haystack sessions, query in each retrieval mode (keyword / semantic
  * / hybrid+RRF), score R@5 plus the session-body companion metric.
@@ -31,8 +33,9 @@
  * keyed by sha256(provider+model+body). First run per model takes hours
  * (one LLM call per unique body); subsequent re-runs hit cache only.
  *
- * Re-runs are fast: embeddings cache in ~/.cache/longmemeval/embeddings.sqlite
- * keyed by sha256(kind + text). First run = ~30 min embedding; subsequent = seconds.
+ * Re-runs are fast: embeddings cache in ~/.cache/longmemeval/embeddings.<model>.sqlite
+ * keyed by sha256(kind + text), one file per embed model so A/B arms never
+ * share vectors. First run = ~30-60 min embedding; subsequent = seconds.
  */
 
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -45,6 +48,7 @@ const __dirname = dirname(__filename);
 import { RecallService } from "../../src/core/recall/recall-service.js";
 import { SqliteSessionStore } from "../../src/core/storage/sqlite-session-store.js";
 import { OllamaClient } from "../../src/llm/ollama-client.js";
+import { buildEmbedder } from "../../src/llm/build-embedder.js";
 import { DeepSeekClient } from "../../src/llm/deepseek-client.js";
 import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
 import type {
@@ -175,10 +179,13 @@ function stratifiedPick<T extends { question_type: string }>(
 
 /** LLMClient wrapper: routes embed() through the on-disk cache. */
 class CachingEmbedder implements LLMClient {
-  constructor(private readonly cache: EmbeddingCache) {}
+  constructor(
+    private readonly cache: EmbeddingCache,
+    private readonly model: string,
+  ) {}
   async embed(text: string, kind: EmbeddingKind): Promise<EmbedResult> {
     const vector = await this.cache.embed(text, kind);
-    return { vector, model: "nomic-embed-text@cached" };
+    return { vector, model: `${this.model}@cached` };
   }
   async classify(): Promise<never> {
     throw new Error("classify not used in LongMemEval body-only harness");
@@ -350,12 +357,14 @@ async function main(): Promise<void> {
   }
 
   // Warm the embedding cache and the LLM transport.
-  const llm = new OllamaClient({ embedModel: "nomic-embed-text" });
+  const llm = buildEmbedder();
+  const embedModel = (await llm.embed("longmemeval embed probe", "query")).model;
+  console.log(`longmemeval-harness: embedder ${embedModel}`);
   const cache = new EmbeddingCache({
-    dbPath: join(args.cacheDir, "embeddings.sqlite"),
+    dbPath: join(args.cacheDir, `embeddings.${embedModel.replace(/[^A-Za-z0-9._-]/g, "_")}.sqlite`),
     llm,
   });
-  const embedder = new CachingEmbedder(cache);
+  const embedder = new CachingEmbedder(cache, embedModel);
 
   let classifierCache: ClassifierCache | null = null;
   if (resolvedClassifier) {
@@ -424,6 +433,7 @@ async function main(): Promise<void> {
     k: args.k,
     modes: args.modes,
     sampling: args.stratify ? "stratified" : "first-N",
+    embedder: embedModel,
     classifier: resolvedClassifier
       ? {
           provider: resolvedClassifier.provider,
@@ -455,6 +465,7 @@ function renderSummary(json: {
   n: number;
   k: number;
   modes: ReadonlyArray<RecallMode>;
+  embedder: string;
   classifier: { provider: string; model: string; cache_total: number; cache_ok: number; cache_failed: number; cache_mean_elapsed_ms: number | null; run_classify_attempts: number; run_classify_failures: number } | null;
   aggregate: Record<string, ReturnType<typeof aggregate>>;
   by_question_type: Record<string, Record<string, ReturnType<typeof aggregate>>>;
@@ -462,7 +473,7 @@ function renderSummary(json: {
 }): string {
   const lines: string[] = [];
   const mode = json.classifier ? `classifier=${json.classifier.provider}:${json.classifier.model}` : "body-only";
-  lines.push(`# LongMemEval-S — NLM (${mode}, n=${json.n}, k=${json.k})`);
+  lines.push(`# LongMemEval-S — NLM (${mode}, embedder=${json.embedder}, n=${json.n}, k=${json.k})`);
   lines.push("");
   lines.push(`Dataset: \`${json.dataset}\``);
   lines.push(`Elapsed: ${json.elapsed_seconds.toFixed(1)}s`);
