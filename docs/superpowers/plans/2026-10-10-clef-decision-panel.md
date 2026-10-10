@@ -8,18 +8,20 @@
 
 **Tech Stack:** TypeScript (ESM, Node 22), Vitest, `tsx` for scripts, LiteLLM gateway at `NLM_CLASSIFIER_BASE_URL`, oMLX model `clef-oQ4e`.
 
-**Spec:** the Hypotheses section of this document. Evidence so far lives in the 2026-10-10 session notes: Gemma's weak decision precision was a reference-list artifact, so Clef has nothing to fix there, `score` questions separated trivial from substantive sessions better than `noul`, six questions cost one read (1.07 s vs 4.77 s), and a zero-shot spike on the recall-gate gold looked comparable to the shipped gate.
+**Spec:** the Hypotheses section of this document. Evidence so far lives in the 2026-10-10 session notes: Gemma's weak decision precision was a reference-list artifact, so Clef has nothing to fix there, `score` questions separated trivial from substantive sessions better than `noul`, six questions cost one read (1.07 s vs 4.77 s), and a zero-shot spike on the recall-gate gold looked promising, but no gate is live (see H1).
 
 ## Hypotheses
 
 | ID | Where Clef might help | Today | Zero-shot spike (n small, untuned) |
 |---|---|---|---|
-| H1 | Pre-injection recall gate (`src/hook/recall-gate.ts`), hot path on every prompt | `qwen3.5:4b` via Ollama. Measured on these same 77 rows (design spec 2026-06-23): conservative point keeps 96% of informed and skips 25% of off-topic; balanced point keeps 67% and skips 60% | 77 gold rows (24 informed): threshold 0.2 keeps 100% and skips 17%; threshold 0.3 keeps 92% and skips 32%; 0.43 s per call |
+| H1 | Relevance filter, only if ambient recall is ever restored (or for the SessionStart pointer block). Optional and lowest priority | Nothing live to improve. Per-prompt recall injection is off (`NLM_HOOK_PROMPT_RECALL=off`, push replaced by pull on 2026-06-23) and the old gate is off (`NLM_HOOK_RECALL_GATE=off`: it added about 1.3 s per fire and held a 3.2 GB model resident). That model is retired from this work and is not rerun | 77 gold rows (24 informed): threshold 0.2 keeps 100% and skips 17%; threshold 0.3 keeps 92% and skips 32%; 0.43 s per call |
 | H2 | Ingest triage panel: session kind (`choice`), importance (`score` 0 to 3), flags (`noul`), then skip or route the generative classifier call | Gemma 12B at 12 s (trivial) to 44 s (substantive) per session; self-reported confidence missed 1 of 4 trivial sessions | 20 synthetic sessions: `score` gap 0.6 on a 0 to 3 scale vs 0.08 for `noul` on 0 to 1 |
 | H3 | Cheap faithfulness judge for `classifier-eval.ts` (is this decision or entity supported by the transcript) | Large-LLM judge in `scripts/eval/judge.ts` | 40 of 40 foreign decisions rejected, 31 of 32 genuine extras accepted |
 | H4 | session-close: task status (`choice`: Done, In Progress, Blocked, unchanged) and capture triage (`choice`: synthesis, operational action, skip) | Generative scan in `session-close/scripts/scan.py` | not tested |
 
-Two limits on H1 are known up front. The gold label says whether the response used the context, not whether the context was on topic, so some "unused" rows are relevant and the achievable skip rate is capped. And the design spec puts the gate's total payoff at about 18% fewer injected tokens and precision 31% to 37%, so H1 is a modest win even if Clef is better.
+H1 is demoted for three reasons. Ambient recall is off, so there is no live traffic to filter. Shadow data showed ambient injection was about 80% off-topic, and the 2026-06-23 design spec estimated a good gate removes only a quarter of that, so most of the noise would remain anyway. And the gold label says whether the response used the context, not whether it was on topic, which caps the achievable skip rate. H1 gets a quick score on the existing gold (Task 3) and nothing more unless push recall is revived.
+
+Execution order: Task 5 (H2) first, then Tasks 6 and 7, then Task 3 as a cheap side check. Task 4 is skipped unless push recall is revived.
 
 Falsified and not pursued: using Clef to filter Gemma's "false" decisions. The fixture eval scores decision precision by word overlap with 1 or 2 reference decisions, so most "unmatched" decisions were real.
 
@@ -35,6 +37,7 @@ Falsified and not pursued: using Clef to filter Gemma's "false" decisions. The f
 - No fine-tuning and no Cloudflare RL service in this plan. Decide that separately from the memo.
 - Every label, audit and spot check is done by the session's frontier model reading the material. Nothing is handed to the operator as a manual step.
 - Test files follow the repo convention `tests/unit/scripts/`.
+- `qwen3.5:4b` and the Ollama gate path are retired. Nothing in this plan runs them, and no label, judge or baseline comes from them.
 - Task tracking: nxttasks T533 (property nlm-memory, project Recall). Every commit carries a `Work-Id: T533` trailer.
 
 ## Review Focus
@@ -418,7 +421,7 @@ EOF
 npx tsx /tmp/clef-canary.mts
 ```
 
-Replace `/ABS/PATH/TO/WORKTREE` with the absolute worktree path before running. Expected: scores near 0.9 up to some size, then near 0. Record the last size that finds the canary in the memo (Task 9). It must be above 15,000 chars; if it is not, lower the cap in `capState` before any later task.
+Replace `/ABS/PATH/TO/WORKTREE` with the absolute worktree path before running. Result on 2026-10-10: the marker was found at 15k, 40k, 60k and 80k characters (scores 0.97, 0.95, 0.86, 0.93) and missed at 100k and 120k (0.01), so the served window ends between 80k and 100k characters, well above the 15k cap. Expected: scores near 0.9 up to some size, then near 0. Record the last size that finds the canary in the memo (Task 9). It must be above 15,000 chars; if it is not, lower the cap in `capState` before any later task.
 
 - [ ] **Step 6: Commit**
 
@@ -431,7 +434,7 @@ Work-Id: T533"
 
 ---
 
-### Task 3: H1 recall-gate experiment on the existing gold
+### Task 3: H1 side check on the existing gold (optional, cheap)
 
 **Files:**
 - Create: `scripts/eval/clef-recall-gate.ts`
@@ -500,12 +503,9 @@ for v in noul noulCriteria score; do npx tsx scripts/eval/clef-recall-gate.ts $v
 
 Expected: three tables. Choose the threshold from the **tune** rows only (best off-topic skip rate with informed kept at or above 96%), then read that threshold's **holdout** line. Write both into the memo.
 
-- [ ] **Step 4: Paired baseline from the shipped gate on the same rows**
+- [ ] **Step 4: Report without a live baseline**
 
-The shipped gate's published numbers come from these same 77 rows, but rerun it so both models are compared on the same tune and holdout halves. `qwen3.5:4b` is installed in local Ollama.
-
-Run: `npx tsx scripts/eval/gate-feasibility.ts --model=qwen3.5:4b`
-Record its conservative and balanced operating points on the holdout half, and compare the two operating curves (Clef's sweep against those two points) rather than one number. The spike suggested Clef holds 88% informed kept while skipping 57%; the shipped gate's curve implies roughly 35% at that retention. That rests on 3 informed rows, so it is a lead, not a result.
+There is no live gate to beat, and the old `qwen3.5:4b` gate is not rerun. Report Clef's holdout AUC and operating points alone, and say plainly that they show whether Clef can separate used from unused context, not that it beats anything. The 2026-06-23 design spec's one-off operating points (96% kept at 25% skipped; 67% kept at 60% skipped) may be quoted as history only.
 
 - [ ] **Step 5: Shuffle-invariance check for batched candidates**
 
@@ -552,16 +552,16 @@ Work-Id: T533"
 
 ---
 
-### Task 4: Grow the recall-gate gold before trusting H1
+### Task 4: Grow the recall-gate gold (skip unless push recall is revived)
 
-The gold has 24 informed rows, so any rate has a wide interval. This task stops H1 from being decided on noise.
+The gold has 24 informed rows, so any rate has a wide interval. This task stops H1 from being decided on noise, and it only matters if ambient recall comes back.
 
 **Files:**
 - Read first: `scripts/eval/hook-usefulness.ts`, `scripts/eval/lib/usefulness-judge.ts`, `docs/eval-signals.md`
 - Output: `$NLM_EVAL_DATA_DIR/gold-usefulness-v2.jsonl` (outside the repo)
 
 - [ ] **Step 1: Read how `gold-usefulness.jsonl` was built** (headers of the two scripts above) and write down the exact command that produces more `(prompt, context, response, gold)` rows from real hook injections. Also settle provenance: 64 of the 77 current rows have no `labeler` field (13 say `frontier-claude-opus`), while the docs call the whole set frontier-labeled. Check the commit that expanded it (`git log -S"gold-usefulness"`) and record who labeled the 64. If a Qwen-family model did, relabel those rows with the frontier model before using them as gold (Review Focus 3).
-- [ ] **Step 2: Produce rows until there are at least 150 total with at least 60 informed.** Label with the existing frontier-labeler path; do not label with a Qwen-family model (Review Focus 3).
+- [ ] **Step 2: Produce rows until there are at least 150 total with at least 60 informed.** Label with the frontier model reading each row. Do not use `lib/usefulness-judge.ts` (it runs the retired `qwen3.5:4b`) or any Qwen-family labeler (Review Focus 3).
 - [ ] **Step 3: Audit 30 rows by hand** against the response text. Record agreement with the labeler. If agreement is under 85%, stop and report; the gold is not trustworthy enough.
 - [ ] **Step 4: Rerun Task 3 on the new file** by pointing the script at `gold-usefulness-v2.jsonl` (change the filename constant, one line) and record the holdout numbers in the memo.
 - [ ] **Step 5: Stop condition.** If 60 informed rows cannot be reached, report H1 as "indicative only" and do not recommend adoption.
@@ -642,8 +642,8 @@ Work-Id: T533"
 **Files:**
 - Modify: none (numbers go in the memo)
 
-- [ ] **Step 1: Count volume.** `sqlite3 ~/.nlm/canonical.sqlite "select date(started_at), count(*) from sessions where started_at > date('now','-30 day') group by 1"` gives sessions per day; hook injections per day come from the hook log (`docs/hooks.md` names it).
-- [ ] **Step 2: Compute per day** the seconds of generative classifier time avoided (H2 skip rate times sessions times measured latency), the prompt tokens of injected context avoided (H1 skip rate times injections times mean candidate size), and the Clef time added (calls times 0.4 to 1.2 s).
+- [ ] **Step 1: Count volume.** `sqlite3 ~/.nlm/canonical.sqlite "select date(started_at), count(*) from sessions where started_at > date('now','-30 day') group by 1"` gives sessions per day; hook fires per day come from `~/.nlm/hook-log.jsonl` (`docs/hooks.md` names it).
+- [ ] **Step 2: Compute per day** the seconds of generative classifier time avoided (H2 skip rate times sessions times measured latency), the prompt tokens of injected context avoided (only if H1 is revived), and the Clef time added (calls times 0.4 to 1.2 s).
 - [ ] **Step 3: Check Studio headroom.** Clef is resident at about 16 GB. List what else is loaded (`curl -s 127.0.0.1:8349/v1/models` on the Studio) and note whether Gemma could be unloaded if H2 and H3 adopt.
 
 ---
@@ -658,7 +658,7 @@ Work-Id: T533"
 
 | Hypothesis | Adopt only if, on the holdout half |
 |---|---|
-| H1 recall gate | informed kept is at least 96% and off-topic skipped is at least 40%, at p95 latency under 1.5 s through the hook path, and Task 4 reached 60 informed rows |
+| H1 relevance filter | not evaluated for adoption unless push recall is revived. If it is: informed kept at least 96%, off-topic skipped at least 40%, added latency under 0.6 s per fire, and Task 4 reached 60 informed rows |
 | H2 triage | zero audited-substantive sessions skipped and at least 20% of sessions skipped; calibration Brier no worse than the classifier's own confidence |
 | H3 judge | agreement with the existing judge at least 90% on at least 100 pairs, and Clef right on at least half of the audited disagreements |
 | H4 session-close | task-status agreement at least 90% and capture-triage recall at least 95% |
