@@ -34,6 +34,30 @@ Against the proposed adoption bar (no worthwhile session skipped, at least 20% o
 - Clef call time: the fastest call was 1.05 s, but the median in this run was 6.4 s because the Studio was serving other work (including a classifier job started for the comparison below). Use about 1 s as the clean figure and re-measure at adoption.
 - Calibration comparison is not usable: the production classifier was stopped after 15 sessions (2 unparsed). Its self-reported confidence was exactly 1.0 on every parsed one, so it carried no signal on those sessions, but 13 sessions is too few to conclude more.
 
+## H2 at scale: 799 historical sessions against stored output
+
+A seeded random sample of 799 closed sessions (`scripts/eval/clef-yield.ts`), each scored by Clef and compared with what the classifier stored for it (decision markers and live facts). The threshold stayed at 1.5, frozen from the audited tune set.
+
+| Threshold | Sessions skipped | Stored-nothing sessions skipped | Decisions lost | Facts lost |
+|---|---|---|---|---|
+| 1.25 | 21.4% | 134 of 246 | 10 of 3012 (0.3%) | 63 of 3868 (1.6%) |
+| 1.5 | 28.5% | 170 of 246 | 14 of 3012 (0.5%) | 94 of 3868 (2.4%) |
+| 1.75 | 39.2% | 198 of 246 | 43 of 3012 (1.4%) | 189 of 3868 (4.9%) |
+
+- AUC of the importance score for "stored anything": 0.869. 553 sessions stored something and 246 stored nothing.
+- At 1.5, 58 of 553 yielding sessions would be skipped (10.5%, upper bound 13.3%), but they are thin ones: the median skipped-but-yielding session stored 0 decisions and 1 fact, only 12 held any decision, and only 9 held three or more items.
+- This is consistent with the audit: sessions I audited as minor (importance 1) still stored an average of 2.4 decisions and 4.2 facts, so "stored anything" counts minor sessions as yielding. The measure overstates the loss.
+- By runtime at 1.5: claude-code skips 19.8% (lost 9 of 1016 decisions, 86 of 1603 facts), muse skips 89% (80 of 81 stored-nothing sessions, nothing lost), hermes-agent skips 23% (5 of 241 decisions lost). Other runtimes had too few sessions to report.
+- The stored output reflects whichever classifier model ran at the time, so it is a proxy for value, not ground truth.
+
+Operationally, a false skip costs the extraction for that session, not the session: the body can still be indexed for recall, and a skipped session can be classified later.
+
+## Conclusion
+
+The gate works as a cost saver with a small, measurable loss. At threshold 1.5 it would have skipped 28.5% of classifier calls on a random sample while keeping 99.5% of stored decisions and 97.6% of stored facts, and on the audited sample it skipped none of 43 worthwhile sessions. On a backlog of about 1,240 files that is roughly 350 fewer classifier calls, around 6 hours of Gemma time at a minute each.
+
+The gain is modest rather than large, and adoption needs a change inside the daemon's ingest step (flag-gated, fail-open, skipped sessions still stored), which is a separate plan.
+
 ## Other measurements from the same investigation
 
 - Question types: `score` separated trivial from substantive sessions with a gap of 0.6 on a 0 to 3 scale, against 0.08 on 0 to 1 for `noul`. Spelling out the true and false cases in `noul` criteria added almost nothing.
@@ -48,4 +72,4 @@ H3 (Clef as the extraction judge) and H4 (session-close task status and capture 
 
 ## Next step
 
-Shadow mode for H2: call Clef at ingest, log the decision beside the real classifier result, skip nothing, and review the log after a few hundred sessions. That adds labeled positives at no risk. An integration plan comes after that.
+An integration plan for the daemon gate, written from this memo. `scripts/eval/clef-shadow.ts` logs what the gate would do on newly ingested sessions and reports its cost, and can run against the live ingest while that plan is built.

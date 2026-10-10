@@ -18,7 +18,7 @@
  */
 import Database from "better-sqlite3";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { askClef } from "./lib/clef-client.js";
@@ -70,5 +70,6 @@ for (const id of ids) {
 }
 writeFileSync(resultPath, JSON.stringify(done));
 db.close();
+rmSync(tmp, { recursive: true, force: true });
 
 printYieldReport(done, THRESHOLD);
