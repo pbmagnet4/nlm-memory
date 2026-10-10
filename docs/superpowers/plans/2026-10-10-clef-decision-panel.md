@@ -254,18 +254,18 @@ describe("clef panels", () => {
   });
 
   it("builds one question per recall-gate variant", () => {
-    expect(recallGateQuestions("noul").q.type).toBe("noul");
-    expect(recallGateQuestions("noulCriteria").q).toMatchObject({ type: "noul", criteria: { true: expect.any(String), false: expect.any(String) } });
-    const s = recallGateQuestions("score").q;
-    expect(s.type).toBe("score");
-    expect(s.type === "score" && s.criteria.length).toBe(4);
+    expect(recallGateQuestions("noul")["q"]?.type).toBe("noul");
+    expect(recallGateQuestions("noulCriteria")["q"]).toMatchObject({ type: "noul", criteria: { true: expect.any(String), false: expect.any(String) } });
+    const s = recallGateQuestions("score")["q"];
+    expect(s?.type).toBe("score");
+    expect(s?.type === "score" ? s.criteria.length : 0).toBe(4);
   });
 
   it("triage panel asks six typed questions in one call", () => {
     const q = triageQuestions();
     expect(Object.keys(q).sort()).toEqual(["abandoned", "decision", "failure", "importance", "kind", "unfinished"]);
-    expect(q.kind.type).toBe("choice");
-    expect(q.importance.type).toBe("score");
+    expect(q["kind"]?.type).toBe("choice");
+    expect(q["importance"]?.type).toBe("score");
   });
 });
 ```
