@@ -2,8 +2,8 @@
  * OpenAIEmbedderClient — an embedder backed by any OpenAI-compatible
  * `/v1/embeddings` endpoint (LM Studio, oMLX, vLLM, or a cloud API). It mirrors
  * OllamaClient's embedding contract exactly so vectors are interchangeable:
- * the same model-aware retrieval prompts (`buildEmbedPrompt`), the same
- * MAX_EMBED_CHARS truncation, and the same
+ * the same nomic asymmetric-retrieval prefixes (`search_query:` /
+ * `search_document:`), the same MAX_EMBED_CHARS truncation, and the same
  * L2-normalization. Only the transport differs (POST `/embeddings` with
  * `{model, input}` and a `data[0].embedding` response shape).
  *
@@ -20,7 +20,7 @@ import type {
   RewriteResult,
 } from "@ports/llm-client.js";
 import { LLMUnreachableError } from "@ports/llm-client.js";
-import { buildEmbedPrompt, l2Normalize } from "./ollama-client.js";
+import { EMBED_PREFIXES, MAX_EMBED_CHARS, l2Normalize } from "./ollama-client.js";
 
 export type FetchImpl = typeof fetch;
 
@@ -58,7 +58,7 @@ export class OpenAIEmbedderClient implements LLMClient {
   }
 
   async embed(text: string, kind: EmbeddingKind, opts?: { signal?: AbortSignal }): Promise<EmbedResult> {
-    const input = buildEmbedPrompt(text, kind, this.model);
+    const input = `${EMBED_PREFIXES[kind]}${text.slice(0, MAX_EMBED_CHARS)}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     const onExternal = opts?.signal != null ? (): void => { controller.abort(); } : null;

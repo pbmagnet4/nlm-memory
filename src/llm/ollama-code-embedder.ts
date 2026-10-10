@@ -16,21 +16,16 @@
 
 import type { CodeEmbedder, EmbedCodeResult } from "@ports/code-embedder.js";
 import { LLMUnreachableError } from "@ports/llm-client.js";
-import { EMBEDDINGGEMMA_PREFIXES, isEmbeddingGemma, l2Normalize } from "./ollama-client.js";
+import { l2Normalize } from "./ollama-client.js";
 
 export const DEFAULT_CODE_EMBED_MODEL = "hf.co/awhiteside/CodeRankEmbed-Q8_0-GGUF";
 export const CODE_RANK_QUERY_PREFIX = "Represent this query for searching relevant code: ";
-export const EMBEDDINGGEMMA_CODE_QUERY_PREFIX = "task: code retrieval | query: ";
 
 /** Apply the code-embed prefix convention for `model`. CodeRankEmbed prefixes
  *  queries and leaves documents raw; nomic-family models use the asymmetric
- *  search_query/search_document prefixes; EmbeddingGemma uses its
- *  code-retrieval query prompt. Shared by both transports so the two code
- *  embedders produce identical inputs (and thus interchangeable vectors). */
+ *  search_query/search_document prefixes. Shared by both transports so the two
+ *  code embedders produce identical inputs (and thus interchangeable vectors). */
 export function buildCodeEmbedPrompt(text: string, role: "query" | "document", model: string): string {
-  if (isEmbeddingGemma(model)) {
-    return role === "query" ? `${EMBEDDINGGEMMA_CODE_QUERY_PREFIX}${text}` : `${EMBEDDINGGEMMA_PREFIXES.document}${text}`;
-  }
   if (model.startsWith("nomic")) {
     return role === "query" ? `search_query: ${text}` : `search_document: ${text}`;
   }

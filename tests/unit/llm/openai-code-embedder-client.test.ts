@@ -39,15 +39,6 @@ describe("OpenAICodeEmbedderClient.embed", () => {
     expect(calls[0]!.body.input).toBe("search_document: x");
   });
 
-  it("uses EmbeddingGemma's code-retrieval prompts when the model is embeddinggemma", async () => {
-    const { calls, fetchImpl } = recordingFetch([1, 0]);
-    const client = new OpenAICodeEmbedderClient({ baseUrl: "http://h:1234/v1", model: "embeddinggemma-2-mxfp8", fetchImpl });
-    await client.embed("parse a csv", "query");
-    await client.embed("def f(): pass", "document");
-    expect(calls[0]!.body.input).toBe("task: code retrieval | query: parse a csv");
-    expect(calls[1]!.body.input).toBe("title: none | text: def f(): pass");
-  });
-
   it("L2-normalizes and reports the dim", async () => {
     const { fetchImpl } = recordingFetch([3, 4]);
     const client = new OpenAICodeEmbedderClient({ baseUrl: "http://h:1234/v1", model: "m", fetchImpl });

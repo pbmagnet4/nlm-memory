@@ -36,15 +36,6 @@ describe("OpenAIEmbedderClient.embed", () => {
     expect(calls[0]!.body.input).toBe("search_query: find this");
   });
 
-  it("uses EmbeddingGemma's retrieval prompts when the model is embeddinggemma", async () => {
-    const { calls, fetchImpl } = recordingFetch([1, 0]);
-    const client = new OpenAIEmbedderClient({ baseUrl: "http://h:1234/v1", model: "embeddinggemma-2-mxfp8", fetchImpl });
-    await client.embed("find this", "query");
-    await client.embed("some text", "document");
-    expect(calls[0]!.body.input).toBe("task: search result | query: find this");
-    expect(calls[1]!.body.input).toBe("title: none | text: some text");
-  });
-
   it("L2-normalizes the returned vector (consistent cosine space)", async () => {
     const { fetchImpl } = recordingFetch([3, 4]); // |v| = 5 -> normalized [0.6, 0.8]
     const client = new OpenAIEmbedderClient({ baseUrl: "http://h:1234/v1", model: "m", fetchImpl });
