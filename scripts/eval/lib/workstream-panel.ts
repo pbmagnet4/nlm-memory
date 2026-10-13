@@ -1,4 +1,4 @@
-import type { ClefAnswer, ClefQuestion } from "./clef-client.js";
+import type { ClefAnswer, ClefQuestion } from "../../../src/llm/clef-client.js";
 
 export function workstreamQuestion(labels: string[]): ClefQuestion {
   const criteria: Record<string, string> = {};

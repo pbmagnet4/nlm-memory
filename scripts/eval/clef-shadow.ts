@@ -16,8 +16,8 @@ import Database from "better-sqlite3";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { askClef } from "./lib/clef-client.js";
-import { capState, triageQuestions } from "./lib/clef-panels.js";
+import { askClef } from "../../src/llm/clef-client.js";
+import { capState, triageQuestions } from "../../src/core/classifier/triage-panel.js";
 import { printYieldReport, type YieldRow } from "./lib/clef-yield-report.js";
 
 const arg = (k: string) => process.argv.find((a) => a.startsWith(`--${k}=`))?.slice(k.length + 3);

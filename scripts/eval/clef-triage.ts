@@ -13,8 +13,8 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { askClef, type ClefAnswer } from "./lib/clef-client.js";
-import { capState, triageQuestions } from "./lib/clef-panels.js";
+import { askClef, type ClefAnswer } from "../../src/llm/clef-client.js";
+import { capState, triageQuestions } from "../../src/core/classifier/triage-panel.js";
 import { auc, brier, splitOf, sweep, wilson } from "./lib/clef-stats.js";
 
 const dataDir = join((process.env["NLM_EVAL_DATA_DIR"] ?? join(homedir(), ".nlm", "eval")).replace(/^~/, homedir()), "triage");
