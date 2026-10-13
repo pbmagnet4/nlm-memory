@@ -73,3 +73,19 @@ H3 (Clef as the extraction judge) and H4 (session-close task status and capture 
 ## Next step
 
 An integration plan for the daemon gate, written from this memo. `scripts/eval/clef-shadow.ts` logs what the gate would do on newly ingested sessions and reports its cost, and can run against the live ingest while that plan is built.
+
+## Workstream binding (2026-10-13, T640)
+
+One Clef `choice` call per session (options: the 15 active workstreams by index, plus none) against the production namer (`tune-naming.ts`, `litellm-classifier`), on the 50-row matcher gold: 17 sessions that belong to a workstream, 33 that belong to none. Same session text and workstream list for both.
+
+| | Correct binds (of 17) | Wrong binds | Correct abstains (of 33) | False binds | Time per session |
+|---|---|---|---|---|---|
+| Production namer | 13 | 0 | 32 | 1 | about 13 s (337 s total, 2 at a time) |
+| Clef, cutoff 0 | 14 | 0 | 30 | 3 | median 9.9 s, min 4.3 s |
+| Clef, cutoff 0.5 | 13 | 0 | 30 | 3 | |
+| Clef, cutoff 0.7 | 12 | 0 | 31 | 2 | |
+| Clef, cutoff 0.9 | 7 | 0 | 32 | 1 | |
+
+Verdict: not adopted. The rule fixed before the run (more correct binds and no more wrong binds than the namer, abstains under half the rows) fails at every cutoff: where Clef binds more sessions it also false-binds more, and where it matches the namer's false binds it loses half the correct ones. Clef was not meaningfully faster here, because the Studio was serving other work during the run. With 17 positives the intervals are wide (Clef cutoff 0: 59 to 94%), so this is indicative only.
+
+What this eval does not measure: in production, with scope stamping on, a name that matches no workstream creates a new one. This harness uses the unscoped path, so it scores missed binds as abstains. The namer's 4 missed binds may be new workstreams in production. That is a reason to look at workstream creation separately, not evidence for Clef.
