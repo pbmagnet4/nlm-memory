@@ -45,8 +45,9 @@ export async function classifyLarge(
   const results: ClassifyResult[] = [];
   for (const chunk of chunks) {
     try {
-      const p = classifier.classify(chunk);
-      results.push(opts.perCallTimeoutMs ? await withTimeout(p, opts.perCallTimeoutMs) : await p);
+      results.push(opts.perCallTimeoutMs
+        ? await withTimeout((signal) => classifier.classify(chunk, { signal }), opts.perCallTimeoutMs)
+        : await classifier.classify(chunk));
     } catch {
       // Tolerate a chunk that still failed after the client's own retries:
       // skip it and classify from the survivors. If every chunk fails, the
@@ -75,8 +76,9 @@ export async function classifyAdaptive(
   opts: ClassifyAdaptiveOptions = {},
 ): Promise<ClassifyResult> {
   if (text.length <= SINGLE_PASS_CHAR_BUDGET) {
-    const p = classifier.classify(text);
-    return opts.perCallTimeoutMs ? withTimeout(p, opts.perCallTimeoutMs) : p;
+    return opts.perCallTimeoutMs
+      ? withTimeout((signal) => classifier.classify(text, { signal }), opts.perCallTimeoutMs)
+      : classifier.classify(text);
   }
   return classifyLarge(text, classifier, opts);
 }

@@ -163,13 +163,15 @@ export class OllamaClient implements LLMClient {
     }
   }
 
-  async classify(transcript: string, priorContext: string = ""): Promise<ClassifyResult> {
-    return classifyWithRetry(this.classifyAttempts, () => this.classifyOnce(transcript, priorContext));
+  async classify(transcript: string, opts: { signal?: AbortSignal; priorContext?: string } = {}): Promise<ClassifyResult> {
+    return classifyWithRetry(this.classifyAttempts, () => this.classifyOnce(transcript, opts.priorContext ?? "", opts.signal), opts.signal);
   }
 
-  private async classifyOnce(transcript: string, priorContext: string): Promise<ClassifyResult> {
+  private async classifyOnce(transcript: string, priorContext: string, caller?: AbortSignal): Promise<ClassifyResult> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.classifyTimeoutMs);
+    caller?.addEventListener("abort", () => controller.abort(), { once: true });
+    if (caller?.aborted) controller.abort();
     try {
       const userPrompt = buildUserPrompt(transcript, priorContext);
       const res = await this.fetchImpl(`${this.baseUrl}/api/chat`, {

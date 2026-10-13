@@ -73,8 +73,8 @@ export class ClassifierBox implements LLMClient {
     throw new Error("ClassifierBox.embed is not supported — wire OllamaClient as the embedder.");
   }
 
-  classify(transcript: string): Promise<ClassifyResult> {
-    return this.inner.classify(stripInjectedContext(transcript));
+  classify(transcript: string, opts?: { signal?: AbortSignal }): Promise<ClassifyResult> {
+    return this.inner.classify(stripInjectedContext(transcript), opts);
   }
 
   rewriteForRecall(query: string): Promise<RewriteResult> {

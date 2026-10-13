@@ -83,7 +83,7 @@ describe("OllamaClient.classify", () => {
       return jsonResponse({ message: { content: JSON.stringify(VALID_PAYLOAD) } });
     });
     const client = new OllamaClient({ fetchImpl });
-    await client.classify("...transcript...", "earlier session about Hono routing");
+    await client.classify("...transcript...", { priorContext: "earlier session about Hono routing" });
     expect(userContent).toContain("PRIOR CONTEXT (already filed):");
     expect(userContent).toContain("earlier session about Hono routing");
   });

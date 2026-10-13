@@ -9,13 +9,14 @@ import {
 export async function classifyWithRetry(
   attempts: number,
   once: () => Promise<ClassifyResult>,
+  signal?: AbortSignal,
 ): Promise<ClassifyResult> {
   let lastErr: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       return await once();
     } catch (e) {
-      if (!(e instanceof ClassifierSchemaError || e instanceof LLMUnreachableError)) throw e;
+      if (signal?.aborted || !(e instanceof ClassifierSchemaError || e instanceof LLMUnreachableError)) throw e;
       lastErr = e;
     }
   }
