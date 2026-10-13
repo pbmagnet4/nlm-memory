@@ -124,7 +124,8 @@ import { computeReDerivationRate, sqliteReDerivationDeps } from "../core/metrics
 import { reconcileLane } from "../core/embedding/embedding-config.js";
 import type { EmbeddingConfigStore, EmbeddingLaneConfig } from "../core/embedding/embedding-config.js";
 import { backfillFacts } from "../core/facts/backfill-facts.js";
-import { ScanScheduler } from "../core/scheduler/scheduler.js";
+import { ScanScheduler, type IngestGate } from "../core/scheduler/scheduler.js";
+import { makeClefIngestGate, parseIngestGateMode } from "../core/classifier/ingest-gate.js";
 import { MemoSweepScheduler } from "../core/hook/memo-sweep.js";
 import { isAgentLoaded, isBenignBootoutError } from "./launchctl-helpers.js";
 import { DAEMON_PKILL_PATTERN, planRestart, executeRestartPlan, type ExecuteRestartPlanDeps } from "./restart-helpers.js";
@@ -155,6 +156,26 @@ const PG_MIGRATIONS_DIR = join(
 );
 const UI_DIST = resolve(__dirname, "../../dist/ui");
 const DEFAULT_DB_PATH = resolve(homedir(), ".nlm/canonical.sqlite");
+
+/** NLM_INGEST_GATE=shadow|live consults Clef before the classifier; off (default) or missing credentials disable it. */
+function buildIngestGate(): IngestGate | null {
+  const mode = parseIngestGateMode();
+  if (mode === "off") return null;
+  const baseUrl = process.env["NLM_CLASSIFIER_BASE_URL"];
+  const apiKey = process.env["NLM_CLASSIFIER_API_KEY"];
+  if (!baseUrl || !apiKey) {
+    console.error(`  ingest gate: NLM_INGEST_GATE=${mode} ignored: NLM_CLASSIFIER_BASE_URL or NLM_CLASSIFIER_API_KEY unset`);
+    return null;
+  }
+  const threshold = Number(process.env["NLM_INGEST_GATE_THRESHOLD"] ?? "1.5");
+  console.error(`  ingest gate: ${mode}, importance threshold ${threshold}`);
+  return {
+    mode,
+    threshold,
+    judge: makeClefIngestGate({ baseUrl, apiKey, threshold }),
+    shadowLogPath: join(homedir(), ".nlm", "clef-shadow.jsonl"),
+  };
+}
 const DEFAULT_PORT = Number.parseInt(DEFAULT_NLM_PORT, 10);
 
 function dbPath(): string {
@@ -879,6 +900,7 @@ program
           codeEmbedder: buildCodeEmbedder(),
           workstreams: storage.workstreams,
           classifierDescriptor: { provider: classifier.provider, model: classifier.model },
+          ingestGate: buildIngestGate(),
         });
         scheduler.start();
         console.error(
