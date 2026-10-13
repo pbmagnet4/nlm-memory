@@ -126,6 +126,7 @@ import type { EmbeddingConfigStore, EmbeddingLaneConfig } from "../core/embeddin
 import { backfillFacts } from "../core/facts/backfill-facts.js";
 import { ScanScheduler, type IngestGate } from "../core/scheduler/scheduler.js";
 import { makeClefIngestGate, parseIngestGateMode } from "../core/classifier/ingest-gate.js";
+import { GATE_MODEL } from "../core/classifier/gate-model-params.js";
 import { MemoSweepScheduler } from "../core/hook/memo-sweep.js";
 import { isAgentLoaded, isBenignBootoutError } from "./launchctl-helpers.js";
 import { DAEMON_PKILL_PATTERN, planRestart, executeRestartPlan, type ExecuteRestartPlanDeps } from "./restart-helpers.js";
@@ -167,12 +168,11 @@ function buildIngestGate(): IngestGate | null {
     console.error(`  ingest gate: NLM_INGEST_GATE=${mode} ignored: NLM_CLASSIFIER_BASE_URL or NLM_CLASSIFIER_API_KEY unset`);
     return null;
   }
-  const threshold = Number(process.env["NLM_INGEST_GATE_THRESHOLD"] ?? "1.5");
-  console.error(`  ingest gate: ${mode}, importance threshold ${threshold}`);
+  console.error(`  ingest gate: ${mode}, skip below P(stored) ${GATE_MODEL.threshold}`);
   return {
     mode,
-    threshold,
-    judge: makeClefIngestGate({ baseUrl, apiKey, threshold }),
+    threshold: GATE_MODEL.threshold,
+    judge: makeClefIngestGate({ baseUrl, apiKey }),
     shadowLogPath: join(homedir(), ".nlm", "clef-shadow.jsonl"),
   };
 }

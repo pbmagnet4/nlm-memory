@@ -2,6 +2,16 @@
 
 Session-level log per session protocol. Cap: 10 entries — archive older to `CHANGELOG-YYYY.md` when exceeded.
 
+## 2026-10-13 - Clef ingest gate tuned on stored-output labels (T644)
+
+**Changes:** The gate asks four more Clef questions in the same call (`gateQuestions()`) and combines the answers with session length in a fitted logistic model (`src/core/classifier/gate-model.ts`, generated `gate-model-params.ts`) that predicts whether the classifier would store anything. `NLM_INGEST_GATE_THRESHOLD` is gone: the threshold is fitted with the model. Shadow lines now log P(stored). New `scripts/eval/clef-gate-collect.ts`, `clef-gate-fit.ts` and `lib/logreg.ts`; `clef-shadow.ts` backfills with the production gate.
+
+**Results:** On held-out sessions the fitted gate beats importance < 1.5 everywhere: historical AUC 0.919 vs 0.863 (facts lost 0.2% vs 1.4%), live 0.714 vs 0.683 (0.5% vs 2.2%), audited 0.966 vs 0.933 with no worthwhile session skipped. It skips fewer sessions (live 4.8%).
+
+**State:** Off by default. Shadow mode next on this install.
+
+**Next:** a week of shadow data, then a live decision with Edward; retrain Clef's decision head only if live skips stay too small to matter.
+
 ## 2026-10-13 - Clef ingest gate and workstream-binding eval (T642, T640)
 
 **Changes:** The daemon can consult Clef before the classifier: `NLM_INGEST_GATE=off|shadow|live` (default off), `NLM_INGEST_GATE_THRESHOLD` (default 1.5). In live mode a session scoring under the threshold is stored and embedded with its adapter label but no extraction, stamped `clef-gate` provenance, and not bound to a workstream. Clef errors fail open to the classifier. The Clef client and the calibrated triage panel moved from `scripts/eval/lib` to `src/llm/clef-client.ts` and `src/core/classifier/triage-panel.ts`. New `scripts/eval/clef-workstream.ts`.
@@ -85,21 +95,3 @@ Session-level log per session protocol. Cap: 10 entries — archive older to `CH
 **State:** `origin/main` at `198e69f` (pushed via fast-forward, no PR gate). Typecheck clean; exemplar-backfill + scheduler-exemplars integration tests passing on top of current main. Left ~577 lines of pre-existing, unrelated plugin-bundle build drift (`nlm/index.js`, `plugin/scripts/*.mjs`) untouched — not this session's to fix, logged as a Backlog task instead.
 
 **Next:** Rebuild + commit fresh plugin bundles (nlm-memory Tasks, P3). No other #457 follow-ups touched this session — FTS bm25 cold recall (~3.4s) and VACUUM/ANALYZE scheduling remain open.
-
-## 2026-08-25 - The 0.21.5 "embedder regression" does not exist; source attribution, test isolation, warmup retry
-
-**Corrections first, because three open diagnoses were wrong and the wrong ones cost the most time.**
-
-**0.21.5 does NOT regress the prose embedder (board #450, three weeks P1).** Reproduced the reported signature with zero code changes. Ran the actual staged `versions/0.21.5` payload against a copy of the real 1GB corpus under the same bundled node: `ready=True` in 25s. Then the same payload, unmodified, with only the prose model name pointed at something LM Studio will not serve: `ready=False, textEmbedder=False, prose='unknown', code='ok'` — that row's reported signature exactly, code lane included. What happened on 08-14 was the prose model not being servable at boot; LM Studio loads on demand, so the code model can be resident while nomic-v1.5 is not, which is why the code lane looked like it exonerated the backend. The static-JSON-import hypothesis was independently weak: `src/http/app.ts` on healthy 0.21.6 already does that exact import in the daemon's early module graph.
-
-**The real defect was the warmup latch, and it manufactured that false root cause.** `embedder.embed("warmup init").then(markWarm).catch(() => {})` — one attempt, silent catch, no retry. A transient backend absence latched the stage cold for the daemon's entire uptime, so restarting inside the same outage window reproduces it every time and reads as determinism, while a later rollback appears to fix it. Fixed: `retryUntilWarm` retries on capped exponential backoff, and failures now record reason and attempt count so health reports `LLM unreachable: openai-embedder, attempts 4` instead of a bare false. Verified end to end: booted with the embedder absent, brought it up underneath the same pid, recovered with no restart.
-
-**~800 recall probes/day were self-inflicted (board #437).** Two emitters, split by `limit`. 12,961 rows at `limit=1` came from `nxtoskit/verify/orchestrate.py`, which ran a full recall query to test reachability once per verification run — not on a schedule, which is why volume swung 12/day to 2670/day and looked like a rogue prober. Now uses `/api/health`. The other 2,169 at `limit=20` were this suite: `vitest.config.ts` never set `NLM_STATE_ROOT`, so any test touching `/api/recall` appended to the operator's live `query_log.jsonl`. One run of `tests/integration/http.test.ts` wrote 5 rows. Now pinned to a mkdtemp root; full suite writes zero.
-
-**Session-start recalls were logged as prompt-hook traffic since `b69db02`.** That dedup replaced the hook's own `recallOverHttp`, which sent `x-recall-source: session-start-hook`, with the shared helper that hardcodes `"hook"`. The query log dies on exactly that schedule: 670 rows in June, 31 in July, 0 in August, while the hook kept firing hundreds of times a month. Per-source precision cannot separate two paths sharing a label, and their ceilings are not comparable — prompt recall queries a real user prompt, session-start queries a derived project name. `source` now defaults to `"hook"`, so only the session-start call site opts into its own bucket.
-
-**Also corrected, not fixed:** board #419's stated hypothesis is wrong. 7 of 8 temporal queries in the locked gold set carry a named entity, so the force-include gate already fires on them; all three hybrid misses are gate-fires and the single gate fall-through is a hit. The real mechanism is that `forceIncludeKeywordTop` rescues only `kwHits[0]`, and every miss has `kw_R@1 = 0`, so it inserts a non-gold session and can evict the gold one it exists to protect.
-
-**State:** `origin/main` at `f9eff91`, 14 commits pushed. The 0.21.6 release line was replayed onto main with `f7e6ca3`'s corpus artifacts dropped, so main now matches what the install actually runs; one real conflict in `hook-log.ts` where both sides add a distinct optional field (`v?` and `recallOutcome?`), resolved by keeping both. Version bump commits deliberately skipped — main carries work 0.21.6 lacks, so numbering is an operator call. Suite 2837 passing, typecheck clean. `reports/re-derivation/` bulk artifacts (671 judge-cache files, decision-vectors, labels, sample, spot-check) were verified absent from published history and stay unpushed; the 4 curated Stage A files that `e35107b` deliberately published are untouched.
-
-**Next:** #455, a Hermes `state.db` adapter. Hermes migrated from JSON files to per-profile SQLite around 2026-05-21, so the file adapter has captured nothing since: 25 profiles, 1,091 sessions, 113,351 messages the corpus has never seen. The plugin cannot cover it either — gate run before rolling it out, and none of its three hook routes writes a session row. Also #456: NxtCron records run history only for the Pro, so 55 jobs on the ssh-transport hosts are inventory-only and a job that stops firing raises nothing.
