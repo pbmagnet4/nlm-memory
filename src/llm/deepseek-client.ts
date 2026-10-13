@@ -110,13 +110,15 @@ export class DeepSeekClient implements LLMClient {
     );
   }
 
-  async classify(transcript: string, priorContext: string = ""): Promise<ClassifyResult> {
-    return classifyWithRetry(this.classifyAttempts, () => this.classifyOnce(transcript, priorContext));
+  async classify(transcript: string, opts: { signal?: AbortSignal; priorContext?: string } = {}): Promise<ClassifyResult> {
+    return classifyWithRetry(this.classifyAttempts, () => this.classifyOnce(transcript, opts.priorContext ?? "", opts.signal), opts.signal);
   }
 
-  private async classifyOnce(transcript: string, priorContext: string): Promise<ClassifyResult> {
+  private async classifyOnce(transcript: string, priorContext: string, caller?: AbortSignal): Promise<ClassifyResult> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.classifyTimeoutMs);
+    caller?.addEventListener("abort", () => controller.abort(), { once: true });
+    if (caller?.aborted) controller.abort();
     try {
       // DeepSeek's reliable zone is ≤30K, narrower than the prompt module's
       // 15K default. We pre-truncate to our wider cap to feed the model more

@@ -541,6 +541,19 @@ describe("check-invariants (SQLite)", () => {
       expect(violations.find((v) => v.id === "I7b-1")).toBeUndefined();
     });
 
+    it("I7b-1 matches vectors by user id, not by vec0 storage block", () => {
+      store.insertSessionForTest(makeSession({ id: "s_chunk_block" }));
+      const db = store.rawDb();
+      const blob = Buffer.alloc(768 * 4);
+      for (const chunkId of [5000, 5001]) {
+        db.prepare("INSERT INTO session_embedding_chunks (chunk_id, embedding, session_id, chunk_idx) VALUES (?, ?, ?, ?)").run(BigInt(chunkId), blob, "s_chunk_block", BigInt(chunkId - 5000));
+        db.prepare("INSERT INTO session_chunk_map (chunk_id, session_id, chunk_idx) VALUES (?, ?, ?)").run(chunkId, "s_chunk_block", chunkId - 5000);
+      }
+      expect(runChecksOnSqlite(db).find((v) => v.id === "I7b-1")).toBeUndefined();
+      db.prepare("DELETE FROM session_chunk_map WHERE chunk_id = 5001").run();
+      expect(runChecksOnSqlite(db).find((v) => v.id === "I7b-1")?.sampleIds).toEqual(["5001"]);
+    });
+
     it("I7b-2 fires when a map row references a missing session", () => {
       const db = store.rawDb();
       db.pragma("foreign_keys = OFF");

@@ -38,9 +38,16 @@ export interface ClassifyResult {
   readonly facts: ReadonlyArray<ExtractedFact>;
 }
 
+/** "fetch failed" alone hides whether it was a timeout, a reset or a refusal; undici puts that code on the cause. */
+function describeCause(cause: unknown): string {
+  if (!(cause instanceof Error)) return String(cause);
+  const code = (cause.cause as { code?: unknown } | undefined)?.code;
+  return typeof code === "string" ? `${cause.message}: ${code}` : cause.message;
+}
+
 export class LLMUnreachableError extends Error {
   constructor(provider: string, cause?: unknown) {
-    super(`LLM unreachable: ${provider}`);
+    super(cause === undefined ? `LLM unreachable: ${provider}` : `LLM unreachable: ${provider} (${describeCause(cause)})`);
     this.name = "LLMUnreachableError";
     this.cause = cause;
   }
@@ -75,7 +82,7 @@ export interface WorkstreamCandidateHint {
 
 export interface LLMClient {
   embed(text: string, kind: EmbeddingKind, opts?: { signal?: AbortSignal }): Promise<EmbedResult>;
-  classify(transcript: string): Promise<ClassifyResult>;
+  classify(transcript: string, opts?: { signal?: AbortSignal }): Promise<ClassifyResult>;
   /** Name which candidate workstream this session belongs to, or null for "none".
    *  Returns the chosen candidate.label verbatim. Content is label+summary or a transcript. */
   nameWorkstream(content: string, candidates: ReadonlyArray<WorkstreamCandidateHint>): Promise<string | null>;

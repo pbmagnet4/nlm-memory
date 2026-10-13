@@ -2,6 +2,16 @@
 
 Session-level log per session protocol. Cap: 10 entries — archive older to `CHANGELOG-YYYY.md` when exceeded.
 
+## 2026-10-13 - Daemon log faults: false integrity alert, git noise, codex fork ids, orphaned classify requests (T674)
+
+**Changes:** I7b-1 joins the vec0 shadow table on rowid; its chunk_id column is the storage block, so every vector past block one read as a ghost. Exemplar extraction runs `git show` with piped stderr and `--end-of-options`; shas detected in transcripts are often from another repo or not commits. The codex adapter takes the session id from the first `session_meta`; forked rollouts replay the parent's after their own, so forks were stored under the parent's id and overwrote it. `withTimeout` hands the work an AbortSignal and aborts it at the deadline; `classify` accepts `{ signal }` and stops retrying once aborted. `LLMUnreachableError` messages name their cause.
+
+**Results:** I7b-1 on the live db: 105,352 reported, 4 real. Before the abort fix a scheduler timeout left the request running up to 180 s and retried it twice, which matches the bursts of 48 to 157 timeouts in daemon.err. Embedder failures are not explained yet: LiteLLM logged no failed embedding request in 24 h and every probe returned in under 0.5 s, so the failing requests end client-side before reaching it.
+
+**State:** Fixed and tested on main; deploy with the next release. `tests/integration/mcp-recall-logging.test.ts` is flaky under full-suite load (passes alone); the Postgres integration tests need a local Postgres.
+
+**Next:** read the embed failure causes now in daemon.err and fix that root cause; the codex sessions stored under a parent id need a reprocess to split back out.
+
 ## 2026-10-13 - Clef ingest gate tuned on stored-output labels (T644)
 
 **Changes:** The gate asks four more Clef questions in the same call (`gateQuestions()`) and combines the answers with session length in a fitted logistic model (`src/core/classifier/gate-model.ts`, generated `gate-model-params.ts`) that predicts whether the classifier would store anything. `NLM_INGEST_GATE_THRESHOLD` is gone: the threshold is fitted with the model. Shadow lines now log P(stored). New `scripts/eval/clef-gate-collect.ts`, `clef-gate-fit.ts` and `lib/logreg.ts`; `clef-shadow.ts` backfills with the production gate.
@@ -85,13 +95,3 @@ Session-level log per session protocol. Cap: 10 entries — archive older to `CH
 **State:** Audit corrections: the Claude Code "stall" was not a stall (low Claude Code use 09-28, work moved to Muse); citation-log's last line is 09-29, not 09-10, and the cite attribution fix already shipped in 0.21.6. The daemon logs nowhere since the 09-27 reinstall because the nxtos-written plist sets no StandardOutPath. The Pro's own NLM service (crash-looping since 09-09) was stopped and disabled. Suite: typecheck clean, non-pg suite passing apart from environment-only failures (no built UI in a fresh worktree, no Postgres).
 
 **Next:** Install 0.21.7, back up the store, restart, register Muse and OpenCode sources, ingest a 5-session sample, then backfill. Pro Hermes transport, daemon log path (nxtos), fact reconciliation job, Gemini adapter.
-
-## 2026-09-17 - Exemplar embed-backfill wired into the daemon's maintenance loop; closes the #457 "dead recall_code" follow-up
-
-**Changes:** Investigated NLM #457's carried-over "1,541 code_exemplars vs 2 vector chunks" figure — stale. Direct query against `code_exemplars` / `code_exemplars_vec` showed 1468/1542 already vectored; the real gap was 74 rows. Ran the existing operator CLI (`nlm embed-backfill --exemplars --verbose`): 74/74 succeeded, full 1542/1542 parity, `recall_code` verified end-to-end returning real matches. Wired the same repair into the daemon's existing in-process maintenance timer lineup in `src/cli/nlm.ts` (same `setInterval` pattern as the corpus monitor / wiki projection / signal prune) — SQLite-only, gated on `NLM_CODE_EXEMPLARS_ENABLED=1`, 24h cadence, 2-min startup delay — so a future dropped-embed race self-heals instead of silently degrading `recall_code` again.
-
-**Decisions:** Cherry-picked the single new commit onto a fresh branch off `origin/main` rather than rebasing the stale `fix/recall-outcome-observability` branch forward — two of its three unpushed commits were already on `main` under different SHAs (one patch-identical, one genuinely diverged because `reports/re-derivation/decision-vectors.jsonl`, a large generated report, differs per-environment). Cherry-pick avoided replaying that divergence as a false conflict.
-
-**State:** `origin/main` at `198e69f` (pushed via fast-forward, no PR gate). Typecheck clean; exemplar-backfill + scheduler-exemplars integration tests passing on top of current main. Left ~577 lines of pre-existing, unrelated plugin-bundle build drift (`nlm/index.js`, `plugin/scripts/*.mjs`) untouched — not this session's to fix, logged as a Backlog task instead.
-
-**Next:** Rebuild + commit fresh plugin bundles (nlm-memory Tasks, P3). No other #457 follow-ups touched this session — FTS bm25 cold recall (~3.4s) and VACUUM/ANALYZE scheduling remain open.

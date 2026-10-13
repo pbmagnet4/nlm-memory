@@ -26,6 +26,21 @@ function recordingFetch() {
   return { calls, fetchImpl };
 }
 
+describe("DeepSeekClient cancellation", () => {
+  it("a caller abort cancels the in-flight request and is not retried", async () => {
+    let calls = 0;
+    const fetchImpl = ((_url: string, init?: RequestInit) => {
+      calls += 1;
+      return new Promise((_r, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))));
+    }) as typeof fetch;
+    const client = new DeepSeekClient({ apiKey: "k", baseUrl: "http://gw/v1", classifyModel: "m", classifyAttempts: 3, fetchImpl });
+    const caller = new AbortController();
+    setTimeout(() => caller.abort(), 20);
+    await expect(client.classify("transcript", { signal: caller.signal })).rejects.toThrow();
+    expect(calls).toBe(1);
+  });
+});
+
 describe("DeepSeekClient — OpenAI-compatible request shaping", () => {
   it("omits response_format when responseFormat is 'none' (LM Studio MLX rejects json_object)", async () => {
     const { calls, fetchImpl } = recordingFetch();

@@ -164,12 +164,12 @@ const SQL_I7_GHOST_PG = `
 // I7b-1: chunk vectors with no map row (vec0 has no FK; interrupted deletes
 // orphan here). Uses the session_embedding_chunks_rowids shadow table for
 // full-scan access: vec0 tables do not support unfiltered SELECT without a
-// KNN predicate. For INTEGER PK vec0 tables the shadow column is chunk_id
-// (not id, which is null for non-text PKs).
+// KNN predicate. For INTEGER PK vec0 tables the user id is the shadow rowid;
+// the shadow chunk_id column is the storage block number, not the user id.
 const SQL_I7B_1_GHOST_SQLITE = `
-  SELECT CAST(r.chunk_id AS TEXT) AS bad_id
+  SELECT CAST(r.rowid AS TEXT) AS bad_id
   FROM session_embedding_chunks_rowids r
-  LEFT JOIN session_chunk_map m ON m.chunk_id = r.chunk_id
+  LEFT JOIN session_chunk_map m ON m.chunk_id = r.rowid
   WHERE m.chunk_id IS NULL
   LIMIT 6
 `;

@@ -60,3 +60,14 @@ describe("OpenAIEmbedderClient.embed", () => {
     await expect(client.rewriteForRecall("q")).rejects.toBeInstanceOf(LLMUnreachableError);
   });
 });
+
+describe("OpenAIEmbedderClient failure messages", () => {
+  it("names the underlying cause, so a timeout and a refused connection read differently", async () => {
+    const refused = (async () => { throw new TypeError("fetch failed: ECONNREFUSED"); }) as typeof fetch;
+    const status = (async () => new Response("x", { status: 503 })) as typeof fetch;
+    const a = new OpenAIEmbedderClient({ baseUrl: "http://gw/v1", fetchImpl: refused });
+    const b = new OpenAIEmbedderClient({ baseUrl: "http://gw/v1", fetchImpl: status });
+    await expect(a.embed("x", "document")).rejects.toThrow("LLM unreachable: openai-embedder (fetch failed: ECONNREFUSED)");
+    await expect(b.embed("x", "document")).rejects.toThrow("LLM unreachable: openai-embedder (status 503)");
+  });
+});
