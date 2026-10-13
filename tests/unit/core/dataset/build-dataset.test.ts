@@ -118,3 +118,42 @@ describe("buildDataset with a corpus past the SQLite variable cap", () => {
     expect(edgeSource.supersedes).toBe(sessionId(16000));
   });
 });
+
+describe("buildDataset stale alerts", () => {
+  let dir: string;
+  let dbPath: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "nlm-dataset-stale-"));
+    dbPath = join(dir, "corpus.sqlite");
+    const db = new Database(dbPath);
+    db.exec(SCHEMA);
+    const session = db.prepare(
+      `INSERT INTO sessions (id, runtime, started_at, label, summary, status, tenant_id) VALUES (?, 'test', ?, 'l', 's', 'closed', 'test')`,
+    );
+    const tag = db.prepare(`INSERT INTO session_entities (session_id, entity_canonical) VALUES (?, ?)`);
+    const open = db.prepare(`INSERT INTO markers (session_id, kind, text, position) VALUES (?, 'open', ?, ?)`);
+    session.run("s1", "2026-01-01T00:00:00");
+    session.run("s2", "2026-01-02T00:00:00");
+    session.run("s3", "2026-01-03T00:00:00");
+    tag.run("s1", "acme"); tag.run("s2", "acme"); tag.run("s2", "beta"); tag.run("s3", "beta");
+    open.run("s1", "first acme question", 0);
+    open.run("s2", "second question", 0);
+    open.run("s2", "third question", 1);
+    db.exec(`INSERT INTO entities (tenant_id, canonical, type, status, session_count, last_seen_session) VALUES
+      ('test', 'acme', 'org', 'active', 2, 's2'), ('test', 'beta', 'org', 'active', 2, 's3'), ('test', 'quiet', 'org', 'active', 1, 's1')`);
+    db.close();
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("names the first two open questions from the entity's sessions, oldest session first", () => {
+    const alerts = buildDataset(dbPath, "test").alerts.filter((a) => a.type === "stale");
+    const byEntity = Object.fromEntries(alerts.map((a) => [(a as { entity: string }).entity, a.summary]));
+    expect(byEntity["acme"]).toMatch(/· 2 unresolved open questions: "first acme question"$/);
+    expect(byEntity["beta"]).toMatch(/· 2 unresolved open questions: "second question"$/);
+    expect(byEntity["quiet"]).toMatch(/^Last touch \d+ days ago$/);
+  });
+});

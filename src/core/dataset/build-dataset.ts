@@ -593,6 +593,18 @@ function computeStaleAlerts(
 ): StaleAlert[] {
   const now = Date.now();
   const sessionsById = new Map(sessions.map((s) => [s.id, s]));
+  // First two open questions per entity, oldest session first. Built once:
+  // filtering every session per entity was O(entities x sessions), ~13 s on 22k sessions.
+  const opensByEntity = new Map<string, string[]>();
+  for (const s of sessions) {
+    if (s.open.length === 0) continue;
+    for (const entity of new Set(s.entities)) {
+      const opens = opensByEntity.get(entity) ?? [];
+      if (opens.length >= 2) continue;
+      opens.push(...s.open.slice(0, 2 - opens.length));
+      opensByEntity.set(entity, opens);
+    }
+  }
   const alerts: StaleAlert[] = [];
   for (const e of entityRows) {
     if (e.session_count === 0 || e.status === "retired" || e.status === "snoozed") continue;
@@ -605,10 +617,7 @@ function computeStaleAlerts(
     const alertId = `stale_${e.canonical.replace(/[^A-Za-z0-9]/g, "_")}`;
     if (overlay.dismissedAlerts.has(alertId) || overlay.snoozedAlerts.has(alertId)) continue;
 
-    const openOnEntity = sessions
-      .filter((s) => s.entities.includes(e.canonical))
-      .flatMap((s) => s.open)
-      .slice(0, 2);
+    const openOnEntity = opensByEntity.get(e.canonical) ?? [];
     let summary = `Last touch ${ageDays} days ago`;
     if (openOnEntity.length > 0) {
       const n = openOnEntity.length;
