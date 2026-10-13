@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,6 +31,16 @@ describe("extractFromGitSha (params object)", () => {
     expect(ex!.outcome).toBe("pass");
     expect(ex!.gitSha).toBe(sha);
     expect(ex!.model).toBe("unknown");
+  });
+
+  it("returns null without writing git's error to stderr for an unknown sha", () => {
+    const mod = join(process.cwd(), "src/core/exemplars/extract-exemplar.ts");
+    const script = `const { extractFromGitSha } = await import(${JSON.stringify(mod)});
+      const ex = extractFromGitSha({ repo: ${JSON.stringify(repo)}, sha: "1048576", installScope: "s", outcome: "pass" });
+      process.stdout.write(String(ex));`;
+    const r = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { encoding: "utf8" });
+    expect(r.stdout).toBe("null");
+    expect(r.stderr).toBe("");
   });
 
   it("uses a provided taskContext override", () => {

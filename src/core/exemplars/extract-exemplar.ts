@@ -48,11 +48,11 @@ export function extractFromGitSha(params: GitShaExtractParams): CodeExemplarInpu
   try {
     diff = execFileSync(
       "git",
-      ["show", "--unified=3", "--diff-filter=AM", params.sha],
-      { cwd: repoPath, encoding: "utf8", timeout: 10_000 },
+      ["show", "--unified=3", "--diff-filter=AM", "--end-of-options", params.sha],
+      { cwd: repoPath, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] },
     );
   } catch {
-    // Git show failed - exemplar extraction from this commit skipped.
+    // Detected shas are often from another repo or not commits at all; skip quietly.
     return null;
   }
 
