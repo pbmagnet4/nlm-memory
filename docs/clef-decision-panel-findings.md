@@ -72,7 +72,7 @@ H3 (Clef as the extraction judge) and H4 (session-close task status and capture 
 
 ## Next step
 
-An integration plan for the daemon gate, written from this memo. `scripts/eval/clef-shadow.ts` logs what the gate would do on newly ingested sessions and reports its cost, and can run against the live ingest while that plan is built.
+The daemon gate is built (T642, `docs/superpowers/plans/2026-10-13-clef-ingest-gate.md`). Settings in `~/.nlm/.env`: `NLM_INGEST_GATE` is `off` (default), `shadow` (score each session and append to `~/.nlm/clef-shadow.jsonl`, then classify as usual) or `live` (a session scoring under the threshold is stored with its adapter label, no extraction, `clef-gate` provenance and no workstream binding). `NLM_INGEST_GATE_THRESHOLD` defaults to 1.5. Any Clef failure classifies the session normally. Read the shadow log with `npx tsx scripts/eval/clef-shadow.ts --report`. Originally: `scripts/eval/clef-shadow.ts` logs what the gate would do on newly ingested sessions and reports its cost, and can run against the live ingest while that plan is built.
 
 ## Workstream binding (2026-10-13, T640)
 
