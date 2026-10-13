@@ -137,6 +137,21 @@ describe("CodexAdapter.parseSession", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
+  it("a forked rollout keeps its own id, not the parent session_meta it replays", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "codex-fork-"));
+    const f = join(tmp, "fork.jsonl");
+    writeFileSync(
+      f,
+      `{"timestamp":"2026-10-02T19:06:02Z","type":"session_meta","payload":{"id":"fork-id","forked_from_id":"parent-id","cwd":"/x"}}\n` +
+        `{"timestamp":"2026-10-02T19:06:02Z","type":"session_meta","payload":{"id":"parent-id","cwd":"/x"}}\n` +
+        `{"timestamp":"2026-10-02T19:06:03Z","type":"event_msg","payload":{"type":"user_message","message":"continue the fork"}}\n`,
+    );
+    const chunk = await adapter.parseSession(f);
+    expect(chunk?.runtimeSessionId).toBe("fork-id");
+    expect(chunk?.id).toBe(safeSessionId("codex", "fork-id"));
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
   it("returns null when no extractable turns exist", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "codex-meta-only-"));
     const f = join(tmp, "meta-only.jsonl");

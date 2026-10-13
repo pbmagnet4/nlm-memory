@@ -119,7 +119,8 @@ export class CodexAdapter implements TranscriptAdapter {
         (evt["payload"] as Record<string, unknown> | undefined) ?? {};
 
       if (outerType === "session_meta") {
-        if (typeof payload["id"] === "string") runtimeSessionId = payload["id"];
+        // A forked rollout replays its parent's session_meta after its own; the first is this file's.
+        if (!runtimeSessionId && typeof payload["id"] === "string") runtimeSessionId = payload["id"];
         if (!projectDir && typeof payload["cwd"] === "string") {
           projectDir = payload["cwd"];
         }
