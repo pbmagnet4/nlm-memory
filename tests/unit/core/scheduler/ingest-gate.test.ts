@@ -51,12 +51,12 @@ function gate(mode: IngestGateMode, verdict: GateVerdict, shadowLogPath: string)
   let judged = 0;
   return {
     judged: () => judged,
-    opt: { mode, threshold: 1.5, shadowLogPath, judge: async () => { judged += 1; return verdict; } },
+    opt: { mode, threshold: 0.22, shadowLogPath, judge: async () => { judged += 1; return verdict; } },
   };
 }
 
-const SKIP: GateVerdict = { score: 0.5, kind: "trivial", skip: true, ms: 3 };
-const KEEP: GateVerdict = { score: 2.4, kind: "coding", skip: false, ms: 3 };
+const SKIP: GateVerdict = { score: 0.1, kind: "trivial", skip: true, ms: 3 };
+const KEEP: GateVerdict = { score: 0.8, kind: "coding", skip: false, ms: 3 };
 const ERROR: GateVerdict = { score: null, kind: null, skip: false, ms: 3, error: "clef HTTP 502" };
 
 describe("ScanScheduler ingest gate", () => {
@@ -78,7 +78,7 @@ describe("ScanScheduler ingest gate", () => {
       .prepare("SELECT label, summary, body, classifier_provider, classifier_model, classifier_confidence FROM sessions WHERE id = ?")
       .get("pi_gate") as Record<string, unknown>;
     expect(row).toMatchObject({ label: "what time is it", summary: "", classifier_provider: "clef-gate", classifier_model: "clef-oQ4e" });
-    expect(row["classifier_confidence"]).toBeCloseTo(0.5 / 3);
+    expect(row["classifier_confidence"]).toBeCloseTo(0.1);
     expect(String(row["body"])).toContain("what time is it");
     expect(existsSync(join(s.tmp, "shadow.jsonl"))).toBe(false);
     await s.storage.close();
@@ -120,7 +120,7 @@ describe("ScanScheduler ingest gate", () => {
     expect(s.calls.classify).toBe(1);
     const lines = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l));
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatchObject({ id: "pi_gate", runtime: "pi/1.0", score: 0.5, wouldSkip: true, threshold: 1.5 });
+    expect(lines[0]).toMatchObject({ id: "pi_gate", runtime: "pi/1.0", score: 0.1, wouldSkip: true, threshold: 0.22 });
     await s.storage.close();
   });
 

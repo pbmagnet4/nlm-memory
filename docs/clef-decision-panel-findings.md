@@ -72,7 +72,26 @@ H3 (Clef as the extraction judge) and H4 (session-close task status and capture 
 
 ## Next step
 
-The daemon gate is built (T642, `docs/superpowers/plans/2026-10-13-clef-ingest-gate.md`). Settings in `~/.nlm/.env`: `NLM_INGEST_GATE` is `off` (default), `shadow` (score each session and append to `~/.nlm/clef-shadow.jsonl`, then classify as usual) or `live` (a session scoring under the threshold is stored with its adapter label, no extraction, `clef-gate` provenance and no workstream binding). `NLM_INGEST_GATE_THRESHOLD` defaults to 1.5. Any Clef failure classifies the session normally. Read the shadow log with `npx tsx scripts/eval/clef-shadow.ts --report`. Originally: `scripts/eval/clef-shadow.ts` logs what the gate would do on newly ingested sessions and reports its cost, and can run against the live ingest while that plan is built.
+The daemon gate is built (T642, `docs/superpowers/plans/2026-10-13-clef-ingest-gate.md`) and tuned (T644, below). Settings in `~/.nlm/.env`: `NLM_INGEST_GATE` is `off` (default), `shadow` (score each session and append to `~/.nlm/clef-shadow.jsonl`, then classify as usual) or `live` (a session under the fitted threshold is stored with its adapter label, no extraction, `clef-gate` provenance and no workstream binding). Any Clef failure classifies the session normally. Read the shadow log with `npx tsx scripts/eval/clef-shadow.ts --report`.
+
+## Gate tuning (2026-10-13, T644)
+
+The importance score alone was weaker on live traffic than on history: on 300 live sessions its AUC for "stored anything" was 0.65, and skipping under 1.5 lost 2.1% of facts. Tuning keeps Clef frozen and changes what it is asked and how its answers are combined:
+
+- `gateQuestions()` adds four questions aimed at what the classifier stores: `facts`, `outcome`, `delegated` (noul) and `extractable` (score), to the triage panel in one call.
+- `gate-model.ts` turns the answers plus log session length into 17 features; a logistic model (`scripts/eval/clef-gate-fit.ts`, generated `gate-model-params.ts`) predicts P(stored anything). The threshold is the highest one that loses at most 0.5% of decisions and 2.5% of facts on the training half.
+- Data: the 799 historical sessions, the 301 live shadow sessions and the 120 audited sessions, all answered by Clef (`scripts/eval/clef-gate-collect.ts`, cached under `~/.nlm/eval/gate-tune`). Trained on the tune half of historical plus live (541 sessions); reported on the held-out half and on the audited set.
+
+| Set | Gate | AUC | Skipped | Decisions lost | Facts lost |
+|---|---|---|---|---|---|
+| Historical holdout (414) | fitted, P < 0.223 | 0.919 | 15.9% | 0.1% | 0.2% |
+| | importance < 1.5 | 0.863 | 27.3% | 0.3% | 1.4% |
+| Live holdout (146) | fitted | 0.714 | 4.8% | 0.0% | 0.5% |
+| | importance < 1.5 | 0.683 | 8.2% | 0.0% | 2.2% |
+| Audited (120) | fitted | 0.966 | 8.3% | 0.0% | 0.2% |
+| | importance < 1.5 | 0.933 | 15.8% | 0.4% | 1.4% |
+
+The fitted gate ranks better everywhere and loses far less, at the price of skipping fewer sessions; it skipped none of the 82 audited-worthwhile sessions. Live traffic stays the hard case (AUC 0.71, 4.8% skipped): recent sessions are longer agentic coding work, where almost everything yields a fact. The savings on live traffic are small, so the shadow week decides whether `live` is worth turning on. The wider panel costs time: serially about 2 s per session, 6 to 11 s for long ones, so the gate's Clef timeout is 30 s. If a larger cut is needed, the next step is retraining Clef's own decision head (`joint_head.safetensors`, about 128M parameters) on these labels; the backbone stays frozen.
 
 ## Workstream binding (2026-10-13, T640)
 

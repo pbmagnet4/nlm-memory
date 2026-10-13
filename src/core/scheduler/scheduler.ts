@@ -299,7 +299,7 @@ export class ScanScheduler {
         if (gated) {
           gatedSkips += 1;
           classification = gatedClassification(chunk.label);
-          this.opts.logger(`[scheduler] clef gate skipped classifier for ${chunk.id} (importance ${gated.score})`);
+          this.opts.logger(`[scheduler] clef gate skipped classifier for ${chunk.id} (P(stored) ${gated.score?.toFixed(3)})`);
         } else {
           try {
             classification = await classifyAdaptive(chunk.text, this.opts.classifier, {
@@ -378,7 +378,7 @@ export class ScanScheduler {
           totalTokens: transcriptDerivables.totalTokens,
           skill: transcriptDerivables.skill,
           ...(gated
-            ? { classifier: { provider: "clef-gate", model: "clef-oQ4e", confidence: (gated.score ?? 0) / 3 } }
+            ? { classifier: { provider: "clef-gate", model: "clef-oQ4e", confidence: gated.score ?? 0 } }
             : this.opts.classifierDescriptor !== undefined
               ? { classifier: { ...this.opts.classifierDescriptor, confidence: classification.confidence } }
               : {}),

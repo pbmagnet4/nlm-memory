@@ -1,11 +1,14 @@
 import { appendFileSync } from "node:fs";
 import { askClef } from "../../llm/clef-client.js";
 import type { ClassifyResult } from "@ports/llm-client.js";
-import { capState, triageQuestions } from "./triage-panel.js";
+import { capState, gateQuestions } from "./triage-panel.js";
+import { gateFeatures, gateProbability, type GateModel } from "./gate-model.js";
+import { GATE_MODEL } from "./gate-model-params.js";
 
 export type IngestGateMode = "off" | "shadow" | "live";
 
 export interface GateVerdict {
+  /** Fitted probability that the classifier would store anything (T644); null on a Clef failure. */
   readonly score: number | null;
   readonly kind: string | null;
   readonly skip: boolean;
@@ -19,19 +22,19 @@ export function parseIngestGateMode(env: NodeJS.ProcessEnv = process.env): Inges
 }
 
 export function makeClefIngestGate(o: {
-  baseUrl: string; apiKey: string; threshold: number; timeoutMs?: number; fetchImpl?: typeof fetch;
+  baseUrl: string; apiKey: string; model?: GateModel; timeoutMs?: number; fetchImpl?: typeof fetch;
 }): (text: string) => Promise<GateVerdict> {
+  const model = o.model ?? GATE_MODEL;
   return async (text) => {
     const t0 = Date.now();
     try {
-      const { answers } = await askClef({ session: capState(text) }, triageQuestions(), {
-        baseUrl: o.baseUrl, apiKey: o.apiKey, timeoutMs: o.timeoutMs ?? 10_000,
+      const { answers } = await askClef({ session: capState(text) }, gateQuestions(), {
+        baseUrl: o.baseUrl, apiKey: o.apiKey, timeoutMs: o.timeoutMs ?? 30_000,
         ...(o.fetchImpl ? { fetchImpl: o.fetchImpl } : {}),
       });
-      const imp = answers["importance"];
-      if (imp?.type !== "score") throw new Error("reply has no importance score");
+      const p = gateProbability(model, gateFeatures(answers, text.length));
       const kind = answers["kind"];
-      return { score: imp.score, kind: kind?.type === "choice" ? kind.choice : null, skip: imp.score < o.threshold, ms: Date.now() - t0 };
+      return { score: p, kind: kind?.type === "choice" ? kind.choice : null, skip: p < model.threshold, ms: Date.now() - t0 };
     } catch (e) {
       return { score: null, kind: null, skip: false, ms: Date.now() - t0, error: (e instanceof Error ? e.message : String(e)).slice(0, 120) };
     }
