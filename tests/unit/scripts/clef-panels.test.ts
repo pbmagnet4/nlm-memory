@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { capState, recallGateQuestions, triageQuestions } from "../../../scripts/eval/lib/clef-panels.js";
+import { recallGateQuestions } from "../../../scripts/eval/lib/clef-panels.js";
+import { capState, triageQuestions } from "../../../src/core/classifier/triage-panel.js";
 import { MAX_TRANSCRIPT_CHARS } from "../../../src/core/classifier/prompt.js";
 
 describe("clef panels", () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { askClef, askClefOrNull } from "../../../scripts/eval/lib/clef-client.js";
+import { askClef, askClefOrNull } from "../../../src/llm/clef-client.js";
 
 const ok = (body: unknown): typeof fetch =>
   (async () => new Response(JSON.stringify(body), { status: 200 })) as typeof fetch;

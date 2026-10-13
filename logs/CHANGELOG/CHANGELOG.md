@@ -2,6 +2,16 @@
 
 Session-level log per session protocol. Cap: 10 entries — archive older to `CHANGELOG-YYYY.md` when exceeded.
 
+## 2026-10-13 - Clef ingest gate and workstream-binding eval (T642, T640)
+
+**Changes:** The daemon can consult Clef before the classifier: `NLM_INGEST_GATE=off|shadow|live` (default off), `NLM_INGEST_GATE_THRESHOLD` (default 1.5). In live mode a session scoring under the threshold is stored and embedded with its adapter label but no extraction, stamped `clef-gate` provenance, and not bound to a workstream. Clef errors fail open to the classifier. The Clef client and the calibrated triage panel moved from `scripts/eval/lib` to `src/llm/clef-client.ts` and `src/core/classifier/triage-panel.ts`. New `scripts/eval/clef-workstream.ts`.
+
+**Results:** Workstream binding with Clef was not adopted: on the 50-row matcher gold it never beat the production namer (13 of 17 correct, 1 false bind) without adding false binds.
+
+**State:** Gate code landed, off by default. Shadow mode is the next step on this install.
+
+**Next:** a week of shadow data, then a live decision with Edward.
+
 ## 2026-10-10 - Clef decision-model evaluation tooling and findings (T533)
 
 **Changes:** `scripts/eval/` gains a fail-open Clef client (`lib/clef-client.ts`), stats and panel helpers, `clef-triage.ts` (an importance gate scored against audited labels), `clef-yield.ts` (the gate's cost against stored decisions and facts) and `clef-shadow.ts` (logs what the gate would do on newly ingested sessions). `docs/clef-decision-panel-findings.md` records the results. No product code changed.
@@ -93,15 +103,3 @@ Session-level log per session protocol. Cap: 10 entries — archive older to `CH
 **State:** `origin/main` at `f9eff91`, 14 commits pushed. The 0.21.6 release line was replayed onto main with `f7e6ca3`'s corpus artifacts dropped, so main now matches what the install actually runs; one real conflict in `hook-log.ts` where both sides add a distinct optional field (`v?` and `recallOutcome?`), resolved by keeping both. Version bump commits deliberately skipped — main carries work 0.21.6 lacks, so numbering is an operator call. Suite 2837 passing, typecheck clean. `reports/re-derivation/` bulk artifacts (671 judge-cache files, decision-vectors, labels, sample, spot-check) were verified absent from published history and stay unpushed; the 4 curated Stage A files that `e35107b` deliberately published are untouched.
 
 **Next:** #455, a Hermes `state.db` adapter. Hermes migrated from JSON files to per-profile SQLite around 2026-05-21, so the file adapter has captured nothing since: 25 profiles, 1,091 sessions, 113,351 messages the corpus has never seen. The plugin cannot cover it either — gate run before rolling it out, and none of its three hook routes writes a session row. Also #456: NxtCron records run history only for the Pro, so 55 jobs on the ssh-transport hosts are inventory-only and a job that stops firing raises nothing.
-
-## 2026-08-14c - Hook version parity built and green, NOT deployed: 0.21.5 regresses the prose embedder
-
-**Changes:** Built the parity check that closes the gap the liveness canary structurally can't cover. `hook-liveness` answers "did hooks fire?"; it cannot answer "did the RIGHT hooks fire?", which is why nine days of 0.21.0 hook code ran against a 0.21.3 daemon with every check green. Hooks now stamp their own version into each hook-log line at both writers (`appendHookLog`, `appendHookEvent` — the two choke points, so every hook is covered), and `checkHookVersionParity` compares the most recent LIVE fire against the installed version, alerting on skew or on a fire carrying no version at all (definitionally a pre-stamp build). Wired into `cli/digest.ts` beside the existing two canaries. 9 tests, full suite 2576 green, typecheck clean. Committed `5817885`, released as 0.21.5.
-
-**Decisions:** Parity reads only the newest live fire rather than scanning a window. A window still holds pre-upgrade entries, so it would alert for a day after every legitimate upgrade — and a canary that cries wolf on routine upgrades gets muted, which is precisely how the original drift survived undetected. Newest-fire self-clears one hook run after an upgrade while a genuinely stale hook reports the old version forever. Bumped to 0.21.5 rather than restaging 0.21.4 with different content: a check about version integrity must not ship under a lying version.
-
-**State — NOT DEPLOYED, and this is the important part:** 0.21.5 breaks the prose text embedder. Reproduced twice on clean restarts: `warmup.textEmbedder` stays false past 150s and `embedding.prose` reports `unknown` (the code lane stays `ok`), so the daemon never reaches ready. Rolling `current` back to 0.21.4 restored it in 10 seconds — causality is unambiguous. Ruled out by direct comparison: node_modules listings byte-identical (165 pkgs, `@huggingface/transformers` 4.2.0 in both), `assets/` identical, dist structure identical, `dist/shared/version.js` imports fine under the bundled node, nothing in `daemon-err.log`. The only delta is the 0.21.5 code itself. **Live right now: 0.21.4, healthy, textEmbedder true, ready true.** Hooks follow `current` so they're on 0.21.4 as well, which carries the `isMainModule` fix, so capture is intact. The parity canary is written and green but NOT protecting anything yet.
-
-**Next:** NocoDB #450. Best untested hypothesis is the static `import ... with { type: "json" }` now sitting in two modules the daemon loads early, changing ESM evaluation order for the transformers warmup downstream (`cli/nlm.ts` does the same import, but as an entrypoint, not inside the daemon's early graph). Cheapest first move is to drop the static JSON import and read the version lazily at call time or bake it at build, keeping it out of the module graph. If that doesn't do it, bisect `5817885` — stamp-only vs parity-module-only isolates it in two builds.
-
-_Older entries archived in CHANGELOG-2026.md_

@@ -21,7 +21,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { LLMClient } from "@ports/llm-client.js";
-import type { TranscriptAdapter } from "@ports/transcript-adapter.js";
+import type { SessionChunk, TranscriptAdapter } from "@ports/transcript-adapter.js";
 import { deriveSubagentMeta } from "@core/adapters/claude-code.js";
 import { scanTranscriptDerivables } from "@core/ingest/transcript-derivables.js";
 import type { SignalStore } from "@ports/signal-store.js";
@@ -42,6 +42,7 @@ import type { Fact, Signal } from "@shared/types.js";
 import { MAX_CLASSIFY_FAILURES, recordClassified, recordClassifiedPg, recordFailed, recordFailedPg, recordSkippedLowConfidence, recordSkippedLowConfidencePg, scanOnce, scanOncePg } from "./scan-once.js";
 import { runCheapChecksOnSqlite } from "@core/integrity/check-invariants.js";
 import { classifyAdaptive } from "@core/classifier/hierarchical-classify.js";
+import { appendShadowLine, gatedClassification, type GateVerdict, type IngestGateMode } from "@core/classifier/ingest-gate.js";
 import { TimeoutError } from "@core/util/with-timeout.js";
 import { bindSessionToWorkstream } from "@core/workstream/bind.js";
 import { parseWorkTopics, aliasToLabelMap } from "@core/workstream/work-topics.js";
@@ -142,6 +143,9 @@ export interface SchedulerOptions {
   readonly workstreams?: WorkstreamStore | null;
   /** Provider and model name of the active classifier, for provenance stamping. */
   readonly classifierDescriptor?: { readonly provider: string; readonly model: string };
+  /** Clef importance gate consulted before the classifier. In "shadow" it only
+   *  logs; in "live" a below-threshold session is stored without classification. */
+  readonly ingestGate?: IngestGate | null;
   readonly intervalMs?: number;
   readonly classifyTimeoutMs?: number;
   readonly confidenceFloor?: number;
@@ -150,8 +154,16 @@ export interface SchedulerOptions {
   readonly logger?: (msg: string) => void;
 }
 
+export interface IngestGate {
+  readonly mode: IngestGateMode;
+  readonly threshold: number;
+  readonly judge: (text: string) => Promise<GateVerdict>;
+  readonly shadowLogPath: string;
+}
+
 export interface TickReport {
   readonly inserted: number;
+  readonly gatedSkips: number;
   readonly skippedLowConfidence: number;
   readonly classifyFailures: number;
   readonly storageFailures: number;
@@ -159,7 +171,7 @@ export interface TickReport {
 }
 
 export class ScanScheduler {
-  private readonly opts: Required<Omit<SchedulerOptions, "embedder" | "factStore" | "signalStore" | "installScope" | "exemplarStore" | "codeEmbedder" | "workstreams" | "classifierDescriptor" | "tenantId">> & {
+  private readonly opts: Required<Omit<SchedulerOptions, "embedder" | "factStore" | "signalStore" | "installScope" | "exemplarStore" | "codeEmbedder" | "workstreams" | "classifierDescriptor" | "tenantId" | "ingestGate">> & {
     readonly tenantId: string;
     readonly embedder: LLMClient | null;
     readonly factStore: SqliteFactStore | PgFactStore | null;
@@ -169,6 +181,7 @@ export class ScanScheduler {
     readonly codeEmbedder: CodeEmbedder | null;
     readonly workstreams: WorkstreamStore | null;
     readonly classifierDescriptor: { readonly provider: string; readonly model: string } | undefined;
+    readonly ingestGate: IngestGate | null;
   };
   private readonly aliasToLabel: ReadonlyMap<string, string>;
   private stopped = true;
@@ -188,6 +201,7 @@ export class ScanScheduler {
       codeEmbedder: opts.codeEmbedder ?? null,
       workstreams: opts.workstreams ?? null,
       classifierDescriptor: opts.classifierDescriptor,
+      ingestGate: opts.ingestGate && opts.ingestGate.mode !== "off" ? opts.ingestGate : null,
       intervalMs: opts.intervalMs ?? DEFAULT_INTERVAL_MS,
       classifyTimeoutMs: opts.classifyTimeoutMs ?? DEFAULT_CLASSIFY_TIMEOUT_MS,
       confidenceFloor: opts.confidenceFloor ?? DEFAULT_CONFIDENCE_FLOOR,
@@ -195,6 +209,22 @@ export class ScanScheduler {
       logger: opts.logger ?? ((msg) => console.error(msg)),
     };
     this.aliasToLabel = loadAliasToLabel();
+  }
+
+  /** Returns the verdict when the live gate says skip; null means classify. */
+  private async consultGate(chunk: SessionChunk): Promise<GateVerdict | null> {
+    const gate = this.opts.ingestGate;
+    if (!gate) return null;
+    const verdict = await gate.judge(chunk.text);
+    if (gate.mode === "shadow") {
+      try {
+        appendShadowLine(gate.shadowLogPath, { id: chunk.id, runtime: chunk.runtime, chars: chunk.text.length, threshold: gate.threshold, ...verdict });
+      } catch (e) {
+        this.opts.logger(`[scheduler] clef shadow log write failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      return null;
+    }
+    return verdict.skip ? verdict : null;
   }
 
   start(): void {
@@ -221,6 +251,7 @@ export class ScanScheduler {
   async tick(): Promise<TickReport> {
     let inserted = 0;
     let skippedLowConfidence = 0;
+    let gatedSkips = 0;
     let classifyFailures = 0;
     let storageFailures = 0;
     let chunksSeen = 0;
@@ -263,28 +294,35 @@ export class ScanScheduler {
           : null;
         await this.drainSignals(chunk, chunkScope);
 
+        const gated = await this.consultGate(chunk);
         let classification;
-        try {
-          classification = await classifyAdaptive(chunk.text, this.opts.classifier, {
-            perCallTimeoutMs: this.opts.classifyTimeoutMs,
-          });
-        } catch (e) {
-          classifyFailures += 1;
-          const reason = e instanceof TimeoutError ? "timed out" : `error: ${e instanceof Error ? e.message : String(e)}`;
-          let count: number;
-          if (_pgPool) {
-            count = await recordFailedPg(_pgPool, adapter.name, chunk.sourcePath, fileSize);
-          } else {
-            recordFailed(sqliteDb!, adapter.name, chunk.sourcePath, fileSize);
-            count = sqliteDb!
-              .prepare<[string, string], { failure_count: number }>(
-                "SELECT COALESCE(failure_count, 0) AS failure_count FROM adapter_state WHERE adapter_name = ? AND source_path = ?",
-              )
-              .get(adapter.name, chunk.sourcePath)?.failure_count ?? 1;
+        if (gated) {
+          gatedSkips += 1;
+          classification = gatedClassification(chunk.label);
+          this.opts.logger(`[scheduler] clef gate skipped classifier for ${chunk.id} (importance ${gated.score})`);
+        } else {
+          try {
+            classification = await classifyAdaptive(chunk.text, this.opts.classifier, {
+              perCallTimeoutMs: this.opts.classifyTimeoutMs,
+            });
+          } catch (e) {
+            classifyFailures += 1;
+            const reason = e instanceof TimeoutError ? "timed out" : `error: ${e instanceof Error ? e.message : String(e)}`;
+            let count: number;
+            if (_pgPool) {
+              count = await recordFailedPg(_pgPool, adapter.name, chunk.sourcePath, fileSize);
+            } else {
+              recordFailed(sqliteDb!, adapter.name, chunk.sourcePath, fileSize);
+              count = sqliteDb!
+                .prepare<[string, string], { failure_count: number }>(
+                  "SELECT COALESCE(failure_count, 0) AS failure_count FROM adapter_state WHERE adapter_name = ? AND source_path = ?",
+                )
+                .get(adapter.name, chunk.sourcePath)?.failure_count ?? 1;
+            }
+            const ceiling = count >= MAX_CLASSIFY_FAILURES ? ` (failure ${count}/${MAX_CLASSIFY_FAILURES} — will skip until file grows)` : ` (failure ${count}/${MAX_CLASSIFY_FAILURES})`;
+            this.opts.logger(`[scheduler] classifier ${reason} for ${chunk.id}${ceiling}`);
+            continue;
           }
-          const ceiling = count >= MAX_CLASSIFY_FAILURES ? ` (failure ${count}/${MAX_CLASSIFY_FAILURES} — will skip until file grows)` : ` (failure ${count}/${MAX_CLASSIFY_FAILURES})`;
-          this.opts.logger(`[scheduler] classifier ${reason} for ${chunk.id}${ceiling}`);
-          continue;
         }
 
         if (classification.confidence < this.opts.confidenceFloor) {
@@ -339,9 +377,11 @@ export class ScanScheduler {
           primaryModel: transcriptDerivables.primaryModel,
           totalTokens: transcriptDerivables.totalTokens,
           skill: transcriptDerivables.skill,
-          ...(this.opts.classifierDescriptor !== undefined
-            ? { classifier: { ...this.opts.classifierDescriptor, confidence: classification.confidence } }
-            : {}),
+          ...(gated
+            ? { classifier: { provider: "clef-gate", model: "clef-oQ4e", confidence: (gated.score ?? 0) / 3 } }
+            : this.opts.classifierDescriptor !== undefined
+              ? { classifier: { ...this.opts.classifierDescriptor, confidence: classification.confidence } }
+              : {}),
         };
 
         const supersedesArg = supersedes ? { priorSessionId: supersedes, kind: "replaces" as const } : null;
@@ -366,7 +406,7 @@ export class ScanScheduler {
             recordClassified(sqliteDb!, adapter.name, chunk.sourcePath, chunk.id, fileSize);
           }
           inserted += 1;
-          if (bindWorkstreamsEnabled() && this.opts.workstreams) {
+          if (!gated && bindWorkstreamsEnabled() && this.opts.workstreams) {
             await bindSessionToWorkstream(
               {
                 namer: this.opts.classifier,
@@ -442,7 +482,7 @@ export class ScanScheduler {
       }
     }
 
-    return { inserted, skippedLowConfidence, classifyFailures, storageFailures, chunksSeen };
+    return { inserted, gatedSkips, skippedLowConfidence, classifyFailures, storageFailures, chunksSeen };
   }
 
   private async drainSignals(chunk: { id: string; signals?: ReadonlyArray<unknown> }, scope: string | null): Promise<void> {

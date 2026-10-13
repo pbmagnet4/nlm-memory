@@ -21,8 +21,8 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { askClef } from "./lib/clef-client.js";
-import { capState, triageQuestions } from "./lib/clef-panels.js";
+import { askClef } from "../../src/llm/clef-client.js";
+import { capState, triageQuestions } from "../../src/core/classifier/triage-panel.js";
 import { printYieldReport, type YieldRow } from "./lib/clef-yield-report.js";
 
 const arg = (k: string, d: string) => process.argv.find((a) => a.startsWith(`--${k}=`))?.slice(k.length + 3) ?? d;

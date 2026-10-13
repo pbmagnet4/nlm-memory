@@ -13,8 +13,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { NAMING_CONTENT_CHARS } from "../../src/core/workstream/bind.js";
-import { askClef, type ClefAnswer } from "./lib/clef-client.js";
-import { capState } from "./lib/clef-panels.js";
+import { askClef, type ClefAnswer } from "../../src/llm/clef-client.js";
+import { capState } from "../../src/core/classifier/triage-panel.js";
 import { wilson } from "./lib/clef-stats.js";
 import { pickWorkstream, scoreWorkstreams, workstreamQuestion } from "./lib/workstream-panel.js";
 
