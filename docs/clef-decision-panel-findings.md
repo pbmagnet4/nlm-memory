@@ -91,7 +91,18 @@ The importance score alone was weaker on live traffic than on history: on 300 li
 | Audited (120) | fitted | 0.966 | 8.3% | 0.0% | 0.2% |
 | | importance < 1.5 | 0.933 | 15.8% | 0.4% | 1.4% |
 
-The fitted gate ranks better everywhere and loses far less, at the price of skipping fewer sessions; it skipped none of the 82 audited-worthwhile sessions. Live traffic stays the hard case (AUC 0.71, 4.8% skipped): recent sessions are longer agentic coding work, where almost everything yields a fact. The savings on live traffic are small, so the shadow week decides whether `live` is worth turning on. The wider panel costs time: serially about 2 s per session, 6 to 11 s for long ones, so the gate's Clef timeout is 30 s. If a larger cut is needed, the next step is retraining Clef's own decision head (`joint_head.safetensors`, about 128M parameters) on these labels; the backbone stays frozen.
+The fitted gate ranks better everywhere and loses far less, at the price of skipping fewer sessions; it skipped none of the 82 audited-worthwhile sessions. Live traffic stays the hard case (AUC 0.71, 4.8% skipped): recent sessions are longer agentic coding work, where almost everything yields a fact. The wider panel costs time: serially about 2 s per session, 6 to 11 s for long ones, so the gate's Clef timeout is 30 s. If a larger cut is needed, the next step is retraining Clef's own decision head (`joint_head.safetensors`, about 128M parameters) on these labels; the backbone stays frozen.
+
+### Verdict: not adopted (cost, not accuracy)
+
+Timed on the 12 most recent sessions, each run through both the gate and the production classifier (`litellm-classifier`, 0.21.15):
+
+- The gate costs 2 to 10 s on every session, kept ones included (57 s over the 12).
+- It only skips short sessions, which the classifier already finishes in 6 to 15 s (55 s saved over the 5 it skipped). Long sessions, where the classifier takes 30 to 70 s, are never skipped.
+- Break-even needs roughly 40% of sessions skipped. Live traffic gives 4.8%, so on live traffic the gate adds about 5 s per session to save about 0.5 s.
+- A free rule does nearly as well where there is anything to skip: skipping the classifier under 500 characters skips 12.9% of historical sessions and loses 2 decisions and 3 facts of 3,012 and 3,868. On recent live traffic it skips nothing, because those sessions are long.
+
+`NLM_INGEST_GATE` is `off` on this install; the code stays flag-gated. Retraining Clef's head would not help: the problem is the per-call cost against a cheap skipped call, not ranking quality. For any further Clef use, measure the cost of the call it replaces and compare against a free heuristic before tuning.
 
 ## Workstream binding (2026-10-13, T640)
 

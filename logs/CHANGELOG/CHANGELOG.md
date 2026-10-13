@@ -8,9 +8,9 @@ Session-level log per session protocol. Cap: 10 entries — archive older to `CH
 
 **Results:** On held-out sessions the fitted gate beats importance < 1.5 everywhere: historical AUC 0.919 vs 0.863 (facts lost 0.2% vs 1.4%), live 0.714 vs 0.683 (0.5% vs 2.2%), audited 0.966 vs 0.933 with no worthwhile session skipped. It skips fewer sessions (live 4.8%).
 
-**State:** Off by default. Shadow mode next on this install.
+**State:** Released in 0.21.15, then rejected on cost the same day: the gate takes 2 to 10 s on every session and only skips short ones the classifier handles in 6 to 15 s; break-even needs about 40% skipped against 4.8% live. `NLM_INGEST_GATE=off` on this install. Verdict in `docs/clef-decision-panel-findings.md`.
 
-**Next:** a week of shadow data, then a live decision with Edward; retrain Clef's decision head only if live skips stay too small to matter.
+**Next:** none for the ingest gate. Further Clef candidates are measured on cost against the call they replace before any tuning.
 
 ## 2026-10-13 - Clef ingest gate and workstream-binding eval (T642, T640)
 
