@@ -75,7 +75,8 @@
     "eval:rederiv-label": "tsx scripts/eval/re-derivation-label.ts",
     "eval:rederiv-calibrate": "tsx scripts/eval/re-derivation-calibrate.ts",
     "eval:fact-judge-replay": "tsx scripts/eval/fact-judge-replay.ts",
-    "eval:fact-judge-label": "tsx scripts/eval/fact-judge-label.ts"
+    "eval:fact-judge-label": "tsx scripts/eval/fact-judge-label.ts",
+    "eval:fact-class-replay": "tsx scripts/eval/fact-class-replay.ts"
   },
   "dependencies": {
     "@clack/prompts": "^1.4.0",

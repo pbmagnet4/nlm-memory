@@ -31,6 +31,7 @@ import {
   computeFactEmbedStats,
   missingFactEmbeddingSamples,
 } from "@core/facts/embed-missing.js";
+import { EVENT_CLASS_PREDICATES } from "@core/facts/fact-classes.js";
 
 export interface Violation {
   readonly id: string;
@@ -58,6 +59,8 @@ const MULTI_VALUED_PREDICATES: ReadonlySet<string> = new Set([
   "commit", // distinct SHAs recorded at different points in time
   "branch", // a repo accumulates one branch per task
   "description", // complementary facets of one subject, not competing values
+  // Event class (T737): no conflicting group of these was a true replacement.
+  ...EVENT_CLASS_PREDICATES,
 ]);
 
 const MV_IN = [...MULTI_VALUED_PREDICATES].map((p) => `'${p}'`).join(", ");

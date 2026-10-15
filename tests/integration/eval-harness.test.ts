@@ -49,8 +49,8 @@ describe("eval harness (synthetic corpus)", () => {
       { id: "f_db", subject: "widget-app", predicate: "database", value: "Postgres" },
       { id: "f_cache", subject: "widget-app", predicate: "cache layer", value: "Redis" },
       { id: "f_queue", subject: "widget-app", predicate: "job queue", value: "BullMQ" },
-      { id: "f_dup1", subject: "widget-app", predicate: "owner", value: "team a" },
-      { id: "f_dup2", subject: "widget-app", predicate: "owner", value: "team b" },
+      { id: "f_dup1", subject: "widget-app", predicate: "port", value: "team a" },
+      { id: "f_dup2", subject: "widget-app", predicate: "port", value: "team b" },
     ];
     for (const f of facts) {
       await storage.facts.insert("team_local", makeFact({ ...f, sourceSessionId: GOLDEN_CORPUS[0]!.id }));
@@ -110,7 +110,7 @@ describe("eval harness (synthetic corpus)", () => {
     expect(byQuery.has("Tauri desktop packaging")).toBe(false);
     expect(byQuery.has("no conversation id")).toBe(false);
     expect(g.session.every((x) => x.split === "dev" || x.split === "heldout")).toBe(true);
-    // Only the unique (subject, predicate) facts qualify; the two owners conflict.
+    // Only the unique (subject, predicate) facts qualify; the two ports conflict.
     expect(g.factTopic.map((x) => x.relevantIds[0]).sort()).toEqual(["f_cache", "f_db", "f_queue"]);
     expect(g.factCitation).toHaveLength(0);
     expect(existsSync(join(snapshotDir, "goldens.json"))).toBe(true);

@@ -24,6 +24,7 @@ import { isTransientLLMError } from "@core/classifier/transient-error.js";
 import { sharedClassifyLimiter, type Limiter } from "@core/classifier/inflight-limiter.js";
 import { stripJsonFences } from "@core/classifier/prompt.js";
 import { composeFactEmbedText } from "@core/facts/embed-backfill.js";
+import { factClassOf, factClassesEnabled } from "@core/facts/fact-classes.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import { tenantStatePath } from "@core/tenancy/tenant-state-path.js";
 import { guardSweep } from "@core/util/sweep-guard.js";
@@ -251,7 +252,10 @@ export class FactJudge {
     if (this.mode === "off" || facts.length === 0) return [];
     const outcomes: JudgeOutcome[] = [];
     const now = this.opts.now ?? Date.now;
+    const classes = factClassesEnabled();
     for (const fact of facts) {
+      // Event-class facts are never superseded (fact-classes.ts): nothing to judge.
+      if (classes && factClassOf(fact.predicate) === "event") continue;
       const t0 = now();
       const candidates = await findCandidates(this.opts.store, tenantId, fact, {
         embedder: this.opts.embedder,
