@@ -419,6 +419,54 @@ export class SqliteFactStore implements FactStore {
     this.db
       .prepare("INSERT INTO fact_embeddings (fact_id, embedding) VALUES (?, ?)")
       .run(factId, blob);
+    this.db.prepare("DELETE FROM fact_embed_pending WHERE fact_id = ?").run(factId);
+  }
+
+  /**
+   * Record that a fact's vector could not be computed (embedder error, or shed
+   * at the in-flight cap) so the sweep retries it with exponential backoff
+   * (1 min doubling to a 6 h cap). Never throws on a missing fact: the FK
+   * cascade means a deleted fact has nothing left to embed.
+   */
+  markEmbedPending(factId: string, error: string, now: Date = new Date()): void {
+    const prior = this.db
+      .prepare<[string], { attempts: number }>("SELECT attempts FROM fact_embed_pending WHERE fact_id = ?")
+      .get(factId)?.attempts ?? 0;
+    const attempts = prior + 1;
+    const delayMs = Math.min(60_000 * 2 ** (attempts - 1), 6 * 3_600_000);
+    const next = new Date(now.getTime() + delayMs).toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO fact_embed_pending (fact_id, attempts, last_error, next_attempt_at)
+         SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM facts WHERE id = ?)
+         ON CONFLICT(fact_id) DO UPDATE SET
+           attempts = excluded.attempts, last_error = excluded.last_error,
+           next_attempt_at = excluded.next_attempt_at`,
+      )
+      .run(factId, attempts, error.slice(0, 300), next, factId);
+  }
+
+  /**
+   * Recall-eligible facts with no vector that are due for (re)embedding: never
+   * recorded as pending (a crash between commit and embed, or a pre-T732 drop)
+   * or whose backoff has elapsed. Oldest first.
+   */
+  listFactsDueForEmbedding(
+    tenantId: string,
+    limit: number,
+    now: Date = new Date(),
+  ): ReadonlyArray<{ id: string; subject: string; predicate: string; value: string }> {
+    const tc = tenantClause(tenantId, "f.tenant_id");
+    return this.db
+      .prepare<[string, string, number], { id: string; subject: string; predicate: string; value: string }>(
+        `SELECT f.id, f.subject, f.predicate, f.value FROM facts f
+         LEFT JOIN fact_embed_pending p ON p.fact_id = f.id
+         WHERE f.superseded_by IS NULL AND f.retired_at IS NULL AND ${tc.sql}
+           AND f.id NOT IN (SELECT id FROM fact_embeddings_rowids)
+           AND (p.fact_id IS NULL OR p.next_attempt_at <= ?)
+         ORDER BY f.created_at LIMIT ?`,
+      )
+      .all(tc.param, now.toISOString(), limit);
   }
 
   async markSuperseded(tenantId: string, oldId: string, newId: string | null): Promise<void> {

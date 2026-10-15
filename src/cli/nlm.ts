@@ -116,6 +116,7 @@ import { reembedCorpus } from "../core/embedding/embed-backfill.js";
 import { reembedCorpusPg } from "../core/embedding/pg-embed-backfill.js";
 import { backfillExemplarEmbeddings } from "../core/exemplars/embed-backfill.js";
 import { backfillFactEmbeddings } from "../core/facts/embed-backfill.js";
+import { runFactEmbedTick } from "../core/facts/embed-sweep-tick.js";
 import { warmCodeEmbedder } from "../core/exemplars/warm-embedder.js";
 import { markWarm, markWarmFailure } from "../core/health/warmup-state.js";
 import { setLaneHealth } from "../core/health/embedding-lane-state.js";
@@ -874,6 +875,33 @@ program
       exemplarBackfillTimer.unref();
       setTimeout(() => { void runExemplarBackfill(); }, EXEMPLAR_BACKFILL_INITIAL_DELAY_MS).unref();
       console.error("  exemplar-backfill: enabled, repair sweep every 24h");
+    }
+
+    // Fact-embedding sweep (T732 / E1): re-embeds facts whose vector failed or
+    // was shed (fact_embed_pending) plus unrecorded drops, a small batch every
+    // 2 min under the shared embed in-flight cap, then publishes the
+    // missing-share for /api/health and alerts when it exceeds 0.5%. SQLite only.
+    if (!(storage instanceof PgStorage)) {
+      const FACT_EMBED_SWEEP_INTERVAL_MS = 2 * 60 * 1000;
+      const FACT_EMBED_SWEEP_INITIAL_DELAY_MS = 90 * 1000;
+      const runFactEmbedSweep = async () => {
+        try {
+          const report = await runFactEmbedTick({
+            tenantId: DEFAULT_TEAM_ID,
+            storage: storage as SqliteStorage,
+            embedder: buildEmbedder(),
+            fire: fireAlert,
+          });
+          if (report.repaired > 0 || report.failed > 0) {
+            console.error(`[fact-embed-sweep] ${report.repaired}/${report.attempted} repaired (${report.failed} failed${report.shed ? ", shed at cap" : ""})`);
+          }
+        } catch (e) {
+          console.error(`[fact-embed-sweep] error: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      };
+      setInterval(() => { void runFactEmbedSweep(); }, FACT_EMBED_SWEEP_INTERVAL_MS).unref();
+      setTimeout(() => { void runFactEmbedSweep(); }, FACT_EMBED_SWEEP_INITIAL_DELAY_MS).unref();
+      console.error("  fact-embed-sweep: enabled, retry sweep every 2m");
     }
 
     // Memo sweep runs independently of the transcript scheduler — it's the
@@ -2954,7 +2982,7 @@ program
       await storage.close();
     }
 
-    const ALL_CHECKS = ["I1", "I2", "I3", "I4", "I5a", "I5b", "I6", "I7"];
+    const ALL_CHECKS = ["I1", "I2", "I3", "I4", "I5a", "I5b", "I6", "I7", ...(storage instanceof PgStorage ? [] : ["I8"])];
     const byId = new Map(violations.map((v) => [v.id, v]));
     let anyFail = false;
     console.log("Database integrity:");
