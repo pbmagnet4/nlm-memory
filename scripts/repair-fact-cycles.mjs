@@ -21,6 +21,7 @@
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { guardSweep, formatDecision } from "../dist/core/util/sweep-guard.js";
 import { SqliteStorage } from "../dist/core/storage/sqlite-storage.js";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -37,6 +38,23 @@ const cyclePairs = db
      WHERE a.id < b.id`,
   )
   .all();
+
+const dryRun = process.argv.includes("--dry-run");
+const overrideGuard = process.argv.includes("--override-guard");
+
+const decision = guardSweep({
+  sweep: "repair-fact-cycles",
+  actor: "script:repair-fact-cycles",
+  targetTotal: db.prepare("SELECT COUNT(*) AS n FROM facts WHERE superseded_by IS NOT NULL").get().n,
+  touching: cyclePairs.length * 2,
+  dryRun,
+  override: overrideGuard,
+});
+console.log(formatDecision(decision));
+if (decision.mode !== "applied") {
+  await storage.close();
+  process.exit(dryRun ? 0 : 1);
+}
 
 const activeOther = db.prepare(
   `SELECT id FROM facts

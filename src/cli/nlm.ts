@@ -44,6 +44,7 @@ import { PgStorage } from "../core/storage/pg-storage.js";
 import { applyPendingRestore, stageRestore } from "../core/storage/db-restore.js";
 import {
   applyRetirements,
+  previewRetirements,
   findContradictions,
   formatReport,
   loadAuthorities,
@@ -92,6 +93,7 @@ import { runSupersedeCommand } from "./supersede.js";
 import { runInitCommand } from "./init.js";
 import { DEFAULT_TEAM_ID } from "../core/tenancy/default-team.js";
 import { hashTeamToken } from "../core/tenancy/team-auth.js";
+import { formatDecision, guardSweep } from "../core/util/sweep-guard.js";
 import { runScopeBackfill, formatBackfillResult } from "./scope-backfill.js";
 import { runScopeCoverage, formatCoverageResult } from "./scope-coverage.js";
 import { loadAliasMap } from "../core/scope/alias-map.js";
@@ -1428,6 +1430,7 @@ program
   .description("Find live facts that contradict an authorities file (dry run unless --apply)")
   .requiredOption("--authorities <file>", "JSON file of authoritative values and deleted files")
   .option("--apply", "retire the findings (backs up the DB first)")
+  .option("--override-guard", "allow the sweep past the share/floor guard")
   .option("-l, --limit <n>", "max facts changed per run", (v) => Number.parseInt(v, 10), 100)
   .option("--json", "emit the report as JSON")
   .action(async (opts) => {
@@ -1440,7 +1443,9 @@ program
       const db = storage.rawDb();
       const findings = findContradictions(db, loadAuthorities(opts.authorities as string));
       const limit = opts.limit as number;
-      const applied = opts.apply ? await applyRetirements(db, dbPath(), findings, limit) : null;
+      const guardOpts = { override: Boolean(opts.overrideGuard) };
+      const applied = opts.apply ? await applyRetirements(db, dbPath(), findings, limit, undefined, guardOpts) : null;
+      const decision = applied ? applied.decision : previewRetirements(db, findings, limit, guardOpts);
       if (opts.json) {
         process.stdout.write(
           JSON.stringify(
@@ -1458,6 +1463,7 @@ program
         return;
       }
       console.log(formatReport(findings, limit));
+      if (decision) console.log(formatDecision(decision));
       if (applied) {
         console.log(`retired ${applied.retired.length} fact(s); backup: ${applied.backupPath ?? "none"}`);
       } else {
@@ -1658,8 +1664,9 @@ program
   .option("--dry-run", "print cohort report without writing")
   .option("-v, --verbose", "per-session progress on stderr")
   .option("--force-embed", "proceed even when the stored prose embedding lane mismatches the runtime embedder")
+  .option("--override-guard", "allow the run past the sweep guard (share of sessions / floor)")
   .option("--daemon", "submit to the running daemon's job supervisor instead of running in this process (restarts on OOM/crash, reports stalls)")
-  .action(async (opts: { limit?: number; minConfidence?: number; onlyNull?: boolean; excludeModel?: string[]; state?: string; dryRun?: boolean; verbose?: boolean; forceEmbed?: boolean; daemon?: boolean }) => {
+  .action(async (opts: { limit?: number; minConfidence?: number; onlyNull?: boolean; excludeModel?: string[]; state?: string; dryRun?: boolean; verbose?: boolean; forceEmbed?: boolean; overrideGuard?: boolean; daemon?: boolean }) => {
     if (opts.daemon) {
       // Same daemon-call auth pattern as `nlm ui`'s bootstrap-nonce POST:
       // autoload ~/.nlm/.env so a fresh shell still has NLM_MCP_TOKEN, then
@@ -1676,6 +1683,7 @@ program
       if (opts.state) args.push("--state", opts.state);
       if (opts.dryRun) args.push("--dry-run");
       if (opts.forceEmbed) args.push("--force-embed");
+      if (opts.overrideGuard) args.push("--override-guard");
       // -v is always added by the daemon's spawn adapter (job-supervisor.ts
       // parses reprocess's [i/n] progress lines from it) — a local
       // --verbose here would only affect this short-lived CLI invocation's
@@ -1733,6 +1741,7 @@ program
           dryRun: Boolean(opts.dryRun),
           verbose: Boolean(opts.verbose),
           forceEmbed: Boolean(opts.forceEmbed),
+          overrideGuard: Boolean(opts.overrideGuard),
           ...(opts.verbose
             ? {
                 onProgress: (i: number, n: number, sid: string, status: string) => {
@@ -2936,6 +2945,7 @@ program
   .command("doctor")
   .description("Check database integrity invariants and install/runtime health, optionally repair safe violations")
   .option("--fix", "repair mechanically safe violations: delete self-loop edges (I1), restore orphaned superseded/replaced sessions to closed (I2), delete ghost fact embeddings (I7)")
+  .option("--override-guard", "allow the ghost-embedding repair past the sweep guard")
   .action(async (opts) => {
     const storage = await buildStorage(dbPath());
     let violations;
@@ -2945,13 +2955,16 @@ program
         if (storage instanceof PgStorage) {
           fixReport = await applyFixOnPg(storage.pgPool());
         } else {
-          fixReport = applyFixOnSqlite((storage as SqliteStorage).rawDb());
+          fixReport = applyFixOnSqlite((storage as SqliteStorage).rawDb(), { overrideGuard: Boolean(opts.overrideGuard) });
         }
         if (fixReport.deletedSelfLoops > 0) {
           console.log(`  fixed I1: deleted ${fixReport.deletedSelfLoops} self-loop edge(s)`);
         }
         if (fixReport.restoredToClosed > 0) {
           console.log(`  fixed I2: restored ${fixReport.restoredToClosed} session(s) to closed`);
+        }
+        if (fixReport.ghostGuardRefusal) {
+          console.log(`  skipped I7: refused by sweep guard: ${fixReport.ghostGuardRefusal}`);
         }
         if (fixReport.deletedGhostEmbeddings > 0) {
           console.log(`  fixed I7: deleted ${fixReport.deletedGhostEmbeddings} ghost embedding(s)`);
@@ -3185,7 +3198,8 @@ entitiesCmd
   )
   .option("--apply-safe", "execute safe-class merges via the merge primitive", false)
   .option("--interactive", "step through likely-class pairs with y/n on stdin", false)
-  .action(async (opts: { applySafe?: boolean; interactive?: boolean }) => {
+  .option("--override-guard", "allow --apply-safe past the sweep guard")
+  .action(async (opts: { applySafe?: boolean; interactive?: boolean; overrideGuard?: boolean }) => {
     const storage = await buildStorage(dbPath());
 
     type EntityQueryRow = { canonical: string; session_count: number; status: string };
@@ -3226,12 +3240,28 @@ entitiesCmd
     let failed = 0;
     let skipped = 0;
 
+    const liveEntities = rows.filter((r) => r.status !== "retired").length;
+    const dedupGuard = guardSweep({
+      sweep: "entities-dedup",
+      actor: "cli:entities dedup",
+      targetTotal: liveEntities,
+      touching: safe.length,
+      dryRun: !opts.applySafe,
+      override: Boolean(opts.overrideGuard),
+    });
+    if (opts.applySafe && dedupGuard.mode === "refused") {
+      console.error(`nlm entities dedup: refused by sweep guard: ${dedupGuard.reason}`);
+      await storage.close();
+      process.exit(1);
+    }
+
     if (!opts.applySafe && !opts.interactive) {
       console.log(`safe (${safe.length}):`);
       for (const s of safe) console.log(`  ${s.source}  ->  ${s.target}`);
       console.log(`likely (${likely.length}):`);
       for (const s of likely) console.log(`  ${s.source}  ->  ${s.target}`);
       console.log(`\ntotal: safe=${safe.length} likely=${likely.length} (dry run)`);
+      console.log(`${formatDecision(dedupGuard)} for --apply-safe`);
       await storage.close();
       return;
     }

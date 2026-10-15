@@ -23,6 +23,7 @@ import type Database from "better-sqlite3";
 import type { CodeExemplarSearchFilter, CodeExemplarStore, ExemplarVerdictPatch, ExemplarVerdictResult, ExemplarVerdictSource } from "@ports/code-exemplar-store.js";
 import type { CodeExemplar, CodeExemplarHit, CodeExemplarInput, CodeExemplarOutcome } from "@shared/types.js";
 import { tenantClause } from "@core/tenancy/tenant-clause.js";
+import { guardSweep } from "@core/util/sweep-guard.js";
 
 const VEC_DIM = 768;
 
@@ -229,6 +230,19 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
     return rows.map((r) => this.rowToExemplar(r));
   }
 
+  /** Sweep guard for bulk exemplar deletes. False means refused: caller deletes nothing. */
+  private sweepAllowed(sweep: string, tenantId: string, touching: number): boolean {
+    if (touching === 0) return true;
+    const tc = tenantClause(tenantId);
+    const total = (this.db.prepare(`SELECT COUNT(*) AS n FROM code_exemplars WHERE ${tc.sql}`).get(tc.param) as { n: number }).n;
+    const decision = guardSweep({ sweep, actor: "daemon", targetTotal: total, touching });
+    if (decision.mode === "refused") {
+      process.stderr.write(`[sweep-guard] ${sweep} refused: ${decision.reason}\n`);
+      return false;
+    }
+    return true;
+  }
+
   async applyBucketCap(tenantId: string, installScope: string, maxPerBucket: number): Promise<number> {
     type BucketRow = { repo: string; lang: string | null; outcome_class: string };
     const bucketTc = tenantClause(tenantId);
@@ -243,6 +257,7 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
     let deleted = 0;
     const delStmt = this.db.prepare("DELETE FROM code_exemplars WHERE id = ?");
     const txn = this.db.transaction(() => {
+      const doomed: string[] = [];
       for (const bucket of buckets) {
         const outcomeList = bucket.outcome_class === "positive" ? ["pass", "fix"] : ["fail", "exhausted"];
         const placeholders = outcomeList.map(() => "?").join(",");
@@ -265,12 +280,13 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
           .all(...params)
           .map((r) => r.id);
 
-        const toDelete = allIds.slice(maxPerBucket);
-        for (const id of toDelete) {
-          delStmt.run(id);
-          this.db.prepare("DELETE FROM code_exemplars_vec WHERE exemplar_id = ?").run(id);
-          deleted++;
-        }
+        doomed.push(...allIds.slice(maxPerBucket));
+      }
+      if (!this.sweepAllowed("exemplar-bucket-cap", tenantId, doomed.length)) return;
+      for (const id of doomed) {
+        delStmt.run(id);
+        this.db.prepare("DELETE FROM code_exemplars_vec WHERE exemplar_id = ?").run(id);
+        deleted++;
       }
     });
     txn();
@@ -288,6 +304,7 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
       .map((r) => r.id);
     let deleted = 0;
     const txn = this.db.transaction(() => {
+      if (!this.sweepAllowed("exemplar-prune-reverted", tenantId, ids.length)) return;
       for (const id of ids) {
         this.db.prepare("DELETE FROM code_exemplars WHERE id = ?").run(id);
         this.db.prepare("DELETE FROM code_exemplars_vec WHERE exemplar_id = ?").run(id);
@@ -338,6 +355,7 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
       .map((r) => r.id);
     let deleted = 0;
     const txn = this.db.transaction(() => {
+      if (!this.sweepAllowed("exemplar-prune-older-than", tenantId, ids.length)) return;
       for (const id of ids) {
         this.db.prepare("DELETE FROM code_exemplars WHERE id = ?").run(id);
         this.db.prepare("DELETE FROM code_exemplars_vec WHERE exemplar_id = ?").run(id);

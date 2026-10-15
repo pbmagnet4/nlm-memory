@@ -25,6 +25,7 @@
 
 import type Database from "better-sqlite3";
 import type { Pool } from "pg";
+import { guardSweep } from "../util/sweep-guard.js";
 import {
   MISSING_SHARE_ALARM,
   computeFactEmbedStats,
@@ -609,9 +610,16 @@ export interface FixReport {
   readonly deletedSelfLoops: number;
   readonly restoredToClosed: number;
   readonly deletedGhostEmbeddings: number;
+  /** Set when the sweep guard refused the ghost-embedding deletion (I7). */
+  readonly ghostGuardRefusal?: string;
 }
 
-export function applyFixOnSqlite(db: Database.Database): FixReport {
+export interface FixGuardOptions {
+  readonly overrideGuard?: boolean;
+  readonly auditPath?: string;
+}
+
+export function applyFixOnSqlite(db: Database.Database, guard: FixGuardOptions = {}): FixReport {
   const deleteResult = db
     .prepare("DELETE FROM session_edges WHERE from_session = to_session")
     .run();
@@ -644,15 +652,27 @@ export function applyFixOnSqlite(db: Database.Database): FixReport {
     `)
     .all();
   const delGhostEmb = db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ?");
+  const embeddingTotal = (db.prepare("SELECT COUNT(*) AS n FROM fact_embeddings_rowids").get() as { n: number }).n;
+  const ghostDecision = guardSweep({
+    sweep: "doctor-fix-ghost-embeddings",
+    actor: "cli:doctor --fix",
+    targetTotal: embeddingTotal,
+    touching: ghostIds.length,
+    override: guard.overrideGuard,
+    auditPath: guard.auditPath,
+  });
   let deletedGhostEmbeddings = 0;
-  for (const { bad_id } of ghostIds) {
-    deletedGhostEmbeddings += delGhostEmb.run(bad_id).changes;
+  if (ghostDecision.mode === "applied") {
+    for (const { bad_id } of ghostIds) {
+      deletedGhostEmbeddings += delGhostEmb.run(bad_id).changes;
+    }
   }
 
   return {
     deletedSelfLoops: deleteResult.changes,
     restoredToClosed: updateSuperseded.changes + updateReplaced.changes,
     deletedGhostEmbeddings,
+    ...(ghostDecision.mode === "refused" ? { ghostGuardRefusal: ghostDecision.reason } : {}),
   };
 }
 

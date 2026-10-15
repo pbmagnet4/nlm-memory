@@ -18,6 +18,7 @@
  * SQLite only. Pg variant deferred; file task against nlm#TODO in report.
  */
 
+import { guardSweep, type SweepDecision } from "../util/sweep-guard.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -56,6 +57,8 @@ export interface ReprocessOptions {
   readonly classifyTimeoutMs?: number;
   readonly verbose?: boolean;
   readonly forceEmbed?: boolean;
+  /** Let the run past the sweep guard (share of sessions / floor). */
+  readonly overrideGuard?: boolean;
   readonly onProgress?: (i: number, n: number, sid: string, status: string) => void;
 }
 
@@ -77,6 +80,7 @@ export interface ReprocessReport {
   readonly meanConfidenceOld: number | null;
   readonly meanConfidenceNew: number | null;
   readonly cohort?: ReadonlyArray<CohortGroup>;
+  readonly guard?: SweepDecision;
   readonly stateNote?: string;
 }
 
@@ -195,6 +199,16 @@ export async function reprocess(
     ...(opts.excludeModels ? { excludeModels: opts.excludeModels } : {}),
   });
 
+  const sessionTotal = (db.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number }).n;
+  const guard = guardSweep({
+    sweep: "reprocess",
+    actor: "cli:reprocess",
+    targetTotal: sessionTotal,
+    touching: opts.limit !== undefined ? Math.min(opts.limit, allCandidates.length) : allCandidates.length,
+    dryRun: Boolean(opts.dryRun),
+    override: opts.overrideGuard,
+  });
+
   if (opts.dryRun) {
     const groupMap = new Map<string, CohortGroup>();
     for (const row of allCandidates) {
@@ -230,8 +244,15 @@ export async function reprocess(
       meanConfidenceOld: null,
       meanConfidenceNew: null,
       cohort,
+      guard,
       ...(stateNote !== undefined ? { stateNote } : {}),
     };
+  }
+
+  if (guard.mode === "refused") {
+    const msg = `reprocess: refused by sweep guard: ${guard.reason}`;
+    log(msg);
+    throw new Error(msg);
   }
 
   if (deps.embeddingConfig && deps.embedderDescriptor) {
