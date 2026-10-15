@@ -40,6 +40,8 @@ import { RecallService } from "../core/recall/recall-service.js";
 import { ProviderRegistry } from "../core/providers/provider-registry.js";
 import type { SourceRegistryPort } from "../core/sources/source-registry.js";
 import { SqliteStorage } from "../core/storage/sqlite-storage.js";
+import { SqliteSessionStore } from "../core/storage/sqlite-session-store.js";
+import { FactJudge, judgeModeFromEnv } from "../core/facts/write-judge.js";
 import { PgStorage } from "../core/storage/pg-storage.js";
 import { applyPendingRestore, stageRestore } from "../core/storage/db-restore.js";
 import {
@@ -419,6 +421,9 @@ async function buildStack() {
   // separately for Phase D ingest.
   const embedder = buildEmbedder();
   const classifier = buildClassifier();
+  if (judgeModeFromEnv() !== "off" && store instanceof SqliteSessionStore) {
+    store.setFactJudge(new FactJudge({ store: facts, llm: classifier, embedder }));
+  }
   const wsStore = storage.workstreams;
   const recall = new RecallService({
     store,

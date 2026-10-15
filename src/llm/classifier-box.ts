@@ -81,6 +81,11 @@ export class ClassifierBox implements LLMClient {
     return this.inner.rewriteForRecall(query);
   }
 
+  complete(system: string, user: string, opts?: { signal?: AbortSignal; maxTokens?: number }): Promise<string> {
+    if (!this.inner.complete) throw new Error(`classifier provider ${this.providerName} has no chat completion`);
+    return this.inner.complete(system, user, opts);
+  }
+
   nameWorkstream(content: string, candidates: ReadonlyArray<import("@ports/llm-client.js").WorkstreamCandidateHint>): Promise<string | null> {
     return this.inner.nameWorkstream(content, candidates);
   }

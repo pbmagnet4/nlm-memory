@@ -46,6 +46,7 @@ import type { SqliteFactStore } from "./sqlite-fact-store.js";
 import { tokenize } from "@core/recall/tokenize.js";
 import { chunkSessionText } from "@core/embedding/chunk-body.js";
 import { batchWinners } from "./fact-batch.js";
+import type { FactJudge } from "@core/facts/write-judge.js";
 import { tenantClause } from "@core/tenancy/tenant-clause.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import { recordEmbedFailure } from "@core/health/embed-failure-state.js";
@@ -232,6 +233,7 @@ export class SqliteSessionStore implements SessionStore {
   // 1) and must never bleed across tenants once M3 adds real multi-tenant
   // traffic to one daemon instance.
   private overlayCache = new Map<string, { overlay: ActionOverlay; at: number }>();
+  private factJudge: FactJudge | null = null;
 
   /**
    * @internal. Construct via SqliteStorage.create(...) instead. Direct
@@ -564,6 +566,7 @@ export class SqliteSessionStore implements SessionStore {
         await this.embedFacts(tenantId, factSink.factStore, factSink.facts, embedder);
       }
     }
+    if (factSink !== null) await this.judgeNewFacts(tenantId, factSink.facts);
   }
 
   private deleteSessionChunks(sessionId: string): void {
@@ -666,6 +669,7 @@ export class SqliteSessionStore implements SessionStore {
     if (embedder) {
       await this.embedFacts(tenantId, factStore, facts, embedder);
     }
+    await this.judgeNewFacts(tenantId, facts);
   }
 
   /**
@@ -675,6 +679,21 @@ export class SqliteSessionStore implements SessionStore {
    * whose embed fails, or is shed because recall holds the in-flight cap, is
    * recorded in fact_embed_pending for the daemon sweep rather than dropped.
    */
+  /** Attach the write-time fact judge (T734). Daemon wiring only; the judge itself is gated by NLM_FACT_JUDGE. */
+  setFactJudge(judge: FactJudge | null): void {
+    this.factJudge = judge;
+  }
+
+  /** Runs after the facts are committed and embedded; a judge failure never touches the ingest. */
+  private async judgeNewFacts(tenantId: string, facts: ReadonlyArray<Fact>): Promise<void> {
+    if (!this.factJudge || this.factJudge.mode === "off") return;
+    try {
+      await this.factJudge.run(tenantId, batchWinners(facts));
+    } catch (err) {
+      process.stderr.write(`[nlm] fact judge failed: ${String(err)}\n`);
+    }
+  }
+
   private async embedFacts(
     tenantId: string,
     factStore: SqliteFactStore,

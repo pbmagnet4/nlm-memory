@@ -237,6 +237,37 @@ export class OllamaClient implements LLMClient {
     }
   }
 
+  async complete(system: string, user: string, opts: { signal?: AbortSignal } = {}): Promise<string> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.classifyTimeoutMs);
+    opts.signal?.addEventListener("abort", () => controller.abort(), { once: true });
+    try {
+      const res = await this.fetchImpl(`${this.baseUrl}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: this.classifyModel,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: user },
+          ],
+          stream: false,
+          options: { temperature: 0 },
+          ...(classifierNeedsThinkDisabled(this.classifyModel) ? { think: false } : {}),
+        }),
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new LLMUnreachableError("ollama-complete", `status ${res.status}: ${await res.text().catch(() => "")}`);
+      const data = (await res.json()) as ChatResponse;
+      return data.message?.content ?? "";
+    } catch (e) {
+      if (e instanceof LLMUnreachableError) throw e;
+      throw new LLMUnreachableError("ollama-complete", e);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async nameWorkstream(
     content: string,
     candidates: ReadonlyArray<WorkstreamCandidateHint>,
