@@ -1,5 +1,15 @@
 # nlm-memory CHANGELOG
 
+## 2026-10-15 - Polite classifier client: in-flight cap, re-touch dedupe, per-chunk budget, outage backoff (T720)
+
+**Changes:** Every daemon classifier request goes through one limiter (`NLM_CLASSIFY_MAX_INFLIGHT`, default 1), chunks of an oversized session included; chunks now dispatch through it and each gets its own timeout once it holds a slot, with surviving chunks kept as a partial result. The scheduler hashes the normalized session text per source and skips a resumed source whose text is unchanged. Infrastructure errors (unreachable, reset, DNS, 5xx, timeout) defer the session with 30 s doubling to 10 min backoff, stop the tick, and never count toward the 3-strike ceiling; non-JSON and schema failures still do. `TickReport` gains `deferred`.
+
+**Results:** Tests cover cap 1 and 2 across 3 chunks, a 5-chunk slow client exceeding one chunk's budget, touch-only and noise-append skips, append reclassification, and a 500-then-success recovery.
+
+**State:** The dedupe hash and backoff clocks live in daemon memory, so a restart costs at most one extra classification per grown source. Clearing `adapter_state` rows still forces re-ingest.
+
+**Next:** none.
+
 Session-level log per session protocol. Cap: 10 entries — archive older to `CHANGELOG-YYYY.md` when exceeded.
 
 ## 2026-10-13 - Daemon log faults: daemon stalls, false integrity alert, git noise, codex fork ids, orphaned classify requests (T674)
@@ -85,13 +95,3 @@ Session-level log per session protocol. Cap: 10 entries — archive older to `CH
 **State:** 0.21.10 installed. 30 hermes-agent sources registered with `excludeSources` covering cron, agent-protocol, tool, one-shot and benchmark runs. reconcile-facts dry run against a snapshot found 6 stale facts; not applied. Suite 2648 passing, only the Postgres-only cycle-guard failures.
 
 **Next:** Confirm hermes-agent rows land once the Muse backlog drains (adapters scan in source order). Review and apply the reconcile-facts findings. cursor still has the bare-id discover() shape.
-
-## 2026-09-29 - Cross-agent capture: Muse and OpenCode adapters made shippable, 0.21.7 staged
-
-**Changes:** Merged the Muse adapter (feat/muse-adapter, previously unmerged) and fixed a boot crash it would have caused: the `sources.kind` CHECK didn't allow `muse`, so `seedDefaults()` fails on any machine with a Muse sessions dir. Migration 038 (SQLite rebuild) + pg 036 (ALTER). OpenCode's adapter looked for `opencode.db` under Application Support on macOS; OpenCode uses the XDG data path there too, so it now prefers XDG and falls back. SessionStart recall now builds its query from the directory name plus branch and the last 3 commit subjects: a one-word directory name alone is rejected by `extractRecallQuery`, which skipped 117 of 268 SessionStart recalls in the week of 09-22. Version bumped to 0.21.7 and bundles regenerated. Sandbox boot against a copy of the live store then turned up two more: `nlm connect opencode` claimed the source was "already registered (see migration 010)" but 010 never inserted a row, so OpenCode was never scanned; it now registers the source, `nlm connect muse` does the same, and `/api/sources` accepts every adapter kind instead of six. And 1,710 of Muse's 1,868 session files are subagent runs, which were landing as standalone sessions; they now use the `<parent>/agent-<id>` shape and get linked to their parent. After installing 0.21.7 live, OpenCode still ingested nothing: `scanOnce` statSync'd every discovered source, and OpenCode's discover() returns session ids, so each one was silently skipped. The adapter had never ingested a row. Adapters can now supply `stat()` for non-file sources; OpenCode keys sources `<db>::<id>` end to end. Shipped as 0.21.8, installed and live 2026-09-29, OpenCode rows landing. hermes-agent and cursor have the same shape and still need `stat()`.
-
-**Decisions:** Released from main rather than release/0.21.6: main already carries the 0.21.6 line (replayed 08-25), and `src/` differs from it by additions only, so merging the release branch in would only re-conflict on generated bundles and the version bump. Hermes adapter left alone: the Pro's real transcripts are per-profile `state.db` files the hermes-agent adapter already reads, so the gap is transport, not parsing.
-
-**State:** Audit corrections: the Claude Code "stall" was not a stall (low Claude Code use 09-28, work moved to Muse); citation-log's last line is 09-29, not 09-10, and the cite attribution fix already shipped in 0.21.6. The daemon logs nowhere since the 09-27 reinstall because the nxtos-written plist sets no StandardOutPath. The Pro's own NLM service (crash-looping since 09-09) was stopped and disabled. Suite: typecheck clean, non-pg suite passing apart from environment-only failures (no built UI in a fresh worktree, no Postgres).
-
-**Next:** Install 0.21.7, back up the store, restart, register Muse and OpenCode sources, ingest a 5-session sample, then backfill. Pro Hermes transport, daemon log path (nxtos), fact reconciliation job, Gemini adapter.

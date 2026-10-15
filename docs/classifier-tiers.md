@@ -196,6 +196,24 @@ query-curation approach in `docs/methodology-recall-baseline.md` or run
 | Prior citations | No -- citation log references session IDs, which do not change |
 | Backend | SQLite only -- Postgres reprocess is not yet implemented |
 
+## Load on the classifier server
+
+The daemon is a polite client of a shared classifier server. `NLM_CLASSIFY_MAX_INFLIGHT`
+(default `1`) caps concurrent classifier requests across the whole daemon,
+including the chunks of one oversized session. Raise it only if the server has
+spare capacity. The per-request timeout applies per chunk once it holds a slot,
+so a long session takes proportionally longer instead of hitting one total
+deadline, and chunks that succeed are kept if others fail.
+
+A session whose source file was touched or grew without changing its normalized
+text is not classified again. Infrastructure failures (connection refused or
+reset, DNS, HTTP 5xx, timeouts) do not count toward the three-strike failure
+ceiling: the session is deferred and retried with exponential backoff (30 s,
+doubling, capped at 10 minutes), the tick stops classifying while the server is
+down, and deferred sessions classify on their own once it recovers. Non-JSON and
+schema failures still count as strikes. The dedupe hash and backoff state are
+held in memory.
+
 ## Limitations
 
 **NULL provenance on pre-tracking corpora.** Sessions ingested before Phase 2

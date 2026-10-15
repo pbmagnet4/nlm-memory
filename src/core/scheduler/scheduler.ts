@@ -17,6 +17,7 @@
  * are skipped rather than persisted as low-quality noise.
  */
 
+import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -42,6 +43,7 @@ import type { Fact, Signal } from "@shared/types.js";
 import { MAX_CLASSIFY_FAILURES, recordClassified, recordClassifiedPg, recordFailed, recordFailedPg, recordSkippedLowConfidence, recordSkippedLowConfidencePg, scanOnce, scanOncePg } from "./scan-once.js";
 import { runCheapChecksOnSqlite } from "@core/integrity/check-invariants.js";
 import { classifyAdaptive } from "@core/classifier/hierarchical-classify.js";
+import { isTransientLLMError } from "@core/classifier/transient-error.js";
 import { appendShadowLine, gatedClassification, type GateVerdict, type IngestGateMode } from "@core/classifier/ingest-gate.js";
 import { TimeoutError } from "@core/util/with-timeout.js";
 import { bindSessionToWorkstream } from "@core/workstream/bind.js";
@@ -66,7 +68,13 @@ function loadAliasToLabel(): Map<string, string> {
 }
 
 const DEFAULT_INTERVAL_MS = 30 * 60 * 1000; // 30 min, matches Python default
-const DEFAULT_CLASSIFY_TIMEOUT_MS = 120_000;
+const DEFAULT_CLASSIFY_TIMEOUT_MS = 120_000; // per classifier request (per chunk for oversized sessions)
+const DEFER_BASE_MS = 30_000;
+const DEFER_CAP_MS = 10 * 60 * 1000;
+
+function contentHash(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
 const DEFAULT_CONFIDENCE_FLOOR = 0.3;
 const DEFAULT_IDLE_MINUTES = 15;
 const SUBAGENT_RUNTIMES: ReadonlySet<string> = new Set(["claude-code", "muse"]);
@@ -168,6 +176,8 @@ export interface TickReport {
   readonly classifyFailures: number;
   readonly storageFailures: number;
   readonly chunksSeen: number;
+  /** Sessions put back for a later tick (retouched without new content, backing off, or classifier unreachable). */
+  readonly deferred: number;
 }
 
 export class ScanScheduler {
@@ -185,6 +195,10 @@ export class ScanScheduler {
   };
   private readonly aliasToLabel: ReadonlyMap<string, string>;
   private stopped = true;
+  /** Hash of the normalized text last classified per source; a touch that adds no content is not re-classified. */
+  private readonly classifiedHash = new Map<string, string>();
+  /** Sources whose last attempt hit an infrastructure error; retried after `until` with doubling delay. */
+  private readonly deferrals = new Map<string, { until: number; delayMs: number }>();
   private timer: NodeJS.Timeout | null = null;
 
   constructor(opts: SchedulerOptions) {
@@ -255,6 +269,7 @@ export class ScanScheduler {
     let classifyFailures = 0;
     let storageFailures = 0;
     let chunksSeen = 0;
+    let deferred = 0;
 
     const now = Date.now();
     // Backend split: exactly one of (_pgPool, sqliteDb) is non-null. PG branches
@@ -274,7 +289,9 @@ export class ScanScheduler {
       }
     }
 
+    let classifierDown = false;
     for (const adapter of this.opts.adapters) {
+      if (classifierDown) break;
       let results;
       try {
         results = _pgPool
@@ -287,8 +304,25 @@ export class ScanScheduler {
         continue;
       }
 
-      for (const { chunk, supersedes, fileSize } of results) {
+      for (const { chunk, supersedes, fileSize, resumed } of results) {
         chunksSeen += 1;
+        const stateKey = `${adapter.name}\0${chunk.sourcePath}`;
+        const backoff = this.deferrals.get(stateKey);
+        if (backoff && now < backoff.until) {
+          deferred += 1;
+          continue;
+        }
+        const hash = contentHash(chunk.text);
+        if (resumed && this.classifiedHash.get(stateKey) === hash) {
+          // Source changed on disk but yields the same session text: remember the new size, skip the classifier.
+          if (_pgPool) {
+            await recordClassifiedPg(_pgPool, adapter.name, chunk.sourcePath, chunk.id, fileSize);
+          } else {
+            recordClassified(sqliteDb!, adapter.name, chunk.sourcePath, chunk.id, fileSize);
+          }
+          deferred += 1;
+          continue;
+        }
         const chunkScope: string | null = scopeStampEnabled()
           ? (deriveScope(chunk.projectDir ?? "", loadAliasMap()) ?? null)
           : null;
@@ -306,6 +340,17 @@ export class ScanScheduler {
               perCallTimeoutMs: this.opts.classifyTimeoutMs,
             });
           } catch (e) {
+            if (isTransientLLMError(e)) {
+              // Infrastructure error, not the transcript's fault: no strike, retry with exponential backoff.
+              const delayMs = Math.min((backoff?.delayMs ?? DEFER_BASE_MS / 2) * 2, DEFER_CAP_MS);
+              this.deferrals.set(stateKey, { until: Date.now() + delayMs, delayMs });
+              deferred += 1;
+              this.opts.logger(
+                `[scheduler] classifier unavailable for ${chunk.id} (${e instanceof Error ? e.message : String(e)}): deferred, retry in ${Math.round(delayMs / 1000)}s`,
+              );
+              classifierDown = true;
+              break;
+            }
             classifyFailures += 1;
             const reason = e instanceof TimeoutError ? "timed out" : `error: ${e instanceof Error ? e.message : String(e)}`;
             let count: number;
@@ -406,6 +451,8 @@ export class ScanScheduler {
             recordClassified(sqliteDb!, adapter.name, chunk.sourcePath, chunk.id, fileSize);
           }
           inserted += 1;
+          this.deferrals.delete(stateKey);
+          if (!gated) this.classifiedHash.set(stateKey, hash);
           if (!gated && bindWorkstreamsEnabled() && this.opts.workstreams) {
             await bindSessionToWorkstream(
               {
@@ -482,7 +529,7 @@ export class ScanScheduler {
       }
     }
 
-    return { inserted, gatedSkips, skippedLowConfidence, classifyFailures, storageFailures, chunksSeen };
+    return { inserted, gatedSkips, skippedLowConfidence, classifyFailures, storageFailures, chunksSeen, deferred };
   }
 
   private async drainSignals(chunk: { id: string; signals?: ReadonlyArray<unknown> }, scope: string | null): Promise<void> {

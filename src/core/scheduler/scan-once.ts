@@ -34,6 +34,8 @@ export interface ScanResult {
   readonly chunk: SessionChunk;
   readonly supersedes: string | null;
   readonly fileSize: number;
+  /** True when the source was classified before and has changed size since (not a first sighting). */
+  readonly resumed: boolean;
 }
 
 export const MAX_CLASSIFY_FAILURES = 3;
@@ -98,7 +100,7 @@ export async function scanOnce(
     if (!chunk) continue;
     const supersedes =
       prior?.session_id && prior.session_id !== chunk.id ? prior.session_id : null;
-    out.push({ chunk, supersedes, fileSize: st.size });
+    out.push({ chunk, supersedes, fileSize: st.size, resumed: prior !== undefined });
   }
   return out;
 }
@@ -199,7 +201,7 @@ export async function scanOncePg(
 
     const supersedes =
       state?.sessionId && state.sessionId !== chunk.id ? state.sessionId : null;
-    results.push({ chunk, supersedes, fileSize: st.size });
+    results.push({ chunk, supersedes, fileSize: st.size, resumed: state !== undefined });
   }
 
   return results;
