@@ -106,7 +106,7 @@ function claudeCodeWiring(p: InstallProbe): HealthCheck {
   return {
     id: "claude-code",
     status: "warn",
-    detail: `no nlm MCP block in ${p.claudeCode.configPath}`,
+    detail: `no nlm MCP block in ${p.claudeCode.configPath} or the user-scope ~/.claude.json`,
     fix: "nlm connect claude-code",
   };
 }

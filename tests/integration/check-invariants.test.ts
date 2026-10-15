@@ -394,6 +394,31 @@ describe("check-invariants (SQLite)", () => {
       expect(mv!.count).toBe(1);
     });
 
+    it.each(["decided-on", "commit", "branch", "description"])(
+      "two active facts on subject|%s are exempt from I5a",
+      (predicate) => {
+        store.insertSessionForTest(makeSession({ id: `s_mvx_${predicate}` }));
+        const db = store.rawDb();
+        const ins = db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+          VALUES (?, 'attribute', 'proj', ?, ?, ?, 1.0)`);
+        ins.run(`f_${predicate}_1`, predicate, "alpha", `s_mvx_${predicate}`);
+        ins.run(`f_${predicate}_2`, predicate, "beta", `s_mvx_${predicate}`);
+        const violations = runChecksOnSqlite(db);
+        expect(violations.find((v) => v.id === "I5a")).toBeUndefined();
+        expect(violations.find((v) => v.id === "I5a-mv")?.count).toBe(1);
+      },
+    );
+
+    it("two active facts on single-valued predicates (status, host) still trigger I5a", () => {
+      store.insertSessionForTest(makeSession({ id: "s_sv" }));
+      const db = store.rawDb();
+      const ins = db.prepare(`INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence)
+        VALUES (?, 'attribute', 'svc', ?, ?, 's_sv', 1.0)`);
+      ins.run("f_sv1", "status", "deprecated");
+      ins.run("f_sv2", "status", "active");
+      expect(runChecksOnSqlite(db).find((v) => v.id === "I5a")).toBeDefined();
+    });
+
     it("two active facts on a non-whitelisted predicate still trigger I5a", () => {
       store.insertSessionForTest(makeSession({ id: "s_mv2" }));
       const db = store.rawDb();

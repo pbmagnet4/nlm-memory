@@ -68,7 +68,7 @@ import {
   repairCodex,
   pluginScriptsDir,
 } from "../install/codex.js";
-import { connectClaudeCode, disconnectClaudeCode, installClaudeCodeHooks, mcpConfigPath, nvmPinnedHookWarning } from "../install/claude-code.js";
+import { claudeUserConfigPath, connectClaudeCode, disconnectClaudeCode, hasNlmMcpServer, installClaudeCodeHooks, mcpConfigPath, nvmPinnedHookWarning } from "../install/claude-code.js";
 import { evaluateInstallHealth, evaluateModelHealth, evaluateRecallSmoke } from "../install/health.js";
 import type { HealthCheck, InstallProbe } from "../install/health.js";
 import { codexConfigPath } from "../install/codex.js";
@@ -1288,7 +1288,7 @@ program
   .option("--json", "emit JSON instead of human-readable output")
   .option("--verbose", "show per-conversation breakdown")
   .action(async (opts) => {
-    const { computePrecision, computePerSourcePrecision } = await import(
+    const { computePrecision, computePerSourcePrecision, formatPrecisionReport } = await import(
       "../core/recall/precision.js"
     );
     const { readHookRecallLog } = await import("../core/recall/hook-recall-log.js");
@@ -1314,27 +1314,14 @@ program
       return;
     }
 
-    console.log(`Recall precision@k — last ${opts.days} day(s)`);
-    if (result.precisionAtK === null) {
-      console.log("  Blended: no hook-lane conversations to score (hook-log.jsonl empty for this window).");
-      if (citationEntries.length === 0) {
-        console.log("  No citations recorded — run: nlm help close-loop");
-      }
-    } else {
-      const pct = (result.precisionAtK * 100).toFixed(1);
-      console.log(`  Blended: ${pct}%  (${result.conversationCount} conversations scored)`);
-    }
-
-    if (perSource.length > 0) {
-      console.log("\n  Per source:");
-      for (const row of perSource) {
-        const p = (row.precision * 100).toFixed(1).padStart(5);
-        const convs = `${row.conversationCount} conv${row.conversationCount === 1 ? "" : "s"}`;
-        console.log(`    ${row.source.padEnd(20)} ${p}%  (${convs})`);
-      }
-    }
-    if (unmeasurable.length > 0) {
-      console.log(`  Unmeasurable (no conversation id captured): ${unmeasurable.join(", ")}`);
+    for (const line of formatPrecisionReport(
+      opts.days,
+      result,
+      perSource,
+      unmeasurable,
+      citationEntries.length === 0,
+    )) {
+      console.log(line);
     }
 
     if (opts.verbose && result.perConversation.length > 0) {
@@ -2875,15 +2862,7 @@ async function gatherInstallProbe(): Promise<InstallProbe> {
   }
 
   const mcpPath = mcpConfigPath();
-  let claudeMcp = false;
-  try {
-    if (existsSync(mcpPath)) {
-      const cfg = JSON.parse(readFileSync(mcpPath, "utf8")) as { mcpServers?: Record<string, unknown> };
-      claudeMcp = Boolean(cfg.mcpServers && "nlm-memory" in cfg.mcpServers);
-    }
-  } catch {
-    // malformed config → treat as unconfigured (connect will rewrite it)
-  }
+  const claudeMcp = hasNlmMcpServer([mcpPath, claudeUserConfigPath()]);
 
   const codexPath = codexConfigPath();
   let codexPresent = false;
