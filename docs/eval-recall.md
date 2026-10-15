@@ -52,3 +52,10 @@ npm run eval:fact-recall                    # fact R@k/precision over a sandbox 
 of the canonical store, so the live daemon DB is never touched. Capture the JSON
 output per run and diff R@5 / MRR week over week; a sustained drop is the signal
 to investigate, not a single noisy run.
+
+## 4. Shared eval harness (snapshot, goldens, baselines)
+
+For experiments that must be compared on the same frozen data, use the shared
+harness: a dated read-only snapshot of the live store, golden query sets derived
+from citation logs, and one command that emits R@1/R@5/MRR plus store and hook
+metrics as JSON. See [eval-harness.md](eval-harness.md).

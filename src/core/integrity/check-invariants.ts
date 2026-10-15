@@ -273,6 +273,18 @@ function buildViolation(id: string, description: string, samples: string[], coun
   return { id, description, count, sampleIds: samples.slice(0, 5) };
 }
 
+/**
+ * Active-fact conflict counts for the eval harness: the same queries doctor
+ * runs for I5a (conflicting groups, exempt predicates excluded) and I5a-mv
+ * (exempt groups, informational), without the rest of the invariant sweep.
+ */
+export function countActiveFactConflicts(db: Database.Database): { conflicts: number; multiValuedGroups: number } {
+  return {
+    conflicts: sqliteCount(db, SQL_I5_DUPLICATE_FACTS),
+    multiValuedGroups: sqliteCount(db, SQL_I5A_MULTI_VALUED),
+  };
+}
+
 export function runChecksOnSqlite(db: Database.Database): ReadonlyArray<Violation> {
   const violations: Violation[] = [];
 
