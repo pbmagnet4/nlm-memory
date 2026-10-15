@@ -30,6 +30,7 @@ Dispositions per program spec §2: **STAMP** = carries `tenant_id NOT NULL`; **D
 | schema_migrations | NEUTRAL | migration bookkeeping |
 | teams | NEUTRAL | the tenancy registry itself (created in Task 2) |
 | team_tokens | NEUTRAL | credential registry, keyed by team_id FK (created in Task 2) |
+| fact_embed_pending | DERIVE | via facts.id (ON DELETE CASCADE); retry bookkeeping for dropped fact vectors |
 | learners | STAMP | learner-evidence corpus (spec 2026-10-06) |
 | enrollments | STAMP | learner-evidence corpus (spec 2026-10-06) |
 | learning_events | STAMP | learner-evidence corpus (spec 2026-10-06) |

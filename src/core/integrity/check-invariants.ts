@@ -19,10 +19,17 @@
  *   I7b chunk-level ghost: every session_embedding_chunks row has a map entry
  *       (I7b-1); every session_chunk_map row references an existing session
  *       (I7b-2)
+ *   I8  missing-vector share of recall-eligible facts is at most 0.5% (SQLite
+ *       only; a dropped embedding leaves a fact keyword-only, T732)
  */
 
 import type Database from "better-sqlite3";
 import type { Pool } from "pg";
+import {
+  MISSING_SHARE_ALARM,
+  computeFactEmbedStats,
+  missingFactEmbeddingSamples,
+} from "@core/facts/embed-missing.js";
 
 export interface Violation {
   readonly id: string;
@@ -376,6 +383,17 @@ export function runChecksOnSqlite(db: Database.Database): ReadonlyArray<Violatio
   if (i7b2Samples.length > 0) {
     const count = sqliteCount(db, SQL_I7B_2_ORPHAN_MAP_SQLITE);
     violations.push(buildViolation("I7b-2", "session_chunk_map references non-existent session", i7b2Samples, count));
+  }
+
+  // I8
+  const i8 = computeFactEmbedStats(db);
+  if (i8.missingShare > MISSING_SHARE_ALARM) {
+    violations.push(buildViolation(
+      "I8",
+      `${i8.missing} of ${i8.active} active facts (${(i8.missingShare * 100).toFixed(2)}%) have no embedding; threshold ${MISSING_SHARE_ALARM * 100}%`,
+      missingFactEmbeddingSamples(db),
+      i8.missing,
+    ));
   }
 
   return violations;

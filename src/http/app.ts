@@ -114,6 +114,7 @@ import { parseRelativeFloor } from "../hook/score-floor.js";
 import { warmupSnapshot } from "@core/health/warmup-state.js";
 import { laneHealthSnapshot } from "@core/health/embedding-lane-state.js";
 import { inflightSnapshot } from "@core/health/embed-inflight.js";
+import { factEmbedSnapshot } from "@core/health/fact-embed-state.js";
 import { corpusSnapshot } from "@core/health/corpus-state.js";
 import { DEFAULT_NLM_PORT } from "../shared/net.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
@@ -720,7 +721,7 @@ function registerHealthRoute(app: Hono<AppEnv>, deps: HttpDeps): void {
     // not to distinguish "never run" from a five-field block of zeros.
     const jobSnap: JobSnapshot | null = deps.jobSupervisor ? deps.jobSupervisor.snapshot() : null;
     const job = jobSnap && jobSnap.state !== "idle" ? jobSnap : null;
-    return c.json({ status: "ok", service: "nlm-memory", version: pkg.version, warmup: warmupSnapshot(), embedding: laneHealthSnapshot(), embedInflight: inflightSnapshot(), corpus, update, job });
+    return c.json({ status: "ok", service: "nlm-memory", version: pkg.version, warmup: warmupSnapshot(), embedding: laneHealthSnapshot(), embedInflight: inflightSnapshot(), factEmbeddings: factEmbedSnapshot(), corpus, update, job });
   });
 
   // Passive update poll for the UI. Same daily-cached check the CLI
