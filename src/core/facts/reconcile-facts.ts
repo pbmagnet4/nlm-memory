@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import type Database from "better-sqlite3";
 import { appendFactSupersedence } from "../storage/supersedence-log.js";
 import { DEFAULT_TEAM_ID } from "../tenancy/default-team.js";
+import { guardSweep, type SweepDecision } from "../util/sweep-guard.js";
 
 export interface Authority {
   readonly aliases: readonly string[];
@@ -153,6 +154,44 @@ export function findContradictions(db: Database.Database, file: AuthoritiesFile)
 export interface ApplyResult {
   readonly retired: readonly Finding[];
   readonly backupPath: string | null;
+  readonly decision: SweepDecision | null;
+}
+
+export interface RetirementGuardOptions {
+  readonly override?: boolean;
+  readonly auditPath?: string;
+}
+
+function guardRetirements(
+  db: Database.Database,
+  batchSize: number,
+  dryRun: boolean,
+  guard: RetirementGuardOptions,
+): SweepDecision {
+  const active = (
+    db.prepare("SELECT COUNT(*) AS n FROM facts WHERE retired_at IS NULL AND superseded_by IS NULL").get() as {
+      n: number;
+    }
+  ).n;
+  return guardSweep({
+    sweep: "reconcile-facts",
+    actor: "cli:reconcile-facts",
+    targetTotal: active,
+    touching: batchSize,
+    dryRun,
+    override: guard.override,
+    auditPath: guard.auditPath,
+  });
+}
+
+/** What the guard would decide for `--apply` with these findings; mutates nothing. */
+export function previewRetirements(
+  db: Database.Database,
+  findings: readonly Finding[],
+  limit: number,
+  guard: RetirementGuardOptions = {},
+): SweepDecision {
+  return guardRetirements(db, Math.min(findings.length, limit), true, guard);
 }
 
 export async function applyRetirements(
@@ -161,9 +200,12 @@ export async function applyRetirements(
   findings: readonly Finding[],
   limit: number,
   logPath?: string,
+  guard: RetirementGuardOptions = {},
 ): Promise<ApplyResult> {
   const batch = findings.slice(0, limit);
-  if (batch.length === 0) return { retired: [], backupPath: null };
+  if (batch.length === 0) return { retired: [], backupPath: null, decision: null };
+  const decision = guardRetirements(db, batch.length, false, guard);
+  if (decision.mode !== "applied") return { retired: [], backupPath: null, decision };
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const backupPath = `${dbFilePath}.bak-reconcile-${stamp}`;
   await db.backup(backupPath);
@@ -180,7 +222,7 @@ export async function applyRetirements(
       logPath,
     );
   }
-  return { retired: batch, backupPath };
+  return { retired: batch, backupPath, decision };
 }
 
 export function formatReport(findings: readonly Finding[], limit: number): string {

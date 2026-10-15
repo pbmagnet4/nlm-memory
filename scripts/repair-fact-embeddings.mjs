@@ -14,6 +14,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
+import { guardSweep, formatDecision } from "../dist/core/util/sweep-guard.js";
 import { SqliteStorage } from "../dist/core/storage/sqlite-storage.js";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -26,6 +27,23 @@ db.pragma("busy_timeout = 10000");
 const ghosts = db
   .prepare("SELECT id FROM facts WHERE superseded_by IS NOT NULL OR retired_at IS NOT NULL")
   .all();
+
+const dryRun = process.argv.includes("--dry-run");
+const overrideGuard = process.argv.includes("--override-guard");
+
+const decision = guardSweep({
+  sweep: "repair-fact-embeddings",
+  actor: "script:repair-fact-embeddings",
+  targetTotal: db.prepare("SELECT COUNT(*) AS n FROM fact_embeddings_rowids").get().n,
+  touching: ghosts.length,
+  dryRun,
+  override: overrideGuard,
+});
+console.log(formatDecision(decision));
+if (decision.mode !== "applied") {
+  await storage.close();
+  process.exit(dryRun ? 0 : 1);
+}
 const del = db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ?");
 let deleted = 0;
 for (const row of ghosts) {

@@ -19,6 +19,7 @@
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { guardSweep, formatDecision } from "../dist/core/util/sweep-guard.js";
 import { SqliteStorage } from "../dist/core/storage/sqlite-storage.js";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -31,6 +32,23 @@ db.pragma("busy_timeout = 10000");
 const orphans = db
   .prepare("SELECT id FROM fact_embeddings_rowids WHERE id NOT IN (SELECT id FROM facts)")
   .all();
+
+const dryRun = process.argv.includes("--dry-run");
+const overrideGuard = process.argv.includes("--override-guard");
+
+const decision = guardSweep({
+  sweep: "repair-orphan-fact-embeddings",
+  actor: "script:repair-orphan-fact-embeddings",
+  targetTotal: db.prepare("SELECT COUNT(*) AS n FROM fact_embeddings_rowids").get().n,
+  touching: orphans.length,
+  dryRun,
+  override: overrideGuard,
+});
+console.log(formatDecision(decision));
+if (decision.mode !== "applied") {
+  await storage.close();
+  process.exit(dryRun ? 0 : 1);
+}
 const del = db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ?");
 let deleted = 0;
 for (const row of orphans) {

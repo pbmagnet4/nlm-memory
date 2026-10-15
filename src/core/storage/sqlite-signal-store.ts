@@ -11,6 +11,7 @@
  * the outer mandatory filter, installScope narrows further inside it.
  */
 
+import { guardSweep } from "../util/sweep-guard.js";
 import type Database from "better-sqlite3";
 import type { SignalAggregationFilter, SignalStore } from "@ports/signal-store.js";
 import type { Signal, SignalKind, SignalOutcome } from "@shared/types.js";
@@ -91,6 +92,16 @@ export class SqliteSignalStore implements SignalStore {
 
   async pruneOlderThan(tenantId: string, olderThanTs: string): Promise<number> {
     const tc = tenantClause(tenantId);
+    const stale = (
+      this.db.prepare(`SELECT COUNT(*) AS n FROM signals WHERE ts < ? AND ${tc.sql}`).get(olderThanTs, tc.param) as { n: number }
+    ).n;
+    if (stale === 0) return 0;
+    const total = (this.db.prepare(`SELECT COUNT(*) AS n FROM signals WHERE ${tc.sql}`).get(tc.param) as { n: number }).n;
+    const decision = guardSweep({ sweep: "signals-retention-prune", actor: "daemon", targetTotal: total, touching: stale });
+    if (decision.mode === "refused") {
+      process.stderr.write(`[sweep-guard] signals-retention-prune refused: ${decision.reason}\n`);
+      return 0;
+    }
     const info = this.db.prepare(`DELETE FROM signals WHERE ts < ? AND ${tc.sql}`).run(olderThanTs, tc.param);
     return info.changes;
   }
