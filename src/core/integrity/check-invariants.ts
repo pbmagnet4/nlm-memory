@@ -293,6 +293,17 @@ export function countActiveFactConflicts(db: Database.Database): { conflicts: nu
   };
 }
 
+/** The (subject, predicate) groups counted by I5a, in full (the doctor query samples six). */
+export function listActiveFactConflictGroups(db: Database.Database): Array<{ subject: string; predicate: string }> {
+  return db
+    .prepare<[], { subject: string; predicate: string }>(
+      `SELECT subject, predicate FROM facts
+       WHERE superseded_by IS NULL AND retired_at IS NULL AND predicate NOT IN (${MV_IN})
+       GROUP BY subject, predicate HAVING COUNT(*) > 1`,
+    )
+    .all();
+}
+
 export function runChecksOnSqlite(db: Database.Database): ReadonlyArray<Violation> {
   const violations: Violation[] = [];
 

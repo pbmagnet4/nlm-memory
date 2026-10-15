@@ -214,6 +214,40 @@ export class DeepSeekClient implements LLMClient {
     }
   }
 
+  async complete(system: string, user: string, opts: { signal?: AbortSignal; maxTokens?: number } = {}): Promise<string> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.classifyTimeoutMs);
+    opts.signal?.addEventListener("abort", () => controller.abort(), { once: true });
+    try {
+      const res = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
+        body: JSON.stringify({
+          model: this.classifyModel,
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: user },
+          ],
+          ...this.responseFormatField(),
+          temperature: 0,
+          max_tokens: opts.maxTokens ?? this.classifyMaxTokens,
+          stream: false,
+        }),
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        throw new LLMUnreachableError("deepseek-complete", `status ${res.status}: ${await res.text().catch(() => "")}`);
+      }
+      const data = (await res.json()) as ChatResponse;
+      return data.choices?.[0]?.message?.content ?? "";
+    } catch (e) {
+      if (e instanceof LLMUnreachableError) throw e;
+      throw new LLMUnreachableError("deepseek-complete", e);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async nameWorkstream(
     content: string,
     candidates: ReadonlyArray<import("@ports/llm-client.js").WorkstreamCandidateHint>,

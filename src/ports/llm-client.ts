@@ -95,4 +95,11 @@ export interface LLMClient {
    * never wants a garbage-rewritten query silently substituted.
    */
   rewriteForRecall(query: string): Promise<RewriteResult>;
+  /**
+   * One-shot chat completion on the classifier lane, returning the raw reply
+   * text. Used by the write-time fact judge. Throws LLMUnreachableError on
+   * transport or HTTP failure. Optional: clients without a chat lane (embedder-only
+   * clients) omit it.
+   */
+  complete?(system: string, user: string, opts?: { signal?: AbortSignal; maxTokens?: number }): Promise<string>;
 }
