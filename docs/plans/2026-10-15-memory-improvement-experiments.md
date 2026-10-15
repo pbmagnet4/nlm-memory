@@ -40,3 +40,17 @@ A result counts when it beats its threshold on the held-out queries and the snap
 ## Not planned
 
 Layered memory pyramids, a hosted multi-tenant hub, proxy-based capture, destructive merge, and adopting the external project. These solve problems we do not have, or remove the history we rely on.
+
+## Results (2026-10-15)
+
+| ID | Outcome | Evidence |
+|---|---|---|
+| E0 | Done | Baselines in the eval harness: session keyword R@5 43.8% dev / 52.9% held-out; fact semantic and hybrid R@1 about 64% (synthetic labels); 44 conflict groups; hook injection mean 35 tokens per call; citation rate MCP 3.0%, hook 0.2%, session-start 0.0% |
+| E1 | Landed, not deployed | Sweep re-embeds facts missing vectors; `/api/health` reports `factEmbeddings`; doctor I8 alarms above 0.5%. Live drop rate at baseline was 0.18% (68 of 38,511), so the 3.8% figure in #435 is stale |
+| E2 | Landed, not deployed | `sweep-guard` on 11 of 24 destructive paths, audit in `sweep-audit.jsonl` |
+| E3 | Killed for `on` mode; `shadow` kept, default off | Replay on 390 facts: conflict groups 44 to 19 (-57%), R@1 unchanged, but false supersession 25% (blind labeler, 9 of 36) to 33% (manual read, 12 of 36) against a 2% target and 5% kill line. Latency p50 5.9 s, p95 22.3 s. No second-model recheck (Laguna did not load). Code in `src/core/facts/write-judge.ts`, details in `docs/fact-judge.md` |
+| E4 | Killed | Hook injection is already about 35 tokens per call; the problem is relevance, not budget |
+| E5 | Killed | Subagent bodies are about 114 MB (6% of the DB) and still cited (34 of 198 citations) |
+| E6 | Open | Eligible because E3 left conflicts. Predicate-level fact classes need no model judgment |
+
+Related: chunk triage (W5, #533) measured NO-GO at 12.4 to 31.5% skippable at 98% recall against a 50% bar.
