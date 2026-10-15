@@ -49,6 +49,8 @@ import { batchWinners } from "./fact-batch.js";
 import { tenantClause } from "@core/tenancy/tenant-clause.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import { recordEmbedFailure } from "@core/health/embed-failure-state.js";
+import { tryAcquire, release } from "@core/health/embed-inflight.js";
+import { composeFactEmbedText } from "@core/facts/embed-backfill.js";
 
 export interface SqliteSessionStoreOptions {
   readonly dbPath: string;
@@ -669,7 +671,9 @@ export class SqliteSessionStore implements SessionStore {
   /**
    * Best-effort per-fact embedding. Writes `${subject} ${predicate} ${value}`
    * embeddings to fact_embeddings via FactStore.upsertEmbedding. Per-fact
-   * failures don't abort the batch, and never affect committed fact rows.
+   * failures don't abort the batch and never affect committed fact rows. A fact
+   * whose embed fails, or is shed because recall holds the in-flight cap, is
+   * recorded in fact_embed_pending for the daemon sweep rather than dropped.
    */
   private async embedFacts(
     tenantId: string,
@@ -678,18 +682,31 @@ export class SqliteSessionStore implements SessionStore {
     embedder: import("@ports/llm-client.js").LLMClient,
   ): Promise<void> {
     for (const fact of batchWinners(facts)) {
-      const factText = `${fact.subject} ${fact.predicate} ${fact.value}`.trim();
+      const factText = composeFactEmbedText(fact.subject, fact.predicate, fact.value);
       if (!factText) continue;
+      if (!tryAcquire()) {
+        this.markPendingBestEffort(factStore, fact.id, "shed: embed in-flight cap reached");
+        continue;
+      }
       try {
         const { vector } = await embedder.embed(factText, "document");
         await factStore.upsertEmbedding(tenantId, fact.id, vector);
       } catch (err) {
-        // Per-fact embedding failure must not abort embedding of subsequent
-        // facts. The fact row stays current; semantic recall just misses it
-        // until a future re-ingest.
         recordEmbedFailure("fact");
+        this.markPendingBestEffort(factStore, fact.id, String(err));
         process.stderr.write(`[nlm] embedding fact failed fact=${fact.id}: ${String(err)}\n`);
+      } finally {
+        release();
       }
+    }
+  }
+
+  /** Bookkeeping must never fail a committed ingest; the sweep also finds drops by absence. */
+  private markPendingBestEffort(factStore: SqliteFactStore, factId: string, error: string): void {
+    try {
+      factStore.markEmbedPending(factId, error);
+    } catch (err) {
+      process.stderr.write(`[nlm] could not record pending fact embedding fact=${factId}: ${String(err)}\n`);
     }
   }
 

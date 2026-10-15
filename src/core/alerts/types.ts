@@ -13,7 +13,8 @@ export type AlertEventType =
   | "nlm.health.embedder_cold"
   | "nlm.job.stalled"
   | "nlm.wiki.projection_failed"
-  | "nlm.wiki.coverage_drift";
+  | "nlm.wiki.coverage_drift"
+  | "nlm.facts.embedding_drop";
 
 /**
  * Generic across both transition-based event types: `current` is the
@@ -78,12 +79,23 @@ export interface WikiAlertEventData {
   readonly message: string;
 }
 
+/** Fact vectors missing above the E1 threshold (T732). `share` is a fraction of active facts. */
+export interface FactEmbedAlertEventData {
+  readonly missing: number;
+  readonly active: number;
+  readonly share: number;
+  readonly threshold: number;
+  readonly pending: number;
+  readonly message: string;
+}
+
 export type AlertEvent =
   | { readonly type: "nlm.drift.version_behind"; readonly data: AlertEventData }
   | { readonly type: "nlm.health.embedder_cold"; readonly data: AlertEventData }
   | { readonly type: "nlm.job.stalled"; readonly data: JobAlertEventData }
   | { readonly type: "nlm.wiki.projection_failed"; readonly data: WikiAlertEventData }
-  | { readonly type: "nlm.wiki.coverage_drift"; readonly data: WikiAlertEventData };
+  | { readonly type: "nlm.wiki.coverage_drift"; readonly data: WikiAlertEventData }
+  | { readonly type: "nlm.facts.embedding_drop"; readonly data: FactEmbedAlertEventData };
 
 /**
  * Per-producer narrowings of `AlertEvent`. Each transition/builder module
