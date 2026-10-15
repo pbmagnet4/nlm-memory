@@ -13,7 +13,7 @@
 
 import type { PoolClient } from "pg";
 import type { Fact } from "@shared/types.js";
-import { batchWinners } from "./fact-batch.js";
+import { collapseWinners } from "./fact-batch.js";
 import { tenantClausePg } from "@core/tenancy/tenant-clause.js";
 
 export async function ingestSessionFactsOnClient(
@@ -37,7 +37,7 @@ export async function ingestSessionFactsOnClient(
     );
   }
 
-  for (const f of batchWinners(facts)) {
+  for (const f of collapseWinners(facts)) {
     const collapseTc = tenantClausePg(tenantId, 4);
     const collapsed = await client.query<{ id: string }>(
       `UPDATE facts SET superseded_by = $1
