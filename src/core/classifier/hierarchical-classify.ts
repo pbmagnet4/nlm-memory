@@ -9,6 +9,7 @@
 import { chunkSessionText } from "@core/embedding/chunk-body.js";
 import type { ClassifyResult, LLMClient } from "@ports/llm-client.js";
 import { withTimeout } from "@core/util/with-timeout.js";
+import { sharedClassifyLimiter, type Limiter } from "./inflight-limiter.js";
 
 /** Bodies at or under this length go single-pass; larger ones are chunked. */
 export const SINGLE_PASS_CHAR_BUDGET = 40_000;
@@ -16,6 +17,18 @@ export const SINGLE_PASS_CHAR_BUDGET = 40_000;
 export interface ClassifyAdaptiveOptions {
   /** When set, each individual chunk classify is bounded by this many ms. */
   readonly perCallTimeoutMs?: number;
+  /** Caps concurrent classifier requests; defaults to the process-wide limiter. */
+  readonly limiter?: Limiter;
+}
+
+/** One classifier request: waits for an in-flight slot, then the per-call budget starts. */
+function classifyBounded(text: string, classifier: LLMClient, opts: ClassifyAdaptiveOptions): Promise<ClassifyResult> {
+  const limiter = opts.limiter ?? sharedClassifyLimiter();
+  return limiter.run(() =>
+    opts.perCallTimeoutMs
+      ? withTimeout((signal) => classifier.classify(text, { signal }), opts.perCallTimeoutMs)
+      : classifier.classify(text),
+  );
 }
 const CHUNK_CHARS = 40_000;
 const CHUNK_OVERLAP = 1_000;
@@ -42,20 +55,14 @@ export async function classifyLarge(
   if (chunks.length === 0) {
     return { label: "", summary: "", entities: [], decisions: [], open: [], confidence: 0, facts: [] };
   }
-  const results: ClassifyResult[] = [];
-  for (const chunk of chunks) {
-    try {
-      results.push(opts.perCallTimeoutMs
-        ? await withTimeout((signal) => classifier.classify(chunk, { signal }), opts.perCallTimeoutMs)
-        : await classifier.classify(chunk));
-    } catch {
-      // Tolerate a chunk that still failed after the client's own retries:
-      // skip it and classify from the survivors. If every chunk fails, the
-      // results.length === 0 guard below throws.
-    }
-  }
+  // Each chunk gets its own budget, so total time scales with chunk count. A
+  // chunk that still failed after the client's own retries is skipped and the
+  // result is built from the survivors; only when none survive do we throw.
+  const settled = await Promise.allSettled(chunks.map((chunk) => classifyBounded(chunk, classifier, opts)));
+  const results = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
   if (results.length === 0) {
-    throw new Error(`classifyLarge: all ${chunks.length} chunks failed classification`);
+    const first = settled.find((r): r is PromiseRejectedResult => r.status === "rejected");
+    throw new Error(`classifyLarge: all ${chunks.length} chunks failed classification`, { cause: first?.reason });
   }
   const firstLabelled = results.find((r) => r.label.trim().length > 0) ?? results[0]!;
   const firstSummarised = results.find((r) => r.summary.trim().length > 0) ?? results[0]!;
@@ -76,9 +83,7 @@ export async function classifyAdaptive(
   opts: ClassifyAdaptiveOptions = {},
 ): Promise<ClassifyResult> {
   if (text.length <= SINGLE_PASS_CHAR_BUDGET) {
-    return opts.perCallTimeoutMs
-      ? withTimeout((signal) => classifier.classify(text, { signal }), opts.perCallTimeoutMs)
-      : classifier.classify(text);
+    return classifyBounded(text, classifier, opts);
   }
   return classifyLarge(text, classifier, opts);
 }
