@@ -44,6 +44,23 @@ export function mcpConfigPath(): string {
   return process.env["NLM_MCP_CONFIG"] ?? join(homedir(), ".mcp.json");
 }
 
+/** User-scope registrations (`claude mcp add --scope user`) live here, not in ~/.mcp.json. */
+export function claudeUserConfigPath(): string {
+  return process.env["NLM_CLAUDE_USER_CONFIG"] ?? join(homedir(), ".claude.json");
+}
+
+/** True when any of the given Claude Code config files registers the `nlm-memory` MCP server. */
+export function hasNlmMcpServer(paths: readonly string[]): boolean {
+  return paths.some((path) => {
+    try {
+      const cfg = JSON.parse(readFileSync(path, "utf8")) as { mcpServers?: Record<string, unknown> };
+      return Boolean(cfg.mcpServers && "nlm-memory" in cfg.mcpServers);
+    } catch {
+      return false; // missing or malformed: treated as unconfigured
+    }
+  });
+}
+
 function readConfig(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {};
   try {

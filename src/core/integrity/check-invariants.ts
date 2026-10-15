@@ -45,6 +45,11 @@ const MULTI_VALUED_PREDICATES: ReadonlySet<string> = new Set([
   "stack",
   "integration",
   "dependency",
+  // Live-corpus evidence (T722): a subject legitimately carries many of each.
+  "decided-on", // independent decisions per topic, never the same decision twice
+  "commit", // distinct SHAs recorded at different points in time
+  "branch", // a repo accumulates one branch per task
+  "description", // complementary facets of one subject, not competing values
 ]);
 
 const MV_IN = [...MULTI_VALUED_PREDICATES].map((p) => `'${p}'`).join(", ");

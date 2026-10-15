@@ -138,3 +138,43 @@ export function computePerSourcePrecision(
 
   return { perSource, unmeasurable };
 }
+
+const SOURCE_EXPECTATIONS: Readonly<Record<string, string>> = {
+  "session-start-hook":
+    "constant query at session start, so it is structurally rarely cited; low is expected",
+  mcp: "agent-issued recall pulls; the lane that carries value, judge precision here",
+};
+
+/** Human-readable precision report. Per-source figures lead; the blended number is labelled informational. */
+export function formatPrecisionReport(
+  days: number,
+  blended: PrecisionResult,
+  perSource: ReadonlyArray<SourcePrecision>,
+  unmeasurable: ReadonlyArray<string>,
+  noCitations: boolean,
+): string[] {
+  const lines = [`Recall precision@k — last ${days} day(s)`];
+  if (perSource.length > 0) {
+    lines.push("  Per source:");
+    for (const row of perSource) {
+      const p = (row.precision * 100).toFixed(1).padStart(5);
+      const convs = `${row.conversationCount} conv${row.conversationCount === 1 ? "" : "s"}`;
+      lines.push(`    ${row.source.padEnd(20)} ${p}%  (${convs})`);
+      const note = SOURCE_EXPECTATIONS[row.source];
+      if (note) lines.push(`      ${note}`);
+    }
+  }
+  if (blended.precisionAtK === null) {
+    lines.push("  Blended (informational): no hook-lane conversations to score (hook-log.jsonl empty for this window).");
+    if (noCitations) lines.push("  No citations recorded — run: nlm help close-loop");
+  } else {
+    const pct = (blended.precisionAtK * 100).toFixed(1);
+    lines.push(
+      `  Blended (informational, mixes lanes with different expectations): ${pct}%  (${blended.conversationCount} conversations scored)`,
+    );
+  }
+  if (unmeasurable.length > 0) {
+    lines.push(`  Unmeasurable (no conversation id captured): ${unmeasurable.join(", ")}`);
+  }
+  return lines;
+}
