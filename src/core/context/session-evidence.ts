@@ -1,6 +1,6 @@
 import type { Session } from "@shared/types.js";
 import { MAX_CHUNK_CHARS, OVERLAP_CHARS } from "@core/embedding/chunk-body.js";
-import { tokenSet } from "@core/recall/tokenize.js";
+import { TOKEN_PATTERN, tokenSet } from "@core/recall/tokenize.js";
 
 export interface Passage {
   readonly offset: number;
@@ -11,16 +11,17 @@ export interface Passage {
 export function matchedPassages(session: Session, query: string, chunkIndex?: number, passageChars = 1_200): Passage[] {
   const body = session.body;
   if (!body) return [];
-  const tokens = [...tokenSet(query)].filter((t) => t.length > 2);
+  const wanted = tokenSet(query);
+  const tokens = [...wanted];
   const positions = new Set<number>();
-  const lower = body.toLowerCase();
-  for (const token of tokens) {
-    let pos = lower.indexOf(token);
-    let count = 0;
-    while (pos >= 0 && count++ < 40) {
-      positions.add(Math.max(0, pos - 250));
-      pos = lower.indexOf(token, pos + token.length);
-    }
+  let semanticRange: Passage | undefined;
+  const counts = new Map<string, number>();
+  for (const match of body.matchAll(TOKEN_PATTERN)) {
+    const token = match[0].toLowerCase();
+    const count = counts.get(token) ?? 0;
+    if (!wanted.has(token) || count >= 40) continue;
+    counts.set(token, count + 1);
+    positions.add(Math.max(0, match.index - 250));
   }
   if (chunkIndex !== undefined) {
     const trimStart = body.length - body.trimStart().length;
@@ -28,7 +29,8 @@ export function matchedPassages(session: Session, query: string, chunkIndex?: nu
     const firstBudget = Math.max(1, MAX_CHUNK_CHARS - (header ? header.length + 1 : 0));
     const start = chunkIndex === 0 ? 0
       : Math.max(0, firstBudget - OVERLAP_CHARS) + (chunkIndex - 1) * (MAX_CHUNK_CHARS - OVERLAP_CHARS);
-    const end = Math.min(body.length, trimStart + start + MAX_CHUNK_CHARS);
+    const end = Math.min(body.length, trimStart + start + (chunkIndex === 0 ? firstBudget : MAX_CHUNK_CHARS));
+    if (trimStart + start < end) semanticRange = { offset: trimStart + start, end, text: body.slice(trimStart + start, end) };
     for (let offset = trimStart + start; offset < end; offset += 950) positions.add(offset);
   }
   const candidates = [...positions].map((offset) => {
@@ -38,6 +40,7 @@ export function matchedPassages(session: Session, query: string, chunkIndex?: nu
     const score = tokens.filter((t) => words.has(t)).length;
     return { offset, end, text, score };
   }).sort((a, b) => b.score - a.score || a.offset - b.offset);
+  if (semanticRange && !candidates.some((c) => c.score > 0)) return [semanticRange];
   const selected: Passage[] = [];
   for (const { score, ...passage } of candidates) {
     if (!score && chunkIndex === undefined) continue;

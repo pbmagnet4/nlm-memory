@@ -419,7 +419,8 @@ export async function recallContextHandler(
     }) : null;
     const facts = factResult?.results ?? [];
     // Explicit, unambiguous structured lookups need no second search or model.
-    const sessions = exact && facts.length === 1 ? null : await deps.recall.search(tenantId, {
+    const values = new Set(facts.map((f) => JSON.stringify([f.subject, f.predicate, f.value])));
+    const sessions = exact && values.size === 1 ? null : await deps.recall.search(tenantId, {
       query: args.query, mode: args.mode ?? "keyword", limit: 4, rewrite: false,
       includeSuperseded: intent === "history",
     });
@@ -433,10 +434,9 @@ export async function recallContextHandler(
       supersededBy: successors.get(s.id) ?? null }));
     const bundle = buildContextBundle(args.query, facts, sessions?.results ?? [], sources, args.maxChars);
     const conversationId = resolveConversationByQuery(args.query) ?? undefined;
-    const returnedIds = [...new Set([...bundle.sessions.map((s) => s.id), ...bundle.facts.map((f) => f.source.id)])];
-    void logQuery(tenantId, { source: "mcp", runtime, query: args.query, entity: null,
-      kind: null, mode: args.mode ?? "keyword", limit: 4, nResults: returnedIds.length,
-      returnedIds,
+    if (sessions) void logQuery(tenantId, { source: "mcp", runtime, query: args.query, entity: null,
+      kind: null, mode: args.mode ?? "keyword", limit: 4, nResults: bundle.sessions.length,
+      returnedIds: bundle.sessions.map((s) => s.id),
       ...(conversationId ? { conversationId } : {}),
     });
     if (factResult) void logFactQuery(tenantId, { source: "mcp", runtime, query: args.query,

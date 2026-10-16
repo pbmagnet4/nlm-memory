@@ -28,22 +28,26 @@ export function buildContextBundle(
   const sessionRecords = hits.flatMap((h) => {
     const session = byId.get(h.id);
     if (!session) return [];
+    const passages = matchedPassages(session, query, h.chunkIndex, Math.min(800, Math.floor(maxChars / 8)));
     return [{ id: h.id, label: h.label, startedAt: h.startedAt, status: h.status,
       supersededBy: h.supersededBy, summary: h.summary,
       decisions: relevantStrings(h.decisions, query, 2), open: relevantStrings(h.open, query, 2),
-      passages: matchedPassages(session, query, h.chunkIndex, Math.min(800, Math.floor(maxChars / 8))),
-      expand: { id: h.id },
+      passages,
+      expand: h.chunkIndex !== undefined && passages.length > 0
+        ? { id: h.id, view: "transcript", offset: passages[0]!.offset } : { id: h.id },
     }];
   });
   const bundle = { query: query.slice(0, 200), queryShortened: query.length > 200, facts: [] as typeof factRecords, sessions: [] as typeof sessionRecords,
     omitted: { facts: factRecords.length, sessions: sessionRecords.length },
     budgetChars: maxChars,
-    expand: [...hits.map((h) => ({ id: h.id })),
+    expand: [...sessionRecords.map((s) => s.expand),
       ...facts.slice(0, 2).map((f) => ({ id: f.sourceSessionId }))].slice(0, 3),
   };
   // Fit whole evidence records, including provenance, rather than chopping a
   // claim into a misleading fragment. Leave room for transport/degradation info.
-  const factBudget = sessionRecords.length > 0 ? Math.floor(maxChars * 0.45) : maxChars - 500;
+  const reserve = sessionRecords.length > 0
+    ? Math.min(maxChars - 1_000, JSON.stringify(sessionRecords[0]).length + 50) : 0;
+  const factBudget = Math.min(sessionRecords.length ? Math.floor(maxChars * 0.45) : maxChars, maxChars - 500 - reserve);
   for (const fact of factRecords) {
     bundle.facts.push(fact);
     bundle.omitted.facts--;

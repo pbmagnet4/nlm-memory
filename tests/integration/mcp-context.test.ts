@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -31,7 +31,7 @@ describe("bounded structured memory context", () => {
       recall: new RecallService({ store: storage.sessions, llm }),
       factRecall: new FactRecallService({ factStore: storage.facts, llm }) };
   });
-  afterEach(async () => { await storage.close(); rmSync(dir, { recursive: true, force: true }); });
+  afterEach(async () => { vi.unstubAllEnvs(); await storage.close(); rmSync(dir, { recursive: true, force: true }); });
 
   it("retrieves an old fact beyond the newest 500 without an embedder call", async () => {
     await storage.facts.insertMany(tenant, [makeFact({ id: "gold", sourceSessionId: "source",
@@ -40,11 +40,21 @@ describe("bounded structured memory context", () => {
         subject: `noise-${i}`, value: "unrelated", createdAt: "2026-10-16T00:00:00Z" }))]);
     const result = await deps.factRecall!.search(tenant, { query: "SQLite", mode: "keyword" });
     expect(result.results[0]?.id).toBe("gold");
+    await storage.facts.insert(tenant, makeFact({ id: "gold_copy", sourceSessionId: "source",
+      subject: "store", predicate: "framework", value: "SQLite" }));
+    const sessionSearch = vi.spyOn(deps.recall, "search");
+    vi.stubEnv("NLM_QUERY_LOG", join(dir, "session-queries.jsonl"));
+    vi.stubEnv("NLM_FACT_QUERY_LOG", join(dir, "fact-queries.jsonl"));
     const exact = await recallContextHandler(deps, tenant, { query: "which framework", subject: "store", predicate: "framework" });
     const payload = JSON.parse(exact.content[0]!.text);
     expect(exact.isError).toBeUndefined();
     expect(payload.facts[0].value).toBe("SQLite");
     expect(payload.sessions).toEqual([]);
+    expect(sessionSearch).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(existsSync(join(dir, "fact-queries.jsonl"))).toBe(true));
+    expect(JSON.parse(readFileSync(join(dir, "fact-queries.jsonl"), "utf8")).returned_ids).toEqual(["gold_copy"]);
+    expect(existsSync(join(dir, "session-queries.jsonl"))).toBe(false);
+    vi.unstubAllEnvs();
   });
 
   it("returns mid-transcript rationale as exact source evidence within budget", async () => {
@@ -58,6 +68,20 @@ describe("bounded structured memory context", () => {
     const passages = payload.sessions[0].passages;
     expect(passages.some((p: { text: string }) => p.text.includes(rationale))).toBe(true);
     for (const p of passages) expect(p.text).toBe(body.slice(p.offset, p.end));
+  });
+
+  it("preserves semantic-only evidence when the question uses different words", async () => {
+    const vector = new Float32Array(768); vector[0] = 1;
+    storage.sessions.insertChunkEmbeddingForTest("source", 10, vector);
+    const llm = new FixedEmbedder(vector);
+    const recall = new RecallService({ store: storage.sessions, llm });
+    const hits = await recall.search(tenant, { query: "database durability", mode: "semantic" });
+    expect(hits.results[0]?.chunkIndex).toBe(10);
+    const response = await recallContextHandler({ ...deps, recall }, tenant, { query: "database durability", mode: "semantic" });
+    expect(response.isError).toBeUndefined();
+    const result = JSON.parse(response.content[0]!.text);
+    expect(result.sessions[0].passages.some((p: { text: string }) => p.text.includes(rationale))).toBe(true);
+    expect(response.content[0]!.text.length).toBeLessThanOrEqual(8_000);
   });
 
   it("keeps conflicting active values visible and does not run generative rewriting", async () => {
@@ -107,6 +131,13 @@ describe("bounded structured memory context", () => {
     expect(recovered).toBe(original);
     storage.rawDb().prepare("UPDATE sessions SET body = ? WHERE id = ?").run(original + "changed", "unicode");
     expect((await getSessionHandler(deps, tenant, { id: "unicode", view: "transcript", version })).isError).toBe(true);
+  });
+
+  it("retrieves short identifiers without spending the match cap on substrings", async () => {
+    const text = "build instructions\n".repeat(100) + "The UI uses keyboard navigation.";
+    storage.sessions.insertSessionForTest(makeSession({ id: "short-id", body: text }));
+    const response = await getSessionHandler(deps, tenant, { id: "short-id", query: "UI" });
+    expect(JSON.parse(response.content[0]!.text).passages[0].text).toContain("The UI uses keyboard navigation.");
   });
 
   it("keeps a tight context budget useful and rejects unbounded requests", async () => {

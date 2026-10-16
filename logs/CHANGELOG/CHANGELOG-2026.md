@@ -68,3 +68,12 @@ _Older entries archived in CHANGELOG-2026.md_
 
 **Next:** Merge + release so the command is re-runnable from the installed CLI rather than only from this worktree — the backlog is drained but the bleed continues (656 on 08-12 -> 683 on 08-14, ~13/day) until a scheduled run exists. Then decide whether the sweep should call it nightly. Root cause is still unfixed and deliberately so: `embedFacts` swallowing per-fact failures is correct behavior for ingest (one bad embed must not abort a batch); this makes the consequence repairable instead of permanent.
 
+## 2026-09-29 (session 2) - Remote Hermes capture, reconcile-facts, cross-runtime citations; 0.21.9-0.21.10 live
+
+**Changes:** hermes-agent had OpenCode's defect (discover() returned bare ids, scanOnce's stat skipped every one), so it had never ingested. It now keys `<db>::<id>` and supplies `stat()` (last message time as mtime, message count as the change marker), and skips machine-driven sessions via `parse_config.excludeSources` (default `cron`). New `nlm reconcile-facts --authorities <file>`: dry run by default, retires (never replaces) live facts that contradict an operator authorities file or name a deleted file; `--apply` backs up first and logs to the supersedence log. Host comparison uses the URL parser only and never flags a value it can't parse. The conversation resolver behind `cite_session` and recall-pull attribution scanned only Claude Code transcripts; it now covers Codex, pi and Muse, which resolve to `<runtime>:<id>`.
+
+**Decisions:** Remote Hermes reaches the store as per-profile SQLite snapshots (online backup API, read-only on the source) synced to the local machine every 15 minutes, one hermes-agent source per profile, rather than a second capture daemon. reconcile-facts retires rather than supersedes: the structured file is the current value, the fact store is history. First real authorities run is ports only; host/url prose is too ambiguous to judge deterministically.
+
+**State:** 0.21.10 installed. 30 hermes-agent sources registered with `excludeSources` covering cron, agent-protocol, tool, one-shot and benchmark runs. reconcile-facts dry run against a snapshot found 6 stale facts; not applied. Suite 2648 passing, only the Postgres-only cycle-guard failures.
+
+**Next:** Confirm hermes-agent rows land once the Muse backlog drains (adapters scan in source order). Review and apply the reconcile-facts findings. cursor still has the bare-id discover() shape.

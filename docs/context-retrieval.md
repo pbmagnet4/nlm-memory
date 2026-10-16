@@ -74,7 +74,9 @@ confidence and tenant predicates apply before the SQL limit.
 
 The backends use their native tokenizers, so punctuation tokenization and lexical
 ranking can differ. Both pass the shared contract for old facts, safe query
-syntax, and structured filtering. No stored facts are rewritten or retired.
+syntax, and structured filtering. No stored facts are rewritten or retired. Both migrations also add a covering
+index for the corroboration join on tenant/subject/predicate/value/source session;
+without it, each candidate count scans every fact in the tenant.
 
 ## Evaluation
 
@@ -87,7 +89,7 @@ npx tsx scripts/eval/context-retrieval.ts <frozen-snapshot> <private-report.json
 ```
 
 This compares the former recency-window candidates against full-corpus lexical
-candidates on separately migrated disposable snapshot clones. Both arms share
+candidates on one migrated disposable snapshot clone. Both arms share
 query embeddings. The runner fails on fact R@1 regression. Its topic goldens are
 synthetic subject/predicate queries, and citation goldens measure use rather than
 independently verified answer correctness. Cached-embedding arm runtimes are not
@@ -97,3 +99,42 @@ Classifier extraction is reused at ingestion. Decision-model reranking or richer
 rationale extraction should be evaluated separately against independently judged
 questions, including total model tokens, follow-up retrieval calls and latency.
 They are not enabled based on smaller output or model availability alone.
+
+The report also compares raw session serialization with compact `get_session`
+responses for the held-out citation queries (one source per query, deduplicated).
+This measures response characters and budget compliance, not model token counts
+or whether the selected passages completely answer each question.
+
+## Measured on the 2026-10-15 frozen corpus
+
+Paired candidate experiment, 2026-10-16; both arms use the same query embeddings
+and migrated clone. No fact R@1 regression in either split or tested mode.
+
+| Held-out synthetic fact-topic queries (122) | Previous candidates | Full-corpus candidates |
+| --- | ---: | ---: |
+| Keyword R@1 | 0% | 36.9% |
+| Keyword R@5 | 0% | 39.3% |
+| Hybrid R@1 | 73.0% | 73.0% |
+| Hybrid R@5 | 100% | 100% |
+
+The keyword improvement removes an age blind spot; its remaining errors mean
+keyword alone is not an adequate default for unstructured fact questions.
+Hybrid remains the fact default. These synthetic labels do not establish answer
+correctness on natural-language questions.
+
+On 26 deduplicated held-out source sessions, raw serialization totalled 3,344,708
+characters and compact session context 120,591 (96.4% fewer characters). Twenty
+raw sessions exceeded 25,000 characters; compact responses had zero errors and
+zero budget violations. Expansion is required for full transcripts. Character
+reduction is not a measured model-token reduction or proof of context sufficiency.
+
+A 12-triple corroboration batch on a disposable corpus clone returned identical
+counts over 10 alternating runs. Median was 93.38 ms using the former tenant-only
+index and 0.044 ms using the covering index; SQLite also selects the new index
+without an index hint. This isolates that SQL lookup, not whole-request latency.
+
+Independent Muse review of the implementation found one low-severity telemetry
+defect: exact fact lookups logged a phantom session search. Accepted and fixed;
+regression coverage verifies the fact event without a session event. Later
+semantic-only, short-identifier and covering-index refinements were verified
+against source excerpts and the shared storage/integration gates.

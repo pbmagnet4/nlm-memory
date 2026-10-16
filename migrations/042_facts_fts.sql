@@ -17,3 +17,5 @@ CREATE TRIGGER facts_fts_update AFTER UPDATE ON facts BEGIN
   VALUES (new.rowid, new.subject, new.predicate, new.value);
 END;
 INSERT INTO facts_fts(facts_fts) VALUES ('rebuild');
+
+CREATE INDEX idx_facts_corroboration ON facts (tenant_id, subject, predicate, value, source_session_id);
