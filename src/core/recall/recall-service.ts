@@ -265,6 +265,15 @@ export class RecallService {
       if (semError) result = { ...result, modeUnavailable: semError };
     }
 
+    const matchedChunks = new Map(semNeighbors.map((n) => [n.sessionId, n.chunkIndex]));
+    result = {
+      ...result,
+      results: result.results.map((hit) => {
+        const chunkIndex = matchedChunks.get(hit.id);
+        return chunkIndex === undefined ? hit : { ...hit, chunkIndex };
+      }),
+    };
+
     // 5. Citation-frequency reranking is intentionally NOT applied. The offline
     //    ablation (scripts/eval/reranker-ablation.ts, docs/reranker-ablation-
     //    findings.md) showed it cannot help: inert at the raw FTS5 scale (the

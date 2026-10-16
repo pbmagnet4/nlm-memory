@@ -141,7 +141,7 @@ type SessionRow = {
 
 type EntityRow = { session_id: string; entity_canonical: string };
 type MarkerRow = { session_id: string; kind: "decision" | "open"; text: string };
-type NeighborRow = { session_id: string; distance: number };
+type NeighborRow = { session_id: string; distance: number; chunk_idx: number };
 type KeywordRow = { session_id: string; score: number };
 
 export interface RecentWrite {
@@ -829,7 +829,7 @@ export class SqliteSessionStore implements SessionStore {
     // caller's tenant is excluded, not merely "not down-ranked".
     const rows = this.db
       .prepare<[Buffer, number], NeighborRow>(`
-        SELECT session_id, distance
+        SELECT session_id, distance, chunk_idx
         FROM session_embedding_chunks
         WHERE embedding MATCH ?
           AND k = ?
@@ -840,7 +840,7 @@ export class SqliteSessionStore implements SessionStore {
     // Max-pool: keep the smallest distance (highest cosine) per session,
     // filtering out superseded, replaced, out-of-workstream, and (via the
     // tenant-filtered id-resolution join) out-of-tenant sessions.
-    const best = new Map<string, number>();
+    const best = new Map<string, { distance: number; chunkIndex: number }>();
     const excludedSessionIds = new Set<string>();
     const wsIds = opts?.workstreamIds;
     if (wsIds !== undefined && wsIds.length === 0) return [];
@@ -874,12 +874,12 @@ export class SqliteSessionStore implements SessionStore {
     for (const r of rows) {
       if (excludedSessionIds.has(r.session_id)) continue;
       const cur = best.get(r.session_id);
-      if (cur === undefined || r.distance < cur) {
-        best.set(r.session_id, r.distance);
+      if (cur === undefined || r.distance < cur.distance) {
+        best.set(r.session_id, { distance: r.distance, chunkIndex: Number(r.chunk_idx) });
       }
     }
     return [...best.entries()]
-      .map(([sessionId, distance]) => ({ sessionId, distance }))
+      .map(([sessionId, match]) => ({ sessionId, ...match }))
       .sort((a, b) => a.distance - b.distance)
       .slice(0, k);
   }

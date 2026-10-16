@@ -40,6 +40,8 @@ export interface SubjectStat {
 
 /** Pre-filter applied at the storage layer before keyword scoring runs. */
 export interface FactListFilter {
+  /** Full-corpus lexical candidates, ranked before applying limit. */
+  readonly query?: string;
   readonly subject?: string;
   readonly predicate?: string;
   readonly kind?: FactKind;
@@ -144,8 +146,8 @@ export interface FactStore {
   /**
    * Pre-filtered fact list used by FactRecallService. Applies subject /
    * predicate / kind / confidence / superseded filters at the SQL layer
-   * before keyword scoring runs in core. No ordering guarantee beyond
-   * `created_at DESC`.
+   * before keyword scoring runs in core. Text queries rank lexical matches before the limit; structured-only
+   * queries use `created_at DESC`.
    */
   listForRecall(tenantId: string, filter: FactListFilter): Promise<ReadonlyArray<Fact>>;
 

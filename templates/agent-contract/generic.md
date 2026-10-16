@@ -17,13 +17,15 @@ Do not recall when the request is purely forward-looking with no plausible prior
 
 ## The pointer block
 
-At session start, NLM's hooks inject a block listing possibly-relevant sessions with their ids and labels. Read this block first. It arrives once per session: NLM does not inject memory on every prompt, so mid-conversation recall is your job via the MCP tools. When a session looks relevant, call `get_session` to fetch its full transcript before drawing on it.
+At session start, NLM's hooks inject a block listing possibly-relevant sessions with their ids and labels. Read this block first. It arrives once per session: NLM does not inject memory on every prompt, so mid-conversation recall is your job via the MCP tools. When a session looks relevant, call `get_session(id, query)` for relevant source evidence before drawing on it.
 
 ## MCP tools
 
 `recall_sessions(query)` searches session labels, decisions, entities, and summaries. Call this first when the user references prior work.
 
-`get_session(id)` fetches one session's full transcript by its id. Call this after `recall_sessions` when a result looks relevant and you need the exact wording or full reasoning.
+`recall_context(query)` is the preferred first call: it combines structured facts, decisions, open questions, and original source passages within a response budget. Use subject/predicate filters for exact values.
+
+`get_session(id, query)` returns compact context and matching passages. For original transcript text, explicitly request `view="transcript"` and follow `next` offsets.
 
 `recall_facts(query, subject?, predicate?)` looks up a specific structured fact: endpoint, model, port, framework choice, owner, deadline. Prefer this over `recall_sessions` when the user wants the direct answer, not the surrounding conversation.
 

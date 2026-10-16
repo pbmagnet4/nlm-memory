@@ -15,6 +15,7 @@ import type { BindingSource } from "@core/workstream/model.js";
 import type { Session, SessionStatus } from "@shared/types.js";
 
 export interface SemanticNeighbor {
+  readonly chunkIndex?: number;
   readonly sessionId: string;
   readonly distance: number;
 }

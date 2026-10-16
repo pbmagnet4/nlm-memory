@@ -110,8 +110,8 @@ export function formatPointerBlock(
     }
   }
   const tools = exemplars.length > 0
-    ? "NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved), recall_code (pull the full code for a related exemplar), learner_summary (concept mastery + next step)."
-    : "NLM tools: recall_sessions (search), get_session (full transcript), recall_facts (prior decisions), get_fact_history (how a decision evolved), learner_summary (concept mastery + next step).";
+    ? "NLM tools: recall_context (compact facts and evidence), get_session (targeted source context), recall_sessions (session search), recall_facts (structured lookup), get_fact_history (how a decision evolved), recall_code (pull the full code for a related exemplar), learner_summary (concept mastery + next step)."
+    : "NLM tools: recall_context (compact facts and evidence), get_session (targeted source context), recall_sessions (session search), recall_facts (structured lookup), get_fact_history (how a decision evolved), learner_summary (concept mastery + next step).";
   out.push(tools);
   return out.join("\n");
 }

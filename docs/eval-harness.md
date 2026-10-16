@@ -47,9 +47,9 @@ modes probe the embedder first and fail loudly if it is down, rather than
 silently degrading to keyword. Metrics in the JSON:
 
 - `retrieval.{session,fact}.{dev,heldout}.<mode>`: `n`, `rAt1`, `rAt5`, `mrr`.
-  Fact keyword mode reads only a recency-capped window of facts, so on a large
-  store its fact recall is near zero by design; judge fact changes in semantic
-  and hybrid.
+  Fact keyword queries now rank full-corpus lexical candidates before applying
+  the candidate bound; older baselines used a recency window. See
+  [context retrieval](context-retrieval.md) for the paired candidate experiment.
 - `store`: `conflictingActiveFacts` (the doctor I5a query, current exempt
   predicate set), `multiValuedGroups` (I5a-mv, informational),
   `missingEmbeddingShare` (active facts with no row in the `fact_embeddings`

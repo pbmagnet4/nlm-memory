@@ -10,6 +10,7 @@
  * SessionStore); core/ does not know this module exists.
  */
 
+import { createHash } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { encode as toonEncode } from "@toon-format/toon";
 import { z } from "zod";
@@ -53,6 +54,10 @@ import type {
 } from "@shared/types.js";
 import { SIGNAL_OUTCOMES } from "@shared/types.js";
 import type Database from "better-sqlite3";
+
+import { buildContextBundle } from "@core/context/context-bundle.js";
+import { boundedFormat } from "./response-budget.js";
+import { matchedPassages, relevantStrings, transcriptPage } from "@core/context/session-evidence.js";
 
 const CHARACTER_LIMIT = 25_000;
 const DEFAULT_LIMIT = 10;
@@ -118,20 +123,14 @@ function format(data: unknown): string {
     try {
       return toonEncode(data);
     } catch {
-      return JSON.stringify(data, null, 2);
+      return JSON.stringify(data);
     }
   }
-  return JSON.stringify(data, null, 2);
+  return JSON.stringify(data);
 }
 
 function truncate(data: unknown): string {
-  const str = format(data);
-  if (str.length <= CHARACTER_LIMIT) return str;
-  return format({
-    truncated: true,
-    truncation_message:
-      "Response too large. Lower limit or fetch fewer fields via get_session.",
-  });
+  return boundedFormat(data, format, CHARACTER_LIMIT);
 }
 
 function ok(data: unknown): ToolResult {
@@ -393,12 +392,86 @@ function localToday(): string {
   return `${d.getFullYear()}-${mo}-${da}`;
 }
 
+const contextInput = z.object({
+  query: z.string().min(1).max(2_000),
+  subject: z.string().min(1).max(200).optional(),
+  predicate: z.string().min(1).max(100).optional(),
+  intent: z.enum(["auto", "lookup", "decision", "state", "history"]).default("auto"),
+  mode: z.enum(["keyword", "semantic", "hybrid"]).optional(),
+  maxChars: z.number().int().min(2_000).max(20_000).default(8_000),
+});
+
+export async function recallContextHandler(
+  deps: McpDeps, tenantId: string, input: z.input<typeof contextInput>, runtime: string | null = null,
+): Promise<ToolResult> {
+  try {
+    const args = contextInput.parse(input);
+    const intent = args.intent === "auto"
+      ? /\b(why|rationale|reason|decide|decided|choose|chose)\b/i.test(args.query) ? "decision"
+        : /\b(left off|still open|status|blocked|next step)\b/i.test(args.query) ? "state" : "lookup"
+      : args.intent;
+    const exact = !!args.subject && !!args.predicate && intent === "lookup";
+    const factResult = deps.factRecall ? await deps.factRecall.search(tenantId, {
+      query: exact ? "" : args.query, mode: exact ? "keyword" : args.mode ?? "hybrid", limit: 12,
+      ...(args.subject ? { subject: args.subject } : {}),
+      ...(args.predicate ? { predicate: args.predicate } : {}),
+      ...(intent === "decision" ? { kind: "decision" as const } : {}),
+    }) : null;
+    const facts = factResult?.results ?? [];
+    // Explicit, unambiguous structured lookups need no second search or model.
+    const sessions = exact && facts.length === 1 ? null : await deps.recall.search(tenantId, {
+      query: args.query, mode: args.mode ?? "keyword", limit: 4, rewrite: false,
+      includeSuperseded: intent === "history",
+    });
+    const ids = [...new Set([...facts.map((f) => f.sourceSessionId),
+      ...(sessions?.results.map((s) => s.id) ?? [])])];
+    const metadata = await deps.store.getByIds(tenantId, ids);
+    const evidenceSources = await Promise.all((sessions?.results ?? []).map((s) => deps.store.getById(tenantId, s.id)));
+    const fullById = new Map(evidenceSources.filter((s) => s !== null).map((s) => [s.id, s]));
+    const successors = await deps.store.resolveSuccessors(tenantId, ids);
+    const sources = metadata.map((s) => ({ ...(fullById.get(s.id) ?? s),
+      supersededBy: successors.get(s.id) ?? null }));
+    const bundle = buildContextBundle(args.query, facts, sessions?.results ?? [], sources, args.maxChars);
+    const conversationId = resolveConversationByQuery(args.query) ?? undefined;
+    const returnedIds = [...new Set([...bundle.sessions.map((s) => s.id), ...bundle.facts.map((f) => f.source.id)])];
+    void logQuery(tenantId, { source: "mcp", runtime, query: args.query, entity: null,
+      kind: null, mode: args.mode ?? "keyword", limit: 4, nResults: returnedIds.length,
+      returnedIds,
+      ...(conversationId ? { conversationId } : {}),
+    });
+    if (factResult) void logFactQuery(tenantId, { source: "mcp", runtime, query: args.query,
+      subject: args.subject ?? null, predicate: args.predicate ?? null,
+      kind: intent === "decision" ? "decision" : null, mode: exact ? "keyword" : args.mode ?? "hybrid", limit: 12,
+      nResults: bundle.facts.length, returnedIds: bundle.facts.map((f) => f.id),
+      ...(conversationId ? { conversationId } : {}),
+    });
+    return { content: [{ type: "text", text: boundedFormat({ ...bundle, intent,
+      ...(sessions?.modeUnavailable || factResult?.modeUnavailable ? {
+        modeUnavailable: sessions?.modeUnavailable ?? factResult?.modeUnavailable,
+      } : {}),
+      ...(!deps.factRecall ? { factsUnavailable: true } : {}),
+    }, format, args.maxChars) }] };
+  } catch (e) {
+    return err(e);
+  }
+}
+
+const sessionInput = z.object({
+  id: z.string().min(1).max(500),
+  version: z.string().regex(/^[a-f0-9]{16}$/).optional(),
+  query: z.string().max(2_000).optional(),
+  view: z.enum(["context", "transcript"]).default("context"),
+  offset: z.number().int().min(0).default(0),
+  maxChars: z.number().int().min(2_000).max(20_000).default(8_000),
+});
+
 export async function getSessionHandler(
   deps: McpDeps,
   tenantId: string,
-  input: { id: string },
+  input: z.input<typeof sessionInput>,
 ): Promise<ToolResult> {
   try {
+    const args = sessionInput.parse(input);
     const session = await deps.store.getById(tenantId, input.id);
     if (!session) {
       return err(new Error(`session ${input.id} not found`));
@@ -457,7 +530,39 @@ export async function getSessionHandler(
       }
     }
 
-    return ok({ ...session, supersedes, supersededBy, ...(outcome ? { outcome } : {}) });
+    if (args.view === "transcript") {
+      if (args.offset > session.body.length) return err(new Error("offset exceeds transcript length"));
+      const version = createHash("sha256").update(session.body).digest("hex").slice(0, 16);
+      if (args.version && args.version !== version) return err(new Error("Transcript changed; restart at offset 0."));
+      let size = args.maxChars - 1_000;
+      for (;;) {
+        const { text: body, ...page } = transcriptPage(session.body, args.offset, size);
+        const text = format({ id: session.id, status: session.status,
+          supersededBy: supersededBy?.id ?? null, version, body, ...page,
+          next: page.nextOffset === null ? null : {
+            id: session.id, view: "transcript", offset: page.nextOffset, maxChars: args.maxChars, version,
+          } });
+        if (text.length <= args.maxChars) return { content: [{ type: "text", text }] };
+        size -= Math.max(100, text.length - args.maxChars);
+        if (size < 1) return err(new Error("Response metadata exceeds maxChars; increase the budget."));
+      }
+    }
+    const facts = deps.factStore ? await deps.factStore.listBySession(tenantId, session.id) : [];
+    const currentFacts = facts.filter((f) => !f.supersededBy && !f.retiredAt);
+    const decisions = relevantStrings(session.decisions, args.query ?? "");
+    const open = relevantStrings(session.open, args.query ?? "");
+    return { content: [{ type: "text", text: boundedFormat({
+      id: session.id, label: session.label, startedAt: session.startedAt, status: session.status,
+      summary: session.summary, decisions, open, entities: session.entities,
+      facts: currentFacts.slice(0, 8).map((f) => ({ id: f.id, kind: f.kind, subject: f.subject,
+        predicate: f.predicate, value: f.value, sourceQuote: f.sourceQuote })),
+      passages: args.query ? matchedPassages(session, args.query) : [],
+      omitted: { decisions: session.decisions.length - decisions.length,
+        open: session.open.length - open.length, facts: Math.max(0, currentFacts.length - 8) },
+      supersedes, supersededBy, ...(outcome ? { outcome } : {}),
+      expand: { id: session.id, view: "transcript", offset: 0, maxChars: args.maxChars },
+    }, format, args.maxChars) }] };
+
   } catch (e) {
     return err(e);
   }
@@ -565,7 +670,7 @@ to prevent: re-derivation of already-solved problems, contradicting prior decisi
 re-litigating resolved open questions, ignoring the user's accumulated context.
 
 Returns ranked session digests (id, label, summary, entities, decisions, open
-questions, status, superseded_by). Call get_session for the full body when a
+questions, status, superseded_by). Call get_session with query for source evidence when a
 digest looks relevant.
 
 Superseded sessions ARE included here, down-ranked below active matches and
@@ -590,23 +695,16 @@ Args:
           Optional.
   - limit: max results (1-100, default 10).`;
 
-const GET_SESSION_DESCRIPTION = `Fetch one full session by its canonical ID, including the conversational body.
+const GET_SESSION_DESCRIPTION = `Read a session's compact structured context: summary, decisions, open questions,
+current facts, supersedence and outcome. Pass query to include matching original
+passages with exact character offsets. Prefer recall_context for a question across
+memory. Do not fetch full transcripts by default.
 
-Call this AFTER recall_sessions when a returned digest looks relevant and the
-summary alone isn't enough to answer — e.g. you need the exact wording of a
-decision, the full reasoning behind a pivot, the specific commands that were
-run, or any quote you intend to reference verbatim.
-
-The recall_sessions digest is optimized for ranking and scanning; the full body
-contains the actual conversation transcript that produced the decision.
-
-When wired, the response includes an \`outcome\` object: whether the session's
-decision held, was overturned, was built upon, was re-derived later, or
-remains unobserved, plus the evidence tier/confidence behind that verdict.
-
-Args:
-  - id: Canonical session ID returned by recall_sessions (e.g. "cc_abc123",
-        "sess_pgvector"). Pass the id field from the recall_sessions result.`;
+For exact wording or more evidence, use view="transcript" and offset (default 0).
+Follow next until null to read all pages; next includes a version to detect a
+changed transcript. maxChars (2000-20000, default 8000)
+bounds the response in characters, not model tokens. Offsets are UTF-16 string
+positions into the stored transcript. An ID-only call returns context, not a body.`;
 
 const RECALL_FACTS_DESCRIPTION = `Look up specific (subject, predicate, value) facts the user has established in
 prior sessions — model aliases, framework choices, endpoints, ports, hosts,
@@ -1204,13 +1302,34 @@ export function createMcpServer(deps: McpDeps, tenantId: string): McpServer {
   );
 
   server.registerTool(
+    "recall_context",
+    {
+      title: "Recall Structured NLM Context",
+      description: `Preferred first call for memory questions. Returns current structured facts,
+source quotes, relevant decisions/open questions and original transcript passages
+within maxChars (default 8000 characters, not tokens). Evidence has source IDs
+and get_session expansion arguments. Use subject+predicate for exact structured
+lookups, intent=decision for rationale, state for continuity, history to include
+superseded sessions. Conflicting values are preserved, never silently resolved.
+Defaults to hybrid facts and keyword sessions, preserving each lane's measured
+ranking policy. Set mode to override both. No query-time generative model calls;
+hybrid uses the embedder. Keyword works
+offline. Omitted counts refer to retrieved candidates, not exhaustive corpus totals.
+Use recall_facts/get_fact_history for deeper fact history; get_session with query
+for more source context, or view=transcript with offset for original text.`,
+      inputSchema: contextInput.shape,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async (args) => recallContextHandler(deps, tenantId, args,
+      mcpRuntimeFromClient(server.server.getClientVersion())) as never,
+  );
+
+  server.registerTool(
     "get_session",
     {
-      title: "Get Full NLM Session",
+      title: "Get NLM Session Evidence",
       description: GET_SESSION_DESCRIPTION,
-      inputSchema: {
-        id: z.string().min(1).describe("Canonical session ID."),
-      },
+      inputSchema: sessionInput.shape,
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,

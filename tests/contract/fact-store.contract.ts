@@ -363,6 +363,27 @@ export function runFactStoreContract(h: FactStoreContractHarness): void {
         expect(high.map((f) => f.id).sort()).toEqual(["f_endpoint", "f_hono"]);
       });
 
+      it("finds matching old facts before the candidate limit in both backends", async () => {
+        await storage.facts.insertMany("team_local", [
+          makeFact({ id: "old_lexical", subject: "archive", predicate: "framework", value: "Zebradb",
+            sourceSessionId: "sess_parent", createdAt: "2020-01-01T00:00:00Z" }),
+          ...Array.from({ length: 501 }, (_, i) => makeFact({ id: `recent_${i}`, subject: `recent-${i}`,
+            value: "noise", sourceSessionId: "sess_parent", createdAt: "2026-10-16T00:00:00Z" })),
+        ]);
+        const rows = await storage.facts.listForRecall("team_local", { query: "Zebradb", limit: 1 });
+        expect(rows.map((f) => f.id)).toEqual(["old_lexical"]);
+        expect(await storage.facts.listForRecall("other_team", { query: "Zebradb", limit: 1 })).toEqual([]);
+      });
+
+      it("treats lexical query syntax as text and applies structured lifecycle filters", async () => {
+        const rows = await storage.facts.listForRecall("team_local", {
+          query: '"Hono" OR :*', subject: "nlm-memory-ts", minConfidence: 0.8,
+        });
+        expect(rows.map((f) => f.id)).toEqual(["f_hono"]);
+        expect(await storage.facts.listForRecall("team_local", { query: "Fastify" })).toEqual([]);
+        expect(await storage.facts.listForRecall("team_local", { query: "***" })).toEqual([]);
+      });
+
       it("kind filter restricts the result set", async () => {
         const out = await storage.facts.listForRecall("team_local", { kind: "attribute" });
         expect(out.map((f) => f.id)).toEqual(["f_endpoint"]);

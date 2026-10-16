@@ -10,6 +10,7 @@
  * semanticSearch.
  */
 
+import { tokenize } from "@core/recall/tokenize.js";
 import type { Pool } from "pg";
 import type {
   FactListFilter,
@@ -181,6 +182,17 @@ export class PgFactStore implements FactStore {
     const tc = tenantClausePg(tenantId, idx++);
     where.push(tc.sql);
     params.push(tc.param);
+    const tokens = [...new Set(tokenize(filter.query))];
+    if (filter.query && tokens.length === 0) return [];
+    const document = "to_tsvector('simple', subject || ' ' || predicate || ' ' || value)";
+    let order = "created_at DESC";
+    if (tokens.length > 0) {
+      const search = tokens.map((_, i) => `plainto_tsquery('simple', $${idx + i})`).join(" || ");
+      params.push(...tokens);
+      idx += tokens.length;
+      where.push(`${document} @@ (${search})`);
+      order = `ts_rank(${document}, (${search})) DESC, created_at DESC, id ASC`;
+    }
     const limit = Math.max(1, Math.trunc(filter.limit ?? 500));
     params.push(limit);
     const sql = `
@@ -188,7 +200,7 @@ export class PgFactStore implements FactStore {
              source_quote, created_at, superseded_by, confidence, retired_at
       FROM facts
       ${where.length > 0 ? "WHERE " + where.join(" AND ") : ""}
-      ORDER BY created_at DESC
+      ORDER BY ${order}
       LIMIT $${idx}
     `;
     const result = await this.pool.query<FactRow>(sql, params);

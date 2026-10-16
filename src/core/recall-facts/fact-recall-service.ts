@@ -92,6 +92,7 @@ export class FactRecallService {
       includeSuperseded: input.includeSuperseded === true,
       minConfidence: input.minConfidence ?? DEFAULT_MIN_CONFIDENCE,
       limit: STORAGE_FETCH_CAP,
+      ...(queryText && mode !== "semantic" ? { query: queryText } : {}),
       ...(input.subject !== undefined ? { subject: input.subject } : {}),
       ...(input.predicate !== undefined ? { predicate: input.predicate } : {}),
       ...(input.kind !== undefined ? { kind: input.kind } : {}),
@@ -102,11 +103,8 @@ export class FactRecallService {
     const byId = new Map<string, Fact>(candidates.map((f) => [f.id, f]));
     const queryTokens = queryText ? new Set(tokenSet(queryText)) : new Set<string>();
 
-    // The keyword candidate set is recency-capped (listForRecall ORDER BY
-    // created_at DESC LIMIT STORAGE_FETCH_CAP). Semantic recall must reach the
-    // whole corpus, so it resolves vector neighbours independently of this
-    // window and re-applies the same filters via `accept`. Without this, ~93%
-    // of facts (everything older than the recent cap) were silently unreachable.
+    // Both search legs reach the full corpus; resolve semantic neighbours
+    // outside the bounded lexical candidate set through the same filters.
     const accept = makeFilterPredicate(filter);
 
     const kwHits =
@@ -325,7 +323,7 @@ function scoreFact(
  * Semantic-primary hybrid merge.
  *
  * For short fact triples, semantic similarity is the dominant quality signal
- * and the keyword leg is both recency-windowed (see listForRecall) and noisy
+ * and the keyword leg can be noisy
  * (few tokens to match on). An equal-weight blend let high keyword scores on
  * recent-but-wrong facts dilute strong semantic hits — measured ~14pts of R@5
  * lost vs pure semantic on the paraphrase gold set (2026-06-16 report).
