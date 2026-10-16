@@ -214,19 +214,20 @@ export class PgSessionStore implements SessionStore {
     const result = await this.pool.query<{
       session_id: string;
       distance: number;
+      chunk_idx: number;
       status: string;
     }>(
-      `SELECT sec.session_id, MIN(sec.embedding <-> $1::vector) AS distance, s.status
+      `SELECT * FROM (SELECT DISTINCT ON (sec.session_id) sec.session_id, sec.embedding <-> $1::vector AS distance, sec.chunk_idx, s.status
        FROM session_embedding_chunks sec
        JOIN sessions s ON s.id = sec.session_id
        WHERE ${tc.sql} ${wsClause}
-       GROUP BY sec.session_id, s.status
-       HAVING ${statusFilter}
+       AND ${statusFilter}
+       ORDER BY sec.session_id, distance, sec.chunk_idx) nearest
        ORDER BY distance
        LIMIT ${limitParam}`,
       params,
     );
-    return result.rows.map((r) => ({ sessionId: r.session_id, distance: r.distance }));
+    return result.rows.map((r) => ({ sessionId: r.session_id, distance: r.distance, chunkIndex: r.chunk_idx }));
   }
 
   async keywordSearch(

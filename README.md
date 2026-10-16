@@ -270,7 +270,8 @@ Off by default — enable with `NLM_CODE_EXEMPLARS_ENABLED=1`. Capture rides the
 | Tool | What it does |
 |---|---|
 | `recall_sessions` | Hybrid keyword+semantic search across the full session corpus. Returns label, started_at, snippet, match score, `status`, and `superseded_by`. Superseded sessions are included (down-ranked, badged) so a decision investigation sees overturned reasoning; prefer the `superseded_by` successor for current state. |
-| `get_session` | Full body of one session by ID. Includes enriched `supersedes` / `supersededBy` links (id + label + summary) and a derived `outcome` verdict (held / overturned / built-upon / unobserved, with evidence) from the corpus-internal outcome rollup. |
+| `recall_context` | Preferred compact retrieval: structured facts, decisions, open questions, and cited source passages within a response budget. See [context retrieval](docs/context-retrieval.md). |
+| `get_session` | Compact context by default; add `query` for matching passages. Explicit `view="transcript"` returns bounded original-text pages with continuation arguments. Includes supersedence and outcome context. |
 | `recall_facts` | Search structured facts: decisions, open questions, project state. Filterable by entity and kind. |
 | `get_fact_history` | Full version history of one fact — how a decision evolved over time. |
 | `cite_session` | Mark a session as explicitly referenced. Drives the `useful_hit_rate` metric and the future learned reranker. |

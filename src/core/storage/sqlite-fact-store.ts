@@ -28,6 +28,7 @@
 type NeighborRow = { fact_id: string; distance: number };
 
 import type Database from "better-sqlite3";
+import { tokenize } from "@core/recall/tokenize.js";
 import type {
   FactListFilter,
   FactQuery,
@@ -202,14 +203,22 @@ export class SqliteFactStore implements FactStore {
       where.push("superseded_by IS NULL");
       where.push("retired_at IS NULL");
     }
+    const tokens = [...new Set(tokenize(filter.query))];
+    if (filter.query && tokens.length === 0) return [];
+    const lexical = tokens.length > 0;
+    const prefix = lexical
+      ? "WITH lexical AS (SELECT rowid, bm25(facts_fts, 1, 1, 3) AS rank FROM facts_fts WHERE facts_fts MATCH ?)"
+      : "";
+    if (lexical) params.unshift(tokens.map((t) => `"${t}"`).join(" OR "));
+    const order = lexical ? "lexical.rank ASC, created_at DESC, id ASC" : "created_at DESC";
     const limit = Math.max(1, Math.trunc(filter.limit ?? 500));
     params.push(limit);
-    const sql = `
+    const sql = `${prefix}
       SELECT id, kind, subject, predicate, value, source_session_id,
              source_quote, created_at, superseded_by, confidence, retired_at
-      FROM facts
+      FROM facts ${lexical ? "JOIN lexical ON lexical.rowid = facts.rowid" : ""}
       WHERE ${where.join(" AND ")}
-      ORDER BY created_at DESC
+      ORDER BY ${order}
       LIMIT ?
     `;
     const rows = this.db

@@ -153,6 +153,8 @@ export interface RecallQuery {
 }
 
 export interface RecallHit {
+  /** Best matching embedded passage, retained for targeted evidence retrieval. */
+  readonly chunkIndex?: number;
   readonly id: string;
   readonly startedAt: string;
   readonly label: string;

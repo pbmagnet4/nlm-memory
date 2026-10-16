@@ -23,6 +23,7 @@ Dispositions per program spec §2: **STAMP** = carries `tenant_id NOT NULL`; **D
 | fact_embeddings | DERIVE | via facts.id |
 | code_exemplar_embeddings | DERIVE | via code_exemplars.id |
 | code_exemplars_vec | DERIVE | sqlite-vec shadow of code_exemplars |
+| facts_fts | DERIVE | FTS shadow of facts; reads join tenant-filtered facts before LIMIT |
 | sessions_fts | DERIVE | FTS shadow of sessions |
 | actions | DERIVE | via target session/entity rows; operator-overlay log |
 | adapter_state | NEUTRAL | local ingest cursor state; hosted ingest is webhook-push (spec §8) |

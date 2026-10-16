@@ -1,5 +1,15 @@
 # nlm-memory CHANGELOG
 
+## 2026-10-16 - Compact structured memory context and source expansion (T803)
+
+**Changes:** Added `recall_context` with current fact triples, source provenance, decisions/open questions, exact original passages, a bounded response, and targeted expansion references. Exact structured lookups skip session search and embeddings; default lanes preserve hybrid facts and keyword sessions without query-time generative calls. `get_session` now defaults to compact context and offers explicit versioned transcript pages. Retained semantic chunk positions, fixed lexical fact retrieval beyond the newest 500 rows (SQLite FTS5 / PG GIN), added a covering corroboration index, minified JSON, and regenerated hook guidance/bundles. No stored facts were rewritten or retired.
+
+**Results:** On the frozen corpus, 122 held-out synthetic fact-topic queries improved keyword R@1 from 0 to 36.9%; hybrid R@1 stayed 73.0% and R@5 stayed 100%. No fact R@1 regression across tested splits/modes. Across 26 held-out source sessions compact context used 96.4% fewer response characters, with no errors or budget overruns; this is not a token-count or answer-correctness measurement. Corroboration counts matched across 10 alternating 12-triple batches; median lookup 93.38 ms to 0.044 ms. Independent review's single low-severity phantom-session-query finding was accepted and fixed.
+
+**State:** Implementation is local; the installed daemon is unchanged. Tests cover source offsets, Unicode and changed-source paging, semantic-only passages, short identifiers, tenant isolation, old facts, conflicts, budgets, and telemetry. API contract and measurement limits: `docs/context-retrieval.md`.
+
+**Next:** Release/deploy through the normal NLM installer to activate the new MCP tool and migrations; independently labelled answer-quality evaluation remains separate from the existing synthetic/citation ranking checks.
+
 ## 2026-10-15 - Polite classifier client: in-flight cap, re-touch dedupe, per-chunk budget, outage backoff (T720)
 
 **Changes:** Every daemon classifier request goes through one limiter (`NLM_CLASSIFY_MAX_INFLIGHT`, default 1), chunks of an oversized session included; chunks now dispatch through it and each gets its own timeout once it holds a slot, with surviving chunks kept as a partial result. The scheduler hashes the normalized session text per source and skips a resumed source whose text is unchanged. Infrastructure errors (unreachable, reset, DNS, 5xx, timeout) defer the session with 30 s doubling to 10 min backoff, stop the tick, and never count toward the 3-strike ceiling; non-JSON and schema failures still do. `TickReport` gains `deferred`.
@@ -85,13 +95,3 @@ Session-level log per session protocol. Cap: 10 entries — archive older to `CH
 **Decisions:** dedicated store over Fact overload (attempts don't fit triples); summaries computed never stored; enrollment binds a workstream id at enroll; no plan-blob table (ref+fingerprint only, mismatch blocks writes); explicit record only, no classifier extraction in v1; cold-start mitigation is read-time unrecorded-session listing (SessionEnd is fail-open/client-side, wrong surface); drawer text rows over chips (design system forbids new badge families); standalone Learning page deferred.
 
 **State:** merged with origin/main through 0.21.10 (cross-runtime citations, Muse/OpenCode capture, reconcile-facts); learner migrations renumbered sqlite 039 + pg 037 — main's covering-index sqlite 037 and sources-muse sqlite 038 / pg 036 landed while the branch was in flight, and the migrator keys on version number so duplicates would silently skip. Daemon/UI-bundle deploy pending release cut.
-
-## 2026-09-29 (session 2) - Remote Hermes capture, reconcile-facts, cross-runtime citations; 0.21.9-0.21.10 live
-
-**Changes:** hermes-agent had OpenCode's defect (discover() returned bare ids, scanOnce's stat skipped every one), so it had never ingested. It now keys `<db>::<id>` and supplies `stat()` (last message time as mtime, message count as the change marker), and skips machine-driven sessions via `parse_config.excludeSources` (default `cron`). New `nlm reconcile-facts --authorities <file>`: dry run by default, retires (never replaces) live facts that contradict an operator authorities file or name a deleted file; `--apply` backs up first and logs to the supersedence log. Host comparison uses the URL parser only and never flags a value it can't parse. The conversation resolver behind `cite_session` and recall-pull attribution scanned only Claude Code transcripts; it now covers Codex, pi and Muse, which resolve to `<runtime>:<id>`.
-
-**Decisions:** Remote Hermes reaches the store as per-profile SQLite snapshots (online backup API, read-only on the source) synced to the local machine every 15 minutes, one hermes-agent source per profile, rather than a second capture daemon. reconcile-facts retires rather than supersedes: the structured file is the current value, the fact store is history. First real authorities run is ports only; host/url prose is too ambiguous to judge deterministically.
-
-**State:** 0.21.10 installed. 30 hermes-agent sources registered with `excludeSources` covering cron, agent-protocol, tool, one-shot and benchmark runs. reconcile-facts dry run against a snapshot found 6 stale facts; not applied. Suite 2648 passing, only the Postgres-only cycle-guard failures.
-
-**Next:** Confirm hermes-agent rows land once the Muse backlog drains (adapters scan in source order). Review and apply the reconcile-facts findings. cursor still has the bare-id discover() shape.

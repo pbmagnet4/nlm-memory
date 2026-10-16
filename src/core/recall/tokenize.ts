@@ -4,7 +4,7 @@
  * starts here.
  */
 
-const TOKEN_PATTERN = /[A-Za-z0-9][A-Za-z0-9_.-]*/g;
+export const TOKEN_PATTERN = /[A-Za-z0-9][A-Za-z0-9_.-]*/g;
 
 export function tokenize(text: string | null | undefined): ReadonlyArray<string> {
   if (!text) return [];

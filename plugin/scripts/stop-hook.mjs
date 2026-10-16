@@ -392,6 +392,8 @@ var package_default = {
     "bench:longmemeval": "tsx scripts/longmemeval/run-harness.ts",
     "bench:classifier": "tsx scripts/longmemeval/run-harness.ts --classifier",
     "bench:compare": "tsx scripts/longmemeval/compare-classifiers.ts",
+    "eval:snapshot": "tsx scripts/eval/snapshot.ts",
+    "eval:harness": "tsx scripts/eval/harness.ts",
     "eval:signals": "tsx scripts/eval/signals-eval.ts",
     "eval:classifier": "tsx scripts/eval/classifier-eval.ts",
     "eval:fact-recall": "tsx scripts/eval/fact-recall-eval.ts",
@@ -403,7 +405,10 @@ var package_default = {
     "eval:naming": "tsx scripts/eval/tune-naming.ts",
     "eval:rederiv-sample": "tsx scripts/eval/re-derivation-sample.ts",
     "eval:rederiv-label": "tsx scripts/eval/re-derivation-label.ts",
-    "eval:rederiv-calibrate": "tsx scripts/eval/re-derivation-calibrate.ts"
+    "eval:rederiv-calibrate": "tsx scripts/eval/re-derivation-calibrate.ts",
+    "eval:fact-judge-replay": "tsx scripts/eval/fact-judge-replay.ts",
+    "eval:fact-judge-label": "tsx scripts/eval/fact-judge-label.ts",
+    "eval:fact-class-replay": "tsx scripts/eval/fact-class-replay.ts"
   },
   dependencies: {
     "@clack/prompts": "^1.4.0",
