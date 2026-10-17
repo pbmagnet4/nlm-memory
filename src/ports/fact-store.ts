@@ -38,7 +38,7 @@ export interface SubjectStat {
   readonly sessionCount: number;
 }
 
-/** Pre-filter applied at the storage layer before keyword scoring runs. */
+/** Eligibility applied before lexical limits and final semantic top-k. */
 export interface FactEligibility {
   readonly workstreamIds?: readonly string[];
   readonly subject?: string;
@@ -155,11 +155,10 @@ export interface FactStore {
   listForRecall(tenantId: string, filter: FactListFilter): Promise<ReadonlyArray<Fact>>;
 
   /**
-   * sqlite-vec KNN over fact_embeddings. Returns up to `limit` nearest
-   * neighbors by L2 distance, re-applying the tenant filter in the
-   * id-resolution SQL (program spec §4.3 — the vector index otherwise
-   * returns neighbors from the whole corpus). The service converts distance
-   * to cosine and blends with keyword scores.
+   * Exact L2 neighbors from tenant-owned facts with tenant-owned source
+   * sessions. Eligibility is applied before ranking/limit; default lifecycle
+   * excludes superseded and retired facts. Ties order by fact id ascending.
+   * The service converts distance to cosine and blends with keyword scores.
    */
   semanticSearch(
     tenantId: string,

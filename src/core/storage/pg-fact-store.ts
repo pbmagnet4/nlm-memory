@@ -319,26 +319,43 @@ export class PgFactStore implements FactStore {
     eligibility?: FactEligibility,
   ): Promise<ReadonlyArray<FactSemanticNeighbor>> {
     if (eligibility?.workstreamIds?.length === 0) return [];
-    const eligible = eligibility ? new Set((await this.listForRecall(tenantId, {
-      ...eligibility, limit: 2_147_483_647,
-    })).map((f) => f.id)) : undefined;
-    const k = Math.max(1, Math.trunc(limit));
-    const vecStr = `[${Array.from(queryVector).join(",")}]`;
-    // Tenant filter applied in the id-resolution join against `facts`
-    // (program spec §4.3, vector-path rule) — fact_embeddings carries no
-    // tenant_id of its own.
-    const tc = tenantClausePg(tenantId, 2);
-    const result = await this.pool.query<{ fact_id: string; distance: number }>(
-      `SELECT fe.fact_id, fe.embedding <-> $1::vector AS distance
-       FROM fact_embeddings fe
-       JOIN facts f ON f.id = fe.fact_id
-       WHERE ${tc.sql}
-       ORDER BY fe.embedding <-> $1::vector
-       LIMIT $3`,
-      [vecStr, tc.param, k],
-    );
-    return result.rows.filter((r) => eligible === undefined || eligible.has(r.fact_id))
-      .map((r) => ({ factId: r.fact_id, distance: r.distance }));
+    const factTenant = tenantClausePg(tenantId, 2, "f.tenant_id");
+    const sourceTenant = tenantClausePg(tenantId, 3, "s.tenant_id");
+    const where = [factTenant.sql, sourceTenant.sql];
+    const params: unknown[] = [JSON.stringify(Array.from(queryVector)), factTenant.param, sourceTenant.param];
+    for (const field of ["subject", "predicate", "kind"] as const) {
+      if (eligibility?.[field] !== undefined) {
+        params.push(eligibility[field]);
+        where.push(`f.${field} = $${params.length}`);
+      }
+    }
+    if (eligibility?.minConfidence !== undefined) {
+      params.push(eligibility.minConfidence);
+      where.push(`f.confidence >= $${params.length}`);
+    }
+    if (eligibility?.includeSuperseded !== true) {
+      where.push("f.superseded_by IS NULL", "f.retired_at IS NULL");
+    }
+    if (eligibility?.workstreamIds !== undefined) {
+      params.push(eligibility.workstreamIds);
+      where.push(`s.workstream_id = ANY($${params.length}::text[])`);
+    }
+    params.push(Math.max(1, Math.trunc(limit)));
+    // Materialization prevents an approximate vector index from limiting the eligible corpus.
+    const result = await this.pool.query<{ fact_id: string; distance: number }>(`
+      WITH eligible AS MATERIALIZED (
+        SELECT fe.fact_id, fe.embedding
+        FROM fact_embeddings fe
+        JOIN facts f ON f.id = fe.fact_id
+        JOIN sessions s ON s.id = f.source_session_id
+        WHERE ${where.join(" AND ")}
+      )
+      SELECT fact_id, embedding <-> $1::vector AS distance
+      FROM eligible
+      ORDER BY distance, fact_id COLLATE "C"
+      LIMIT $${params.length}
+    `, params);
+    return result.rows.map((r) => ({ factId: r.fact_id, distance: r.distance }));
   }
 
   async getHistory(

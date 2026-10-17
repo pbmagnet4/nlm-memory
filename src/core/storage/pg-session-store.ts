@@ -222,8 +222,8 @@ export class PgSessionStore implements SessionStore {
        JOIN sessions s ON s.id = sec.session_id
        WHERE ${tc.sql} ${wsClause}
        AND ${statusFilter}
-       ORDER BY sec.session_id, distance, sec.chunk_idx) nearest
-       ORDER BY distance
+       ORDER BY sec.session_id, distance, sec.chunk_idx, sec.chunk_id) nearest
+       ORDER BY distance, session_id COLLATE "C"
        LIMIT ${limitParam}`,
       params,
     );

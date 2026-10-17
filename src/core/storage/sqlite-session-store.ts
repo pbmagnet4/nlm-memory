@@ -22,6 +22,7 @@
  * to a tenant-filtered `sessions` row.
  */
 
+import { completeSemanticTopK } from "./sqlite-semantic-top-k.js";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import Database from "better-sqlite3";
@@ -808,81 +809,60 @@ export class SqliteSessionStore implements SessionStore {
     opts?: SearchOptions,
   ): Promise<ReadonlyArray<SemanticNeighbor>> {
     if (opts?.workstreamIds?.length === 0) return [];
+    const tc = tenantClause(tenantId, "s.tenant_id");
+    const where = [tc.sql, opts?.includeSuperseded === true
+      ? "s.status != 'replaced'" : "s.status NOT IN ('superseded', 'replaced')"];
+    const blob = Buffer.from(queryVector.buffer, queryVector.byteOffset, queryVector.byteLength);
+    const params: unknown[] = [blob, tc.param];
+    if (opts?.workstreamIds !== undefined) {
+      where.push(`s.workstream_id IN (${opts.workstreamIds.map(() => "?").join(",")})`);
+      params.push(...opts.workstreamIds);
+    }
     const k = Math.max(1, Math.trunc(limit));
-    const blob = Buffer.from(
-      queryVector.buffer,
-      queryVector.byteOffset,
-      queryVector.byteLength,
-    );
-    // Overfetch chunks so the max-pool grouping has enough unique sessions
-    // even when several top chunks come from the same session. Default 4
-    // ≈ average chunks per session on the LongMemEval-S benchmark. Env-
-    // tunable via NLM_CHUNK_OVERFETCH for per-type ablation against the
-    // preference/assistant regressions where displacement is hypothesized.
-    const envOverfetch = Number.parseInt(process.env["NLM_CHUNK_OVERFETCH"] ?? "", 10);
-    const CHUNK_OVERFETCH = Number.isFinite(envOverfetch) && envOverfetch > 0 ? envOverfetch : 4;
-    const chunkK = k * CHUNK_OVERFETCH;
-    // The vec0 KNN scan has no tenant awareness (session_embedding_chunks
-    // carries no tenant_id — DERIVE-VIA-FK), so it returns neighbors from the
-    // whole corpus. The tenant filter is re-applied below, in the
-    // id-resolution join against `sessions` (program spec §4.3, vector-path
-    // rule) — any candidate session id that doesn't resolve within the
-    // caller's tenant is excluded, not merely "not down-ranked".
-    const rows = this.db
-      .prepare<[Buffer, number], NeighborRow>(`
-        SELECT session_id, distance, chunk_idx
-        FROM session_embedding_chunks
-        WHERE embedding MATCH ?
-          AND k = ?
-        ORDER BY distance
-      `)
-      .all(blob, chunkK);
-
-    // Max-pool: keep the smallest distance (highest cosine) per session,
-    // filtering out superseded, replaced, out-of-workstream, and (via the
-    // tenant-filtered id-resolution join) out-of-tenant sessions.
-    const best = new Map<string, { distance: number; chunkIndex: number }>();
-    const excludedSessionIds = new Set<string>();
-    const wsIds = opts?.workstreamIds;
-    if (wsIds !== undefined && wsIds.length === 0) return [];
-    // First pass: resolve each unique candidate session id against the
-    // tenant-filtered sessions table to get its status + workstream. A
-    // candidate id that fails to resolve (wrong tenant or gone) is excluded
-    // outright, not merely left un-excluded.
-    const uniqueSessionIds = [...new Set(rows.map((r) => r.session_id))];
-    if (uniqueSessionIds.length > 0) {
-      const placeholders = uniqueSessionIds.map(() => "?").join(",");
-      const tc = tenantClause(tenantId);
-      const statusRows = this.db
-        .prepare<unknown[], { id: string; status: string; workstream_id: string | null }>(
-          `SELECT id, status, workstream_id FROM sessions WHERE id IN (${placeholders}) AND ${tc.sql}`,
-        )
-        .all(...uniqueSessionIds, tc.param);
-      const resolvedIds = new Set(statusRows.map((r) => r.id));
-      for (const id of uniqueSessionIds) {
-        if (!resolvedIds.has(id)) excludedSessionIds.add(id);
-      }
-      const excludeSuperseded = opts?.includeSuperseded !== true;
-      for (const sr of statusRows) {
-        const statusExcluded = sr.status === "replaced" || (excludeSuperseded && sr.status === "superseded");
-        const wsExcluded = wsIds?.length ? (sr.workstream_id === null || !wsIds.includes(sr.workstream_id)) : false;
-        if (statusExcluded || wsExcluded) {
-          excludedSessionIds.add(sr.id);
+    params.push(k);
+    // The embedding's own attribution survives historical gaps in session_chunk_map.
+    const exact = (): readonly SemanticNeighbor[] => this.db.prepare<unknown[], NeighborRow>(`
+      WITH eligible AS MATERIALIZED (
+        SELECT sec.session_id, sec.chunk_idx, sec.chunk_id,
+               vec_distance_L2(sec.embedding, ?) AS distance
+        FROM session_embedding_chunks sec
+        JOIN sessions s ON s.id = sec.session_id
+        WHERE ${where.join(" AND ")}
+      ), ranked AS (
+        SELECT session_id, chunk_idx, distance,
+               ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY distance, chunk_idx, chunk_id) AS rank
+        FROM eligible
+      )
+      SELECT session_id, chunk_idx, distance FROM ranked
+      WHERE rank = 1
+      ORDER BY distance, session_id
+      LIMIT ?
+    `).all(...params).map((r) => ({ sessionId: r.session_id, distance: r.distance, chunkIndex: Number(r.chunk_idx) }));
+    if (opts?.workstreamIds !== undefined) return exact();
+    return this.db.transaction(() => completeSemanticTopK(k,
+      (window) => this.db.prepare<[Buffer, number], NeighborRow>(`
+        SELECT session_id, distance, chunk_idx FROM session_embedding_chunks
+        WHERE embedding MATCH ? AND k = ? ORDER BY distance
+      `).all(blob, window),
+      (candidates) => {
+        if (candidates.length === 0) return [];
+        const ids = [...new Set(candidates.map((r) => r.session_id))];
+        const owned = this.db.prepare<unknown[], { id: string }>(`
+          SELECT s.id FROM sessions s
+          WHERE ${where.join(" AND ")} AND s.id IN (${ids.map(() => "?").join(",")})
+        `).all(...params.slice(1, -1), ...ids);
+        const eligibleIds = new Set(owned.map((r) => r.id));
+        const best = new Map<string, SemanticNeighbor>();
+        for (const r of candidates) {
+          if (!eligibleIds.has(r.session_id)) continue;
+          const chunkIndex = Number(r.chunk_idx);
+          const prior = best.get(r.session_id);
+          if (!prior || r.distance < prior.distance || (r.distance === prior.distance && chunkIndex < prior.chunkIndex!)) {
+            best.set(r.session_id, { sessionId: r.session_id, distance: r.distance, chunkIndex });
+          }
         }
-      }
-    }
-    // Second pass: max-pool, excluding superseded/replaced/out-of-tenant sessions
-    for (const r of rows) {
-      if (excludedSessionIds.has(r.session_id)) continue;
-      const cur = best.get(r.session_id);
-      if (cur === undefined || r.distance < cur.distance) {
-        best.set(r.session_id, { distance: r.distance, chunkIndex: Number(r.chunk_idx) });
-      }
-    }
-    return [...best.entries()]
-      .map(([sessionId, match]) => ({ sessionId, ...match }))
-      .sort((a, b) => a.distance - b.distance)
-      .slice(0, k);
+        return [...best.values()].sort((a, b) => a.distance - b.distance || Buffer.compare(Buffer.from(a.sessionId), Buffer.from(b.sessionId))).slice(0, k);
+      }, exact)).deferred();
   }
 
   /**

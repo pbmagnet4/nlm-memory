@@ -48,6 +48,7 @@ export interface SessionStore {
    */
   listByDateRange(tenantId: string, fromIso: string, toIso: string): Promise<ReadonlyArray<Session>>;
 
+  /** Exact eligible L2 top-k, max-pooled per session; ties use session id then chunk index. */
   semanticSearch(
     tenantId: string,
     queryVector: Float32Array,

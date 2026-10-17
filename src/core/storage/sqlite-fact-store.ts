@@ -19,15 +19,14 @@
  * as its non-optional first parameter. `facts` is a STAMP table; every
  * SELECT/UPDATE/DELETE routes its WHERE fragment through `tenantClause`,
  * and INSERTs stamp `tenant_id` explicitly. `fact_embeddings` carries no
- * tenant_id (DERIVE-VIA-FK, keyed by fact_id) — `semanticSearch`'s KNN scan
- * has no tenant awareness of its own, so callers (FactRecallService) resolve
- * neighbor ids back through the tenant-filtered `getByIds`/`getById` before
- * trusting them (program spec §4.3, vector-path rule).
+ * tenant_id (DERIVE-VIA-FK, keyed by fact_id). Semantic recall joins both
+ * tenant-owned facts and their source sessions before distance ranking.
  */
 
 type NeighborRow = { fact_id: string; distance: number };
 
 import type Database from "better-sqlite3";
+import { completeSemanticTopK } from "./sqlite-semantic-top-k.js";
 import { tokenize } from "@core/recall/tokenize.js";
 import type {
   FactEligibility,
@@ -241,44 +240,58 @@ export class SqliteFactStore implements FactStore {
     eligibility?: FactEligibility,
   ): Promise<ReadonlyArray<FactSemanticNeighbor>> {
     if (eligibility?.workstreamIds?.length === 0) return [];
-    const eligible = eligibility ? new Set((await this.listForRecall(tenantId, {
-      ...eligibility, limit: 2_147_483_647,
-    })).map((f) => f.id)) : undefined;
+    const factTenant = tenantClause(tenantId, "f.tenant_id");
+    const sourceTenant = tenantClause(tenantId, "s.tenant_id");
+    const where = [factTenant.sql, sourceTenant.sql];
+    const blob = Buffer.from(queryVector.buffer, queryVector.byteOffset, queryVector.byteLength);
+    const params: unknown[] = [blob, factTenant.param, sourceTenant.param];
+    for (const field of ["subject", "predicate", "kind"] as const) {
+      if (eligibility?.[field] !== undefined) {
+        where.push(`f.${field} = ?`);
+        params.push(eligibility[field]);
+      }
+    }
+    if (eligibility?.minConfidence !== undefined) {
+      where.push("f.confidence >= ?");
+      params.push(eligibility.minConfidence);
+    }
+    if (eligibility?.includeSuperseded !== true) {
+      where.push("f.superseded_by IS NULL", "f.retired_at IS NULL");
+    }
+    if (eligibility?.workstreamIds !== undefined) {
+      where.push(`s.workstream_id IN (${eligibility.workstreamIds.map(() => "?").join(",")})`);
+      params.push(...eligibility.workstreamIds);
+    }
     const k = Math.max(1, Math.trunc(limit));
-    const blob = Buffer.from(
-      queryVector.buffer,
-      queryVector.byteOffset,
-      queryVector.byteLength,
-    );
-    // fact_embeddings carries no tenant_id (DERIVE-VIA-FK) — the KNN scan
-    // returns neighbors from the whole corpus. Re-resolve candidate ids
-    // against the tenant-filtered `facts` table before returning, per the
-    // vector-path rule (program spec §4.3): a neighbor whose fact doesn't
-    // resolve within the caller's tenant is dropped, not down-ranked.
-    const overfetchK = k * 4;
-    const rows = this.db
-      .prepare<[Buffer, number], NeighborRow>(`
-        SELECT fact_id, distance
-        FROM fact_embeddings
-        WHERE embedding MATCH ?
-          AND k = ?
-        ORDER BY distance
-      `)
-      .all(blob, overfetchK);
-    if (rows.length === 0) return [];
-    const candidateIds = [...new Set(rows.map((r) => r.fact_id))];
-    const placeholders = candidateIds.map(() => "?").join(",");
-    const tc = tenantClause(tenantId);
-    const resolvedRows = this.db
-      .prepare<unknown[], { id: string }>(
-        `SELECT id FROM facts WHERE id IN (${placeholders}) AND ${tc.sql}`,
-      )
-      .all(...candidateIds, tc.param);
-    const resolved = new Set(resolvedRows.map((r) => r.id));
-    return rows
-      .filter((r) => resolved.has(r.fact_id) && (eligible === undefined || eligible.has(r.fact_id)))
-      .slice(0, k)
-      .map((r) => ({ factId: r.fact_id, distance: r.distance }));
+    params.push(k);
+    const exact = (): readonly FactSemanticNeighbor[] => this.db.prepare<unknown[], NeighborRow>(`
+      SELECT fe.fact_id, vec_distance_L2(fe.embedding, ?) AS distance
+      FROM fact_embeddings fe
+      JOIN facts f ON f.id = fe.fact_id
+      JOIN sessions s ON s.id = f.source_session_id
+      WHERE ${where.join(" AND ")}
+      ORDER BY distance, fe.fact_id
+      LIMIT ?
+    `).all(...params).map((r) => ({ factId: r.fact_id, distance: r.distance }));
+    if (eligibility?.workstreamIds !== undefined) return exact();
+    return this.db.transaction(() => completeSemanticTopK(k,
+      (window) => this.db.prepare<[Buffer, number], NeighborRow>(`
+        SELECT fact_id, distance FROM fact_embeddings
+        WHERE embedding MATCH ? AND k = ? ORDER BY distance
+      `).all(blob, window),
+      (candidates) => {
+        if (candidates.length === 0) return [];
+        const ids = candidates.map((r) => r.fact_id);
+        const owned = this.db.prepare<unknown[], { id: string }>(`
+          SELECT f.id FROM facts f JOIN sessions s ON s.id = f.source_session_id
+          WHERE ${where.join(" AND ")} AND f.id IN (${ids.map(() => "?").join(",")})
+        `).all(...params.slice(1, -1), ...ids);
+        const eligibleIds = new Set(owned.map((r) => r.id));
+        return candidates.filter((r) => eligibleIds.has(r.fact_id))
+          .map((r) => ({ factId: r.fact_id, distance: r.distance }))
+          .sort((a, b) => a.distance - b.distance || Buffer.compare(Buffer.from(a.factId), Buffer.from(b.factId)))
+          .slice(0, k);
+      }, exact)).deferred();
   }
 
   async getHistory(
