@@ -22,6 +22,7 @@
  * to a tenant-filtered `sessions` row.
  */
 
+import { bodyVersion, persistedText } from "@core/context/source-version.js";
 import { readSemanticSessions } from "./sqlite-semantic-sessions.js";
 import type { SqliteSemanticReader } from "./sqlite-semantic-reader.js";
 import { existsSync, mkdirSync } from "node:fs";
@@ -129,6 +130,7 @@ type SessionRow = {
   transcript_kind: string | null;
   transcript_path: string | null;
   body: string | null;
+  body_version?: string | null;
   workstream_id: string | null;
   classifier_provider?: string | null;
   classifier_model?: string | null;
@@ -363,18 +365,19 @@ export class SqliteSessionStore implements SessionStore {
     supersedes: Supersedes | null = null,
     factSink: { factStore: SqliteFactStore; facts: ReadonlyArray<Fact> } | null = null,
   ): Promise<void> {
+    record = { ...record, body: record.body === null ? null : persistedText(record.body) };
     const db = this.db;
     const txn = db.transaction(() => {
       db.prepare(`
         INSERT INTO sessions (
           id, runtime, runtime_session_id, started_at, ended_at, duration_min,
-          label, summary, body, status,
+          label, summary, body, body_version, status,
           transcript_kind, transcript_path, transcript_offset, transcript_length,
           classifier_provider, classifier_model, classifier_confidence,
           scope, agent_persona, parent_session_id,
           primary_model, total_tokens, skill, tenant_id
         ) VALUES (@id, @runtime, @runtimeSessionId, @startedAt, @endedAt, @durationMin,
-          @label, @summary, @body, @status,
+          @label, @summary, @body, @bodyVersion, @status,
           @transcriptKind, @transcriptPath, @transcriptOffset, @transcriptLength,
           @classifierProvider, @classifierModel, @classifierConfidence,
           @scope, @agentPersona, @parentSessionId,
@@ -385,6 +388,7 @@ export class SqliteSessionStore implements SessionStore {
           label = excluded.label,
           summary = excluded.summary,
           body = excluded.body,
+          body_version = excluded.body_version,
           status = excluded.status,
           classifier_provider = excluded.classifier_provider,
           classifier_model = excluded.classifier_model,
@@ -406,6 +410,7 @@ export class SqliteSessionStore implements SessionStore {
         label: record.label,
         summary: record.summary,
         body: record.body,
+        bodyVersion: record.body === null ? null : bodyVersion(record.body),
         status: record.status === "idle" ? "active" : record.status,
         transcriptKind: record.transcriptKind,
         transcriptPath: record.transcriptPath,
@@ -644,7 +649,7 @@ export class SqliteSessionStore implements SessionStore {
   /**
    * Phase B.5 — backfill entry point. Writes facts (with deterministic
    * supersedence + best-effort embeddings) for an EXISTING session row
-   * without touching it. Opens its own transaction; callers must not be
+   * versioning its body atomically. Opens its own transaction; callers must not be
    * inside one. The session row must already exist in `sessions` or the
    * FK on facts.source_session_id rejects.
    *
@@ -665,6 +670,12 @@ export class SqliteSessionStore implements SessionStore {
     // callbacks must be sync; ingestSessionFactsInTxn is the sync core.
     const sessionScope = await this.getSessionScopeById(tenantId, sessionId);
     const txn = this.db.transaction(() => {
+      const sourceTc = tenantClause(tenantId);
+      const source = this.db.prepare<[string, string], { body: string | null }>(
+        `SELECT body FROM sessions WHERE id = ? AND ${sourceTc.sql}`).get(sessionId, sourceTc.param);
+      if (!source) throw new Error(`Session ${sessionId} not found`);
+      this.db.prepare(`UPDATE sessions SET body_version = ? WHERE id = ? AND ${sourceTc.sql}`)
+        .run(source.body === null ? null : bodyVersion(source.body), sessionId, sourceTc.param);
       factStore.ingestSessionFactsInTxn(tenantId, sessionId, facts, sessionScope);
     });
     txn();
@@ -736,7 +747,7 @@ export class SqliteSessionStore implements SessionStore {
     const row = this.db
       .prepare<[string, string], SessionRow>(`
         SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
-               label, summary, status, transcript_kind, transcript_path, body,
+               label, summary, status, transcript_kind, transcript_path, body, body_version, workstream_id,
                classifier_provider, classifier_model, classifier_confidence,
                agent_persona, parent_session_id,
                primary_model, total_tokens, skill
@@ -766,7 +777,7 @@ export class SqliteSessionStore implements SessionStore {
     const rows = this.db
       .prepare<unknown[], Omit<SessionRow, "body">>(`
         SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
-               label, summary, status, transcript_kind, transcript_path
+               label, summary, status, transcript_kind, transcript_path, body_version
         FROM sessions
         WHERE id IN (${placeholders}) AND ${tc.sql}
       `)
@@ -1045,10 +1056,10 @@ export class SqliteSessionStore implements SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO sessions (
         id, runtime, runtime_session_id, started_at, ended_at, duration_min,
-        label, summary, body, status, transcript_kind, transcript_path, tenant_id
+        label, summary, body, body_version, status, transcript_kind, transcript_path, tenant_id
       ) VALUES (
         @id, @runtime, @runtimeSessionId, @startedAt, @endedAt, @durationMin,
-        @label, @summary, @body, @status, @transcriptKind, @transcriptPath, @tenantId
+        @label, @summary, @body, @bodyVersion, @status, @transcriptKind, @transcriptPath, @tenantId
       )
     `);
     const status: SessionStatus = session.status === "idle" ? "active" : session.status;
@@ -1061,7 +1072,8 @@ export class SqliteSessionStore implements SessionStore {
       durationMin: session.durationMin,
       label: session.label,
       summary: session.summary,
-      body: session.body,
+      body: persistedText(session.body),
+      bodyVersion: bodyVersion(session.body),
       status,
       transcriptKind: session.transcriptKind,
       transcriptPath: session.transcriptPath,
@@ -1224,6 +1236,7 @@ export class SqliteSessionStore implements SessionStore {
       transcriptKind: row.transcript_kind ?? "",
       transcriptPath: row.transcript_path,
       body: row.body ?? "",
+      bodyVersion: row.body_version ?? null,
       entities: entitiesById.get(row.id) ?? [],
       decisions: [...rawDecisions, ...promotedDecisions],
       open: activeOpen,

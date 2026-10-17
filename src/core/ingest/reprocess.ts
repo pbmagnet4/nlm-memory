@@ -380,7 +380,7 @@ export async function reprocess(
     try {
       const factSinkArg = belowFloor
         ? null
-        : { factStore, facts: extractFacts(classification, sid, row.started_at) };
+        : { factStore, facts: extractFacts(classification, sid, row.started_at, { sourceBody: record.body ?? "" }) };
       await store.insertSession(tenantId, record, embedder, null, factSinkArg);
       done.add(sid);
       succeeded++;

@@ -431,7 +431,7 @@ export class ScanScheduler {
 
         const supersedesArg = supersedes ? { priorSessionId: supersedes, kind: "replaces" as const } : null;
         const facts: ReadonlyArray<Fact> = this.opts.factStore
-          ? extractFacts(classification, chunk.id, chunk.startedAt)
+          ? extractFacts(classification, chunk.id, chunk.startedAt, { sourceBody: record.body ?? "" })
           : [];
 
         try {

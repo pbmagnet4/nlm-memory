@@ -11,6 +11,8 @@
  *  - every fact the collapse supersedes leaves the ANN index immediately
  */
 
+import { anchorValues } from "./fact-source-anchor.js";
+import { persistedText } from "@core/context/source-version.js";
 import type { PoolClient } from "pg";
 import type { Fact } from "@shared/types.js";
 import { collapseWinners } from "./fact-batch.js";
@@ -30,10 +32,10 @@ export async function ingestSessionFactsOnClient(
   for (const f of facts) {
     await client.query(
       `INSERT INTO facts (id, kind, subject, predicate, value, source_session_id,
-         source_quote, created_at, superseded_by, confidence, retired_at, scope, tenant_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+         source_quote, created_at, superseded_by, confidence, retired_at, scope, tenant_id, source_start, source_end, source_body_version, source_quote_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
       [f.id, f.kind, f.subject, f.predicate, f.value, f.sourceSessionId,
-       f.sourceQuote, f.createdAt, f.supersededBy, f.confidence, f.retiredAt, scope, tenantId],
+       f.sourceQuote === null ? null : persistedText(f.sourceQuote), f.createdAt, f.supersededBy, f.confidence, f.retiredAt, scope, tenantId, ...anchorValues(f.sourceAnchor)],
     );
   }
 

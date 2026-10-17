@@ -144,7 +144,7 @@ export async function reclassifyOversized(
         : {}),
     };
 
-    const extracted = extractFacts(classification, chunk.id, chunk.startedAt);
+    const extracted = extractFacts(classification, chunk.id, chunk.startedAt, { sourceBody: record.body ?? "" });
 
     try {
       await deps.store.insertSession(tenantId, record, deps.embedder, null, {

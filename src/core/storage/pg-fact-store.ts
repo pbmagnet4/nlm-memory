@@ -10,6 +10,8 @@
  * semanticSearch.
  */
 
+import { SOURCE_ANCHOR_COLUMNS, anchorValues, anchorFromRow, type SourceAnchorRow } from "./fact-source-anchor.js";
+import { persistedText } from "@core/context/source-version.js";
 import { tokenize } from "@core/recall/tokenize.js";
 import type { Pool } from "pg";
 import type {
@@ -26,7 +28,13 @@ import type { Fact, FactHistoryChain, FactKind } from "@shared/types.js";
 import { ingestSessionFactsOnClient } from "./pg-fact-ingest.js";
 import { tenantClausePg } from "@core/tenancy/tenant-clause.js";
 
-type FactRow = {
+// Alias every source column so existing fact predicates/orderings remain unambiguous.
+const SOURCE_ANCHOR_JOIN = `LEFT JOIN (
+  SELECT id AS anchor_source_id, tenant_id AS anchor_source_tenant, body_version AS current_source_body_version
+  FROM sessions
+) anchor_source ON anchor_source_id = facts.source_session_id AND anchor_source_tenant = facts.tenant_id`;
+
+type FactRow = SourceAnchorRow & {
   id: string;
   kind: FactKind;
   subject: string;
@@ -46,10 +54,10 @@ export class PgFactStore implements FactStore {
   async insert(tenantId: string, fact: Fact): Promise<void> {
     await this.pool.query(
       `INSERT INTO facts (id, kind, subject, predicate, value, source_session_id,
-         source_quote, created_at, superseded_by, confidence, tenant_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+         source_quote, created_at, superseded_by, confidence, tenant_id, source_start, source_end, source_body_version, source_quote_status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
       [fact.id, fact.kind, fact.subject, fact.predicate, fact.value,
-       fact.sourceSessionId, fact.sourceQuote, fact.createdAt, fact.supersededBy, fact.confidence, tenantId],
+       fact.sourceSessionId, fact.sourceQuote === null ? null : persistedText(fact.sourceQuote), fact.createdAt, fact.supersededBy, fact.confidence, tenantId, ...anchorValues(fact.sourceAnchor)],
     );
   }
 
@@ -61,10 +69,10 @@ export class PgFactStore implements FactStore {
       for (const f of facts) {
         await client.query(
           `INSERT INTO facts (id, kind, subject, predicate, value, source_session_id,
-             source_quote, created_at, superseded_by, confidence, tenant_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+             source_quote, created_at, superseded_by, confidence, tenant_id, source_start, source_end, source_body_version, source_quote_status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
           [f.id, f.kind, f.subject, f.predicate, f.value,
-           f.sourceSessionId, f.sourceQuote, f.createdAt, f.supersededBy, f.confidence, tenantId],
+           f.sourceSessionId, f.sourceQuote === null ? null : persistedText(f.sourceQuote), f.createdAt, f.supersededBy, f.confidence, tenantId, ...anchorValues(f.sourceAnchor)],
         );
       }
       await client.query("COMMIT");
@@ -80,8 +88,8 @@ export class PgFactStore implements FactStore {
     const tc = tenantClausePg(tenantId, 2);
     const result = await this.pool.query<FactRow>(
       `SELECT id, kind, subject, predicate, value, source_session_id,
-              source_quote, created_at, superseded_by, confidence, retired_at
-       FROM facts WHERE id = $1 AND ${tc.sql}`,
+              source_quote, created_at, superseded_by, confidence, retired_at, ${SOURCE_ANCHOR_COLUMNS}
+       FROM facts ${SOURCE_ANCHOR_JOIN} WHERE id = $1 AND ${tc.sql}`,
       [id, tc.param],
     );
     return result.rows[0] ? rowToFact(result.rows[0]) : null;
@@ -92,8 +100,8 @@ export class PgFactStore implements FactStore {
     const tc = tenantClausePg(tenantId, 2);
     const result = await this.pool.query<FactRow>(
       `SELECT id, kind, subject, predicate, value, source_session_id,
-              source_quote, created_at, superseded_by, confidence, retired_at
-       FROM facts WHERE id = ANY($1) AND ${tc.sql}`,
+              source_quote, created_at, superseded_by, confidence, retired_at, ${SOURCE_ANCHOR_COLUMNS}
+       FROM facts ${SOURCE_ANCHOR_JOIN} WHERE id = ANY($1) AND ${tc.sql}`,
       [ids as string[], tc.param],
     );
     return result.rows.map(rowToFact);
@@ -103,8 +111,8 @@ export class PgFactStore implements FactStore {
     const tc = tenantClausePg(tenantId, 3);
     const result = await this.pool.query<FactRow>(
       `SELECT id, kind, subject, predicate, value, source_session_id,
-              source_quote, created_at, superseded_by, confidence, retired_at
-       FROM facts
+              source_quote, created_at, superseded_by, confidence, retired_at, ${SOURCE_ANCHOR_COLUMNS}
+       FROM facts ${SOURCE_ANCHOR_JOIN}
        WHERE subject = $1 AND predicate = $2 AND superseded_by IS NULL AND retired_at IS NULL AND ${tc.sql}
        ORDER BY created_at DESC
        LIMIT 1`,
@@ -133,8 +141,8 @@ export class PgFactStore implements FactStore {
     params.push(limit);
     const result = await this.pool.query<FactRow>(
       `SELECT id, kind, subject, predicate, value, source_session_id,
-              source_quote, created_at, superseded_by, confidence, retired_at
-       FROM facts
+              source_quote, created_at, superseded_by, confidence, retired_at, ${SOURCE_ANCHOR_COLUMNS}
+       FROM facts ${SOURCE_ANCHOR_JOIN}
        WHERE ${where.join(" AND ")}
        ORDER BY created_at DESC
        LIMIT $${idx}`,
@@ -147,8 +155,8 @@ export class PgFactStore implements FactStore {
     const tc = tenantClausePg(tenantId, 2);
     const result = await this.pool.query<FactRow>(
       `SELECT id, kind, subject, predicate, value, source_session_id,
-              source_quote, created_at, superseded_by, confidence, retired_at
-       FROM facts
+              source_quote, created_at, superseded_by, confidence, retired_at, ${SOURCE_ANCHOR_COLUMNS}
+       FROM facts ${SOURCE_ANCHOR_JOIN}
        WHERE source_session_id = $1 AND ${tc.sql}
        ORDER BY created_at ASC`,
       [sessionId, tc.param],
@@ -163,8 +171,8 @@ export class PgFactStore implements FactStore {
     const tc = tenantClausePg(tenantId, sessionIds.length + 1);
     const result = await this.pool.query<FactRow>(
       `SELECT id, kind, subject, predicate, value, source_session_id,
-              source_quote, created_at, superseded_by, confidence, retired_at
-       FROM facts WHERE source_session_id IN (${ph}) AND ${tc.sql}${filter} ORDER BY created_at ASC`,
+              source_quote, created_at, superseded_by, confidence, retired_at, ${SOURCE_ANCHOR_COLUMNS}
+       FROM facts ${SOURCE_ANCHOR_JOIN} WHERE source_session_id IN (${ph}) AND ${tc.sql}${filter} ORDER BY created_at ASC`,
       [...sessionIds, tc.param],
     );
     return result.rows.map(rowToFact);
@@ -209,8 +217,8 @@ export class PgFactStore implements FactStore {
     params.push(limit);
     const sql = `
       SELECT id, kind, subject, predicate, value, source_session_id,
-             source_quote, created_at, superseded_by, confidence, retired_at
-      FROM facts
+             source_quote, created_at, superseded_by, confidence, retired_at, ${SOURCE_ANCHOR_COLUMNS}
+      FROM facts ${SOURCE_ANCHOR_JOIN}
       ${where.length > 0 ? "WHERE " + where.join(" AND ") : ""}
       ORDER BY ${order}
       LIMIT $${idx}
@@ -403,8 +411,8 @@ export class PgFactStore implements FactStore {
           (() => {
             const tc = tenantClausePg(tenantId, 3);
             return `SELECT id, kind, subject, predicate, value, source_session_id,
-                  source_quote, created_at, superseded_by, confidence, retired_at
-           FROM facts
+                  source_quote, created_at, superseded_by, confidence, retired_at, ${SOURCE_ANCHOR_COLUMNS}
+           FROM facts ${SOURCE_ANCHOR_JOIN}
            WHERE subject = $1 AND predicate = $2 AND ${tc.sql}
            ORDER BY predicate ASC, created_at DESC`;
           })(),
@@ -414,8 +422,8 @@ export class PgFactStore implements FactStore {
           (() => {
             const tc = tenantClausePg(tenantId, 2);
             return `SELECT id, kind, subject, predicate, value, source_session_id,
-                  source_quote, created_at, superseded_by, confidence, retired_at
-           FROM facts
+                  source_quote, created_at, superseded_by, confidence, retired_at, ${SOURCE_ANCHOR_COLUMNS}
+           FROM facts ${SOURCE_ANCHOR_JOIN}
            WHERE subject = $1 AND ${tc.sql}
            ORDER BY predicate ASC, created_at DESC`;
           })(),
@@ -500,6 +508,7 @@ function rowToFact(row: FactRow): Fact {
     value: row.value,
     sourceSessionId: row.source_session_id,
     sourceQuote: row.source_quote,
+      sourceAnchor: anchorFromRow(row, row.source_quote),
     createdAt: row.created_at,
     supersededBy: row.superseded_by,
     confidence: row.confidence,

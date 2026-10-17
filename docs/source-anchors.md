@@ -1,0 +1,19 @@
+# Literal fact source anchors
+
+A source anchor proves where a quote occurs, not whether a fact is true or a user accepted it. New extraction uses the existing classifier result and the exact capped, UTF-8-normalized session body. Offsets count JavaScript UTF-16 code units. A quote must occur once, including overlapping occurrences: `aa` in `aaaa` is ambiguous. Empty quotes are missing; absent quotes are invalid. Body versions use the first 16 lowercase hex characters of SHA-256, matching transcript pagination.
+
+`Fact.sourceAnchor` has these shapes:
+
+- Verified: `{status:'verified', start, end, bodyVersion}`.
+- Negative: `{status:'invalid'|'ambiguous', bodyVersion?:string}`. The optional version identifies the body assessed; it never supplies trusted offsets.
+- Missing or stale: `{status:'missing'|'stale'}`.
+
+SQLite migration 043 and PostgreSQL migration 039 add nullable `sessions.body_version` and `facts.source_start`, `source_end`, `source_body_version`, `source_quote_status`. There are no new tables and no startup hashing or corpus backfill. Existing rows remain readable. Each fact read projects the anchor columns and joins the source's current version through the fact's tenant. Changed, missing or foreign source versions invalidate stored assessments. Fact-only session metadata reads carry versions without bodies.
+
+Both session adapters normalize before writing and atomically persist body/version with session facts. Scheduler, webhook, oversized reclassification, reprocess and explicit fact backfill pass the persisted-body representation into extraction. The explicit bounded `insertFactsForSession` maintenance path establishes a legacy source version inside its fact transaction; a failure rolls back both. Seed helpers version their bodies too. Single/bulk fact insert APIs persist supplied extraction anchors and normalize quotes; they do not silently scan or rewrite sources.
+
+Compatible old binaries can still update a body without updating its new version column. SQLite and PostgreSQL write-boundary triggers null the version when the body changes but the version does not. An unchanged body preserves its version. SQLite's FTS update trigger is restricted to its indexed content columns so the version-only invalidation cannot recursively corrupt the FTS index. All changes are additive migrations; no installed binary or database is changed by committing this code.
+
+Compact context reuses matching positive and negative assessments without loading fact-only bodies. Missing, legacy and stale assessments hydrate only the selected source bodies under the existing shared request deadline. A pure literal search can then set `quoteVerified` for one occurrence in that returned body. This ephemeral boolean proof does not upgrade the durable anchor or write a version; repeated and absent quotes remain false. No generative calls are added. Session expansion rechecks tenant/workstream membership, validates stored fact anchors against the fetched session version, and retains transcript version checks. Transcript pages still load the full body and slice in JavaScript. SQL `substr` code-point offsets are not used as UTF-16 offsets.
+
+The CPU diagnostic `scripts/eval/source-anchor-cpu.ts SNAPSHOT OUTPUT_DIRECTORY` clones the frozen snapshot, reads only source/fact development data, deterministically samples quoted facts, and measures verification CPU after database loading. It reports the actual nullable legacy population, a counterfactual new-write population, and the uniquely verified subset separately. The counterfactual is not a deployed-corpus or whole-request latency gain. Private results, clone files and source text stay outside git; the Task 6 report records the measurements and limitations.

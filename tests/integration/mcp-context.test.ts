@@ -1,3 +1,4 @@
+import { locateSourceAnchor } from "../../src/core/facts/source-anchor.js";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -32,6 +33,62 @@ describe("bounded structured memory context", () => {
       factRecall: new FactRecallService({ factStore: storage.facts, llm }) };
   });
   afterEach(async () => { vi.unstubAllEnvs(); await storage.close(); rmSync(dir, { recursive: true, force: true }); });
+
+  it("preserves unique legacy quote proof with read-only bounded body hydration", async () => {
+    await storage.facts.insert(tenant, makeFact({ id: "legacy", sourceSessionId: "source", subject: "store", predicate: "framework", value: "SQLite", sourceQuote: rationale }));
+    storage.rawDb().prepare("UPDATE sessions SET body_version = NULL WHERE id = 'source'").run();
+    const changes = () => (storage.rawDb().prepare("SELECT total_changes() AS n").get() as { n: number }).n;
+    const before = changes();
+    const readBody = vi.spyOn(storage.sessions, "getById");
+    const payload = JSON.parse((await recallContextHandler(deps, tenant, { query: "store framework", subject: "store", predicate: "framework" })).content[0]!.text);
+    expect(payload.facts[0].quoteVerified).toBe(true);
+    expect(readBody).toHaveBeenCalledWith(tenant, "source");
+    expect(changes()).toBe(before);
+    expect((await storage.facts.getById(tenant, "legacy"))!.sourceAnchor).toEqual({ status: "missing" });
+    expect((await storage.sessions.getById(tenant, "source"))!.bodyVersion).toBeNull();
+  });
+
+  it("uses current versioned anchors without fact-only body reads", async () => {
+    await storage.facts.insert(tenant, makeFact({ id: "anchored", sourceSessionId: "source", subject: "store", predicate: "framework", value: "SQLite", sourceQuote: rationale, sourceAnchor: locateSourceAnchor(body, rationale) }));
+    const readBody = vi.spyOn(storage.sessions, "getById");
+    const payload = JSON.parse((await recallContextHandler(deps, tenant, { query: "store framework", subject: "store", predicate: "framework" })).content[0]!.text);
+    expect(payload.facts[0].quoteVerified).toBe(true);
+    expect(readBody).not.toHaveBeenCalled();
+  });
+
+  it.each(["invalid", "ambiguous"] as const)("reuses a current %s assessment and hydrates only after the source changes", async (status) => {
+    const negativeBody = status === "invalid" ? "absent" : "aaaa";
+    const quote = "aa";
+    storage.sessions.insertSessionForTest(makeSession({ id: "negative", body: negativeBody }));
+    await storage.facts.insert(tenant, makeFact({ id: "negative-fact", sourceSessionId: "negative", subject: "store", predicate: "framework", value: "SQLite", sourceQuote: quote, sourceAnchor: locateSourceAnchor(negativeBody, quote) }));
+    const readBody = vi.spyOn(storage.sessions, "getById");
+    const input = { query: "store framework", subject: "store", predicate: "framework" };
+    let payload = JSON.parse((await recallContextHandler(deps, tenant, input)).content[0]!.text);
+    expect(payload.facts[0].quoteVerified).toBe(false);
+    expect(readBody).not.toHaveBeenCalled();
+    storage.rawDb().prepare("UPDATE sessions SET body = 'now aa unique' WHERE id = 'negative'").run();
+    payload = JSON.parse((await recallContextHandler(deps, tenant, input)).content[0]!.text);
+    expect(payload.facts[0].quoteVerified).toBe(true);
+    expect(readBody).toHaveBeenCalledWith(tenant, "negative");
+    expect((await storage.facts.getById(tenant, "negative-fact"))!.sourceAnchor).toEqual({ status: "stale" });
+  });
+
+  it("reverifies changed sources without trusting stale offsets, rejecting overlapping repeats", async () => {
+    const quote = "aa";
+    storage.sessions.insertSessionForTest(makeSession({ id: "repeat", body: "xx aa yy" }));
+    await storage.facts.insert(tenant, makeFact({ id: "anchored", sourceSessionId: "repeat", subject: "store", predicate: "framework", value: "SQLite", sourceQuote: quote, sourceAnchor: locateSourceAnchor("xx aa yy", quote) }));
+    const before = storage.rawDb().prepare("SELECT source_start, source_end, source_body_version FROM facts WHERE id = 'anchored'").get();
+    storage.rawDb().prepare("UPDATE sessions SET body = 'aaaa' WHERE id = 'repeat'").run();
+    const input = { query: "store framework", subject: "store", predicate: "framework" };
+    let payload = JSON.parse((await recallContextHandler(deps, tenant, input)).content[0]!.text);
+    expect(payload.facts[0].quoteVerified).toBe(false);
+    expect((await storage.facts.getById(tenant, "anchored"))!.sourceAnchor).toEqual({ status: "stale" });
+    storage.rawDb().prepare("UPDATE sessions SET body = 'changed prefix aa' WHERE id = 'repeat'").run();
+    payload = JSON.parse((await recallContextHandler(deps, tenant, input)).content[0]!.text);
+    expect(payload.facts[0].quoteVerified).toBe(true);
+    expect(storage.rawDb().prepare("SELECT source_start, source_end, source_body_version FROM facts WHERE id = 'anchored'").get()).toEqual(before);
+    expect((await storage.facts.getById(tenant, "anchored"))!.sourceAnchor).toEqual({ status: "stale" });
+  });
 
   it("scopes both evidence lanes, expansion arguments, and history against current bindings", async () => {
     await storage.workstreams.create(tenant, { id: "ws_scope", label: "SQLite project", scope: null });

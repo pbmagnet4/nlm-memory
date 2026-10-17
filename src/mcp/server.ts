@@ -1,3 +1,5 @@
+import { validateSourceAnchor } from "@core/facts/source-anchor.js";
+import { bodyVersion } from "@core/context/source-version.js";
 import { resolveRecallScope, type ResolvedRecallScope } from "@core/recall/resolve-scope.js";
 /**
  * MCP adapter. Binds the `recall_sessions` and `get_session` tools directly
@@ -487,6 +489,10 @@ export async function getSessionHandler(
       return err(new Error(`session ${input.id} not found`));
     }
 
+    if (scope.status !== "all" && !scope.workstreamIds.some((id) => id === session.workstreamId)) {
+      return err(new Error(`session ${input.id} not found`));
+    }
+
     // Enrich supersedence links with labels so AI callers get context, not just opaque IDs
     const linkedIds: string[] = [
       ...(session.supersedes ?? []),
@@ -543,7 +549,7 @@ export async function getSessionHandler(
 
     if (args.view === "transcript") {
       if (args.offset > session.body.length) return err(new Error("offset exceeds transcript length"));
-      const version = createHash("sha256").update(session.body).digest("hex").slice(0, 16);
+      const version = bodyVersion(session.body);
       if (args.version && args.version !== version) return err(new Error("Transcript changed; restart at offset 0."));
       let size = args.maxChars - 1_000;
       for (;;) {
@@ -566,7 +572,8 @@ export async function getSessionHandler(
       id: session.id, label: session.label, startedAt: session.startedAt, status: session.status,
       summary: session.summary, decisions, open, entities: session.entities,
       facts: currentFacts.slice(0, 8).map((f) => ({ id: f.id, kind: f.kind, subject: f.subject,
-        predicate: f.predicate, value: f.value, sourceQuote: f.sourceQuote })),
+        predicate: f.predicate, value: f.value, sourceQuote: f.sourceQuote,
+        sourceAnchor: validateSourceAnchor(f.sourceAnchor, session.bodyVersion) })),
       passages: args.query ? matchedPassages(session, args.query) : [],
       omitted: { decisions: session.decisions.length - decisions.length,
         open: session.open.length - open.length, facts: Math.max(0, currentFacts.length - 8) },

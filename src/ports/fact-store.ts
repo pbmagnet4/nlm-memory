@@ -64,6 +64,8 @@ export interface FactListFilter extends FactEligibility {
   readonly limit?: number;
 }
 
+/** Reads validate stored literal assessments against the current tenant-owned source version.
+ * Legacy/stale rows stay readable without trusted offsets or implicit maintenance writes. */
 export interface FactStore {
   /** Atomically insert a single fact. Throws on duplicate id. */
   insert(tenantId: string, fact: Fact): Promise<void>;

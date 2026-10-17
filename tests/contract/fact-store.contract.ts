@@ -132,7 +132,7 @@ export function runFactStoreContract(h: FactStoreContractHarness): void {
       const fact = makeFact({ id: "fact_1", sourceSessionId: "sess_parent" });
       await storage.facts.insert("team_local", fact);
       const fetched = await storage.facts.getById("team_local", "fact_1");
-      expect(fetched).toEqual(fact);
+      expect(fetched).toEqual({ ...fact, sourceAnchor: { status: "missing" } });
     });
 
     it("returns null for missing ids", async () => {

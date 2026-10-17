@@ -1,3 +1,4 @@
+import { hasCurrentSourceAssessment } from "@core/facts/source-anchor.js";
 import type { FactStore, CurrentValueSummary } from "@ports/fact-store.js";
 import type { SessionStore } from "@ports/session-store.js";
 import type { WorkstreamStore } from "@ports/workstream-store.js";
@@ -71,18 +72,26 @@ export async function recallContext(tenantId: string, input: ContextRequest, dep
     return budget.run(async () => {
       const metadata = await deps.store.getByIds(tenantId, ids);
       budget.check();
-      const full = await Promise.all(sessionHits.map((s) => deps.store.getById(tenantId, s.id)));
+      const currentVersions = new Map(metadata.map((s) => [s.id, s.bodyVersion]));
+      const fullIds = new Set([...sessionHits.map((s) => s.id), ...factHits
+        .filter((f) => f.sourceQuote && !hasCurrentSourceAssessment(f.sourceAnchor, currentVersions.get(f.sourceSessionId)))
+        .map((f) => f.sourceSessionId)]);
+      const full = await Promise.all([...fullIds].map((id) => deps.store.getById(tenantId, id)));
       budget.check();
       const successors = await deps.store.resolveSuccessors(tenantId, ids);
       const byId = new Map(full.filter((s) => s !== null).map((s) => [s.id, s]));
-      return metadata.map((s) => ({ ...(byId.get(s.id) ?? s), supersededBy: successors.get(s.id) ?? null }));
+      return metadata.map((s) => {
+        const prior = sourceMap.get(s.id);
+        const source = byId.get(s.id) ?? (prior && prior.bodyVersion === s.bodyVersion ? { ...s, body: prior.body } : s);
+        return { ...source, supersededBy: successors.get(s.id) ?? null };
+      });
     });
   };
   const publishFacts = async (result: Pick<FactRecallResult, "results">) => {
     const sources = await hydrate(result.results, []);
     budget.check();
     facts = result.results;
-    for (const source of sources) if (!sourceMap.has(source.id)) sourceMap.set(source.id, source);
+    for (const source of sources) sourceMap.set(source.id, source);
     factCoverage = "partial";
   };
   const publishSessions = async (result: RecallResult) => {

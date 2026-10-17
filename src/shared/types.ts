@@ -31,6 +31,7 @@ export interface Session {
   readonly transcriptKind: string;
   readonly transcriptPath: string | null;
   readonly body: string;
+  readonly bodyVersion?: string | null;
   readonly entities: ReadonlyArray<string>;
   readonly decisions: ReadonlyArray<string>;
   readonly open: ReadonlyArray<string>;
@@ -230,6 +231,12 @@ export interface RecallResult {
  */
 export type FactKind = "decision" | "open" | "attribute";
 
+export type SourceAnchor =
+  | { readonly status: "verified"; readonly start: number; readonly end: number; readonly bodyVersion: string }
+  | { readonly status: "invalid" | "ambiguous"; readonly bodyVersion?: string }
+  | { readonly status: "missing" }
+  | { readonly status: "stale" };
+
 export interface Fact {
   readonly id: string;
   readonly kind: FactKind;
@@ -238,6 +245,7 @@ export interface Fact {
   readonly value: string;
   readonly sourceSessionId: string;
   readonly sourceQuote: string | null;
+  readonly sourceAnchor?: SourceAnchor;
   readonly createdAt: string;
   readonly supersededBy: string | null;
   readonly confidence: number;

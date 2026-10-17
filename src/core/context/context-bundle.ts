@@ -1,3 +1,4 @@
+import { verifySourceQuote } from "@core/facts/source-anchor.js";
 import type { ContextCoverage } from "./recall-context.js";
 import type { ResolvedRecallScope } from "@core/recall/resolve-scope.js";
 import type { FactHit, RecallHit, Session } from "@shared/types.js";
@@ -48,7 +49,7 @@ export function buildContextBundle(
       source: { id: f.sourceSessionId, status: source?.status ?? "unavailable",
         supersededBy: source?.supersededBy ?? null },
       sourceQuote: f.sourceQuote,
-      quoteVerified: f.sourceQuote && source?.body ? source.body.includes(f.sourceQuote) : null,
+      quoteVerified: verifySourceQuote(f, source),
       expand: { id: f.sourceSessionId, ...scopeArgs },
     }];
   });

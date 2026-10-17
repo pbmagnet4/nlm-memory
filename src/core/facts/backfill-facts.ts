@@ -171,7 +171,7 @@ export async function backfillFacts(
       continue;
     }
 
-    const facts = extractFacts(classification, sid, row.startedAt);
+    const facts = extractFacts(classification, sid, row.startedAt, { sourceBody: row.body ?? "" });
     if (facts.length === 0) {
       skippedLowConfidence += 1;
       opts.onProgress?.(
