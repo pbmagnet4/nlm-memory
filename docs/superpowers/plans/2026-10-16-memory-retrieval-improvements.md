@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-16-memory-retrieval-improvements.md` (binding authority; section 5 owns numeric experiment thresholds).
 
-**Status:** T806 implementation is in progress from local main `a9f0729` (retrieval baseline `e391597`); planning task T805. Required Tasks 1–6 have passed independent engineering/spec/security review, including scoped fix reviews. Task 7 development-only ranking experiments are in progress. The source-audited set has 120 frozen cases (65 development / 55 sealed holdout; 36 sources, 10 families). Exact consumer tokens and scientific promotion remain unavailable. T527/T679 are related work, not duplicate tickets.
+**Status:** T806 implementation is in progress from local main `a9f0729` (retrieval baseline `e391597`); planning task T805. Required Tasks 1–6 have passed independent engineering/spec/security review, including scoped fix reviews. Task 7 ended inconclusive/no-go after independent review; Task 8 evidence-delta feasibility is in progress. The source-audited set has 120 frozen cases (65 development / 55 sealed holdout; 36 sources, 10 families). Exact consumer tokens and scientific promotion remain unavailable. T527/T679 are related work, not duplicate tickets.
 
 ## Global Constraints
 
@@ -176,12 +176,16 @@ A deterministic 256-of-9,977 quoted-fact sample contained 95 unique literals, 14
 
 **Interfaces:** `CorroborationPolicy = (count:number)=>number` for factor experiments, plus an explicit relevance-first tie-break policy if evaluated. Store count semantics stay unchanged. No process-global env mutation while concurrent arms run.
 
-- [ ] Add tests proving that disabled boost retains count metadata; count cannot promote a zero-relevance non-match; equal triples from copies are distinguished from independent evidence in reports; multiple facets are not retired.
-- [ ] Verify tests on current policy, then freeze the three-arm grid (cap 2.0, cap 1.0, relevance-first/tie-only) on development data before holdout.
-- [ ] Run paired identical-vector experiments against the post-correctness baseline. Evaluate supported answers/evidence and no-answer behavior as primary metrics; retain R@1/R@5/MRR as diagnostics.
-- [ ] Select at most one candidate using development data and the spec's proposed quality gates. Register it for Task 10; keep holdout sealed and production ranking unchanged. Estimate final sample size from development data, not intermediate held-out results.
-- [ ] Review scoring methodology as well as code; verify any apparent gain against original sources and audit disagreements. Record rejected/accepted findings.
-- [ ] Commit the development report and a disabled candidate only; Task 10 owns held-out promotion. Update T527 with evidence; do not create a duplicate ranking task or claim a failed experiment as a feature.
+- [x] Add tests proving that disabled boost retains count metadata; count cannot promote a zero-relevance non-match; equal triples from copies are distinguished from independent evidence in reports; multiple facets are not retired.
+- [x] Verify tests on current policy, then freeze the three-arm grid (cap 2.0, cap 1.0, relevance-first/tie-only) on development data before holdout.
+- [x] Run paired identical-vector experiments against the post-correctness baseline. Evaluate supported answers/evidence and no-answer behavior as primary metrics; retain R@1/R@5/MRR as diagnostics.
+- [x] Select at most one candidate using development data and the spec's proposed quality gates. Register it for Task 10; keep holdout sealed and production ranking unchanged. Estimate final sample size from development data, not intermediate held-out results.
+- [x] Review scoring methodology as well as code; verify any apparent gain against original sources and audit disagreements. Record rejected/accepted findings.
+- [x] Commit the development report and a disabled candidate only; Task 10 owns held-out promotion. Update T527 with evidence; do not create a duplicate ranking task or claim a failed experiment as a feature.
+
+**Execution evidence:** `78342db`/`ed58dc5` passed independent code/spec/security and methodology review, with 37 focused tests and typecheck. The preregistered 3-policy × 2-session-mode development grid produced literal-evidence counts 10/65 for current cap2/default, 11/65 for cap1/default and tie-only/default, and 2/65 for every both-hybrid arm. The best +1.54 pp is below the frozen overall +5 pp threshold. No primary blinded answer-quality or power estimate is available, so no optional arm qualifies for Task 10. Production remains unchanged.
+
+The control matches 65/65 scores but only 64/65 reader answers/full bundles: a first-request partial baseline differs while both versions score insufficient. All baseline deadline failures remain counted; no reruns were used to remove them. Source audits validated 71/71 gold UTF-16 ranges and audited all disagreements/no-answer errors plus seeded agreements. All 328 nonliteral occurrences were historical `sourceQuote` fields explicitly marked `quoteVerified:false`; none was a verified-quote contradiction. Seven hybrid losses omit the intended source from the packed bundle; one retains its source but omits the needed range. These are scoped engineering followups for T527, not a general claim about hybrid retrieval. [Development report](../../memory-corroboration-experiment.md).
 
 ## Task 8: Test caller-declared evidence deltas for repeated context
 
