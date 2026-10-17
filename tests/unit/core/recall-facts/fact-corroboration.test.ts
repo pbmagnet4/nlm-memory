@@ -40,6 +40,7 @@ class ScriptedFactStore implements FactStore {
     private readonly counts: Map<string, number>,
     private readonly shouldThrow = false,
   ) {}
+  async summarizeCurrentValues(): Promise<never> { throw new Error("Unexpected current-value probe in this test"); }
   async insert() {}
   async insertMany() {}
   async getById(_tenantId: string, id: string) {

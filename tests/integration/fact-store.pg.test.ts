@@ -57,6 +57,10 @@ describe.skipIf(!PG_TEST_URL)(
         await storage.close();
       },
 
+      async seedTenant(storage: Storage, tenantId: string): Promise<void> {
+        await (storage as PgStorage).pgPool().query("INSERT INTO teams (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING", [tenantId, tenantId]);
+      },
+
       async seedSession(storage: Storage, session: Session): Promise<void> {
         await (storage as PgStorage).sessions.insertSessionForTest(session);
       },

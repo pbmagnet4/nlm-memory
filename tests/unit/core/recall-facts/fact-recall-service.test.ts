@@ -24,6 +24,7 @@ class InMemoryFactStore implements FactStore {
     private readonly facts: Fact[],
     private readonly neighbors: FactSemanticNeighbor[] = [],
   ) {}
+  async summarizeCurrentValues(): Promise<never> { throw new Error("Unexpected current-value probe in this test"); }
   async insert(): Promise<void> {}
   async insertMany(): Promise<void> {}
   async getById(_tenantId: string, id: string): Promise<Fact | null> {

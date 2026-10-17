@@ -103,6 +103,65 @@ describe("bounded structured memory context", () => {
     vi.unstubAllEnvs();
   });
 
+  it("proves ambiguity across the complete eligible corpus and surfaces the hidden alternative", async () => {
+    await storage.facts.insertMany(tenant, [makeFact({ id: "old_b", sourceSessionId: "source", subject: "store", predicate: "framework", value: "B", createdAt: "2020-01-01T00:00:00Z" }),
+      ...Array.from({ length: 601 }, (_, i) => makeFact({ id: `duplicate_${i}`, sourceSessionId: "source", subject: "store", predicate: "framework", value: "A" }))]);
+    const search = vi.spyOn(deps.recall, "search");
+    const result = await recallContextHandler(deps, tenant, { query: "store framework", subject: "store", predicate: "framework" });
+    const payload = JSON.parse(result.content[0]!.text);
+    expect(payload.lookup).toEqual({ distinctValueCount: 2, complete: true, sourceSessionCount: 1,
+      omittedAlternatives: 0, expand: { subject: "store", predicate: "framework" } });
+    expect(payload.facts.map((f: { value: string }) => f.value).sort()).toEqual(["A", "B"]);
+    expect(payload.facts.every((f: { multipleValues: boolean; multipleValuesScope: string }) => f.multipleValues && f.multipleValuesScope === "corpus")).toBe(true);
+    expect(search).toHaveBeenCalledOnce();
+  });
+
+  it("cannot infer uniqueness when the complete probe is interrupted", async () => {
+    await storage.facts.insert(tenant, makeFact({ id: "only", sourceSessionId: "source", subject: "store", predicate: "framework", value: "A" }));
+    vi.spyOn(storage.facts, "summarizeCurrentValues").mockRejectedValue(new Error("statement timeout"));
+    const search = vi.spyOn(deps.recall, "search");
+    const result = await recallContextHandler(deps, tenant, { query: "store framework", subject: "store", predicate: "framework" });
+    const payload = JSON.parse(result.content[0]!.text);
+    expect(payload.lookup.distinctValueCount).toBeNull();
+    expect(payload.lookup.complete).toBe(false);
+    expect(payload.facts[0].multipleValuesScope).toBe("candidates");
+    expect(search).toHaveBeenCalledOnce();
+  });
+
+  it("uses the fact lane confidence floor for uniqueness", async () => {
+    await storage.facts.insertMany(tenant, [makeFact({ id: "high", sourceSessionId: "source", subject: "store", predicate: "framework", value: "A" }),
+      makeFact({ id: "low", sourceSessionId: "source", subject: "store", predicate: "framework", value: "B", confidence: 0.59 })]);
+    const search = vi.spyOn(deps.recall, "search");
+    const payload = JSON.parse((await recallContextHandler(deps, tenant, { query: "store framework", subject: "store", predicate: "framework" })).content[0]!.text);
+    expect(payload.lookup.complete).toBe(true); expect(payload.lookup.distinctValueCount).toBe(1);
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it("reports omitted alternatives and scoped history without truncating oversized facts", async () => {
+    await storage.workstreams.create(tenant, { id: "ws_large", label: "Large values", scope: null });
+    await storage.sessions.setWorkstreamBinding(tenant, "source", "ws_large", "operator", 1);
+    await storage.facts.insertMany(tenant, ["A", "B", "C"].map((value) => makeFact({ id: `large_${value}`, sourceSessionId: "source",
+      subject: "store", predicate: "framework", value: value.repeat(4_000), sourceQuote: rationale })));
+    const wired = { ...deps, workstreams: { store: storage.workstreams, sessions: storage.sessions, facts: storage.facts, exemplars: storage.exemplars } };
+    const result = await recallContextHandler(wired, tenant, { query: "store framework", subject: "store", predicate: "framework", workstream: "Large values", maxChars: 2_000 });
+    const payload = JSON.parse(result.content[0]!.text);
+    expect(result.content[0]!.text.length).toBeLessThanOrEqual(2_000);
+    expect(payload.facts).toEqual([]);
+    expect(payload.lookup).toEqual({ distinctValueCount: 3, sourceSessionCount: 1, complete: true, omittedAlternatives: 3,
+      expand: { subject: "store", predicate: "framework", workstream: "Large values" } });
+    expect(payload.truncated).toBeUndefined();
+  });
+
+  it("labels general search multiplicity as a candidate observation and keeps exact tuple groups separate", async () => {
+    await storage.facts.insertMany(tenant, [
+      makeFact({ id: "tuple_a", sourceSessionId: "source", subject: "a b", predicate: "c", value: "A" }),
+      makeFact({ id: "tuple_b", sourceSessionId: "source", subject: "a", predicate: "b c", value: "B" }),
+    ]);
+    const payload = JSON.parse((await recallContextHandler(deps, tenant, { query: "a b c", intent: "history", mode: "keyword" })).content[0]!.text);
+    expect(payload.lookup).toBeUndefined(); expect(payload.facts).toHaveLength(2);
+    expect(payload.facts.every((f: { multipleValues: boolean; multipleValuesScope: string }) => !f.multipleValues && f.multipleValuesScope === "candidates")).toBe(true);
+  });
+
   it("returns mid-transcript rationale as exact source evidence within budget", async () => {
     const result = await recallContextHandler(deps, tenant, { query: "why SQLite single writer", mode: "keyword" });
     expect(result.isError).toBeUndefined();

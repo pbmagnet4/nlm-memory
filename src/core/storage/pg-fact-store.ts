@@ -13,6 +13,8 @@
 import { tokenize } from "@core/recall/tokenize.js";
 import type { Pool } from "pg";
 import type {
+  CurrentValueQuery,
+  CurrentValueSummary,
   FactEligibility,
   FactListFilter,
   FactQuery,
@@ -183,12 +185,15 @@ export class PgFactStore implements FactStore {
     const tc = tenantClausePg(tenantId, idx++);
     where.push(tc.sql);
     params.push(tc.param);
+    const sourceTenant = tenantClausePg(tenantId, idx++);
+    const sourceWhere = [sourceTenant.sql];
+    params.push(sourceTenant.param);
     if (filter.workstreamIds !== undefined) {
       if (filter.workstreamIds.length === 0) return [];
-      const sourceTenant = tenantClausePg(tenantId, idx++);
-      where.push(`source_session_id IN (SELECT id FROM sessions WHERE ${sourceTenant.sql} AND workstream_id = ANY($${idx++}::text[]))`);
-      params.push(tenantId, filter.workstreamIds);
+      sourceWhere.push(`workstream_id = ANY($${idx++}::text[])`);
+      params.push(filter.workstreamIds);
     }
+    where.push(`source_session_id IN (SELECT id FROM sessions WHERE ${sourceWhere.join(" AND ")})`);
     const tokens = [...new Set(tokenize(filter.query))];
     if (filter.query && tokens.length === 0) return [];
     const document = "to_tsvector('simple', subject || ' ' || predicate || ' ' || value)";
@@ -310,6 +315,36 @@ export class PgFactStore implements FactStore {
        ON CONFLICT (fact_id) DO UPDATE SET embedding = EXCLUDED.embedding`,
       [factId, vecStr],
     );
+  }
+
+  async summarizeCurrentValues(tenantId: string, query: CurrentValueQuery): Promise<CurrentValueSummary> {
+    if (query.workstreamIds?.length === 0) return { distinctValueCount: 0, sourceSessionCount: 0, examples: [] };
+    const factTenant = tenantClausePg(tenantId, 1, "f.tenant_id");
+    const sourceTenant = tenantClausePg(tenantId, 2, "s.tenant_id");
+    const where = [factTenant.sql, sourceTenant.sql, "f.subject = $3", "f.predicate = $4",
+      "f.superseded_by IS NULL", "f.retired_at IS NULL"];
+    const params: unknown[] = [factTenant.param, sourceTenant.param, query.subject, query.predicate];
+    if (query.kind !== undefined) { params.push(query.kind); where.push(`f.kind = $${params.length}`); }
+    if (query.minConfidence !== undefined) { params.push(query.minConfidence); where.push(`f.confidence >= $${params.length}`); }
+    if (query.workstreamIds !== undefined) {
+      params.push(query.workstreamIds); where.push(`s.workstream_id = ANY($${params.length}::text[])`);
+    }
+    const { rows } = await this.pool.query<{
+      distinct_count: string; source_count: string; value: string | null; source_session_id: string | null;
+    }>(`
+      WITH eligible AS MATERIALIZED (
+        SELECT f.value, f.source_session_id FROM facts f JOIN sessions s ON s.id = f.source_session_id
+        WHERE ${where.join(" AND ")}
+      ), totals AS (
+        SELECT COUNT(DISTINCT value) AS distinct_count, COUNT(DISTINCT source_session_id) AS source_count FROM eligible
+      ), examples AS (
+        SELECT value, MIN(source_session_id COLLATE "C") AS source_session_id FROM eligible
+        GROUP BY value ORDER BY value COLLATE "C" LIMIT 2
+      )
+      SELECT totals.*, examples.* FROM totals LEFT JOIN examples ON TRUE ORDER BY value COLLATE "C"
+    `, params);
+    return { distinctValueCount: Number(rows[0]!.distinct_count), sourceSessionCount: Number(rows[0]!.source_count),
+      examples: rows.flatMap((r) => r.value === null ? [] : [{ value: r.value, sourceSessionId: r.source_session_id! }]) };
   }
 
   async semanticSearch(

@@ -48,6 +48,17 @@ export interface FactEligibility {
   readonly minConfidence?: number;
 }
 
+export type CurrentValueQuery = Omit<FactEligibility, "includeSuperseded"> & {
+  readonly subject: string;
+  readonly predicate: string;
+};
+
+export interface CurrentValueSummary {
+  readonly distinctValueCount: number;
+  readonly sourceSessionCount: number;
+  readonly examples: readonly { readonly value: string; readonly sourceSessionId: string }[];
+}
+
 export interface FactListFilter extends FactEligibility {
   readonly query?: string;
   readonly limit?: number;
@@ -153,6 +164,9 @@ export interface FactStore {
    * queries use `created_at DESC`.
    */
   listForRecall(tenantId: string, filter: FactListFilter): Promise<ReadonlyArray<Fact>>;
+
+  /** Complete counts over eligible current facts; at most two deterministic examples, in one snapshot. */
+  summarizeCurrentValues(tenantId: string, query: CurrentValueQuery): Promise<CurrentValueSummary>;
 
   /**
    * Exact L2 neighbors from tenant-owned facts with tenant-owned source

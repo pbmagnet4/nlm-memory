@@ -1,12 +1,26 @@
 import type { FactHit, RecallHit, Session } from "@shared/types.js";
 import { matchedPassages, relevantStrings } from "./session-evidence.js";
 
+export interface ContextLookup {
+  readonly subject: string;
+  readonly predicate: string;
+  readonly distinctValueCount: number | null;
+  readonly sourceSessionCount: number | null;
+  readonly complete: boolean;
+}
+
 export function buildContextBundle(
   query: string, facts: readonly FactHit[], hits: readonly RecallHit[],
-  sources: readonly Session[], maxChars: number, workstream?: string,
+  sources: readonly Session[], maxChars: number, workstream?: string, lookup?: ContextLookup,
 ) {
   const scopeArgs = workstream !== undefined ? { workstream } : {};
   const byId = new Map(sources.map((s) => [s.id, s]));
+  const groups = new Map<string, Set<string>>();
+  for (const fact of facts) {
+    const key = JSON.stringify([fact.subject, fact.predicate]);
+    if (!groups.has(key)) groups.set(key, new Set());
+    groups.get(key)!.add(fact.value);
+  }
   const seen = new Set<string>();
   const factRecords = facts.flatMap((f) => {
     const key = JSON.stringify([f.subject, f.predicate, f.value]);
@@ -15,8 +29,9 @@ export function buildContextBundle(
     const source = byId.get(f.sourceSessionId);
     return [{ id: f.id, kind: f.kind, subject: f.subject, predicate: f.predicate,
       value: f.value, createdAt: f.createdAt, confidence: f.confidence,
-      multipleValues: new Set(facts.filter((other) => other.subject === f.subject && other.predicate === f.predicate)
-        .map((other) => other.value)).size > 1,
+      multipleValues: lookup?.complete && lookup.subject === f.subject && lookup.predicate === f.predicate
+        ? lookup.distinctValueCount! > 1 : groups.get(JSON.stringify([f.subject, f.predicate]))!.size > 1,
+      multipleValuesScope: lookup?.complete && lookup.subject === f.subject && lookup.predicate === f.predicate ? "corpus" : "candidates",
       sourceSessionIds: [...new Set(facts.filter((other) => other.subject === f.subject && other.predicate === f.predicate && other.value === f.value)
         .map((other) => other.sourceSessionId))],
       source: { id: f.sourceSessionId, status: source?.status ?? "unavailable",
@@ -38,7 +53,10 @@ export function buildContextBundle(
         ? { id: h.id, ...scopeArgs, view: "transcript", offset: passages[0]!.offset } : { id: h.id, ...scopeArgs },
     }];
   });
-  const bundle = { query: query.slice(0, 200), queryShortened: query.length > 200, facts: [] as typeof factRecords, sessions: [] as typeof sessionRecords,
+  const lookupRecord = lookup ? { distinctValueCount: lookup.distinctValueCount, complete: lookup.complete,
+    sourceSessionCount: lookup.sourceSessionCount, omittedAlternatives: lookup.distinctValueCount,
+    expand: { subject: lookup.subject, predicate: lookup.predicate, ...scopeArgs } } : undefined;
+  const bundle = { ...(lookupRecord ? { lookup: lookupRecord } : {}), query: query.slice(0, 200), queryShortened: query.length > 200, facts: [] as typeof factRecords, sessions: [] as typeof sessionRecords,
     omitted: { facts: factRecords.length, sessions: sessionRecords.length },
     budgetChars: maxChars,
     expand: [...sessionRecords.map((s) => s.expand),
@@ -64,6 +82,10 @@ export function buildContextBundle(
       bundle.sessions.pop();
       bundle.omitted.sessions++;
     }
+  }
+  if (bundle.lookup && lookup && lookup.distinctValueCount !== null) {
+    const returnedValues = new Set(bundle.facts.filter((f) => f.subject === lookup.subject && f.predicate === lookup.predicate).map((f) => f.value));
+    bundle.lookup.omittedAlternatives = Math.max(0, lookup.distinctValueCount - returnedValues.size);
   }
   return bundle;
 }

@@ -37,7 +37,7 @@ import { tokenSet } from "@core/recall/tokenize.js";
 
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 100;
-const DEFAULT_MIN_CONFIDENCE = 0.6;
+export const DEFAULT_FACT_MIN_CONFIDENCE = 0.6;
 const STORAGE_FETCH_CAP = 500;
 const SEMANTIC_OVERFETCH = 3;
 const DEFAULT_BOOST_CAP = 2.0;
@@ -94,7 +94,7 @@ export class FactRecallService {
     if (workstreamIds?.length === 0) return empty;
     const filter: Parameters<FactStore["listForRecall"]>[1] = {
       includeSuperseded: input.includeSuperseded === true,
-      minConfidence: input.minConfidence ?? DEFAULT_MIN_CONFIDENCE,
+      minConfidence: input.minConfidence ?? DEFAULT_FACT_MIN_CONFIDENCE,
       limit: STORAGE_FETCH_CAP,
       ...(workstreamIds !== undefined ? { workstreamIds } : {}),
       ...(queryText && mode !== "semantic" ? { query: queryText } : {}),
