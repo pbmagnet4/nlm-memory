@@ -1,0 +1,82 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { runMemoryContextEval, sha256 } from "../../src/core/eval/context/run.js";
+import type { ContextCase, ContextManifest, EvalDeps } from "../../src/core/eval/context/types.js";
+import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
+import { makeSession } from "../fixtures/sessions.js";
+import { extractiveReader, openPinnedArm } from "../../scripts/eval/memory-context.js";
+const dirs: string[] = [];
+afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+function fixture() {
+  const dir = mkdtempSync(join(tmpdir(), "nlm-context-eval-test-")); dirs.push(dir);
+  const db = join(dir, "snapshot.sqlite"); writeFileSync(db, "synthetic snapshot");
+  const cases: ContextCase[] = ["dev", "holdout"].map((split) => ({ id: split, question: "why SQLite single writer", category: "rationale", sourceFamily: split, split: split as "dev" | "holdout", expected: { answerable: true, claims: ["SQLite", "single writer"], alternatives: [], sourceRanges: [{ sourceId: "source", start: 0, end: "SQLite uses a single writer".length, text: "SQLite uses a single writer" }] } }));
+  const casesPath = join(dir, "cases.json"); writeFileSync(casesPath, JSON.stringify(cases));
+  const manifest: ContextManifest = { schema: 1, snapshot: { path: db, sha256: sha256(readFileSync(db)) }, cases: { path: casesPath, sha256: sha256(readFileSync(casesPath)) }, tenantId: "team_local", tokenizer: { name: "synthetic-character-counter", revision: "test-only-1" }, reader: extractiveReader.metadata, model: null, prompt: { name: "extractive", revision: "1" }, providerRole: null, initialContext: "same initial context", toolInstructions: "memory context", toolSchema: "{query:string}", mode: "keyword", cache: "disabled", labelAudit: "pending", thresholds: { qualityGain: 0.05, qualityLowerBound: -0.02, tokenRatio: 1.1, latencyBudgetMs: 1500 }, environment: { fixture: "synthetic" }, adversarialMatrix: {} };
+  const manifestPath = join(dir, "manifest.json");
+  const save = () => writeFileSync(manifestPath, JSON.stringify(manifest)); save();
+  return { dir, db, cases, casesPath, manifest, manifestPath, save };
+}
+const bundle = JSON.stringify({ facts: [], sessions: [{ id: "source", summary: "SQLite", passages: [{ text: "SQLite uses a single writer" }] }] });
+function dependencies(fail = false): EvalDeps {
+  return { tokenizer: { metadata: { name: "synthetic-character-counter", revision: "test-only-1" }, count: (s) => s.length }, reader: extractiveReader, now: () => 1, async openArm(commit) {
+    return { commit, async close() {}, async run(input, emit) {
+      const event = { id: "retrieval", stage: "retrieval" as const, status: "started" as const, input: JSON.stringify(input), output: null, usage: null, durationMs: null }; emit(event);
+      if (fail) { emit({ ...event, id: "embedding", stage: "embedding", status: "failed" }); throw new Error("embed failed"); }
+      emit({ ...event, status: "ok", output: bundle, durationMs: 1 }); return bundle;
+    } };
+  } };
+}
+describe("memory context evaluator", () => {
+  it("keeps holdout sealed and identical evidence/costs deterministic", async () => {
+    const f = fixture();
+    const report = await runMemoryContextEval({ manifestPath: f.manifestPath, baseline: "a", candidate: "a", outputPath: join(f.dir, "report.json") }, dependencies());
+    expect(report.perCase.map((c) => c.id)).toEqual(["dev"]);
+    expect(report.perCase[0]!.baseline.score).toEqual(report.perCase[0]!.candidate.score);
+    expect(report.tokenTotals.baseline).toBe(report.tokenTotals.candidate);
+    expect(report.perCase[0]!.baseline.events.map((e) => e.stage)).toEqual(["retrieval", "reader"]);
+    expect(report.promotion.eligible).toBe(false);
+  });
+  it("reports false abstentions in the predicted-abstention precision denominator", async () => {
+    const f = fixture();
+    f.cases.push({ ...f.cases[0]!, id: "negative-dev", category: "no-answer", sourceFamily: "negative", expected: { answerable: false, claims: [], alternatives: [], sourceRanges: [] } });
+    writeFileSync(f.casesPath, JSON.stringify(f.cases)); f.manifest.cases.sha256 = sha256(readFileSync(f.casesPath)); f.save();
+    const deps = dependencies();
+    deps.reader = { metadata: extractiveReader.metadata, async read() { return { text: "Insufficient evidence", abstained: true, evidence: [] }; } };
+    const report = await runMemoryContextEval({ manifestPath: f.manifestPath, baseline: "a", candidate: "a", outputPath: join(f.dir, "report.json") }, deps);
+    expect(report.answerMetrics.baseline.answerableCoverage).toEqual({ correct: 0, total: 1, rate: 0 });
+    expect(report.answerMetrics.baseline.noAnswerSuccess).toEqual({ correct: 1, total: 1, rate: 1 });
+    expect(report.answerMetrics.baseline.abstentionPrecision).toEqual({ correct: 1, total: 2, rate: 0.5 });
+  });
+  it("preserves pending and failed model calls and unknown cost", async () => {
+    const f = fixture();
+    const report = await runMemoryContextEval({ manifestPath: f.manifestPath, baseline: "a", candidate: "a", outputPath: join(f.dir, "report.json") }, dependencies(true));
+    expect(report.failures).toHaveLength(6);
+    expect(report.perCase[0]!.baseline.events.map((e) => e.status)).toEqual(["started", "failed"]);
+    expect(report.tokenTotals.baseline).toBeNull();
+  });
+  it("rejects families crossing split and changed frozen cases", async () => {
+    const f = fixture();
+    f.cases[1]!.sourceFamily = "dev"; writeFileSync(f.casesPath, JSON.stringify(f.cases));
+    await expect(runMemoryContextEval({ manifestPath: f.manifestPath, baseline: "a", candidate: "a", outputPath: join(f.dir, "report.json") }, dependencies())).rejects.toThrow("hash mismatch");
+    f.manifest.cases.sha256 = sha256(readFileSync(f.casesPath)); f.save();
+    await expect(runMemoryContextEval({ manifestPath: f.manifestPath, baseline: "a", candidate: "a", outputPath: join(f.dir, "report.json") }, dependencies())).rejects.toThrow("family crosses split");
+  });
+  it("executes the real compact handler at a pinned commit on isolated synthetic copies", async () => {
+    const f = fixture(); rmSync(f.db);
+    const storage = SqliteStorage.create({ dbPath: f.db, migrationsDir: resolve("migrations") }); await storage.init();
+    storage.sessions.insertSessionForTest(makeSession({ id: "source", label: "SQLite single writer", summary: "SQLite uses a single writer", body: "SQLite uses a single writer" }), "team_local");
+    await storage.close();
+    f.manifest.snapshot.sha256 = sha256(readFileSync(f.db)); f.manifest.tokenizer = null; f.save();
+    const revision = execFileSync("git", ["rev-parse", "e391597"], { encoding: "utf8" }).trim();
+    const report = await runMemoryContextEval({ manifestPath: f.manifestPath, baseline: revision, candidate: revision, outputPath: join(f.dir, "report.json") }, { tokenizer: null, reader: extractiveReader, now: () => performance.now(), openArm: (commit, manifest) => openPinnedArm(resolve("."), commit, manifest) });
+    expect(report.failures).toEqual([]);
+    expect(report.perCase[0]!.baseline.score.sufficient).toBe(true);
+    expect(report.perCase[0]!.baseline.answer).toEqual(report.perCase[0]!.candidate.answer);
+    expect(sha256(readFileSync(f.db))).toBe(f.manifest.snapshot.sha256);
+    expect(report.manifest.baseline).toBe(revision);
+  }, 60_000);
+});
