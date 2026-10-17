@@ -111,7 +111,7 @@ The final candidate compensates coverage overhead at record-overflow checks usin
 
 ## Final run 4 outcome
 
-Private artifact: `task5-performance/run4/report.json` and `measurements.jsonl`. Runtime source SHA-256 `b735f3de303279022671a65523a83582b984ad4c3797e27a6215b191a4326ce8`; `candidateSourceChangedDuringRun:false`. Completed 2026-10-17T03:22:51.895Z (October 16 local time). The actual prior handler remains pinned to `69f4c3faa46f3424918172bb899a1086c092f42c`, with identical isolated transcript environments.
+Private artifact: `task5-performance/run4/report.json` and `measurements.jsonl`. Measured pre-teardown-fix runtime source SHA-256 `b735f3de303279022671a65523a83582b984ad4c3797e27a6215b191a4326ce8`; `candidateSourceChangedDuringRun:false`. Completed 2026-10-17T03:22:51.895Z (October 16 local time). The actual prior handler remains pinned to `69f4c3faa46f3424918172bb899a1086c092f42c`, with identical isolated transcript environments.
 
 | Cohort | Requests per arm | p50 baseline → candidate ms | p95 baseline → candidate ms | Candidate max ms | p95 change |
 |---|---:|---:|---:|---:|---:|
@@ -162,3 +162,40 @@ Self-review inspected the staged explicit-file diff, cancellation/lifecycle owne
 - Evidence/docs: `scripts/eval/request-budget-performance.ts`, `docs/context-retrieval.md`, and this report. All corpus, response, and benchmark artifacts remain outside git.
 
 Implementation commit: `3517a12e155760e177b88d0b7c8038f9fd9abf08` (`Work-Id: T806`). This subsequent documentation-only commit records that immutable implementation boundary. Remaining concerns: default speed gate not met; one real scoped deadline partial; native SQLite termination and other main-thread reads remain cooperative; attribution availability intentionally decreases without trusted transport context; cold diagnostic has six pairs; supported-answer/token-cost metrics are unavailable. Controller independent review remains pending; this implementer did not launch a reviewer or subagent.
+
+
+## Independent review correction — round 1, F1
+
+The controller's independent review (`/private/tmp/T806-task-5-review.md`) found one verified P2: the production stdio MCP composition root did not call `storage.close()` on client EOF or transport/server closure. Idle referenced semantic workers therefore kept the child alive after a successful recall. The original pool-close tests covered the pool but missed this production owner. Initial engineering/spec review failed on F1; security passed within scope. This implementer has addressed F1 below; controller re-review remains pending.
+
+Fix base: `2cf628a9cbb28446dd773fc0705c96f2d3d5c664`. Runtime ownership changed only in `src/cli/nlm.ts`. The exported `runMcpStdio` is the actual production `mcp` command owner, and the isolated fixture calls that same function. It registers stdin EOF/close/error and SIGINT/SIGTERM handling, observes SDK server closure (including transport closure), pauses input, closes MCP to abort its active request controllers, then awaits owned storage cleanup. One shared shutdown promise prevents duplicate storage closes during recursive SDK closure or repeated signals. Cleanup removes its listeners and restores a preexisting SDK close callback. Creation/connect failures follow the same `finally` cleanup. Event callbacks notify the owner; the owner awaits the shutdown promise and propagates cleanup failures. No workers were unrefed. HTTP storage ownership and the existing realpath-based CLI entry guard are unchanged.
+
+Files in this fix round:
+
+- `src/cli/nlm.ts`: stdio lifecycle owner and production wiring.
+- `tests/fixtures/mcp-stdio-child.mjs`: isolated actual SDK/storage/service child, deterministic embedding stub, worker-read/close/listener accounting, explicit close/startup scenarios; supports source and compiled stack imports.
+- `tests/integration/mcp-stdio-lifecycle.test.ts`: six child scenarios (EOF, server close, transport close, repeated SIGTERM/SIGINT/close events, server creation failure, transport connect failure).
+- This report: review finding, TDD, measurements boundary and fix handoff.
+
+The new tests first ran against an extracted production owner retaining the prior connect-only behavior:
+
+```sh
+npx vitest run tests/integration/mcp-stdio-lifecycle.test.ts
+```
+
+RED: all six failed. The four successful worker-backed recall children did not exit within three seconds after the requested closure, and both startup failures reported zero storage closes. RED output is retained at `/private/tmp/T806-task5-stdio-red.log`. Hung RED children were explicitly killed/reaped in test cleanup. In GREEN, no parent kill is used: all children exit with code 0 and signal null, close storage exactly once, and return owner listener counts to their original baseline. Each of the four recall scenarios completes two actual worker-backed reads with a successful complete hybrid response before shutdown; the two startup-failure scenarios start no recall. The fixture originally asserted zero total stdin listeners and exposed Node's preexisting end listener; it now measures only the owner-added listener delta. A TypeScript exact-optional-property error while restoring an absent SDK callback was fixed by deleting the optional callback when none preceded the owner.
+
+GREEN covering commands/results:
+
+```sh
+npx vitest run tests/integration/mcp-stdio-lifecycle.test.ts tests/unit/core/storage/sqlite-semantic-reader.test.ts tests/integration/context-deadline.test.ts tests/integration/cli-work-digest.test.ts
+npm run typecheck
+npm run build:server
+NLM_STDIO_TEST_COMPILED=1 npx vitest run tests/integration/mcp-stdio-lifecycle.test.ts
+```
+
+The source covering run passed 22 tests in four files. Typechecks passed for source/tests/scripts; server build passed. The compiled production-stack child replay passed all six scenarios. A separate isolated Python `subprocess.run([node, entry, "--help"], timeout=10, check=True)` smoke used both `dist/cli/nlm.js` and a temporary symlink to it; both exited 0 with identical help output. Temporary child databases, HOME/XDG/state directories and the symlink were removed; all child processes were reaped. No live provider, installed configuration or real corpus was used.
+
+`git diff 2cf628a -- src/core src/mcp src/ports` is empty; the sole runtime file changed is the stdio CLI composition root. Full performance replay was intentionally not repeated per the controller's ruling: the existing benchmark does not execute that CLI owner. Its run-4 fingerprint remains the measured pre-teardown-fix source fingerprint, not a claim that the new whole-source hash was benchmarked. Request implementation, all four historical reports, the retained scoped deadline failure and the no-broad-speed-promotion conclusion are unchanged.
+
+F1 implementation commit: `f6fe2b8bb1f678c91d9ba2cc3d2b8414aa2d01ce` (`Work-Id: T806`). F1 re-review remains pending.
