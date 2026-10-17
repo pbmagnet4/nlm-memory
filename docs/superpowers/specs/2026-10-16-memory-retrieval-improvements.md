@@ -2,7 +2,7 @@
 
 Status: approved for implementation; execution T806 is in progress. Planning work: T805.
 Required Tasks 1–6 are implemented and independently reviewed, including additive source anchors and old-writer invalidation.
-The 120-question source-audited set is frozen. Ranking development ended inconclusive/no-go; evidence-delta feasibility is in progress and scientific promotion remains pending. The anchor CPU target failed for the actual legacy population; conditional new-write results do not replace it.
+The 120-question source-audited set is frozen. Ranking, evidence-delta and decision-model preflights ended inconclusive/no-go after independent review. No optional candidate qualifies; final integration is in progress and scientific promotion remains unestablished. The anchor CPU target failed for the actual legacy population; conditional new-write results do not replace it.
 Baseline: local main `e391597` (T803 compact retrieval), not the oversized raw-session API.
 Owner: nlm-memory. Existing related work: T527 ranking calibration, T679 hook latency;
 coordinate capture work T264/T265 without changing their ingestion adapters incidentally.

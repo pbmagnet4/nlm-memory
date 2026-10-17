@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-16-memory-retrieval-improvements.md` (binding authority; section 5 owns numeric experiment thresholds).
 
-**Status:** T806 implementation is in progress from local main `a9f0729` (retrieval baseline `e391597`); planning task T805. Required Tasks 1–6 have passed independent engineering/spec/security review, including scoped fix reviews. Task 7 ended inconclusive/no-go after independent review; Task 8 evidence-delta feasibility is in progress. The source-audited set has 120 frozen cases (65 development / 55 sealed holdout; 36 sources, 10 families). Exact consumer tokens and scientific promotion remain unavailable. T527/T679 are related work, not duplicate tickets.
+**Status:** T806 implementation is in progress from local main `a9f0729` (retrieval baseline `e391597`); planning task T805. Required Tasks 1–6 have passed independent engineering/spec/security review, including scoped fix reviews. Tasks 7–9 ended inconclusive/no-go after independent review; final integration and release-candidate review are in progress. The source-audited set has 120 frozen cases (65 development / 55 sealed holdout; 36 sources, 10 families). Exact consumer tokens and scientific promotion remain unavailable. T527/T679 are related work, not duplicate tickets.
 
 ## Global Constraints
 
@@ -202,6 +202,8 @@ The control matches 65/65 scores but only 64/65 reader answers/full bundles: a f
 - [ ] Register a candidate only after development meets the spec's token and quality gates; Task 10 owns held-out promotion. Keep it disabled meanwhile; default behavior remains full compact context for clients that do not opt in. Cache/embedding-cache work remains deferred unless observed repeat rates justify a separate experiment.
 - [ ] Security/spec/quality review, fix and commit a disabled development-qualified implementation or a measured no-go. State the result in the ledger so later workers do not repeatedly rebuild the same failed optimization.
 
+**Disposition:** Completed, independently reviewed capability stop (`74afcfa`); scientific **INCONCLUSIVE / NO-GO**. Historical traces lack trusted full conversation/scope/rendering identity; actual consumer accounting and blinded quality are unavailable. No repeated-context rate or token saving was inferred. No API, state/cache, optional candidate or runtime overhead was added. The conditional implementation/test boxes above remain unchecked because those stages were not run. [Evidence-delta report](../../memory-evidence-delta-experiment.md).
+
 ## Task 9: Run a bounded decision-model reranking experiment
 
 **Dependencies:** Tasks 1–7; independent of delta promotion. **Deliverable:** a default-off, measured advisory experiment; model availability alone is not an adoption criterion.
@@ -216,6 +218,8 @@ The control matches 65/65 scores but only 64/65 reader answers/full bundles: a f
 - [ ] Apply the spec's quality, tokens-per-supported-answer (<=1.10x baseline), and latency gates on development data; register a qualified candidate for Task 10 without opening holdout. Unavailable usage/cap enforcement is no-go. Audit every quality disagreement against original text; do not let a model judge certify its own invented evidence. Inconclusive/no-go leaves the advisory path off.
 - [ ] Review trust boundaries, budget cleanup and the experiment's denominator with the strongest appropriate reviewer. Fix findings over the small diff.
 - [ ] Commit a development report and disabled candidate only; Task 10 may wire a runtime option after independent held-out promotion. Never add an unconditional router, judge or gate to every recall request.
+
+**Disposition:** Completed, independently reviewed capability stop (`8e92d68`); scientific **INCONCLUSIVE / NO-GO**. The current completion boundary discards usage/model receipts, has unqualified cancellation and no verified provider-cap/accounting reconciliation. Actual consumer tokens and blinded reader quality are also unavailable. No generative call, reranker, port extension, new provider or optional candidate was added. The conditional experiment/test boxes above remain unchecked because those stages were not run; 16 existing focused tests and offline fake-adapter diagnostics are not promotion evidence. External metadata observations are author-reported; independent review verified the source boundary. [Decision-model report](../../memory-decision-model-experiment.md).
 
 ## Task 10: Final integration, release decision and canary
 
