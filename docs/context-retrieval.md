@@ -145,3 +145,20 @@ The [measurable retrieval specification](superpowers/specs/2026-10-16-memory-ret
 and [SDD implementation plan](superpowers/plans/2026-10-16-memory-retrieval-improvements.md)
 define the next correctness, evaluation and efficiency work. They are planning artifacts;
 their acceptance thresholds are proposed targets, and their features are not implemented.
+
+## Workstream scope
+
+Pass `workstream` (an ID or label) to restrict `recall_context`, `recall_sessions`,
+`recall_facts`, `get_session`, or `get_fact_history`. Resolution uses the authenticated
+tenant and follows tenant-owned merge chains. Omit it to search all accessible
+workstreams. Unknown IDs, foreign IDs, corrupt merge chains, and unavailable scope
+resolution return no scoped evidence; they never fall back to an unrestricted search.
+`recall_context` reports resolution once in `scope`.
+
+Expansion arguments preserve the requested selector. Use those arguments unchanged:
+`get_session` transcript pages and scoped fact history recheck current session bindings,
+so a session moved to another workstream becomes unavailable on the next expansion.
+Facts inherit retrieval eligibility from their source session's current binding.
+Keyword fact eligibility is applied before the candidate limit. Semantic retrieval still
+uses bounded candidate windows in this release; scope safety does not establish complete
+semantic coverage.

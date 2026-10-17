@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { RecallService } from "../../src/core/recall/recall-service.js";
 import { FactRecallService } from "../../src/core/recall-facts/fact-recall-service.js";
-import { getSessionHandler, recallContextHandler, recallSessionsHandler } from "../../src/mcp/server.js";
+import { getFactHistoryHandler, getSessionHandler, recallContextHandler, recallSessionsHandler } from "../../src/mcp/server.js";
 import { makeSession } from "../fixtures/sessions.js";
 import { makeFact } from "../fixtures/facts.js";
 import { FixedEmbedder } from "../fixtures/llm-stubs.js";
@@ -32,6 +32,52 @@ describe("bounded structured memory context", () => {
       factRecall: new FactRecallService({ factStore: storage.facts, llm }) };
   });
   afterEach(async () => { vi.unstubAllEnvs(); await storage.close(); rmSync(dir, { recursive: true, force: true }); });
+
+  it("scopes both evidence lanes, expansion arguments, and history against current bindings", async () => {
+    await storage.workstreams.create(tenant, { id: "ws_scope", label: "SQLite project", scope: null });
+    await storage.workstreams.create(tenant, { id: "ws_other", label: "Other project", scope: null });
+    await storage.workstreams.create("team_foreign", { id: "ws_foreign", label: "Foreign project", scope: null });
+    await storage.sessions.setWorkstreamBinding(tenant, "source", "ws_scope", "operator", 1);
+    storage.sessions.insertSessionForTest(makeSession({ id: "noise", label: "SQLite noise", body: "SQLite OTHER SECRET" }), tenant);
+    await storage.sessions.setWorkstreamBinding(tenant, "noise", "ws_other", "operator", 1);
+    await storage.facts.insertMany(tenant, [
+      makeFact({ id: "wanted", sourceSessionId: "source", subject: "store", predicate: "framework", value: "SQLite", sourceQuote: rationale }),
+      makeFact({ id: "outside", sourceSessionId: "noise", subject: "store", predicate: "framework", value: "OTHER SECRET", sourceQuote: "SQLite OTHER SECRET" }),
+    ]);
+    const wired = { ...deps, workstreams: { store: storage.workstreams, sessions: storage.sessions,
+      facts: storage.facts, exemplars: storage.exemplars } };
+    const result = await recallContextHandler(wired, tenant, { query: "SQLite", mode: "keyword", workstream: "SQLite project" });
+    const payload = JSON.parse(result.content[0]!.text);
+    expect(payload.scope).toEqual({ status: "resolved", workstreamIds: ["ws_scope"], workstream: "SQLite project" });
+    expect(payload.facts.map((f: { id: string }) => f.id)).toEqual(["wanted"]);
+    expect(payload.sessions.map((f: { id: string }) => f.id)).toEqual(["source"]);
+    expect(result.content[0]!.text).not.toContain("OTHER SECRET");
+    for (const expansion of [...payload.expand, ...payload.facts.map((f: { expand: object }) => f.expand), ...payload.sessions.map((s: { expand: object }) => s.expand)]) {
+      expect(expansion.workstream).toBe("SQLite project");
+    }
+    const historyInput = { subject: "store", predicate: "framework", workstream: "SQLite project" };
+    const history = JSON.parse((await getFactHistoryHandler(wired, tenant, historyInput)).content[0]!.text);
+    expect(history.chains.flatMap((c: { history: { id: string }[] }) => c.history.map((f) => f.id))).toEqual(["wanted"]);
+    const context = JSON.parse((await getSessionHandler(wired, tenant, { id: "source", workstream: "SQLite project" })).content[0]!.text);
+    expect(context.expand.workstream).toBe("SQLite project");
+    const page = JSON.parse((await getSessionHandler(wired, tenant, { ...context.expand, maxChars: 2_000 })).content[0]!.text);
+    expect(page.next.workstream).toBe("SQLite project");
+    await storage.sessions.setWorkstreamBinding(tenant, "source", "ws_other", "operator", 1);
+    for (const expansion of [context.expand, page.next]) {
+      const blocked = await getSessionHandler(wired, tenant, expansion);
+      expect(blocked.isError).toBe(true);
+      expect(blocked.content[0]!.text).not.toContain(rationale);
+    }
+    expect(JSON.parse((await getFactHistoryHandler(wired, tenant, historyInput)).content[0]!.text).chains).toEqual([]);
+    for (const workstream of ["unknown", "ws_foreign"]) {
+      const empty = JSON.parse((await recallContextHandler(wired, tenant, { query: "SQLite", mode: "keyword", workstream })).content[0]!.text);
+      expect(empty.scope.status).toBe("not_found");
+      expect(empty.facts).toEqual([]); expect(empty.sessions).toEqual([]);
+    }
+    const noResolver = JSON.parse((await recallContextHandler(deps, tenant, { query: "SQLite", mode: "keyword", workstream: "SQLite project" })).content[0]!.text);
+    expect(noResolver.scope.status).toBe("not_found");
+    expect(noResolver.facts).toEqual([]); expect(noResolver.sessions).toEqual([]);
+  });
 
   it("retrieves an old fact beyond the newest 500 without an embedder call", async () => {
     await storage.facts.insertMany(tenant, [makeFact({ id: "gold", sourceSessionId: "source",

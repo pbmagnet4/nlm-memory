@@ -1,3 +1,4 @@
+import { executionWorkstreamIds, type RecallExecutionOptions } from "./execution-options.js";
 /**
  * RecallService — the use case. Composes filters, keyword scoring, and
  * semantic search into a single recall operation.
@@ -84,14 +85,7 @@ export interface RecallServiceDeps {
   readonly exemplarStore?: CodeExemplarStore;
   readonly codeEmbedder?: CodeEmbedder;
   readonly installScope?: string;
-  /**
-   * Optional resolver for workstream-filter queries. Given an idOrLabel,
-   * returns the array of member workstream ids (merge chains resolve to the
-   * live survivor). Passed as `workstreamIds` into both search legs so the
-   * SQL layer filters by workstream_id. When absent, `query.workstream` is a
-   * no-op. Injected by buildStack(); tests can stub with a plain fn.
-   */
-  readonly resolveWorkstreamMembers?: (idOrLabel: string) => Promise<ReadonlyArray<string>>;
+  readonly resolveWorkstreamMembers?: (tenantId: string, idOrLabel: string) => Promise<ReadonlyArray<string>>;
   /**
    * Learner-evidence recall (spec 2026-10-06): when present, search() can
    * attach `relatedConcepts` for callers that request `withRelatedConcepts`.
@@ -108,7 +102,7 @@ export class RecallService {
 
   constructor(private readonly deps: RecallServiceDeps) {}
 
-  async search(tenantId: string, input: RecallQuery): Promise<RecallResult> {
+  async search(tenantId: string, input: RecallQuery, options: RecallExecutionOptions = {}): Promise<RecallResult> {
     const mode: RecallMode = input.mode ?? "keyword";
     const limit = clampLimit(input.limit);
     const entity = input.entity ?? null;
@@ -125,6 +119,9 @@ export class RecallService {
     };
 
     if (!input.query && !entity && !kind) return empty;
+
+    const workstreamIds = await executionWorkstreamIds(tenantId, input.workstream, options, this.deps.resolveWorkstreamMembers);
+    if (workstreamIds?.length === 0) return empty;
 
     // 0. Optional query rewrite. Fails open on LLM unreachable / parse error:
     //    keyword and semantic both fall back to the raw query, preserving
@@ -149,17 +146,9 @@ export class RecallService {
       }
     }
 
-    // 1. Resolve workstream membership before the search legs so the SQL can
-    //    filter by workstream_id directly, eliminating the post-fetch JS filter.
-    let workstreamIds: ReadonlyArray<string> | null = null;
-    if (input.workstream && this.deps.resolveWorkstreamMembers) {
-      workstreamIds = await this.deps.resolveWorkstreamMembers(input.workstream);
-      if (workstreamIds.length === 0) return empty;
-    }
-
     const searchOpts: SearchOptions = {
       ...(input.includeSuperseded === true ? { includeSuperseded: true } : {}),
-      ...(workstreamIds ? { workstreamIds } : {}),
+      ...(workstreamIds !== undefined ? { workstreamIds } : {}),
     };
 
     const kwNeighbors: ReadonlyArray<KeywordNeighbor> =
@@ -298,7 +287,7 @@ export class RecallService {
     // 6a. Learner-evidence recall (spec 2026-10-06). Same posture as facts:
     //     opt-in flag + wired deps + kill switch; the picker itself is
     //     fail-open so recall never breaks because of concept lookup.
-    if (input.withRelatedConcepts === true && this.deps.learnerDeps && isConceptInjectionEnabled()) {
+    if (workstreamIds === undefined && input.withRelatedConcepts === true && this.deps.learnerDeps && isConceptInjectionEnabled()) {
       const relatedConcepts = await pickRelatedConcepts(tenantId, result.results, this.deps.learnerDeps);
       if (relatedConcepts.length > 0) {
         result = { ...result, relatedConcepts };
@@ -309,7 +298,7 @@ export class RecallService {
     //     timeout so a slow/cold CodeRankEmbed call can never blow the hook's
     //     latency budget — on timeout or error we simply omit exemplars.
     if (
-      input.withRelatedExemplars === true &&
+      workstreamIds === undefined && input.withRelatedExemplars === true &&
       this.deps.exemplarStore &&
       this.deps.codeEmbedder &&
       this.deps.installScope &&

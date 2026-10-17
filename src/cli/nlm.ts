@@ -147,8 +147,7 @@ import { buildWorkDigest } from "../core/work-digest/build-work-digest.js";
 import { composeWorkDigest } from "../core/work-digest/compose-work-digest.js";
 import { defaultTopicProvider, aliasTopicProvider, type TopicProvider } from "../core/work-digest/topics.js";
 import { runChecksOnSqlite, runChecksOnPg, applyFixOnSqlite, applyFixOnPg } from "../core/integrity/check-invariants.js";
-import { normalizeLabel } from "../core/workstream/model.js";
-import { resolveWorkstreamId } from "../core/workstream/resolve.js";
+import { resolveRecallScope } from "../core/recall/resolve-scope.js";
 import { suggestMerges } from "../core/entities/dedup-suggest.js";
 import { DEFAULT_NLM_PORT } from "../shared/net.js";
 
@@ -433,17 +432,11 @@ async function buildStack() {
     exemplarStore: storage.exemplars,
     codeEmbedder: buildCodeEmbedder(),
     installScope: scope,
-    resolveWorkstreamMembers: async (idOrLabel: string): Promise<ReadonlyArray<string>> => {
-      const all = await wsStore.listAll(DEFAULT_TEAM_ID);
-      const byId = new Map(all.map((w) => [w.id, { id: w.id, mergedInto: w.mergedInto }]));
-      const target = all.find((w) => w.id === idOrLabel)
-        ?? all.find((w) => normalizeLabel(w.label) === normalizeLabel(idOrLabel));
-      if (!target) return [];
-      const survivor = resolveWorkstreamId(target.id, byId);
-      return all.filter((w) => resolveWorkstreamId(w.id, byId) === survivor).map((w) => w.id);
-    },
+    resolveWorkstreamMembers: async (tenantId, selector) => (await resolveRecallScope(wsStore, tenantId, selector)).workstreamIds ?? [],
   });
-  const factRecall = new FactRecallService({ factStore: facts, llm: embedder });
+  const factRecall = new FactRecallService({ factStore: facts, llm: embedder,
+    resolveWorkstreamMembers: async (tenantId, selector) => (await resolveRecallScope(wsStore, tenantId, selector)).workstreamIds ?? [],
+  });
   return { storage, store, facts, signals, scope, sources, providers, recall, factRecall, embedder, classifier };
 }
 

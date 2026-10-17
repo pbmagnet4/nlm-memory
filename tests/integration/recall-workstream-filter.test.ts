@@ -11,31 +11,16 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RecallService } from "../../src/core/recall/recall-service.js";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
-import { makeWorkstreamId, normalizeLabel } from "../../src/core/workstream/model.js";
-import { resolveWorkstreamId } from "../../src/core/workstream/resolve.js";
+import { makeWorkstreamId } from "../../src/core/workstream/model.js";
+import { resolveRecallScope } from "../../src/core/recall/resolve-scope.js";
 import type { WorkstreamStore } from "../../src/ports/workstream-store.js";
 import { makeSession } from "../fixtures/sessions.js";
 import { FixedEmbedder } from "../fixtures/llm-stubs.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
 
-/**
- * Exact mirror of the resolveWorkstreamMembers closure in buildStack() (src/cli/nlm.ts).
- * Returns member workstream ids for the given idOrLabel, resolving merge chains.
- */
-function buildWorkstreamResolver(
-  wsStore: WorkstreamStore,
-): (idOrLabel: string) => Promise<ReadonlyArray<string>> {
-  return async (idOrLabel: string) => {
-    const all = await wsStore.listAll("team_local");
-    const byId = new Map(all.map((w) => [w.id, { id: w.id, mergedInto: w.mergedInto }]));
-    const target =
-      all.find((w) => w.id === idOrLabel) ??
-      all.find((w) => normalizeLabel(w.label) === normalizeLabel(idOrLabel));
-    if (!target) return [];
-    const survivor = resolveWorkstreamId(target.id, byId);
-    return all.filter((w) => resolveWorkstreamId(w.id, byId) === survivor).map((w) => w.id);
-  };
+function buildWorkstreamResolver(wsStore: WorkstreamStore) {
+  return async (tenantId: string, selector: string) => (await resolveRecallScope(wsStore, tenantId, selector)).workstreamIds ?? [];
 }
 
 describe("RecallService workstream filter (integration)", () => {
@@ -54,6 +39,48 @@ describe("RecallService workstream filter (integration)", () => {
   afterEach(async () => {
     await storage.close();
     rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("fails closed when an explicit selector has no resolver", async () => {
+    storage.sessions.insertSessionForTest(makeSession({ id: "private", label: "migration secret" }));
+    const svc = new RecallService({ store: storage.sessions, llm: new FixedEmbedder() });
+    expect((await svc.search("team_local", { query: "migration", workstream: "unknown" })).results).toEqual([]);
+  });
+
+  it("keeps empty execution scope distinct from unspecified scope", async () => {
+    storage.sessions.insertSessionForTest(makeSession({ id: "private", label: "migration secret" }));
+    const svc = new RecallService({ store: storage.sessions, llm: new FixedEmbedder() });
+    expect((await svc.search("team_local", { query: "migration" }, { workstreamIds: [] })).results).toEqual([]);
+    expect((await svc.search("team_local", { query: "migration" })).results.map((r) => r.id)).toEqual(["private"]);
+  });
+
+  it("resolves duplicate labels only inside the caller tenant and excludes foreign and unknown IDs", async () => {
+    for (const tenant of ["team_local", "team_other"]) {
+      const id = `ws_${tenant}`;
+      await storage.workstreams.create(tenant, { id, label: "Shared project", scope: null });
+      storage.sessions.insertSessionForTest(makeSession({ id: `s_${tenant}`, label: "migration", summary: `${tenant} value` }), tenant);
+      await storage.sessions.setWorkstreamBinding(tenant, `s_${tenant}`, id, "operator", 1);
+    }
+    const svc = new RecallService({ store: storage.sessions, llm: new FixedEmbedder(),
+      resolveWorkstreamMembers: buildWorkstreamResolver(storage.workstreams) });
+    expect((await svc.search("team_other", { query: "migration", workstream: "Shared project" })).results.map((r) => r.id)).toEqual(["s_team_other"]);
+    for (const selector of ["ws_team_local", "unknown"]) {
+      expect(await resolveRecallScope(storage.workstreams, "team_other", selector)).toEqual({ status: "not_found", workstreamIds: [] });
+      expect((await svc.search("team_other", { query: "migration", workstream: selector })).results).toEqual([]);
+    }
+    await expect(svc.search("team_other", { query: "migration", workstream: "Shared project" }, { workstreamIds: ["ws_team_local"] })).rejects.toThrow("Inconsistent");
+  });
+
+  it("fails closed for cyclic and dangling merge chains", async () => {
+    const base = { label: "Corrupt", scope: null, normalizedLabel: "corrupt", status: "merged" as const,
+      createdAt: "2026-01-01", updatedAt: "2026-01-01", lastSessionAt: null };
+    for (const nodes of [
+      [{ ...base, id: "a", mergedInto: "b" }, { ...base, id: "b", mergedInto: "a" }],
+      [{ ...base, id: "a", mergedInto: "foreign_missing" }],
+    ]) {
+      const store = { listAll: async () => nodes } as unknown as WorkstreamStore;
+      expect(await resolveRecallScope(store, "team_other", "a")).toEqual({ status: "not_found", workstreamIds: [] });
+    }
   });
 
   it("filters to the bound workstream; without filter both return", async () => {

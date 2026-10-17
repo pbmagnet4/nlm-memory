@@ -3,8 +3,9 @@ import { matchedPassages, relevantStrings } from "./session-evidence.js";
 
 export function buildContextBundle(
   query: string, facts: readonly FactHit[], hits: readonly RecallHit[],
-  sources: readonly Session[], maxChars: number,
+  sources: readonly Session[], maxChars: number, workstream?: string,
 ) {
+  const scopeArgs = workstream !== undefined ? { workstream } : {};
   const byId = new Map(sources.map((s) => [s.id, s]));
   const seen = new Set<string>();
   const factRecords = facts.flatMap((f) => {
@@ -22,7 +23,7 @@ export function buildContextBundle(
         supersededBy: source?.supersededBy ?? null },
       sourceQuote: f.sourceQuote,
       quoteVerified: f.sourceQuote && source?.body ? source.body.includes(f.sourceQuote) : null,
-      expand: { id: f.sourceSessionId },
+      expand: { id: f.sourceSessionId, ...scopeArgs },
     }];
   });
   const sessionRecords = hits.flatMap((h) => {
@@ -34,14 +35,14 @@ export function buildContextBundle(
       decisions: relevantStrings(h.decisions, query, 2), open: relevantStrings(h.open, query, 2),
       passages,
       expand: h.chunkIndex !== undefined && passages.length > 0
-        ? { id: h.id, view: "transcript", offset: passages[0]!.offset } : { id: h.id },
+        ? { id: h.id, ...scopeArgs, view: "transcript", offset: passages[0]!.offset } : { id: h.id, ...scopeArgs },
     }];
   });
   const bundle = { query: query.slice(0, 200), queryShortened: query.length > 200, facts: [] as typeof factRecords, sessions: [] as typeof sessionRecords,
     omitted: { facts: factRecords.length, sessions: sessionRecords.length },
     budgetChars: maxChars,
     expand: [...sessionRecords.map((s) => s.expand),
-      ...facts.slice(0, 2).map((f) => ({ id: f.sourceSessionId }))].slice(0, 3),
+      ...facts.slice(0, 2).map((f) => ({ id: f.sourceSessionId, ...scopeArgs }))].slice(0, 3),
   };
   // Fit whole evidence records, including provenance, rather than chopping a
   // claim into a misleading fragment. Leave room for transport/degradation info.

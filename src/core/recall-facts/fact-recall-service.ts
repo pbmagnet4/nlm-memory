@@ -1,3 +1,4 @@
+import { executionWorkstreamIds, type RecallExecutionOptions } from "@core/recall/execution-options.js";
 /**
  * FactRecallService — agent-facing recall over the FactStore.
  *
@@ -20,7 +21,7 @@
  * floor explicitly.
  */
 
-import type { FactStore } from "@ports/fact-store.js";
+import type { FactEligibility, FactStore } from "@ports/fact-store.js";
 import type { LLMClient } from "@ports/llm-client.js";
 import { LLMUnreachableError } from "@ports/llm-client.js";
 import type {
@@ -58,12 +59,13 @@ const FIELD_WEIGHTS = {
 export interface FactRecallServiceDeps {
   readonly factStore: FactStore;
   readonly llm: LLMClient;
+  readonly resolveWorkstreamMembers?: (tenantId: string, idOrLabel: string) => Promise<readonly string[]>;
 }
 
 export class FactRecallService {
   constructor(private readonly deps: FactRecallServiceDeps) {}
 
-  async search(tenantId: string, input: FactRecallQuery): Promise<FactRecallResult> {
+  async search(tenantId: string, input: FactRecallQuery, options: RecallExecutionOptions = {}): Promise<FactRecallResult> {
     const mode: RecallMode = input.mode ?? "hybrid";
     const limit = clampLimit(input.limit);
     const subject = input.subject ?? null;
@@ -88,10 +90,13 @@ export class FactRecallService {
       return empty;
     }
 
+    const workstreamIds = await executionWorkstreamIds(tenantId, input.workstream, options, this.deps.resolveWorkstreamMembers);
+    if (workstreamIds?.length === 0) return empty;
     const filter: Parameters<FactStore["listForRecall"]>[1] = {
       includeSuperseded: input.includeSuperseded === true,
       minConfidence: input.minConfidence ?? DEFAULT_MIN_CONFIDENCE,
       limit: STORAGE_FETCH_CAP,
+      ...(workstreamIds !== undefined ? { workstreamIds } : {}),
       ...(queryText && mode !== "semantic" ? { query: queryText } : {}),
       ...(input.subject !== undefined ? { subject: input.subject } : {}),
       ...(input.predicate !== undefined ? { predicate: input.predicate } : {}),
@@ -106,6 +111,7 @@ export class FactRecallService {
     // Both search legs reach the full corpus; resolve semantic neighbours
     // outside the bounded lexical candidate set through the same filters.
     const accept = makeFilterPredicate(filter);
+    const { query: _query, limit: _limit, ...eligibility } = filter;
 
     const kwHits =
       mode === "keyword" || mode === "hybrid"
@@ -119,7 +125,7 @@ export class FactRecallService {
         semError = "ollama_unreachable";
       } else {
         try {
-          semHits = await this.runSemantic(tenantId, queryText, byId, accept, limit * SEMANTIC_OVERFETCH);
+          semHits = await this.runSemantic(tenantId, queryText, byId, accept, limit * SEMANTIC_OVERFETCH, eligibility);
         } catch (err) {
           if (err instanceof LLMUnreachableError) {
             semError = "ollama_unreachable";
@@ -220,9 +226,10 @@ export class FactRecallService {
     byId: ReadonlyMap<string, Fact>,
     accept: (fact: Fact) => boolean,
     fetchLimit: number,
+    eligibility: FactEligibility,
   ): Promise<ReadonlyArray<SemanticHit>> {
     const embedding = await this.deps.llm.embed(query, "query");
-    const neighbors = await this.deps.factStore.semanticSearch(tenantId, embedding.vector, fetchLimit);
+    const neighbors = await this.deps.factStore.semanticSearch(tenantId, embedding.vector, fetchLimit, eligibility);
 
     // Resolve neighbours that fall outside the recency-capped keyword window
     // in one batch, then apply the same filters the SQL pre-filter would have.

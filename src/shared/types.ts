@@ -252,6 +252,7 @@ export interface Fact {
 export type FactMatchField = "value" | "subject" | "predicate" | "semantic";
 
 export interface FactRecallQuery {
+  readonly workstream?: string;
   readonly query?: string;
   readonly subject?: string;
   readonly predicate?: string;

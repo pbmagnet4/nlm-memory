@@ -39,14 +39,17 @@ export interface SubjectStat {
 }
 
 /** Pre-filter applied at the storage layer before keyword scoring runs. */
-export interface FactListFilter {
-  /** Full-corpus lexical candidates, ranked before applying limit. */
-  readonly query?: string;
+export interface FactEligibility {
+  readonly workstreamIds?: readonly string[];
   readonly subject?: string;
   readonly predicate?: string;
   readonly kind?: FactKind;
   readonly includeSuperseded?: boolean;
   readonly minConfidence?: number;
+}
+
+export interface FactListFilter extends FactEligibility {
+  readonly query?: string;
   readonly limit?: number;
 }
 
@@ -162,6 +165,7 @@ export interface FactStore {
     tenantId: string,
     queryVector: Float32Array,
     limit: number,
+    eligibility?: FactEligibility,
   ): Promise<ReadonlyArray<FactSemanticNeighbor>>;
 
   /**

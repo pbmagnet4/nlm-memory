@@ -807,6 +807,7 @@ export class SqliteSessionStore implements SessionStore {
     limit: number,
     opts?: SearchOptions,
   ): Promise<ReadonlyArray<SemanticNeighbor>> {
+    if (opts?.workstreamIds?.length === 0) return [];
     const k = Math.max(1, Math.trunc(limit));
     const blob = Buffer.from(
       queryVector.buffer,

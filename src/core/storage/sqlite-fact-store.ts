@@ -30,6 +30,7 @@ type NeighborRow = { fact_id: string; distance: number };
 import type Database from "better-sqlite3";
 import { tokenize } from "@core/recall/tokenize.js";
 import type {
+  FactEligibility,
   FactListFilter,
   FactQuery,
   FactSemanticNeighbor,
@@ -203,6 +204,12 @@ export class SqliteFactStore implements FactStore {
       where.push("superseded_by IS NULL");
       where.push("retired_at IS NULL");
     }
+    if (filter.workstreamIds !== undefined) {
+      if (filter.workstreamIds.length === 0) return [];
+      const sourceTenant = tenantClause(tenantId);
+      where.push(`source_session_id IN (SELECT id FROM sessions WHERE ${sourceTenant.sql} AND workstream_id IN (${filter.workstreamIds.map(() => "?").join(",")}))`);
+      params.push(tenantId, ...filter.workstreamIds);
+    }
     const tokens = [...new Set(tokenize(filter.query))];
     if (filter.query && tokens.length === 0) return [];
     const lexical = tokens.length > 0;
@@ -231,7 +238,12 @@ export class SqliteFactStore implements FactStore {
     tenantId: string,
     queryVector: Float32Array,
     limit: number,
+    eligibility?: FactEligibility,
   ): Promise<ReadonlyArray<FactSemanticNeighbor>> {
+    if (eligibility?.workstreamIds?.length === 0) return [];
+    const eligible = eligibility ? new Set((await this.listForRecall(tenantId, {
+      ...eligibility, limit: 2_147_483_647,
+    })).map((f) => f.id)) : undefined;
     const k = Math.max(1, Math.trunc(limit));
     const blob = Buffer.from(
       queryVector.buffer,
@@ -264,7 +276,7 @@ export class SqliteFactStore implements FactStore {
       .all(...candidateIds, tc.param);
     const resolved = new Set(resolvedRows.map((r) => r.id));
     return rows
-      .filter((r) => resolved.has(r.fact_id))
+      .filter((r) => resolved.has(r.fact_id) && (eligible === undefined || eligible.has(r.fact_id)))
       .slice(0, k)
       .map((r) => ({ factId: r.fact_id, distance: r.distance }));
   }

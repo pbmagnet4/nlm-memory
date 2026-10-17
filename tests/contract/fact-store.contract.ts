@@ -46,6 +46,24 @@ export function runFactStoreContract(h: FactStoreContractHarness): void {
       await h.teardown(storage);
     });
 
+    it("applies source membership before lexical LIMIT and treats empty scope as no eligible facts", async () => {
+      await h.seedSession(storage, makeSession({ id: "scope_source", label: "Eligible" }));
+      await storage.workstreams.create("team_local", { id: "ws_fact_scope", label: "Fact scope", scope: null });
+      await storage.sessions.setWorkstreamBinding("team_local", "scope_source", "ws_fact_scope", "operator", 1);
+      await storage.facts.insertMany("team_local", [
+        makeFact({ id: "eligible", sourceSessionId: "scope_source", value: "migration sqlite", sourceQuote: "eligible quote", createdAt: "2020-01-01T00:00:00Z" }),
+        ...Array.from({ length: 510 }, (_, i) => makeFact({ id: `unbound_${i}`, sourceSessionId: "sess_parent", value: "migration migration migration secret", createdAt: "2026-01-01T00:00:00Z" })),
+      ]);
+      const facts = await storage.facts.listForRecall("team_local", { query: "migration", limit: 1, workstreamIds: ["ws_fact_scope"] });
+      expect(facts.map((f) => [f.id, f.value, f.sourceQuote])).toEqual([["eligible", "migration sqlite", "eligible quote"]]);
+      expect(await storage.facts.listForRecall("team_local", { workstreamIds: [] })).toEqual([]);
+      expect(await storage.facts.listForRecall("team_local", { workstreamIds: ["foreign"] })).toEqual([]);
+      expect((await storage.facts.listForRecall("team_local", {})).some((f) => f.id.startsWith("unbound_"))).toBe(true);
+      await storage.workstreams.create("team_local", { id: "ws_other_scope", label: "Other scope", scope: null });
+      await storage.sessions.setWorkstreamBinding("team_local", "scope_source", "ws_other_scope", "operator", 1);
+      expect(await storage.facts.listForRecall("team_local", { workstreamIds: ["ws_fact_scope"] })).toEqual([]);
+    });
+
     it("inserts and retrieves a fact round-trip", async () => {
       const fact = makeFact({ id: "fact_1", sourceSessionId: "sess_parent" });
       await storage.facts.insert("team_local", fact);

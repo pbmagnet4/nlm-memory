@@ -59,7 +59,7 @@ const llm = new Proxy({}, {get(_t, method) { return async (...args) => {
 }}});
 const storage = SqliteStorage.create({dbPath:${JSON.stringify(db)},migrationsDir:${JSON.stringify(join(worktree, "migrations"))}});
 await storage.init();
-const deps = {store:storage.sessions,factStore:storage.facts,recall:new RecallService({store:storage.sessions,llm}),factRecall:new FactRecallService({factStore:storage.facts,llm})};
+const deps = {workstreams:{store:storage.workstreams,sessions:storage.sessions,facts:storage.facts,exemplars:storage.exemplars},store:storage.sessions,factStore:storage.facts,recall:new RecallService({store:storage.sessions,llm}),factRecall:new FactRecallService({factStore:storage.facts,llm})};
 send({ready:true});
 try {
  for await (const line of createInterface({input:process.stdin})) {

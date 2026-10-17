@@ -13,6 +13,7 @@
 import { tokenize } from "@core/recall/tokenize.js";
 import type { Pool } from "pg";
 import type {
+  FactEligibility,
   FactListFilter,
   FactQuery,
   FactSemanticNeighbor,
@@ -182,6 +183,12 @@ export class PgFactStore implements FactStore {
     const tc = tenantClausePg(tenantId, idx++);
     where.push(tc.sql);
     params.push(tc.param);
+    if (filter.workstreamIds !== undefined) {
+      if (filter.workstreamIds.length === 0) return [];
+      const sourceTenant = tenantClausePg(tenantId, idx++);
+      where.push(`source_session_id IN (SELECT id FROM sessions WHERE ${sourceTenant.sql} AND workstream_id = ANY($${idx++}::text[]))`);
+      params.push(tenantId, filter.workstreamIds);
+    }
     const tokens = [...new Set(tokenize(filter.query))];
     if (filter.query && tokens.length === 0) return [];
     const document = "to_tsvector('simple', subject || ' ' || predicate || ' ' || value)";
@@ -309,7 +316,12 @@ export class PgFactStore implements FactStore {
     tenantId: string,
     queryVector: Float32Array,
     limit: number,
+    eligibility?: FactEligibility,
   ): Promise<ReadonlyArray<FactSemanticNeighbor>> {
+    if (eligibility?.workstreamIds?.length === 0) return [];
+    const eligible = eligibility ? new Set((await this.listForRecall(tenantId, {
+      ...eligibility, limit: 2_147_483_647,
+    })).map((f) => f.id)) : undefined;
     const k = Math.max(1, Math.trunc(limit));
     const vecStr = `[${Array.from(queryVector).join(",")}]`;
     // Tenant filter applied in the id-resolution join against `facts`
@@ -325,7 +337,8 @@ export class PgFactStore implements FactStore {
        LIMIT $3`,
       [vecStr, tc.param, k],
     );
-    return result.rows.map((r) => ({ factId: r.fact_id, distance: r.distance }));
+    return result.rows.filter((r) => eligible === undefined || eligible.has(r.fact_id))
+      .map((r) => ({ factId: r.fact_id, distance: r.distance }));
   }
 
   async getHistory(
