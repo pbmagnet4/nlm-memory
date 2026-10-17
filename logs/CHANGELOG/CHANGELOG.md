@@ -1,5 +1,15 @@
 # nlm-memory CHANGELOG
 
+## 2026-10-16 - Source-grounded SDD retrieval improvement plan (T805)
+
+**Changes:** Added the measurable retrieval specification, ten-task SDD implementation plan and editable architecture diagram. The plan prioritizes source-grounded evaluation, tenant/workstream eligibility, semantic candidate completeness, exact-value ambiguity, shared request budgets and source anchors; optional ranking, evidence deltas and decision-model reranking require measured promotion. Linked from `docs/context-retrieval.md`.
+
+**Results:** Independent critical review's holdout-selection and model-usage/capability findings were accepted, corrected and cleared in scoped re-review. Verified local links, ten ordered tasks/sixty unchecked steps, diagram XML/render and whitespace. No runtime tests or new performance gains are claimed for this documentation-only change.
+
+**State:** Planning only, based on local main `e391597`. Implementation and installed daemon unchanged. Numeric improvement gates are proposed acceptance targets; final holdout stays sealed until preregistered candidate selection is complete. Each implementation task includes spec/code review and the release includes final branch review.
+
+**Next:** Execute Task 1 in its own task worktree/SDD ledger to establish independent evidence-sufficiency and actual-token baselines before optimizing.
+
 ## 2026-10-16 - Compact structured memory context and source expansion (T803)
 
 **Changes:** Added `recall_context` with current fact triples, source provenance, decisions/open questions, exact original passages, a bounded response, and targeted expansion references. Exact structured lookups skip session search and embeddings; default lanes preserve hybrid facts and keyword sessions without query-time generative calls. `get_session` now defaults to compact context and offers explicit versioned transcript pages. Retained semantic chunk positions, fixed lexical fact retrieval beyond the newest 500 rows (SQLite FTS5 / PG GIN), added a covering corroboration index, minified JSON, and regenerated hook guidance/bundles. No stored facts were rewritten or retired.
@@ -87,11 +97,3 @@ Session-level log per session protocol. Cap: 10 entries — archive older to `CH
 **Decisions:** 0.21.12 over moving the v0.21.11 tag (public repo, tags immutable). Parse-from-first-`[` over --ignore-scripts (npm 10 runs prepare on pack anyway, verified locally; parsing is version-proof). No daemon reinstall for .12: the delta from the live 0.21.11 install is release-script only.
 
 **State:** Daemon live on 0.21.11. npm latest still 0.21.0 until the v0.21.12 tag CI publishes. fix/dataset-sqlite-variable-limit (Edward's staged classifier work) untouched throughout. Release tooling note: the nxtgit session from the 0.21.11 cut was ended, and an ended record still pins the harness session (peek ignores status), so checkout/commit/push all refuse with no new identity obtainable mid-conversation; the .12 line was assembled in a scratch worktree instead.
-
-## 2026-10-06 - Learner evidence shipped (M0–M6): Gnos-style concept tracking across recall, MCP, and UI
-
-**Changes:** new learner-evidence subsystem (spec `docs/superpowers/specs/2026-10-06-learner-evidence-design.md`, SDD-lite with briefs/reports in `docs/superpowers/records/learner-evidence/`). Storage: sqlite `039` + pg `037` (`learners`, `enrollments`, `learning_events`, all STAMP; learner PK is composite `(tenant_id, id)`), `LearnerStore` port with sqlite/pg impls wired into `Storage`, 20-test backend contract both lanes. Core: Gnos evidence-validation + deterministic summary port (exposed/practicing/demonstrated/retained, demotion on failure, never "mastered"), service orchestration. MCP: `learner_enroll/record/summary/complete_course` on both transports. Recall: `relatedConcepts` through RecallService → `/api/recall` (`?withConcepts`, hook-automatic) → hook → `## Learning state` pointer section (fail-open, kill switch `NLM_HOOK_INJECT_CONCEPTS`). UI: `GET /api/learner/by-session/:id` + drawer section. Eval: summary conformance suite, isolation negatives both lanes, real-store end-to-end recall test; precision-gate entry deliberately declined (deterministic rule path, no scored retrieval to regress — see M6 report). All gates green: typecheck, 42 unit + 20/20 contract + hook/http suites, stdio tool smoke, `build:ui`.
-
-**Decisions:** dedicated store over Fact overload (attempts don't fit triples); summaries computed never stored; enrollment binds a workstream id at enroll; no plan-blob table (ref+fingerprint only, mismatch blocks writes); explicit record only, no classifier extraction in v1; cold-start mitigation is read-time unrecorded-session listing (SessionEnd is fail-open/client-side, wrong surface); drawer text rows over chips (design system forbids new badge families); standalone Learning page deferred.
-
-**State:** merged with origin/main through 0.21.10 (cross-runtime citations, Muse/OpenCode capture, reconcile-facts); learner migrations renumbered sqlite 039 + pg 037 — main's covering-index sqlite 037 and sources-muse sqlite 038 / pg 036 landed while the branch was in flight, and the migrator keys on version number so duplicates would silently skip. Daemon/UI-bundle deploy pending release cut.
