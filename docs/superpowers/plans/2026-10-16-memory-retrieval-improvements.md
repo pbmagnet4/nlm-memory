@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-16-memory-retrieval-improvements.md` (binding authority; section 5 owns numeric experiment thresholds).
 
-**Status:** Execution in progress under T806, from local main `a9f0729` (retrieval baseline `e391597`); planning task T805. Task 1 evaluator engineering is implemented in `1ed8763`/`80063e4` and independently reviewed. An independent source audit has now frozen 120 cases (65 dev / 55 sealed holdout; 36 sources, 10 families). Task 2 is implemented in `8fbdf4d`/`b17190f`, independently reviewed, with 199 covering tests including PG. Task 3 is in progress. Exact consumer token counting and scientific promotion evidence remain unavailable. Existing T527/T679 are related work, not duplicate new tickets.
+**Status:** Execution in progress under T806, from local main `a9f0729` (retrieval baseline `e391597`); planning task T805. Task 1 evaluator engineering is implemented in `1ed8763`/`80063e4` and independently reviewed. An independent source audit has now frozen 120 cases (65 dev / 55 sealed holdout; 36 sources, 10 families). Task 2 is implemented in `8fbdf4d`/`b17190f`, independently reviewed, with 199 covering tests including PG. Task 3 exact eligible semantic top-k is implemented in `a280ab7`, independently reviewed, with 215 covering tests including PG and concurrent SQLite snapshot checks. Task 4 complete current-value probes and selector-preserving response packing are implemented in `7bfae49`/`69f4c3f`, independently reviewed, with 228 covering tests. Task 5 is in progress. Exact consumer token counting and scientific promotion evidence remain unavailable. Existing T527/T679 are related work, not duplicate new tickets.
 
 ## Global Constraints
 
@@ -76,8 +76,10 @@ Names/signatures below are proposed new contracts. Baseline symbols above exist;
 - [x] Run `npx vitest run tests/unit/core/eval/context-score.test.ts`; confirm the new assertions fail before implementation.
 - [x] Implement the scorer/orchestrator and CLI. Reuse snapshots/scoring pieces, not the broad harness's unrelated quadratic re-derivation scan. Run pinned baseline/candidate commits in isolated executor-owned worktrees; do not mutate production or fake the baseline by globally monkeypatching current code. Sample CLI contract: `npx tsx scripts/eval/memory-context.ts --manifest <private-manifest> --baseline e391597 --candidate <sha> --out <private-report>`.
 - [x] Build and freeze the spec's >=120 source-checked question set, family-disjoint split, adversarial matrix, tokenizer/reader/model/prompt manifest and proposed thresholds before tuning. Independently audit source labels; document shortages/inconclusive strata. Character diagnostics remain separate from actual token totals.
-- [ ] Run the synthetic integration suite and a baseline-vs-identical-baseline replay: identical deterministic evidence scores, identical token counts with fixed tokenizer, every costed call represented. Live latency records embedder/cache/load conditions. Check model usage cannot disappear when a stage fails.
+- [x] Run the synthetic integration suite and a baseline-vs-identical-baseline replay: identical deterministic evidence scores, identical token counts with fixed tokenizer, every costed call represented. Live latency records embedder/cache/load conditions. Check model usage cannot disappear when a stage fails.
 - [x] Obtain the task review, record baseline artifacts/hashes/aggregate numbers and accepted/rejected findings, then commit evaluator and documentation only. No optimization result is claimed yet.
+
+**Control evidence:** The frozen 65-development-case replay against identical pinned baseline commits returned identical literal-evidence scores/reader answers (7/65) and zero execution failures. Consumer-token totals remain null because the exact tokenizer is unavailable; no natural-answer-quality or latency promotion follows from this control.
 
 ## Task 2: Resolve and propagate tenant-owned workstream scope
 
@@ -102,12 +104,14 @@ Names/signatures below are proposed new contracts. Baseline symbols above exist;
 
 **Interfaces:** `FactStore.semanticSearch(tenantId:string, vector:Float32Array, limit:number, eligibility?:FactEligibility):Promise<readonly FactSemanticNeighbor[]>`. Session semanticSearch retains SearchOptions. Services pass full eligibility before candidate limits. ChunkIndex survives per-session max pooling.
 
-- [ ] Add a failing fixture with more than the current global overfetch window of wrong-tenant/wrong-workstream/retired/low-confidence near neighbors ahead of the correct eligible one; include many chunks from one session and a missing chunk-map row. Assert eligible IDs, winning chunk and distances, not non-empty output alone.
-- [ ] Run new cases on SQLite and Postgres; demonstrate the fixed-window failure before changing the query.
-- [ ] Implement eligible exact-distance selection in SQLite using the installed extension's verified `vec_distance_L2` capability; join tenant-owned source sessions and filter metadata before top-k/grouping. Use embedding row metadata rather than making chunk-map completeness a prerequisite. Postgres filters the same eligible set before ranking/limit. Preserve deterministic ties. An approximate alternative requires explicit incomplete coverage and separate evidence; it cannot silently replace the oracle path.
-- [ ] Compare each adapter against a brute-force eligible-vector oracle (distance tolerance 1e-5), including empty scopes and no embeddings. Run the new tests and existing semantic/tenant contracts.
-- [ ] Replay real scoped workloads with eligible-vector counts and SQL time. Apply the spec's scoped-evidence gate; flag large synchronous scans for Task 5's responsiveness check. API availability from the planning probe is not performance certification.
-- [ ] Obtain security/spec/quality review, resolve findings, commit the parity result and aggregate measurements. Coordinate T679; leave unrelated hook behavior unchanged.
+- [x] Add a failing fixture with more than the current global overfetch window of wrong-tenant/wrong-workstream/retired/low-confidence near neighbors ahead of the correct eligible one; include many chunks from one session and a missing chunk-map row. Assert eligible IDs, winning chunk and distances, not non-empty output alone.
+- [x] Run new cases on SQLite and Postgres; demonstrate the fixed-window failure before changing the query.
+- [x] Implement eligible exact-distance selection in SQLite using the installed extension's verified `vec_distance_L2` capability; join tenant-owned source sessions and filter metadata before top-k/grouping. Use embedding row metadata rather than making chunk-map completeness a prerequisite. Postgres filters the same eligible set before ranking/limit. Preserve deterministic ties. An approximate alternative requires explicit incomplete coverage and separate evidence; it cannot silently replace the oracle path.
+- [x] Compare each adapter against a brute-force eligible-vector oracle (distance tolerance 1e-5), including empty scopes and no embeddings. Run the new tests and existing semantic/tenant contracts.
+- [x] Replay real scoped workloads with eligible-vector counts and SQL time. Apply the spec's scoped-evidence gate; flag large synchronous scans for Task 5's responsiveness check. API availability from the planning probe is not performance certification.
+- [x] Obtain security/spec/quality review, resolve findings, commit the parity result and aggregate measurements. Coordinate T679; leave unrelated hook behavior unchanged.
+
+**Execution evidence:** Engineering correctness passed exact-distance, tie, cap-fallback and tenant/scope oracles. SQL-only private diagnostics found steady unscoped session reads around 83–112 ms, first-use 1,123 ms (a previous contended run reached 2,698 ms), scoped session p50/p95 334/440 ms, and exact full-scan fallback around 1.9 s. These are not whole-request or cold-OS results. Natural-query quality and speed promotion remain unproven; Task 5 owns responsiveness.
 
 ## Task 4: Prove exact lookup uniqueness across all eligible values
 
@@ -117,12 +121,14 @@ Names/signatures below are proposed new contracts. Baseline symbols above exist;
 
 **Interfaces:** Produces `summarizeCurrentValues(tenantId, query:CurrentValueQuery):Promise<CurrentValueSummary>` and response `lookup:{distinctValueCount:number|null; complete:boolean}` from spec section 4. Use exact JSON tuple keys for subject/predicate grouping. Legacy candidate-only multipleValues must not become a claim about the full corpus.
 
-- [ ] Add failing tests: 600 newer copies of A plus older B -> count 2; identical A copies -> count 1 with correct distinct-source count; scoped-out/retired/superseded/low-confidence B -> count 1; multiple legitimate facets remain multiple; interrupted probe -> complete=false and no unique fast path.
-- [ ] Run the shared SQLite/PG contracts and context tests; record which baseline assertions fail.
-- [ ] Implement one consistent aggregate query/snapshot before preview limits, with at most two complete example values. Reuse existing covering indexes where applicable. Wire the full probe into explicit exact lookup; one distinct eligible value skips the session lane, multiple/unknown values preserve ambiguity and scoped expansion. No fact is retired or chosen merely because it is newest/repeated.
-- [ ] Run both adapters plus context/tenant tests; check the async logging regression still proves no phantom session search for a safe exact lookup.
-- [ ] Replay ambiguity/no-answer cases. Require 100% oracle agreement and zero false unique answers; measure probe SQL/response overhead against the same-quality cases.
-- [ ] Review query consistency, scope/lifecycle parity and result-bound behavior, fix, commit. This is a correctness gate even if a speed target remains inconclusive.
+- [x] Add failing tests: 600 newer copies of A plus older B -> count 2; identical A copies -> count 1 with correct distinct-source count; scoped-out/retired/superseded/low-confidence B -> count 1; multiple legitimate facets remain multiple; interrupted probe -> complete=false and no unique fast path.
+- [x] Run the shared SQLite/PG contracts and context tests; record which baseline assertions fail.
+- [x] Implement one consistent aggregate query/snapshot before preview limits, with at most two complete example values. Reuse existing covering indexes where applicable. Wire the full probe into explicit exact lookup; one distinct eligible value skips the session lane, multiple/unknown values preserve ambiguity and scoped expansion. No fact is retired or chosen merely because it is newest/repeated.
+- [x] Run both adapters plus context/tenant tests; check the async logging regression still proves no phantom session search for a safe exact lookup.
+- [x] Replay ambiguity/no-answer cases. Require 100% oracle agreement and zero false unique answers; measure probe SQL/response overhead against the same-quality cases.
+- [x] Review query consistency, scope/lifecycle parity and result-bound behavior, fix, commit. This is a correctness gate even if a speed target remains inconclusive.
+
+**Execution evidence:** Both adapters passed full distinct-value/source-count oracles, including hidden alternatives beyond 600 repeated values and actual PG interruption. The private synthetic diagnostic covered 20 case/backend combinations with 1,200 repeated checks, zero false unique results. Timing excluded the preexisting ambient transcript attribution scan and does not establish request latency. Review found and fixed long/escaped lookup-selector corruption; actual handler tests replay returned history arguments to recover omitted evidence. No answer-quality or token gain is claimed.
 
 ## Task 5: Compose retrieval lanes under one request budget
 
