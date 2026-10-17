@@ -1,8 +1,8 @@
 # Measurable NLM retrieval improvements
 
-Status: approved for implementation; execution T806 is in progress. Planning work: T805.
+Status: T806 implementation and independent final engineering/spec/security review complete; installed deployment pending. Planning work: T805.
 Required Tasks 1–6 are implemented and independently reviewed, including additive source anchors and old-writer invalidation.
-The 120-question source-audited set is frozen. Ranking, evidence-delta and decision-model preflights ended inconclusive/no-go after independent review. No optional candidate qualifies; final integration passed local checks and scientific promotion remains unestablished. Final whole-branch review/landing are pending; installed deployment is unchanged. The single preregistered literal diagnostic improved 1/55→5/55 with a five-family interval including zero; exact tokens and blinded answer quality remain unavailable. [Final results](../../memory-retrieval-results.md). The anchor CPU target failed for the actual legacy population; conditional new-write results do not replace it.
+The 120-question source-audited set is frozen. Ranking, evidence-delta and decision-model preflights ended inconclusive/no-go after independent review. No optional candidate qualifies; final integration passed local checks and scientific promotion remains unestablished. Final whole-branch review passed; local landing is tracked in T806/git and installed deployment is unchanged. The single preregistered literal diagnostic improved 1/55→5/55 with a five-family interval including zero; exact tokens and blinded answer quality remain unavailable. [Final results](../../memory-retrieval-results.md). The anchor CPU target failed for the actual legacy population; conditional new-write results do not replace it.
 Baseline: local main `e391597` (T803 compact retrieval), not the oversized raw-session API.
 Owner: nlm-memory. Existing related work: T527 ranking calibration, T679 hook latency;
 coordinate capture work T264/T265 without changing their ingestion adapters incidentally.

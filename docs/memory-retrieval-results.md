@@ -1,6 +1,6 @@
 # Memory retrieval integration results (T806)
 
-Required correctness work is implemented; optional ranking, evidence deltas and decision-model reranking remain off. Final independent whole-branch review, landing, deployment and live canary are pending. This document is the aggregate results source of truth; private corpus and raw reports remain outside git.
+Required correctness work is implemented; optional ranking, evidence deltas and decision-model reranking remain off. Final independent whole-branch review passed engineering/spec/security with one low advisory. Local landing is recorded in T806/git; installed deployment and live canary remain pending. This document is the aggregate results source of truth; private corpus and raw reports remain outside git.
 
 ## Frozen final diagnostic protocol
 
@@ -172,7 +172,7 @@ the final full run with PostgreSQL enabled.
 | Reader isolation; all failures/costs; exact tokens or null | Tasks 1/10: literal reader, cost ledger | Evaluator tests and private audit; no-answer and answerable denominators separate; tokens/primary quality unavailable. |
 | Prospective N/contrasts/control, grouped bounds, no tuning | Task 10: consumed registration gate | Evaluator tests reject changed hash/pins/N and repeated attempt; final frozen N55 one contrast. No scientific promotion. |
 | Conditional optional ranking/delta/model gates | Tasks 7–9 | Evaluated capability/DEV prerequisites; all no-go. Unimplemented delta invalidation/model-cap tests are not claimed as passes. |
-| Full gates, generated parity, review, local landing | Task 10 + controller | Full results below; final independent combined Task10/whole-branch review and landing controller-owned/pending. |
+| Full gates, generated parity, review, local landing | Task 10 + controller | Full results below; final independent combined Task10/whole-branch review passed; local landing/task evidence is controller-owned and recorded in T806/git. |
 | Compatible binary, backup, deployed MCP canaries | Controller release scope | Pending deployment authorization. No backup/migration/install/live canary performed here. |
 
 ## Review findings and integration verification
@@ -182,7 +182,7 @@ correlation, live-HOME leakage, answerable-only token denominator and unique cos
 invocation IDs; Task 2 scoped relatedFacts leak plus stale resolver comment;
 Task 4 exact selector shortening; Task 5 stdio worker shutdown. Tasks 3 and 7–9
 had no new actionable findings. Task 6 A1 remains a documented nonblocking I/O
-limitation for final review. Scientific gaps are not converted into engineering
+limitation accepted by final review and tracked as T810 (Backlog, P2). Scientific gaps are not converted into engineering
 passes: failed optional quality, unavailable exact tokens and nonliteral quotes
 already marked unverified were rejected as *new code defects*, while retained
 as measurement limitations. All controller rulings, including why/cost, are in
@@ -222,8 +222,9 @@ it lacks `recall_context`. Source and installed features therefore differ even
 though package versions match. Earlier capture/schema task titles cannot prove
 this branch is deployed or that installed hook latency is fixed.
 
-Before deployment: finish independent whole-branch/spec/security review and
-`nxtgit land`, preserve a consistent backup and prior compatible binary, then use
+Final independent review of `a9f0729..6738cf9` passed EngineeringSpec, EngineeringQuality (Low A1 retained) and Security; no blocking fix wave was required. Native in-session review replaced the previously denied external review destination. The full report is preserved privately at `task10-final/final-review.md`, SHA-256 `f56011d08050cc7302747a7bedc403b0e58be641379666705856d964c8ab9235`. This verifies engineering contracts, not scientific promotion.
+
+Local landing and task synchronization are recorded by `nxtgit`/T806. Before deployment, preserve a consistent backup and prior compatible binary, then use
 the authorized installer. Additive migrations retain null legacy state and
 old-writer guards; rollback restores the compatible binary and never deletes the
 corpus. Live MCP scope/hidden-value/mid-transcript Unicode/stale-version/outage/

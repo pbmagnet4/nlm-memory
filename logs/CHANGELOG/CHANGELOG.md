@@ -6,9 +6,9 @@
 
 **Results:** Typecheck/build pass; full suite with real PostgreSQL: 3,278 pass / three pre-existing opt-in live embedder skips. Four stale PG schema expectations fixed after the first full run. Preregistered 55 heldout literal cases: 1→5 sufficient, grouped95% delta interval [0,+19.35] points; six no-answer cases fail both arms. Source audit has zero verified quote/passage contradictions. Exact tokens, primary answer quality and power unavailable: no scientific promotion. Legacy anchor CPU and broad latency gates did not pass; see `docs/memory-retrieval-results.md`.
 
-**State:** Required task reviews pass; final whole-branch/spec/security review and landing pending. Installed 0.21.17-t730 unchanged; deployment, consistent backup, migration and live MCP canary pending. No provider change, public publish or live database write.
+**State:** Required task reviews and final whole-branch/spec/security review pass; Low A1 is tracked in T810. Local landing is recorded in T806/git. Installed 0.21.17-t730 unchanged; deployment, consistent backup, migration and live MCP canary pending. No provider change, public publish or live database write.
 
-**Next:** Controller final review/landing and task synchronization; retain deferred duplicate legacy-body hydration advisory and release prerequisites.
+**Next:** Authorized deployment and live canaries after backup/binary preservation; T810 tracks duplicate legacy-body hydration. T527/T679 remain open with measured source evidence.
 
 ## 2026-10-16 - Source-grounded SDD retrieval improvement plan (T805)
 
