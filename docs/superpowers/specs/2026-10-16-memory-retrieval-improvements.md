@@ -1,8 +1,8 @@
 # Measurable NLM retrieval improvements
 
 Status: approved for implementation; execution T806 is in progress. Planning work: T805.
-Evaluator engineering, tenant/workstream scope propagation, exact eligible semantic top-k and complete current-value lookup are implemented and independently reviewed.
-The 120-question source-audited set is frozen; request-budget work is in progress and scientific promotion remains pending.
+Evaluator engineering, tenant/workstream scope propagation, exact eligible semantic top-k, complete current-value lookup and request-budget/worker lifecycle changes are implemented and independently reviewed.
+The 120-question source-audited set is frozen; source-anchor work is in progress and scientific promotion remains pending.
 Baseline: local main `e391597` (T803 compact retrieval), not the oversized raw-session API.
 Owner: nlm-memory. Existing related work: T527 ranking calibration, T679 hook latency;
 coordinate capture work T264/T265 without changing their ingestion adapters incidentally.
