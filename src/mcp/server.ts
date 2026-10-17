@@ -474,7 +474,12 @@ export async function recallContextHandler(
     const successors = await deps.store.resolveSuccessors(tenantId, ids);
     const sources = metadata.map((s) => ({ ...(fullById.get(s.id) ?? s),
       supersededBy: successors.get(s.id) ?? null }));
-    const bundle = buildContextBundle(args.query, facts, sessions?.results ?? [], sources, args.maxChars, args.workstream, lookup);
+    const modeUnavailable = sessions?.modeUnavailable ?? factResult?.modeUnavailable;
+    const responseMetadata = { intent, scope: { ...scope, ...(args.workstream !== undefined ? { workstream: args.workstream } : {}) },
+      ...(modeUnavailable ? { modeUnavailable } : {}),
+      ...(!deps.factRecall ? { factsUnavailable: true } : {}),
+    };
+    const bundle = buildContextBundle(args.query, facts, sessions?.results ?? [], sources, args.maxChars, args.workstream, lookup, responseMetadata, format);
     const conversationId = resolveConversationByQuery(args.query) ?? undefined;
     if (sessions) void logQuery(tenantId, { source: "mcp", runtime, query: args.query, entity: null,
       kind: null, mode: args.mode ?? "keyword", limit: 4, nResults: bundle.sessions.length,
@@ -489,12 +494,7 @@ export async function recallContextHandler(
       ...(args.workstream !== undefined ? { workstream: args.workstream } : {}),
       ...(conversationId ? { conversationId } : {}),
     });
-    return { content: [{ type: "text", text: boundedFormat({ ...bundle, intent, scope: { ...scope, ...(args.workstream !== undefined ? { workstream: args.workstream } : {}) },
-      ...(sessions?.modeUnavailable || factResult?.modeUnavailable ? {
-        modeUnavailable: sessions?.modeUnavailable ?? factResult?.modeUnavailable,
-      } : {}),
-      ...(!deps.factRecall ? { factsUnavailable: true } : {}),
-    }, format, args.maxChars) }] };
+    return { content: [{ type: "text", text: format(bundle) }] };
   } catch (e) {
     return err(e);
   }

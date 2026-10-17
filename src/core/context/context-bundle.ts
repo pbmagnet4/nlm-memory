@@ -1,3 +1,4 @@
+import type { ResolvedRecallScope } from "@core/recall/resolve-scope.js";
 import type { FactHit, RecallHit, Session } from "@shared/types.js";
 import { matchedPassages, relevantStrings } from "./session-evidence.js";
 
@@ -9,9 +10,17 @@ export interface ContextLookup {
   readonly complete: boolean;
 }
 
+export interface ContextMetadata {
+  readonly intent: string;
+  readonly scope: ResolvedRecallScope & { workstream?: string };
+  readonly modeUnavailable?: string;
+  readonly factsUnavailable?: boolean;
+}
+
 export function buildContextBundle(
   query: string, facts: readonly FactHit[], hits: readonly RecallHit[],
   sources: readonly Session[], maxChars: number, workstream?: string, lookup?: ContextLookup,
+  metadata?: ContextMetadata, serialize: (value: unknown) => string = JSON.stringify,
 ) {
   const scopeArgs = workstream !== undefined ? { workstream } : {};
   const byId = new Map(sources.map((s) => [s.id, s]));
@@ -56,21 +65,28 @@ export function buildContextBundle(
   const lookupRecord = lookup ? { distinctValueCount: lookup.distinctValueCount, complete: lookup.complete,
     sourceSessionCount: lookup.sourceSessionCount, omittedAlternatives: lookup.distinctValueCount,
     expand: { subject: lookup.subject, predicate: lookup.predicate, ...scopeArgs } } : undefined;
-  const bundle = { ...(lookupRecord ? { lookup: lookupRecord } : {}), query: query.slice(0, 200), queryShortened: query.length > 200, facts: [] as typeof factRecords, sessions: [] as typeof sessionRecords,
+  const bundle = { ...metadata, ...(metadata ? { scope: { ...metadata.scope } } : {}),
+    ...(lookupRecord ? { lookup: lookupRecord } : {}),
+    query: query.slice(0, 200) as string | undefined, queryShortened: (query.length > 200) as boolean | undefined, facts: [] as typeof factRecords, sessions: [] as typeof sessionRecords,
     omitted: { facts: factRecords.length, sessions: sessionRecords.length },
     budgetChars: maxChars,
     expand: [...sessionRecords.map((s) => s.expand),
       ...facts.slice(0, 2).map((f) => ({ id: f.sourceSessionId, ...scopeArgs }))].slice(0, 3),
   };
-  // Fit whole evidence records, including provenance, rather than chopping a
-  // claim into a misleading fragment. Leave room for transport/degradation info.
+  const size = () => serialize(bundle).length;
+  if (size() > maxChars) bundle.expand = [];
+  if (size() > maxChars && bundle.scope) delete bundle.scope.workstream;
+  if (size() > maxChars) { bundle.query = undefined; bundle.queryShortened = undefined; }
+  if (size() > maxChars) throw new Error("Response metadata exceeds the response budget; narrow the query.");
+  // Expansion selectors and evidence stay exact; only complete optional display
+  // fields may be removed before packing records into the final envelope.
   const reserve = sessionRecords.length > 0
-    ? Math.min(maxChars - 1_000, JSON.stringify(sessionRecords[0]).length + 50) : 0;
-  const factBudget = Math.min(sessionRecords.length ? Math.floor(maxChars * 0.45) : maxChars, maxChars - 500 - reserve);
+    ? Math.min(maxChars - 1_000, serialize(sessionRecords[0]).length + 50) : 0;
+  const factBudget = Math.min(sessionRecords.length ? Math.floor(maxChars * 0.45) : maxChars, maxChars - reserve);
   for (const fact of factRecords) {
     bundle.facts.push(fact);
     bundle.omitted.facts--;
-    if (JSON.stringify(bundle).length > factBudget) {
+    if (size() > factBudget) {
       bundle.facts.pop();
       bundle.omitted.facts++;
     }
@@ -78,7 +94,7 @@ export function buildContextBundle(
   for (const session of sessionRecords) {
     bundle.sessions.push(session);
     bundle.omitted.sessions--;
-    if (JSON.stringify(bundle).length > maxChars - 500) {
+    if (size() > maxChars) {
       bundle.sessions.pop();
       bundle.omitted.sessions++;
     }
@@ -87,5 +103,6 @@ export function buildContextBundle(
     const returnedValues = new Set(bundle.facts.filter((f) => f.subject === lookup.subject && f.predicate === lookup.predicate).map((f) => f.value));
     bundle.lookup.omittedAlternatives = Math.max(0, lookup.distinctValueCount - returnedValues.size);
   }
+  if (size() > maxChars) throw new Error("Response metadata exceeds the response budget; narrow the query.");
   return bundle;
 }

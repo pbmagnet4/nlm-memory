@@ -152,6 +152,46 @@ describe("bounded structured memory context", () => {
     expect(payload.truncated).toBeUndefined();
   });
 
+  it.each([
+    { name: "long", subject: "s".repeat(200), predicate: "p".repeat(100), workstream: "w".repeat(500), factOnly: false },
+    { name: "long fact-only", subject: "s".repeat(200), predicate: "p".repeat(100), workstream: "w".repeat(500), factOnly: true },
+    { name: "escaped", subject: '"\\'.repeat(100), predicate: '"\\'.repeat(50), workstream: '"\\'.repeat(250), factOnly: false },
+    { name: "escaped fact-only", subject: '"\\'.repeat(100), predicate: '"\\'.repeat(50), workstream: '"\\'.repeat(250), factOnly: true },
+  ])("preserves $name selectors through final-envelope packing and omitted-value history expansion", async ({ subject, predicate, workstream, factOnly }) => {
+    vi.stubEnv("NLM_FORMAT", "json");
+    await storage.workstreams.create(tenant, { id: "ws_selectors", label: workstream, scope: null });
+    await storage.sessions.setWorkstreamBinding(tenant, "source", "ws_selectors", "operator", 1);
+    await storage.facts.insert(tenant, makeFact({ id: "selector_fact", sourceSessionId: "source", subject, predicate,
+      value: "A", sourceQuote: rationale }));
+    const { factRecall: _factRecall, ...factOnlyDeps } = deps;
+    const wired = { ...(factOnly ? factOnlyDeps : deps), workstreams: { store: storage.workstreams, sessions: storage.sessions, facts: storage.facts, exemplars: storage.exemplars } };
+    const search = vi.spyOn(deps.recall, "search");
+    const result = await recallContextHandler(wired, tenant, { query: "database?", subject, predicate, workstream, maxChars: 2_000 });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0]!.text.length).toBeLessThanOrEqual(2_000);
+    const payload = JSON.parse(result.content[0]!.text);
+    expect(payload.truncated).toBeUndefined();
+    expect(payload.lookup).toEqual({ distinctValueCount: 1, sourceSessionCount: 1, complete: true, omittedAlternatives: 1,
+      expand: { subject, predicate, workstream } });
+    expect(payload.facts).toEqual([]);
+    expect(payload.omitted).toEqual({ facts: 1, sessions: 0 });
+    expect(payload.scope.status).toBe("resolved");
+    if (payload.scope.workstream !== undefined) expect(payload.scope.workstream).toBe(workstream);
+    for (const expansion of payload.expand ?? []) expect(expansion.workstream).toBe(workstream);
+    expect(search).not.toHaveBeenCalled();
+    const history = await getFactHistoryHandler(wired, tenant, payload.lookup.expand);
+    expect(history.isError).toBeUndefined();
+    expect(JSON.parse(history.content[0]!.text).chains.flatMap((chain: { history: { value: string; subject: string; predicate: string }[] }) => chain.history)
+      .map((fact: { value: string; subject: string; predicate: string }) => [fact.subject, fact.predicate, fact.value])).toEqual([[subject, predicate, "A"]]);
+  });
+
+  it("never shortens semantic selectors in generic response compaction", () => {
+    const selectors = { subject: "s".repeat(200), predicate: "p".repeat(100), workstream: "w".repeat(500) };
+    const text = boundedFormat({ lookup: { expand: selectors }, display: "noise".repeat(2_000) }, JSON.stringify, 2_000);
+    expect(text.length).toBeLessThanOrEqual(2_000);
+    expect(JSON.parse(text).lookup.expand).toEqual(selectors);
+  });
+
   it("labels general search multiplicity as a candidate observation and keeps exact tuple groups separate", async () => {
     await storage.facts.insertMany(tenant, [
       makeFact({ id: "tuple_a", sourceSessionId: "source", subject: "a b", predicate: "c", value: "A" }),
