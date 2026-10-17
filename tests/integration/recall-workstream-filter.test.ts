@@ -8,12 +8,13 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RecallService } from "../../src/core/recall/recall-service.js";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { makeWorkstreamId } from "../../src/core/workstream/model.js";
 import { resolveRecallScope } from "../../src/core/recall/resolve-scope.js";
 import type { WorkstreamStore } from "../../src/ports/workstream-store.js";
+import { makeFact } from "../fixtures/facts.js";
 import { makeSession } from "../fixtures/sessions.js";
 import { FixedEmbedder } from "../fixtures/llm-stubs.js";
 
@@ -37,8 +38,44 @@ describe("RecallService workstream filter (integration)", () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await storage.close();
     rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it.each(["legacy selector", "execution options"] as const)("suppresses shared-entity related facts for scoped %s while preserving unscoped enrichment", async (variant) => {
+    vi.stubEnv("NLM_HOOK_INJECT_FACTS", "true");
+    vi.stubEnv("NLM_HOOK_FACT_MIN_CORROBORATION", "2");
+    vi.stubEnv("NLM_HOOK_FACT_MIN_CONFIDENCE", "0.7");
+    vi.stubEnv("NLM_HOOK_FACT_LIMIT", "5");
+    for (const id of ["ws_scope", "ws_outside"]) {
+      await storage.workstreams.create("team_local", { id, label: id, scope: null });
+    }
+    const inside = makeSession({ id: "inside", label: "migration plan", entities: ["shared-db"] });
+    storage.sessions.insertSessionForTest(inside);
+    await storage.sessions.setWorkstreamBinding("team_local", inside.id, "ws_scope", "operator", 1);
+    await storage.facts.insert("team_local", makeFact({ id: "inside_fact", sourceSessionId: inside.id,
+      subject: "shared-db", predicate: "framework", value: "IN SCOPE SQLITE", sourceQuote: "Inside source quote" }));
+    for (const id of ["outside_a", "outside_b"]) {
+      storage.sessions.insertSessionForTest(makeSession({ id, label: "Other work", entities: ["shared-db"] }));
+      await storage.sessions.setWorkstreamBinding("team_local", id, "ws_outside", "operator", 1);
+      await storage.facts.insert("team_local", makeFact({ id: `${id}_fact`, sourceSessionId: id,
+        subject: "shared-db", predicate: "secret", value: "OUTSIDE WORKSTREAM VALUE", sourceQuote: "OUTSIDE SOURCE QUOTE" }));
+    }
+    const svc = new RecallService({ store: storage.sessions, factStore: storage.facts, llm: new FixedEmbedder(),
+      resolveWorkstreamMembers: buildWorkstreamResolver(storage.workstreams) });
+    const query = { query: "migration", withRelatedFacts: true };
+    const unscoped = await svc.search("team_local", query);
+    expect(unscoped.results.map((r) => r.id)).toEqual([inside.id]);
+    expect(unscoped.relatedFacts).toContainEqual({ subject: "shared-db", predicate: "secret",
+      value: "OUTSIDE WORKSTREAM VALUE", corroborationCount: 2 });
+    const scoped = variant === "legacy selector"
+      ? await svc.search("team_local", { ...query, workstream: "ws_scope" })
+      : await svc.search("team_local", query, { workstreamIds: ["ws_scope"] });
+    expect(scoped.results.map((r) => r.id)).toEqual([inside.id]);
+    expect(JSON.stringify(scoped)).not.toContain("OUTSIDE WORKSTREAM VALUE");
+    expect(JSON.stringify(scoped)).not.toContain("OUTSIDE SOURCE QUOTE");
+    expect(scoped.relatedFacts).toBeUndefined();
   });
 
   it("fails closed when an explicit selector has no resolver", async () => {

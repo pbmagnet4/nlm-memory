@@ -277,7 +277,7 @@ export class RecallService {
     //    Only runs when the caller opts in AND a FactStore is wired. Failures
     //    silently no-op so recall never breaks because of fact lookup.
     //    (Note: citation boost in step 5 may have re-sorted results)
-    if (input.withRelatedFacts === true && this.deps.factStore && isFactInjectionEnabled()) {
+    if (workstreamIds === undefined && input.withRelatedFacts === true && this.deps.factStore && isFactInjectionEnabled()) {
       const relatedFacts = await pickRelatedFacts(tenantId, result.results, this.deps.factStore);
       if (relatedFacts.length > 0) {
         result = { ...result, relatedFacts };

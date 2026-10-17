@@ -113,7 +113,8 @@ export interface RecallQuery {
    * high-confidence facts about the entities in the top hits. Defaults
    * to true for the HTTP hook caller (so the pointer block can include
    * structured context); other callers must opt in. Disable globally
-   * via NLM_HOOK_INJECT_FACTS=false. Spec G.2.
+   * via NLM_HOOK_INJECT_FACTS=false. Omitted for explicit workstream scopes
+   * until related-fact selection supports source-session membership. Spec G.2.
    */
   readonly withRelatedFacts?: boolean;
   /**
@@ -145,9 +146,9 @@ export interface RecallQuery {
   /**
    * Optional workstream id or label to filter recall results. When set, only
    * sessions bound to the resolved workstream (or any member of its merge
-   * chain) are returned. Merge chains resolve to the live survivor. No-op
-   * when omitted or when `resolveWorkstreamMembers` is not wired into
-   * RecallServiceDeps.
+   * chain) are returned. Merge chains resolve to the live survivor. Omitted
+   * means all accessible workstreams. An explicit selector without a wired
+   * resolver returns no results.
    */
   readonly workstream?: string;
 }
