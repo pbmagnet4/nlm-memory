@@ -1,6 +1,7 @@
 # Measurable NLM retrieval improvements
 
-Status: proposed specification; implementation has not started. Planning work: T805.
+Status: approved for implementation; execution T806 is in progress. Planning work: T805.
+Evaluator engineering is implemented; scientific promotion evidence and retrieval changes remain pending.
 Baseline: local main `e391597` (T803 compact retrieval), not the oversized raw-session API.
 Owner: nlm-memory. Existing related work: T527 ranking calibration, T679 hook latency;
 coordinate capture work T264/T265 without changing their ingestion adapters incidentally.

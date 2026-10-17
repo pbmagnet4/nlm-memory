@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-16-memory-retrieval-improvements.md` (binding authority; section 5 owns numeric experiment thresholds).
 
-**Status:** Planning only. Base `e391597`; planning task T805. Execution gets its own task ID(s), isolated worktree and SDD ledger. Existing T527/T679 are related work, not duplicate new tickets.
+**Status:** Execution in progress under T806, from local main `a9f0729` (retrieval baseline `e391597`); planning task T805. Task 1 evaluator engineering is implemented in `1ed8763`/`80063e4` and independently reviewed. The verified diagnostic pilot has 26 cases, leaving a 94-case promotion-data shortfall; exact consumer token counting is unavailable. Task 2 is next. Existing T527/T679 are related work, not duplicate new tickets.
 
 ## Global Constraints
 
