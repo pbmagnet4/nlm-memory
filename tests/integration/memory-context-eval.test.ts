@@ -43,6 +43,7 @@ describe("memory context evaluator", () => {
   it("requires frozen registration, retains holdout identity and consumes it once", async () => {
     const f = fixture();
     const registrationPath = join(f.dir, "registration.json");
+    f.manifest.mode = "default"; f.manifest.cache = "frozen-query-vectors"; f.save();
     const baseline = "a".repeat(40), candidate = "b".repeat(40);
     writeFileSync(registrationPath, JSON.stringify({ schema: 1, purpose: "literal-diagnostic-only", baseline, candidate,
       manifestSha256: sha256(readFileSync(f.manifestPath)), fixedN: 1, contrasts: ["candidate-minus-baseline"] }));

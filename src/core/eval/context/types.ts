@@ -38,8 +38,8 @@ export interface ContextManifest {
   initialContext: string;
   toolInstructions: string;
   toolSchema: string;
-  mode: "keyword";
-  cache: "disabled";
+  mode: "keyword" | "default" | "hybrid";
+  cache: "disabled" | "frozen-query-vectors";
   labelAudit: "pending" | "complete";
   thresholds: { qualityGain: number; qualityLowerBound: number; tokenRatio: number; latencyBudgetMs: number };
   environment: Record<string, string>;

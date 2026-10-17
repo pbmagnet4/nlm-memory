@@ -16,7 +16,7 @@ async function fileSha256(path: string): Promise<string> {
 export async function loadManifest(path: string, split: "dev" | "holdout" = "dev"): Promise<{ manifest: ContextManifest; cases: ContextCase[]; hash: string }> {
   const raw = readFileSync(path, "utf8");
   const manifest = JSON.parse(raw) as ContextManifest;
-  if (manifest.schema !== 1 || manifest.mode !== "keyword" || manifest.cache !== "disabled") throw new Error("unsupported context manifest contract");
+  if (manifest.schema !== 1 || !["keyword", "default", "hybrid"].includes(manifest.mode) || !["disabled", "frozen-query-vectors"].includes(manifest.cache)) throw new Error("unsupported context manifest contract");
   const casesPath = resolve(dirname(path), manifest.cases.path);
   const casesBytes = readFileSync(casesPath);
   if (sha256(casesBytes) !== manifest.cases.sha256) throw new Error("case hash mismatch");
