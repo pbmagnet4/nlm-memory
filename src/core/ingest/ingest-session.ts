@@ -132,7 +132,7 @@ export async function ingestSession(input: IngestInput, deps: IngestDeps, tenant
   };
 
   const facts: ReadonlyArray<Fact> = deps.factStore
-    ? extractFacts(classification, id, startedAt)
+    ? extractFacts(classification, id, startedAt, { sourceBody: record.body ?? "" })
     : [];
 
   // Store + factStore come from the same backend (see buildStack); the cast

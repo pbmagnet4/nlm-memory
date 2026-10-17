@@ -16,9 +16,13 @@ import { randomUUID } from "node:crypto";
 import type { ClassifyResult } from "@ports/llm-client.js";
 import type { Fact } from "@shared/types.js";
 
+import { locateLiteralRange } from "./source-anchor.js";
+import { bodyVersion, persistedText } from "@core/context/source-version.js";
+
 const CONFIDENCE_FLOOR = 0.4;
 
 export interface ExtractFactsOptions {
+  readonly sourceBody?: string;
   /** Generator for fact ids. Defaults to `fact_<randomUUID()>`. */
   readonly idGenerator?: () => string;
 }
@@ -32,7 +36,13 @@ export function extractFacts(
   if (result.confidence < CONFIDENCE_FLOOR) return [];
   const genId = opts.idGenerator ?? (() => `fact_${randomUUID()}`);
   const out: Fact[] = [];
+  const body = opts.sourceBody === undefined ? undefined : persistedText(opts.sourceBody);
+  let version: string | undefined;
   for (const raw of result.facts) {
+    const quote = raw.sourceQuote === undefined ? undefined : persistedText(raw.sourceQuote);
+    const range = body === undefined ? undefined : locateLiteralRange(body, quote);
+    const sourceAnchor = range === undefined || range.status === "missing" ? range
+      : { ...range, bodyVersion: version ??= bodyVersion(body!) };
     out.push({
       id: genId(),
       kind: raw.kind,
@@ -40,7 +50,8 @@ export function extractFacts(
       predicate: raw.predicate,
       value: raw.value,
       sourceSessionId: sessionId,
-      sourceQuote: raw.sourceQuote ?? null,
+      sourceQuote: quote ?? null,
+      ...(sourceAnchor === undefined ? {} : { sourceAnchor }),
       createdAt,
       supersededBy: null,
       confidence: result.confidence,

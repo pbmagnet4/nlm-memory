@@ -26,6 +26,7 @@ export interface FactStoreContractHarness {
   readonly name: string;
   setup(): Promise<Storage>;
   teardown(storage: Storage): Promise<void>;
+  seedTenant(storage: Storage, tenantId: string): Promise<void>;
   /** Test-only session seed; bypasses ingest extraction. */
   seedSession(storage: Storage, session: Session): Promise<void>;
 }
@@ -46,11 +47,92 @@ export function runFactStoreContract(h: FactStoreContractHarness): void {
       await h.teardown(storage);
     });
 
+    it("applies source membership before lexical LIMIT and treats empty scope as no eligible facts", async () => {
+      await h.seedSession(storage, makeSession({ id: "scope_source", label: "Eligible" }));
+      await storage.workstreams.create("team_local", { id: "ws_fact_scope", label: "Fact scope", scope: null });
+      await storage.sessions.setWorkstreamBinding("team_local", "scope_source", "ws_fact_scope", "operator", 1);
+      await storage.facts.insertMany("team_local", [
+        makeFact({ id: "eligible", sourceSessionId: "scope_source", value: "migration sqlite", sourceQuote: "eligible quote", createdAt: "2020-01-01T00:00:00Z" }),
+        ...Array.from({ length: 510 }, (_, i) => makeFact({ id: `unbound_${i}`, sourceSessionId: "sess_parent", value: "migration migration migration secret", createdAt: "2026-01-01T00:00:00Z" })),
+      ]);
+      const facts = await storage.facts.listForRecall("team_local", { query: "migration", limit: 1, workstreamIds: ["ws_fact_scope"] });
+      expect(facts.map((f) => [f.id, f.value, f.sourceQuote])).toEqual([["eligible", "migration sqlite", "eligible quote"]]);
+      expect(await storage.facts.listForRecall("team_local", { workstreamIds: [] })).toEqual([]);
+      expect(await storage.facts.listForRecall("team_local", { workstreamIds: ["foreign"] })).toEqual([]);
+      expect((await storage.facts.listForRecall("team_local", {})).some((f) => f.id.startsWith("unbound_"))).toBe(true);
+      await storage.workstreams.create("team_local", { id: "ws_other_scope", label: "Other scope", scope: null });
+      await storage.sessions.setWorkstreamBinding("team_local", "scope_source", "ws_other_scope", "operator", 1);
+      expect(await storage.facts.listForRecall("team_local", { workstreamIds: ["ws_fact_scope"] })).toEqual([]);
+    });
+
+    describe("complete current-value summaries", () => {
+      it("counts an older alternative beyond 600 duplicates before limiting examples", async () => {
+        await h.seedSession(storage, makeSession({ id: "second_source" }));
+        await storage.facts.insertMany("team_local", [
+          makeFact({ id: "older_b", sourceSessionId: "second_source", value: "B", createdAt: "2020-01-01T00:00:00Z" }),
+          ...Array.from({ length: 601 }, (_, i) => makeFact({ id: `copy_${i}`, sourceSessionId: "sess_parent", value: "A" })),
+          makeFact({ id: "third", sourceSessionId: "sess_parent", value: "C" }),
+        ]);
+        expect(await storage.facts.summarizeCurrentValues("team_local", { subject: "nlm-memory-ts", predicate: "framework" }))
+          .toEqual({ distinctValueCount: 3, sourceSessionCount: 2, examples: [
+            { value: "A", sourceSessionId: "sess_parent" }, { value: "B", sourceSessionId: "second_source" },
+          ] });
+      });
+
+      it("excludes a fact whose source belongs to a different tenant in both probe and fact lane", async () => {
+        await h.seedTenant(storage, "team_foreign");
+        await storage.facts.insert("team_foreign", makeFact({ id: "cross_source", sourceSessionId: "sess_parent" }));
+        expect(await storage.facts.summarizeCurrentValues("team_foreign", { subject: "nlm-memory-ts", predicate: "framework", minConfidence: 0.6 }))
+          .toEqual({ distinctValueCount: 0, sourceSessionCount: 0, examples: [] });
+        expect(await storage.facts.listForRecall("team_foreign", { subject: "nlm-memory-ts", predicate: "framework", minConfidence: 0.6 })).toEqual([]);
+        const vector = new Float32Array(768); vector[0] = 1;
+        await storage.facts.upsertEmbedding("team_foreign", "cross_source", vector);
+        expect(await storage.facts.semanticSearch("team_foreign", vector, 3, { subject: "nlm-memory-ts", predicate: "framework", minConfidence: 0.6 })).toEqual([]);
+      });
+
+      it("deduplicates repeated values and counts distinct eligible sources", async () => {
+        await h.seedSession(storage, makeSession({ id: "second_source" }));
+        await storage.facts.insertMany("team_local", Array.from({ length: 601 }, (_, i) => makeFact({
+          id: `same_${i}`, sourceSessionId: i % 2 ? "second_source" : "sess_parent", value: "A",
+        })));
+        const summary = await storage.facts.summarizeCurrentValues("team_local", { subject: "nlm-memory-ts", predicate: "framework" });
+        expect(summary.distinctValueCount).toBe(1);
+        expect(summary.sourceSessionCount).toBe(2);
+        expect(summary.examples).toEqual([{ value: "A", sourceSessionId: "second_source" }]);
+      });
+
+      it("matches scope, lifecycle, confidence, kind, and exact tuple eligibility", async () => {
+        await h.seedSession(storage, makeSession({ id: "outside_source" }));
+        await storage.workstreams.create("team_local", { id: "ws_values", label: "Values", scope: null });
+        await storage.sessions.setWorkstreamBinding("team_local", "sess_parent", "ws_values", "operator", 1);
+        await storage.facts.insertMany("team_local", [
+          makeFact({ id: "current_a", sourceSessionId: "sess_parent", value: "A" }),
+          makeFact({ id: "low", sourceSessionId: "sess_parent", value: "low", confidence: 0.59 }),
+          makeFact({ id: "retired", sourceSessionId: "sess_parent", value: "retired" }),
+          makeFact({ id: "old", sourceSessionId: "sess_parent", value: "old", supersededBy: "current_a" }),
+          makeFact({ id: "outside", sourceSessionId: "outside_source", value: "outside" }),
+          makeFact({ id: "other_kind", sourceSessionId: "sess_parent", value: "note", kind: "attribute" }),
+          makeFact({ id: "other_tuple", sourceSessionId: "sess_parent", subject: "nlm-memory-ts framework", predicate: "", value: "other" }),
+        ]);
+        await storage.facts.retire("team_local", "retired");
+        const query = { subject: "nlm-memory-ts", predicate: "framework", kind: "decision" as const, minConfidence: 0.6, workstreamIds: ["ws_values"] };
+        expect(await storage.facts.summarizeCurrentValues("team_local", query)).toEqual({ distinctValueCount: 1,
+          sourceSessionCount: 1, examples: [{ value: "A", sourceSessionId: "sess_parent" }] });
+        for (const [tenant, workstreamIds] of [["team_local", []], ["team_local", ["foreign"]], ["foreign", ["ws_values"]]] as const) {
+          expect(await storage.facts.summarizeCurrentValues(tenant, { ...query, workstreamIds }))
+            .toEqual({ distinctValueCount: 0, sourceSessionCount: 0, examples: [] });
+        }
+        expect((await storage.facts.summarizeCurrentValues("team_local", { ...query, minConfidence: 0 })).distinctValueCount).toBe(2);
+        await storage.facts.insert("team_local", makeFact({ id: "facet", sourceSessionId: "sess_parent", value: "legitimate facet" }));
+        expect((await storage.facts.summarizeCurrentValues("team_local", query)).distinctValueCount).toBe(2);
+      });
+    });
+
     it("inserts and retrieves a fact round-trip", async () => {
       const fact = makeFact({ id: "fact_1", sourceSessionId: "sess_parent" });
       await storage.facts.insert("team_local", fact);
       const fetched = await storage.facts.getById("team_local", "fact_1");
-      expect(fetched).toEqual(fact);
+      expect(fetched).toEqual({ ...fact, sourceAnchor: { status: "missing" } });
     });
 
     it("returns null for missing ids", async () => {

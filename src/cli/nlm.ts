@@ -147,8 +147,7 @@ import { buildWorkDigest } from "../core/work-digest/build-work-digest.js";
 import { composeWorkDigest } from "../core/work-digest/compose-work-digest.js";
 import { defaultTopicProvider, aliasTopicProvider, type TopicProvider } from "../core/work-digest/topics.js";
 import { runChecksOnSqlite, runChecksOnPg, applyFixOnSqlite, applyFixOnPg } from "../core/integrity/check-invariants.js";
-import { normalizeLabel } from "../core/workstream/model.js";
-import { resolveWorkstreamId } from "../core/workstream/resolve.js";
+import { resolveRecallScope } from "../core/recall/resolve-scope.js";
 import { suggestMerges } from "../core/entities/dedup-suggest.js";
 import { DEFAULT_NLM_PORT } from "../shared/net.js";
 
@@ -433,17 +432,11 @@ async function buildStack() {
     exemplarStore: storage.exemplars,
     codeEmbedder: buildCodeEmbedder(),
     installScope: scope,
-    resolveWorkstreamMembers: async (idOrLabel: string): Promise<ReadonlyArray<string>> => {
-      const all = await wsStore.listAll(DEFAULT_TEAM_ID);
-      const byId = new Map(all.map((w) => [w.id, { id: w.id, mergedInto: w.mergedInto }]));
-      const target = all.find((w) => w.id === idOrLabel)
-        ?? all.find((w) => normalizeLabel(w.label) === normalizeLabel(idOrLabel));
-      if (!target) return [];
-      const survivor = resolveWorkstreamId(target.id, byId);
-      return all.filter((w) => resolveWorkstreamId(w.id, byId) === survivor).map((w) => w.id);
-    },
+    resolveWorkstreamMembers: async (tenantId, selector) => (await resolveRecallScope(wsStore, tenantId, selector)).workstreamIds ?? [],
   });
-  const factRecall = new FactRecallService({ factStore: facts, llm: embedder });
+  const factRecall = new FactRecallService({ factStore: facts, llm: embedder,
+    resolveWorkstreamMembers: async (tenantId, selector) => (await resolveRecallScope(wsStore, tenantId, selector)).workstreamIds ?? [],
+  });
   return { storage, store, facts, signals, scope, sources, providers, recall, factRecall, embedder, classifier };
 }
 
@@ -1797,12 +1790,56 @@ program
     }
   });
 
+export async function runMcpStdio(
+  storage: { close(): Promise<void> },
+  createServer: () => ReturnType<typeof createMcpServer>,
+  transport = new StdioServerTransport(),
+): Promise<void> {
+  let server: ReturnType<typeof createMcpServer> | undefined;
+  let previousClose: (() => void) | undefined;
+  let closing: Promise<void> | undefined;
+  let finish!: () => void;
+  const stopped = new Promise<void>((resolve) => { finish = resolve; });
+  const shutdown = () => closing ??= Promise.resolve().then(async () => {
+    process.stdin.pause();
+    try { await server?.close(); }
+    finally { await storage.close(); }
+  }).finally(() => {
+    for (const event of ["end", "close", "error"] as const) process.stdin.off(event, onStop);
+    process.off("SIGINT", onStop);
+    process.off("SIGTERM", onStop);
+    if (server) {
+      if (previousClose) server.server.onclose = previousClose;
+      else delete server.server.onclose;
+    }
+    finish();
+  });
+  // Event callbacks notify the owner; its finally awaits and propagates cleanup failures.
+  const onStop = () => { void shutdown().then(finish, finish); };
+  for (const event of ["end", "close", "error"] as const) process.stdin.on(event, onStop);
+  process.on("SIGINT", onStop);
+  process.on("SIGTERM", onStop);
+  try {
+    server = createServer();
+    previousClose = server.server.onclose;
+    server.server.onclose = () => {
+      try { previousClose?.(); }
+      finally { onStop(); }
+    };
+    if (process.stdin.readableEnded || process.stdin.destroyed) onStop();
+    else await server.connect(transport);
+    await stopped;
+  } finally {
+    await shutdown();
+  }
+}
+
 program
   .command("mcp")
   .description("Run as an MCP stdio server (for ~/.mcp.json)")
   .action(async () => {
     const { recall, store, facts, factRecall, storage, scope, signals } = await buildStack();
-    const server = createMcpServer(
+    await runMcpStdio(storage, () => createMcpServer(
       {
         recall,
         store,
@@ -1823,9 +1860,7 @@ program
       // stdio MCP transport carries no bearer token — it is local-mode only
       // by construction (program spec §3), bound to the default team.
       DEFAULT_TEAM_ID,
-    );
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
+    ));
   });
 
 const LAUNCH_AGENT_LABEL = "com.github.pbmagnet4.nlm-memory";

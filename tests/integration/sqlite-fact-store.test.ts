@@ -35,6 +35,9 @@ runFactStoreContract({
     await storage.close();
     if (tmp) rmSync(tmp, { recursive: true, force: true });
   },
+  async seedTenant(storage, tenantId) {
+    (storage as SqliteStorage).rawDb().prepare("INSERT OR IGNORE INTO teams (id, name) VALUES (?, ?)").run(tenantId, tenantId);
+  },
   async seedSession(storage, session) {
     // Cast is safe: setup() returns a SqliteStorage, so the harness owner knows the concrete type.
     (storage as SqliteStorage).sessions.insertSessionForTest(session);

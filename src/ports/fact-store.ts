@@ -38,18 +38,34 @@ export interface SubjectStat {
   readonly sessionCount: number;
 }
 
-/** Pre-filter applied at the storage layer before keyword scoring runs. */
-export interface FactListFilter {
-  /** Full-corpus lexical candidates, ranked before applying limit. */
-  readonly query?: string;
+/** Eligibility applied before lexical limits and final semantic top-k. */
+export interface FactEligibility {
+  readonly workstreamIds?: readonly string[];
   readonly subject?: string;
   readonly predicate?: string;
   readonly kind?: FactKind;
   readonly includeSuperseded?: boolean;
   readonly minConfidence?: number;
+}
+
+export type CurrentValueQuery = Omit<FactEligibility, "includeSuperseded"> & {
+  readonly subject: string;
+  readonly predicate: string;
+};
+
+export interface CurrentValueSummary {
+  readonly distinctValueCount: number;
+  readonly sourceSessionCount: number;
+  readonly examples: readonly { readonly value: string; readonly sourceSessionId: string }[];
+}
+
+export interface FactListFilter extends FactEligibility {
+  readonly query?: string;
   readonly limit?: number;
 }
 
+/** Reads validate stored literal assessments against the current tenant-owned source version.
+ * Legacy/stale rows stay readable without trusted offsets or implicit maintenance writes. */
 export interface FactStore {
   /** Atomically insert a single fact. Throws on duplicate id. */
   insert(tenantId: string, fact: Fact): Promise<void>;
@@ -151,17 +167,21 @@ export interface FactStore {
    */
   listForRecall(tenantId: string, filter: FactListFilter): Promise<ReadonlyArray<Fact>>;
 
+  /** Complete counts over eligible current facts; at most two deterministic examples, in one snapshot. */
+  summarizeCurrentValues(tenantId: string, query: CurrentValueQuery): Promise<CurrentValueSummary>;
+
   /**
-   * sqlite-vec KNN over fact_embeddings. Returns up to `limit` nearest
-   * neighbors by L2 distance, re-applying the tenant filter in the
-   * id-resolution SQL (program spec §4.3 — the vector index otherwise
-   * returns neighbors from the whole corpus). The service converts distance
-   * to cosine and blends with keyword scores.
+   * Exact L2 neighbors from tenant-owned facts with tenant-owned source
+   * sessions. Eligibility is applied before ranking/limit; default lifecycle
+   * excludes superseded and retired facts. Ties order by fact id ascending.
+   * The service converts distance to cosine and blends with keyword scores.
    */
   semanticSearch(
     tenantId: string,
     queryVector: Float32Array,
     limit: number,
+    eligibility?: FactEligibility,
+    execution?: { readonly signal?: AbortSignal },
   ): Promise<ReadonlyArray<FactSemanticNeighbor>>;
 
   /**

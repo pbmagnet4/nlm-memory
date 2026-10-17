@@ -1,5 +1,15 @@
 # nlm-memory CHANGELOG
 
+## 2026-10-16 - Required retrieval integrity and measured optional no-go (T806)
+
+**Changes:** Tenant/workstream fencing, eligible exact semantic top-k, complete current-value probes, shared request budgets/embedding promises, bounded SQLite read workers, trusted attribution, and nullable literal UTF-16 source anchors with old-writer guards. Optional ranking, deltas and decision-model reranking remain off. Added frozen one-shot diagnostic entry and durable results/rulings.
+
+**Results:** Typecheck/build pass; full suite with real PostgreSQL: 3,278 pass / three pre-existing opt-in live embedder skips. Four stale PG schema expectations fixed after the first full run. Preregistered 55 heldout literal cases: 1→5 sufficient, grouped95% delta interval [0,+19.35] points; six no-answer cases fail both arms. Source audit has zero verified quote/passage contradictions. Exact tokens, primary answer quality and power unavailable: no scientific promotion. Legacy anchor CPU and broad latency gates did not pass; see `docs/memory-retrieval-results.md`.
+
+**State:** Required task reviews and final whole-branch/spec/security review pass; Low A1 is tracked in T810. Local landing is recorded in T806/git. Installed 0.21.17-t730 unchanged; deployment, consistent backup, migration and live MCP canary pending. No provider change, public publish or live database write.
+
+**Next:** Authorized deployment and live canaries after backup/binary preservation; T810 tracks duplicate legacy-body hydration. T527/T679 remain open with measured source evidence.
+
 ## 2026-10-16 - Source-grounded SDD retrieval improvement plan (T805)
 
 **Changes:** Added the measurable retrieval specification, ten-task SDD implementation plan and editable architecture diagram. The plan prioritizes source-grounded evaluation, tenant/workstream eligibility, semantic candidate completeness, exact-value ambiguity, shared request budgets and source anchors; optional ranking, evidence deltas and decision-model reranking require measured promotion. Linked from `docs/context-retrieval.md`.
@@ -89,11 +99,3 @@ Session-level log per session protocol. Cap: 10 entries — archive older to `CH
 **Decisions:** reads `CLAUDE_CODE_SESSION_ID` (what Claude Code actually exports) as well as `CLAUDE_SESSION_ID`; the old build only knew the latter, so `--runtime auto` never pinned Claude Code sessions. A session with no projectDir no longer matches an arbitrary cwd (refuse over guess, the scanner's own rule). No per-runtime default-adapter fallback: `seedDefaults` registers every runtime.
 
 **State:** landed on main, not yet released. Once a release with it is installed, session-close's scan.py can drop the dedicated-build lookup and `~/.local/share/nlm-session-close` can go.
-
-## 2026-10-07 - 0.21.11 cut and live on the daemon; release-contract pack bug fixed, 0.21.12 staged
-
-**Changes:** Merged feat/learner-evidence to main (10a88d2..8005e43 landing merge; tree identical to the ff tip) plus chore(release) 0.21.11 (same 6 version files as 0.21.10). Pushed main, tagged v0.21.11. Installed versions/0.21.11 from exact tag content (npm ci, full build, prod prune, copied node 22.23.1, run.sh), flipped current, kickstarted io.whtnxt.nxtos.nlm. /api/health reports 0.21.11 warmup ready; schema_migrations top is 39, so migration 039 applied at boot with no duplicate-skip. Tag CI Release failed at Verify Codex release contract: the script did JSON.parse on `npm pack --dry-run --json` stdout, but npm runs prepare before packing, so vite's build banner lands on the same stream ahead of the JSON (reproduced locally). Fixed with exported packedFiles() (ANSI-strip, parse from the first `[`) plus a 3-case vitest regression; the exact CI step passes locally. Bumped 0.21.12 for the fixed pipeline (commit/tag/push pending in the scratch worktree); a tag checkout is immutable, so v0.21.11 can never go green.
-
-**Decisions:** 0.21.12 over moving the v0.21.11 tag (public repo, tags immutable). Parse-from-first-`[` over --ignore-scripts (npm 10 runs prepare on pack anyway, verified locally; parsing is version-proof). No daemon reinstall for .12: the delta from the live 0.21.11 install is release-script only.
-
-**State:** Daemon live on 0.21.11. npm latest still 0.21.0 until the v0.21.12 tag CI publishes. fix/dataset-sqlite-variable-limit (Edward's staged classifier work) untouched throughout. Release tooling note: the nxtgit session from the 0.21.11 cut was ended, and an ended record still pins the harness session (peek ignores status), so checkout/commit/push all refuse with no new identity obtainable mid-conversation; the .12 line was assembled in a scratch worktree instead.

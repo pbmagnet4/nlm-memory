@@ -1,6 +1,8 @@
 # Measurable NLM retrieval improvements
 
-Status: proposed specification; implementation has not started. Planning work: T805.
+Status: T806 implementation and independent final engineering/spec/security review complete; installed deployment pending. Planning work: T805.
+Required Tasks 1–6 are implemented and independently reviewed, including additive source anchors and old-writer invalidation.
+The 120-question source-audited set is frozen. Ranking, evidence-delta and decision-model preflights ended inconclusive/no-go after independent review. No optional candidate qualifies; final integration passed local checks and scientific promotion remains unestablished. Final whole-branch review passed; local landing is tracked in T806/git and installed deployment is unchanged. The single preregistered literal diagnostic improved 1/55→5/55 with a five-family interval including zero; exact tokens and blinded answer quality remain unavailable. [Final results](../../memory-retrieval-results.md). The anchor CPU target failed for the actual legacy population; conditional new-write results do not replace it.
 Baseline: local main `e391597` (T803 compact retrieval), not the oversized raw-session API.
 Owner: nlm-memory. Existing related work: T527 ranking calibration, T679 hook latency;
 coordinate capture work T264/T265 without changing their ingestion adapters incidentally.
@@ -153,7 +155,7 @@ server-owned operations, not external SQL; pool size is bounded and shutdown rea
 Add optional `Fact.sourceAnchor` and additive fields in both adapters: facts source_start,
 source_end, source_body_version, source_quote_status; sessions body_version.
 Verified anchor shape: `{status:'verified'; start:number; end:number; bodyVersion:string}`.
-Unverified shape: `{status:'missing'|'invalid'|'ambiguous'|'stale'}` with no trusted offsets.
+Unverified shapes carry no offsets. Missing/stale are `{status:'missing'|'stale'}`; invalid/ambiguous may carry `{status:'invalid'|'ambiguous'; bodyVersion?:string}`. This optional version identifies the exact body assessed, not a verified quote location. Reuse a negative assessment only while it matches the current tenant-owned source version; changed/missing versions are stale and require fresh bounded verification. Historical null negative versions retain the legacy fallback.
 Use one shared `bodyVersion(body):string` helper matching the existing 16-hex SHA-256 transcript
 version contract. Historical versions/anchors may be null; no startup-wide hashing/backfill.
 

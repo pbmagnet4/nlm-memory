@@ -1,3 +1,4 @@
+import { locateSourceAnchor } from "../../src/core/facts/source-anchor.js";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -5,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { RecallService } from "../../src/core/recall/recall-service.js";
 import { FactRecallService } from "../../src/core/recall-facts/fact-recall-service.js";
-import { getSessionHandler, recallContextHandler, recallSessionsHandler } from "../../src/mcp/server.js";
+import { getFactHistoryHandler, getSessionHandler, recallContextHandler, recallSessionsHandler } from "../../src/mcp/server.js";
 import { makeSession } from "../fixtures/sessions.js";
 import { makeFact } from "../fixtures/facts.js";
 import { FixedEmbedder } from "../fixtures/llm-stubs.js";
@@ -33,6 +34,108 @@ describe("bounded structured memory context", () => {
   });
   afterEach(async () => { vi.unstubAllEnvs(); await storage.close(); rmSync(dir, { recursive: true, force: true }); });
 
+  it("preserves unique legacy quote proof with read-only bounded body hydration", async () => {
+    await storage.facts.insert(tenant, makeFact({ id: "legacy", sourceSessionId: "source", subject: "store", predicate: "framework", value: "SQLite", sourceQuote: rationale }));
+    storage.rawDb().prepare("UPDATE sessions SET body_version = NULL WHERE id = 'source'").run();
+    const changes = () => (storage.rawDb().prepare("SELECT total_changes() AS n").get() as { n: number }).n;
+    const before = changes();
+    const readBody = vi.spyOn(storage.sessions, "getById");
+    const payload = JSON.parse((await recallContextHandler(deps, tenant, { query: "store framework", subject: "store", predicate: "framework" })).content[0]!.text);
+    expect(payload.facts[0].quoteVerified).toBe(true);
+    expect(readBody).toHaveBeenCalledWith(tenant, "source");
+    expect(changes()).toBe(before);
+    expect((await storage.facts.getById(tenant, "legacy"))!.sourceAnchor).toEqual({ status: "missing" });
+    expect((await storage.sessions.getById(tenant, "source"))!.bodyVersion).toBeNull();
+  });
+
+  it("uses current versioned anchors without fact-only body reads", async () => {
+    await storage.facts.insert(tenant, makeFact({ id: "anchored", sourceSessionId: "source", subject: "store", predicate: "framework", value: "SQLite", sourceQuote: rationale, sourceAnchor: locateSourceAnchor(body, rationale) }));
+    const readBody = vi.spyOn(storage.sessions, "getById");
+    const payload = JSON.parse((await recallContextHandler(deps, tenant, { query: "store framework", subject: "store", predicate: "framework" })).content[0]!.text);
+    expect(payload.facts[0].quoteVerified).toBe(true);
+    expect(readBody).not.toHaveBeenCalled();
+  });
+
+  it.each(["invalid", "ambiguous"] as const)("reuses a current %s assessment and hydrates only after the source changes", async (status) => {
+    const negativeBody = status === "invalid" ? "absent" : "aaaa";
+    const quote = "aa";
+    storage.sessions.insertSessionForTest(makeSession({ id: "negative", body: negativeBody }));
+    await storage.facts.insert(tenant, makeFact({ id: "negative-fact", sourceSessionId: "negative", subject: "store", predicate: "framework", value: "SQLite", sourceQuote: quote, sourceAnchor: locateSourceAnchor(negativeBody, quote) }));
+    const readBody = vi.spyOn(storage.sessions, "getById");
+    const input = { query: "store framework", subject: "store", predicate: "framework" };
+    let payload = JSON.parse((await recallContextHandler(deps, tenant, input)).content[0]!.text);
+    expect(payload.facts[0].quoteVerified).toBe(false);
+    expect(readBody).not.toHaveBeenCalled();
+    storage.rawDb().prepare("UPDATE sessions SET body = 'now aa unique' WHERE id = 'negative'").run();
+    payload = JSON.parse((await recallContextHandler(deps, tenant, input)).content[0]!.text);
+    expect(payload.facts[0].quoteVerified).toBe(true);
+    expect(readBody).toHaveBeenCalledWith(tenant, "negative");
+    expect((await storage.facts.getById(tenant, "negative-fact"))!.sourceAnchor).toEqual({ status: "stale" });
+  });
+
+  it("reverifies changed sources without trusting stale offsets, rejecting overlapping repeats", async () => {
+    const quote = "aa";
+    storage.sessions.insertSessionForTest(makeSession({ id: "repeat", body: "xx aa yy" }));
+    await storage.facts.insert(tenant, makeFact({ id: "anchored", sourceSessionId: "repeat", subject: "store", predicate: "framework", value: "SQLite", sourceQuote: quote, sourceAnchor: locateSourceAnchor("xx aa yy", quote) }));
+    const before = storage.rawDb().prepare("SELECT source_start, source_end, source_body_version FROM facts WHERE id = 'anchored'").get();
+    storage.rawDb().prepare("UPDATE sessions SET body = 'aaaa' WHERE id = 'repeat'").run();
+    const input = { query: "store framework", subject: "store", predicate: "framework" };
+    let payload = JSON.parse((await recallContextHandler(deps, tenant, input)).content[0]!.text);
+    expect(payload.facts[0].quoteVerified).toBe(false);
+    expect((await storage.facts.getById(tenant, "anchored"))!.sourceAnchor).toEqual({ status: "stale" });
+    storage.rawDb().prepare("UPDATE sessions SET body = 'changed prefix aa' WHERE id = 'repeat'").run();
+    payload = JSON.parse((await recallContextHandler(deps, tenant, input)).content[0]!.text);
+    expect(payload.facts[0].quoteVerified).toBe(true);
+    expect(storage.rawDb().prepare("SELECT source_start, source_end, source_body_version FROM facts WHERE id = 'anchored'").get()).toEqual(before);
+    expect((await storage.facts.getById(tenant, "anchored"))!.sourceAnchor).toEqual({ status: "stale" });
+  });
+
+  it("scopes both evidence lanes, expansion arguments, and history against current bindings", async () => {
+    await storage.workstreams.create(tenant, { id: "ws_scope", label: "SQLite project", scope: null });
+    await storage.workstreams.create(tenant, { id: "ws_other", label: "Other project", scope: null });
+    await storage.workstreams.create("team_foreign", { id: "ws_foreign", label: "Foreign project", scope: null });
+    await storage.sessions.setWorkstreamBinding(tenant, "source", "ws_scope", "operator", 1);
+    storage.sessions.insertSessionForTest(makeSession({ id: "noise", label: "SQLite noise", body: "SQLite OTHER SECRET" }), tenant);
+    await storage.sessions.setWorkstreamBinding(tenant, "noise", "ws_other", "operator", 1);
+    await storage.facts.insertMany(tenant, [
+      makeFact({ id: "wanted", sourceSessionId: "source", subject: "store", predicate: "framework", value: "SQLite", sourceQuote: rationale }),
+      makeFact({ id: "outside", sourceSessionId: "noise", subject: "store", predicate: "framework", value: "OTHER SECRET", sourceQuote: "SQLite OTHER SECRET" }),
+    ]);
+    const wired = { ...deps, workstreams: { store: storage.workstreams, sessions: storage.sessions,
+      facts: storage.facts, exemplars: storage.exemplars } };
+    const result = await recallContextHandler(wired, tenant, { query: "SQLite", mode: "keyword", workstream: "SQLite project" });
+    const payload = JSON.parse(result.content[0]!.text);
+    expect(payload.scope).toEqual({ status: "resolved", workstreamIds: ["ws_scope"], workstream: "SQLite project" });
+    expect(payload.facts.map((f: { id: string }) => f.id)).toEqual(["wanted"]);
+    expect(payload.sessions.map((f: { id: string }) => f.id)).toEqual(["source"]);
+    expect(result.content[0]!.text).not.toContain("OTHER SECRET");
+    for (const expansion of [...payload.expand, ...payload.facts.map((f: { expand: object }) => f.expand), ...payload.sessions.map((s: { expand: object }) => s.expand)]) {
+      expect(expansion.workstream).toBe("SQLite project");
+    }
+    const historyInput = { subject: "store", predicate: "framework", workstream: "SQLite project" };
+    const history = JSON.parse((await getFactHistoryHandler(wired, tenant, historyInput)).content[0]!.text);
+    expect(history.chains.flatMap((c: { history: { id: string }[] }) => c.history.map((f) => f.id))).toEqual(["wanted"]);
+    const context = JSON.parse((await getSessionHandler(wired, tenant, { id: "source", workstream: "SQLite project" })).content[0]!.text);
+    expect(context.expand.workstream).toBe("SQLite project");
+    const page = JSON.parse((await getSessionHandler(wired, tenant, { ...context.expand, maxChars: 2_000 })).content[0]!.text);
+    expect(page.next.workstream).toBe("SQLite project");
+    await storage.sessions.setWorkstreamBinding(tenant, "source", "ws_other", "operator", 1);
+    for (const expansion of [context.expand, page.next]) {
+      const blocked = await getSessionHandler(wired, tenant, expansion);
+      expect(blocked.isError).toBe(true);
+      expect(blocked.content[0]!.text).not.toContain(rationale);
+    }
+    expect(JSON.parse((await getFactHistoryHandler(wired, tenant, historyInput)).content[0]!.text).chains).toEqual([]);
+    for (const workstream of ["unknown", "ws_foreign"]) {
+      const empty = JSON.parse((await recallContextHandler(wired, tenant, { query: "SQLite", mode: "keyword", workstream })).content[0]!.text);
+      expect(empty.scope.status).toBe("not_found");
+      expect(empty.facts).toEqual([]); expect(empty.sessions).toEqual([]);
+    }
+    const noResolver = JSON.parse((await recallContextHandler(deps, tenant, { query: "SQLite", mode: "keyword", workstream: "SQLite project" })).content[0]!.text);
+    expect(noResolver.scope.status).toBe("not_found");
+    expect(noResolver.facts).toEqual([]); expect(noResolver.sessions).toEqual([]);
+  });
+
   it("retrieves an old fact beyond the newest 500 without an embedder call", async () => {
     await storage.facts.insertMany(tenant, [makeFact({ id: "gold", sourceSessionId: "source",
       subject: "store", predicate: "framework", value: "SQLite", createdAt: "2020-01-01T00:00:00Z" }),
@@ -55,6 +158,105 @@ describe("bounded structured memory context", () => {
     expect(JSON.parse(readFileSync(join(dir, "fact-queries.jsonl"), "utf8")).returned_ids).toEqual(["gold_copy"]);
     expect(existsSync(join(dir, "session-queries.jsonl"))).toBe(false);
     vi.unstubAllEnvs();
+  });
+
+  it("proves ambiguity across the complete eligible corpus and surfaces the hidden alternative", async () => {
+    await storage.facts.insertMany(tenant, [makeFact({ id: "old_b", sourceSessionId: "source", subject: "store", predicate: "framework", value: "B", createdAt: "2020-01-01T00:00:00Z" }),
+      ...Array.from({ length: 601 }, (_, i) => makeFact({ id: `duplicate_${i}`, sourceSessionId: "source", subject: "store", predicate: "framework", value: "A" }))]);
+    const search = vi.spyOn(deps.recall, "search");
+    const result = await recallContextHandler(deps, tenant, { query: "store framework", subject: "store", predicate: "framework" });
+    const payload = JSON.parse(result.content[0]!.text);
+    expect(payload.lookup).toEqual({ distinctValueCount: 2, complete: true, sourceSessionCount: 1,
+      omittedAlternatives: 0, expand: { subject: "store", predicate: "framework" } });
+    expect(payload.facts.map((f: { value: string }) => f.value).sort()).toEqual(["A", "B"]);
+    expect(payload.facts.every((f: { multipleValues: boolean; multipleValuesScope: string }) => f.multipleValues && f.multipleValuesScope === "corpus")).toBe(true);
+    expect(search).toHaveBeenCalledOnce();
+  });
+
+  it("cannot infer uniqueness when the complete probe is interrupted", async () => {
+    await storage.facts.insert(tenant, makeFact({ id: "only", sourceSessionId: "source", subject: "store", predicate: "framework", value: "A" }));
+    vi.spyOn(storage.facts, "summarizeCurrentValues").mockRejectedValue(new Error("statement timeout"));
+    const search = vi.spyOn(deps.recall, "search");
+    const result = await recallContextHandler(deps, tenant, { query: "store framework", subject: "store", predicate: "framework" });
+    const payload = JSON.parse(result.content[0]!.text);
+    expect(payload.lookup.distinctValueCount).toBeNull();
+    expect(payload.lookup.complete).toBe(false);
+    expect(payload.facts[0].multipleValuesScope).toBe("candidates");
+    expect(search).toHaveBeenCalledOnce();
+  });
+
+  it("uses the fact lane confidence floor for uniqueness", async () => {
+    await storage.facts.insertMany(tenant, [makeFact({ id: "high", sourceSessionId: "source", subject: "store", predicate: "framework", value: "A" }),
+      makeFact({ id: "low", sourceSessionId: "source", subject: "store", predicate: "framework", value: "B", confidence: 0.59 })]);
+    const search = vi.spyOn(deps.recall, "search");
+    const payload = JSON.parse((await recallContextHandler(deps, tenant, { query: "store framework", subject: "store", predicate: "framework" })).content[0]!.text);
+    expect(payload.lookup.complete).toBe(true); expect(payload.lookup.distinctValueCount).toBe(1);
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it("reports omitted alternatives and scoped history without truncating oversized facts", async () => {
+    await storage.workstreams.create(tenant, { id: "ws_large", label: "Large values", scope: null });
+    await storage.sessions.setWorkstreamBinding(tenant, "source", "ws_large", "operator", 1);
+    await storage.facts.insertMany(tenant, ["A", "B", "C"].map((value) => makeFact({ id: `large_${value}`, sourceSessionId: "source",
+      subject: "store", predicate: "framework", value: value.repeat(4_000), sourceQuote: rationale })));
+    const wired = { ...deps, workstreams: { store: storage.workstreams, sessions: storage.sessions, facts: storage.facts, exemplars: storage.exemplars } };
+    const result = await recallContextHandler(wired, tenant, { query: "store framework", subject: "store", predicate: "framework", workstream: "Large values", maxChars: 2_000 });
+    const payload = JSON.parse(result.content[0]!.text);
+    expect(result.content[0]!.text.length).toBeLessThanOrEqual(2_000);
+    expect(payload.facts).toEqual([]);
+    expect(payload.lookup).toEqual({ distinctValueCount: 3, sourceSessionCount: 1, complete: true, omittedAlternatives: 3,
+      expand: { subject: "store", predicate: "framework", workstream: "Large values" } });
+    expect(payload.truncated).toBeUndefined();
+  });
+
+  it.each([
+    { name: "long", subject: "s".repeat(200), predicate: "p".repeat(100), workstream: "w".repeat(500), factOnly: false },
+    { name: "long fact-only", subject: "s".repeat(200), predicate: "p".repeat(100), workstream: "w".repeat(500), factOnly: true },
+    { name: "escaped", subject: '"\\'.repeat(100), predicate: '"\\'.repeat(50), workstream: '"\\'.repeat(250), factOnly: false },
+    { name: "escaped fact-only", subject: '"\\'.repeat(100), predicate: '"\\'.repeat(50), workstream: '"\\'.repeat(250), factOnly: true },
+  ])("preserves $name selectors through final-envelope packing and omitted-value history expansion", async ({ subject, predicate, workstream, factOnly }) => {
+    vi.stubEnv("NLM_FORMAT", "json");
+    await storage.workstreams.create(tenant, { id: "ws_selectors", label: workstream, scope: null });
+    await storage.sessions.setWorkstreamBinding(tenant, "source", "ws_selectors", "operator", 1);
+    await storage.facts.insert(tenant, makeFact({ id: "selector_fact", sourceSessionId: "source", subject, predicate,
+      value: "A", sourceQuote: rationale }));
+    const { factRecall: _factRecall, ...factOnlyDeps } = deps;
+    const wired = { ...(factOnly ? factOnlyDeps : deps), workstreams: { store: storage.workstreams, sessions: storage.sessions, facts: storage.facts, exemplars: storage.exemplars } };
+    const search = vi.spyOn(deps.recall, "search");
+    const result = await recallContextHandler(wired, tenant, { query: "database?", subject, predicate, workstream, maxChars: 2_000 });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0]!.text.length).toBeLessThanOrEqual(2_000);
+    const payload = JSON.parse(result.content[0]!.text);
+    expect(payload.truncated).toBeUndefined();
+    expect(payload.lookup).toEqual({ distinctValueCount: 1, sourceSessionCount: 1, complete: true, omittedAlternatives: 1,
+      expand: { subject, predicate, workstream } });
+    expect(payload.facts).toEqual([]);
+    expect(payload.omitted).toEqual({ facts: 1, sessions: 0 });
+    expect(payload.scope.status).toBe("resolved");
+    if (payload.scope.workstream !== undefined) expect(payload.scope.workstream).toBe(workstream);
+    for (const expansion of payload.expand ?? []) expect(expansion.workstream).toBe(workstream);
+    expect(search).not.toHaveBeenCalled();
+    const history = await getFactHistoryHandler(wired, tenant, payload.lookup.expand);
+    expect(history.isError).toBeUndefined();
+    expect(JSON.parse(history.content[0]!.text).chains.flatMap((chain: { history: { value: string; subject: string; predicate: string }[] }) => chain.history)
+      .map((fact: { value: string; subject: string; predicate: string }) => [fact.subject, fact.predicate, fact.value])).toEqual([[subject, predicate, "A"]]);
+  });
+
+  it("never shortens semantic selectors in generic response compaction", () => {
+    const selectors = { subject: "s".repeat(200), predicate: "p".repeat(100), workstream: "w".repeat(500) };
+    const text = boundedFormat({ lookup: { expand: selectors }, display: "noise".repeat(2_000) }, JSON.stringify, 2_000);
+    expect(text.length).toBeLessThanOrEqual(2_000);
+    expect(JSON.parse(text).lookup.expand).toEqual(selectors);
+  });
+
+  it("labels general search multiplicity as a candidate observation and keeps exact tuple groups separate", async () => {
+    await storage.facts.insertMany(tenant, [
+      makeFact({ id: "tuple_a", sourceSessionId: "source", subject: "a b", predicate: "c", value: "A" }),
+      makeFact({ id: "tuple_b", sourceSessionId: "source", subject: "a", predicate: "b c", value: "B" }),
+    ]);
+    const payload = JSON.parse((await recallContextHandler(deps, tenant, { query: "a b c", intent: "history", mode: "keyword" })).content[0]!.text);
+    expect(payload.lookup).toBeUndefined(); expect(payload.facts).toHaveLength(2);
+    expect(payload.facts.every((f: { multipleValues: boolean; multipleValuesScope: string }) => !f.multipleValues && f.multipleValuesScope === "candidates")).toBe(true);
   });
 
   it("returns mid-transcript rationale as exact source evidence within budget", async () => {

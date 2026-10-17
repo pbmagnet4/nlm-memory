@@ -1,3 +1,6 @@
+import { validateSourceAnchor } from "@core/facts/source-anchor.js";
+import { bodyVersion } from "@core/context/source-version.js";
+import { resolveRecallScope, type ResolvedRecallScope } from "@core/recall/resolve-scope.js";
 /**
  * MCP adapter. Binds the `recall_sessions` and `get_session` tools directly
  * to RecallService and SessionStore — no HTTP hop, no localhost loopback.
@@ -18,9 +21,9 @@ import { logQuery } from "@core/recall/query-log.js";
 import { logFactQuery } from "@core/recall-facts/fact-query-log.js";
 import { appendCitation } from "@core/recall/citation-log.js";
 import { resolveConversationForSession } from "@core/hook/memo.js";
-import { resolveConversationByQuery } from "@core/hook/resolve-conversation-by-query.js";
+import { recallContext } from "@core/context/recall-context.js";
 import { appendFactSupersedence, appendSupersedence, readSupersedenceLog } from "@core/storage/supersedence-log.js";
-import type { FactRecallService } from "@core/recall-facts/fact-recall-service.js";
+import { DEFAULT_FACT_MIN_CONFIDENCE, type FactRecallService } from "@core/recall-facts/fact-recall-service.js";
 import type { RecallService } from "@core/recall/recall-service.js";
 import type { FactStore } from "@ports/fact-store.js";
 import type { SessionStore } from "@ports/session-store.js";
@@ -59,6 +62,10 @@ import { buildContextBundle } from "@core/context/context-bundle.js";
 import { boundedFormat } from "./response-budget.js";
 import { matchedPassages, relevantStrings, transcriptPage } from "@core/context/session-evidence.js";
 
+function trustedConversationId(deps: McpDeps, tenantId: string): string | undefined {
+  return deps.requestContext?.tenantId === tenantId ? deps.requestContext.conversationId : undefined;
+}
+
 const CHARACTER_LIMIT = 25_000;
 const DEFAULT_LIMIT = 10;
 const SERVER_NAME = "nlm-memory-mcp-server";
@@ -76,6 +83,7 @@ const useToon = (): boolean => process.env.NLM_FORMAT === "toon";
 
 export interface McpDeps {
   readonly recall: RecallService;
+  readonly requestContext?: { readonly tenantId: string; readonly conversationId?: string; readonly signal?: AbortSignal };
   readonly store: SessionStore;
   /** Optional — when absent, fact tools are not registered. */
   readonly factRecall?: FactRecallService;
@@ -207,7 +215,7 @@ export async function recallSessionsHandler(
       ...(input.workstream !== undefined ? { workstream: input.workstream } : {}),
     };
     const result = await deps.recall.search(tenantId, query);
-    const conversationId = resolveConversationByQuery(input.query ?? "") ?? undefined;
+    const conversationId = trustedConversationId(deps, tenantId);
     // Telemetry — the MCP path is the real agent-usage path; without this it
     // is invisible to query_log.jsonl and the Recall page. Fire-and-forget,
     // mirrors the HTTP /api/recall handler.
@@ -221,6 +229,7 @@ export async function recallSessionsHandler(
       limit: input.limit ?? DEFAULT_LIMIT,
       nResults: result.total,
       returnedIds: result.results.map((r) => r.id),
+      ...(input.workstream !== undefined ? { workstream: input.workstream } : {}),
       ...(conversationId !== undefined ? { conversationId } : {}),
     });
     return ok(result);
@@ -256,7 +265,7 @@ export async function recallWorkstreamHandler(
   try {
     const idOrLabel = (input.idOrLabel ?? "").trim();
     if (!idOrLabel) return okText("Provide a workstream id or label.");
-    const conversationId = resolveConversationByQuery(idOrLabel) ?? undefined;
+    const conversationId = trustedConversationId(deps, tenantId);
     const ws = deps.workstreams.store;
     const found =
       (await ws.getById(tenantId, idOrLabel)) ?? (await ws.findByNormalizedLabel(tenantId, normalizeLabel(idOrLabel)));
@@ -392,7 +401,24 @@ function localToday(): string {
   return `${d.getFullYear()}-${mo}-${da}`;
 }
 
+async function requestedScope(deps: McpDeps, tenantId: string, workstream?: string): Promise<ResolvedRecallScope> {
+  if (workstream === undefined) return { status: "all" };
+  if (!deps.workstreams) return { status: "not_found", workstreamIds: [] };
+  return resolveRecallScope(deps.workstreams.store, tenantId, workstream);
+}
+
+async function scopedSessionIds(deps: McpDeps, tenantId: string, ids: readonly string[], scope: ResolvedRecallScope): Promise<Set<string>> {
+  if (scope.status === "all") return new Set(ids);
+  const bindings = await deps.store.getWorkstreamIds(tenantId, ids);
+  return new Set(ids.filter((id) => {
+    const binding = bindings.get(id);
+    return binding != null && scope.workstreamIds.some((ws) => ws === binding);
+  }));
+}
+
 const contextInput = z.object({
+  timeoutMs: z.number().int().min(100).max(5_000).default(1_500),
+  workstream: z.string().min(1).max(500).optional(),
   query: z.string().min(1).max(2_000),
   subject: z.string().min(1).max(200).optional(),
   predicate: z.string().min(1).max(100).optional(),
@@ -406,57 +432,39 @@ export async function recallContextHandler(
 ): Promise<ToolResult> {
   try {
     const args = contextInput.parse(input);
-    const intent = args.intent === "auto"
-      ? /\b(why|rationale|reason|decide|decided|choose|chose)\b/i.test(args.query) ? "decision"
-        : /\b(left off|still open|status|blocked|next step)\b/i.test(args.query) ? "state" : "lookup"
-      : args.intent;
-    const exact = !!args.subject && !!args.predicate && intent === "lookup";
-    const factResult = deps.factRecall ? await deps.factRecall.search(tenantId, {
-      query: exact ? "" : args.query, mode: exact ? "keyword" : args.mode ?? "hybrid", limit: 12,
-      ...(args.subject ? { subject: args.subject } : {}),
-      ...(args.predicate ? { predicate: args.predicate } : {}),
-      ...(intent === "decision" ? { kind: "decision" as const } : {}),
-    }) : null;
-    const facts = factResult?.results ?? [];
-    // Explicit, unambiguous structured lookups need no second search or model.
-    const values = new Set(facts.map((f) => JSON.stringify([f.subject, f.predicate, f.value])));
-    const sessions = exact && values.size === 1 ? null : await deps.recall.search(tenantId, {
-      query: args.query, mode: args.mode ?? "keyword", limit: 4, rewrite: false,
-      includeSuperseded: intent === "history",
-    });
-    const ids = [...new Set([...facts.map((f) => f.sourceSessionId),
-      ...(sessions?.results.map((s) => s.id) ?? [])])];
-    const metadata = await deps.store.getByIds(tenantId, ids);
-    const evidenceSources = await Promise.all((sessions?.results ?? []).map((s) => deps.store.getById(tenantId, s.id)));
-    const fullById = new Map(evidenceSources.filter((s) => s !== null).map((s) => [s.id, s]));
-    const successors = await deps.store.resolveSuccessors(tenantId, ids);
-    const sources = metadata.map((s) => ({ ...(fullById.get(s.id) ?? s),
-      supersededBy: successors.get(s.id) ?? null }));
-    const bundle = buildContextBundle(args.query, facts, sessions?.results ?? [], sources, args.maxChars);
-    const conversationId = resolveConversationByQuery(args.query) ?? undefined;
-    if (sessions) void logQuery(tenantId, { source: "mcp", runtime, query: args.query, entity: null,
+    const context = await recallContext(tenantId, { ...args,
+      ...(deps.requestContext?.tenantId === tenantId && deps.requestContext.signal ? { signal: deps.requestContext.signal } : {}),
+    }, deps);
+    const { intent, exact } = context;
+    const responseMetadata = { intent, scope: { ...context.scope, ...(args.workstream !== undefined ? { workstream: args.workstream } : {}) },
+      coverage: context.coverage,
+      ...(context.modeUnavailable ? { modeUnavailable: context.modeUnavailable } : {}),
+      ...(!deps.factRecall ? { factsUnavailable: true } : {}),
+    };
+    const bundle = buildContextBundle(args.query, context.facts, context.sessions, context.sources,
+      args.maxChars, args.workstream, context.lookup, responseMetadata, format);
+    const conversationId = trustedConversationId(deps, tenantId);
+    if (context.sessionsExecuted) void logQuery(tenantId, { source: "mcp", runtime, query: args.query, entity: null,
       kind: null, mode: args.mode ?? "keyword", limit: 4, nResults: bundle.sessions.length,
       returnedIds: bundle.sessions.map((s) => s.id),
+      ...(args.workstream !== undefined ? { workstream: args.workstream } : {}),
       ...(conversationId ? { conversationId } : {}),
     });
-    if (factResult) void logFactQuery(tenantId, { source: "mcp", runtime, query: args.query,
+    if (context.factsExecuted) void logFactQuery(tenantId, { source: "mcp", runtime, query: args.query,
       subject: args.subject ?? null, predicate: args.predicate ?? null,
       kind: intent === "decision" ? "decision" : null, mode: exact ? "keyword" : args.mode ?? "hybrid", limit: 12,
       nResults: bundle.facts.length, returnedIds: bundle.facts.map((f) => f.id),
+      ...(args.workstream !== undefined ? { workstream: args.workstream } : {}),
       ...(conversationId ? { conversationId } : {}),
     });
-    return { content: [{ type: "text", text: boundedFormat({ ...bundle, intent,
-      ...(sessions?.modeUnavailable || factResult?.modeUnavailable ? {
-        modeUnavailable: sessions?.modeUnavailable ?? factResult?.modeUnavailable,
-      } : {}),
-      ...(!deps.factRecall ? { factsUnavailable: true } : {}),
-    }, format, args.maxChars) }] };
+    return { content: [{ type: "text", text: format(bundle) }] };
   } catch (e) {
     return err(e);
   }
 }
 
 const sessionInput = z.object({
+  workstream: z.string().min(1).max(500).optional(),
   id: z.string().min(1).max(500),
   version: z.string().regex(/^[a-f0-9]{16}$/).optional(),
   query: z.string().max(2_000).optional(),
@@ -472,8 +480,16 @@ export async function getSessionHandler(
 ): Promise<ToolResult> {
   try {
     const args = sessionInput.parse(input);
+    const scope = await requestedScope(deps, tenantId, args.workstream);
+    const allowed = await scopedSessionIds(deps, tenantId, [input.id], scope);
+    if (!allowed.has(input.id)) return err(new Error(`session ${input.id} not found`));
+    const scopeArgs = args.workstream !== undefined ? { workstream: args.workstream } : {};
     const session = await deps.store.getById(tenantId, input.id);
     if (!session) {
+      return err(new Error(`session ${input.id} not found`));
+    }
+
+    if (scope.status !== "all" && !scope.workstreamIds.some((id) => id === session.workstreamId)) {
       return err(new Error(`session ${input.id} not found`));
     }
 
@@ -484,7 +500,8 @@ export async function getSessionHandler(
     ];
     const linked =
       linkedIds.length > 0 ? await deps.store.getByIds(tenantId, linkedIds) : [];
-    const byId = new Map(linked.map((s) => [s.id, s]));
+    const linkedAllowed = await scopedSessionIds(deps, tenantId, linked.map((s) => s.id), scope);
+    const byId = new Map(linked.filter((s) => linkedAllowed.has(s.id)).map((s) => [s.id, s]));
 
     // Load supersedence log once so we can join reason + recordedBy onto supersededBy
     const supersedenceLog = session.supersededBy
@@ -532,7 +549,7 @@ export async function getSessionHandler(
 
     if (args.view === "transcript") {
       if (args.offset > session.body.length) return err(new Error("offset exceeds transcript length"));
-      const version = createHash("sha256").update(session.body).digest("hex").slice(0, 16);
+      const version = bodyVersion(session.body);
       if (args.version && args.version !== version) return err(new Error("Transcript changed; restart at offset 0."));
       let size = args.maxChars - 1_000;
       for (;;) {
@@ -540,7 +557,7 @@ export async function getSessionHandler(
         const text = format({ id: session.id, status: session.status,
           supersededBy: supersededBy?.id ?? null, version, body, ...page,
           next: page.nextOffset === null ? null : {
-            id: session.id, view: "transcript", offset: page.nextOffset, maxChars: args.maxChars, version,
+            id: session.id, ...scopeArgs, view: "transcript", offset: page.nextOffset, maxChars: args.maxChars, version,
           } });
         if (text.length <= args.maxChars) return { content: [{ type: "text", text }] };
         size -= Math.max(100, text.length - args.maxChars);
@@ -555,12 +572,13 @@ export async function getSessionHandler(
       id: session.id, label: session.label, startedAt: session.startedAt, status: session.status,
       summary: session.summary, decisions, open, entities: session.entities,
       facts: currentFacts.slice(0, 8).map((f) => ({ id: f.id, kind: f.kind, subject: f.subject,
-        predicate: f.predicate, value: f.value, sourceQuote: f.sourceQuote })),
+        predicate: f.predicate, value: f.value, sourceQuote: f.sourceQuote,
+        sourceAnchor: validateSourceAnchor(f.sourceAnchor, session.bodyVersion) })),
       passages: args.query ? matchedPassages(session, args.query) : [],
       omitted: { decisions: session.decisions.length - decisions.length,
         open: session.open.length - open.length, facts: Math.max(0, currentFacts.length - 8) },
       supersedes, supersededBy, ...(outcome ? { outcome } : {}),
-      expand: { id: session.id, view: "transcript", offset: 0, maxChars: args.maxChars },
+      expand: { id: session.id, ...scopeArgs, view: "transcript", offset: 0, maxChars: args.maxChars },
     }, format, args.maxChars) }] };
 
   } catch (e) {
@@ -569,6 +587,7 @@ export async function getSessionHandler(
 }
 
 export interface RecallFactsInput {
+  workstream: string | undefined;
   query: string | undefined;
   subject: string | undefined;
   predicate: string | undefined;
@@ -591,6 +610,7 @@ export async function recallFactsHandler(
   try {
     const query: FactRecallQuery = {
       query: input.query ?? "",
+      ...(input.workstream !== undefined ? { workstream: input.workstream } : {}),
       mode: input.mode ?? "hybrid",
       limit: input.limit ?? DEFAULT_LIMIT,
       ...(input.subject !== undefined ? { subject: input.subject } : {}),
@@ -604,7 +624,7 @@ export async function recallFactsHandler(
         : {}),
     };
     const result = await deps.factRecall.search(tenantId, query);
-    const conversationId = resolveConversationByQuery(input.query ?? "") ?? undefined;
+    const conversationId = trustedConversationId(deps, tenantId);
     // Telemetry — see recallSessionsHandler. Fire-and-forget.
     void logFactQuery(tenantId, {
       source: "mcp",
@@ -617,6 +637,7 @@ export async function recallFactsHandler(
       limit: input.limit ?? DEFAULT_LIMIT,
       nResults: result.total,
       returnedIds: result.results.map((r) => r.id),
+      ...(input.workstream !== undefined ? { workstream: input.workstream } : {}),
       ...(conversationId !== undefined ? { conversationId } : {}),
     });
     return ok(result);
@@ -628,13 +649,17 @@ export async function recallFactsHandler(
 export async function getFactHistoryHandler(
   deps: McpDeps,
   tenantId: string,
-  input: { subject: string; predicate: string | undefined },
+  input: { subject: string; predicate?: string | undefined; workstream?: string | undefined },
 ): Promise<ToolResult> {
   if (!deps.factStore) {
     return err(new Error("fact store not wired in this deployment"));
   }
   try {
-    const chains = await deps.factStore.getHistory(tenantId, input.subject, input.predicate);
+    const scope = await requestedScope(deps, tenantId, input.workstream);
+    const raw = scope.status === "not_found" ? [] : await deps.factStore.getHistory(tenantId, input.subject, input.predicate);
+    const allowed = await scopedSessionIds(deps, tenantId, raw.flatMap((c) => c.history.map((f) => f.sourceSessionId)), scope);
+    const chains = raw.map((c) => ({ ...c, history: c.history.filter((f) => allowed.has(f.sourceSessionId)) }))
+      .filter((c) => c.history.length > 0);
     return ok({ subject: input.subject, predicate: input.predicate ?? null, chains });
   } catch (e) {
     return err(e);
@@ -893,22 +918,16 @@ export async function supersedeFactHandler(
 export async function citeSessionHandler(
   tenantId: string,
   input: CiteSessionInput,
+  requestContext?: McpDeps["requestContext"],
 ): Promise<ToolResult> {
   if (!input.id || input.id.length < MIN_CITE_ID_LEN) {
     return err(new Error(`id must be at least ${MIN_CITE_ID_LEN} characters`));
   }
   try {
-    // Agents rarely pass conversation_id, so resolve it server-side. The
-    // surfaced-memo only knows sessions the recall HOOK injected, which is
-    // empty whenever ambient recall is off or failing — that gap silently
-    // unattributed every pull-driven citation. Fall back to the same
-    // transcript scan the recall handlers use: the runtime has already
-    // written this cite_session tool_use (carrying `id`) to the transcript
-    // before this handler runs, so the id is a reliable join key.
     const conversationId =
       input.conversation_id ??
+      (requestContext?.tenantId === tenantId ? requestContext.conversationId : undefined) ??
       resolveConversationForSession(tenantId, input.id) ??
-      resolveConversationByQuery(input.id) ??
       "mcp_tool";
     const logged = await appendCitation(tenantId, {
       conversationId,
@@ -1307,21 +1326,28 @@ export function createMcpServer(deps: McpDeps, tenantId: string): McpServer {
       title: "Recall Structured NLM Context",
       description: `Preferred first call for memory questions. Returns current structured facts,
 source quotes, relevant decisions/open questions and original transcript passages
-within maxChars (default 8000 characters, not tokens). Evidence has source IDs
+within maxChars (default 8000 characters, not tokens). timeoutMs defaults to 1500
+(range 100–5000); coverage labels incomplete lanes and preserves completed evidence.
+Evidence has source IDs
 and get_session expansion arguments. Use subject+predicate for exact structured
 lookups, intent=decision for rationale, state for continuity, history to include
 superseded sessions. Conflicting values are preserved, never silently resolved.
 Defaults to hybrid facts and keyword sessions, preserving each lane's measured
 ranking policy. Set mode to override both. No query-time generative model calls;
 hybrid uses the embedder. Keyword works
-offline. Omitted counts refer to retrieved candidates, not exhaustive corpus totals.
+offline. General search multipleValues describes retrieved candidates. Exact lookup
+reports lookup.complete and the full eligible distinctValueCount; incomplete probes
+never establish uniqueness. lookup.omittedAlternatives counts values absent from
+returned facts; lookup.expand carries scoped get_fact_history arguments.
 Use recall_facts/get_fact_history for deeper fact history; get_session with query
 for more source context, or view=transcript with offset for original text.`,
       inputSchema: contextInput.shape,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
-    async (args) => recallContextHandler(deps, tenantId, args,
-      mcpRuntimeFromClient(server.server.getClientVersion())) as never,
+    async (args, extra) => recallContextHandler({ ...deps, requestContext: {
+      tenantId, signal: extra.signal,
+      ...(trustedConversationId(deps, tenantId) ? { conversationId: trustedConversationId(deps, tenantId)! } : {}),
+    } }, tenantId, args, mcpRuntimeFromClient(server.server.getClientVersion())) as never,
   );
 
   server.registerTool(
@@ -1351,6 +1377,7 @@ for more source context, or view=transcript with offset for original text.`,
             .string()
             .default("")
             .describe("Free-text search against fact values. Optional if subject/predicate/kind set."),
+          workstream: z.string().min(1).max(500).optional(),
           subject: z
             .string()
             .optional()
@@ -1408,6 +1435,7 @@ for more source context, or view=transcript with offset for original text.`,
         description: GET_FACT_HISTORY_DESCRIPTION,
         inputSchema: {
           subject: z.string().min(1).describe("Normalized entity/topic name."),
+          workstream: z.string().min(1).max(500).optional(),
           predicate: z
             .string()
             .optional()
@@ -1472,7 +1500,7 @@ for more source context, or view=transcript with offset for original text.`,
         openWorldHint: false,
       },
     },
-    async (args) => citeSessionHandler(tenantId, args) as never,
+    async (args) => citeSessionHandler(tenantId, args, deps.requestContext) as never,
   );
 
   if (deps.signalStore && deps.installScope !== undefined) {
@@ -1704,7 +1732,7 @@ for more source context, or view=transcript with offset for original text.`,
           codeEmbedder,
           null,
         );
-        const conversationId = resolveConversationByQuery(args.query) ?? undefined;
+        const conversationId = trustedConversationId(deps, tenantId);
         const allIds = [
           ...result.positives.map((e) => e.id),
           ...result.negatives.map((e) => e.id),

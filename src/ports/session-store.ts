@@ -39,6 +39,7 @@ export interface SearchOptions {
 export interface SessionStore {
   getById(tenantId: string, sessionId: string): Promise<Session | null>;
 
+  /** Metadata includes nullable bodyVersion; full-body reads remain explicit via getById. */
   getByIds(tenantId: string, ids: ReadonlyArray<string>): Promise<ReadonlyArray<Session>>;
 
   /**
@@ -48,11 +49,13 @@ export interface SessionStore {
    */
   listByDateRange(tenantId: string, fromIso: string, toIso: string): Promise<ReadonlyArray<Session>>;
 
+  /** Exact eligible L2 top-k, max-pooled per session; ties use session id then chunk index. */
   semanticSearch(
     tenantId: string,
     queryVector: Float32Array,
     limit: number,
     opts?: SearchOptions,
+    execution?: { readonly signal?: AbortSignal },
   ): Promise<ReadonlyArray<SemanticNeighbor>>;
 
   keywordSearch(

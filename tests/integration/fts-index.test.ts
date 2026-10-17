@@ -60,4 +60,24 @@ describe("sessions_fts index", () => {
       .get('"pgvector"');
     expect(hit?.id).toBe("s1");
   });
+  it.each(["UPDATE", "UPSERT"])("keeps FTS sound when a legacy %s invalidates a version", async (mode) => {
+    store.insertSessionForTest(makeSession({ id: "guard", label: "labelold", summary: "summaryold", body: "bodyold" }));
+    const db = store.rawDb();
+    if (mode === "UPDATE") db.prepare("UPDATE sessions SET body = 'bodynew' WHERE id = 'guard'").run();
+    else db.prepare(`INSERT INTO sessions(id, runtime, started_at, label, summary, body, status)
+      VALUES ('guard', 'test', '2026-01-01', 'labelold', 'summaryold', 'bodynew', 'closed')
+      ON CONFLICT(id) DO UPDATE SET body = excluded.body`).run();
+    const hits = (word: string) => db.prepare("SELECT rowid FROM sessions_fts WHERE sessions_fts MATCH ?").all(word);
+    expect(hits("bodyold")).toHaveLength(0);
+    expect(hits("bodynew")).toHaveLength(1);
+    for (const column of ["label", "summary"] as const) {
+      db.prepare(`UPDATE sessions SET ${column} = ? WHERE id = 'guard'`).run(`${column}new`);
+      expect(hits(`${column}old`)).toHaveLength(0);
+      expect(hits(`${column}new`)).toHaveLength(1);
+    }
+    db.prepare("UPDATE sessions SET body_version = NULL WHERE id = 'guard'").run();
+    expect(hits("bodynew")).toHaveLength(1);
+    db.prepare("INSERT INTO sessions_fts(sessions_fts, rank) VALUES('integrity-check', 1)").run();
+  });
+
 });

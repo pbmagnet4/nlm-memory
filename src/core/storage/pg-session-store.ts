@@ -11,6 +11,7 @@
  * per-table rationale.
  */
 
+import { bodyVersion, persistedText } from "@core/context/source-version.js";
 import type { Pool, PoolClient } from "pg";
 import type {
   KeywordNeighbor,
@@ -45,6 +46,7 @@ type SessionRow = {
   transcript_kind: string | null;
   transcript_path: string | null;
   body: string | null;
+  body_version?: string | null;
   workstream_id: string | null;
   classifier_provider?: string | null;
   classifier_model?: string | null;
@@ -126,7 +128,7 @@ export class PgSessionStore implements SessionStore {
     const tc = tenantClausePg(tenantId, 2);
     const result = await this.pool.query<SessionRow>(
       `SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
-              label, summary, status, transcript_kind, transcript_path, body,
+              label, summary, status, transcript_kind, transcript_path, body, body_version, workstream_id,
               classifier_provider, classifier_model, classifier_confidence,
               agent_persona, parent_session_id,
               primary_model, total_tokens, skill
@@ -150,7 +152,7 @@ export class PgSessionStore implements SessionStore {
     const tc = tenantClausePg(tenantId, ids.length + 1);
     const result = await this.pool.query<Omit<SessionRow, "body">>(
       `SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
-              label, summary, status, transcript_kind, transcript_path
+              label, summary, status, transcript_kind, transcript_path, body_version
        FROM sessions WHERE id IN (${placeholders}) AND ${tc.sql}`,
       [...ids, tc.param],
     );
@@ -222,8 +224,8 @@ export class PgSessionStore implements SessionStore {
        JOIN sessions s ON s.id = sec.session_id
        WHERE ${tc.sql} ${wsClause}
        AND ${statusFilter}
-       ORDER BY sec.session_id, distance, sec.chunk_idx) nearest
-       ORDER BY distance
+       ORDER BY sec.session_id, distance, sec.chunk_idx, sec.chunk_id) nearest
+       ORDER BY distance, session_id COLLATE "C"
        LIMIT ${limitParam}`,
       params,
     );
@@ -494,6 +496,7 @@ export class PgSessionStore implements SessionStore {
     supersedes: Supersedes | null = null,
     factSink: { factStore: PgFactStore; facts: ReadonlyArray<Fact> } | null = null,
   ): Promise<void> {
+    record = { ...record, body: record.body === null ? null : persistedText(record.body) };
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -504,14 +507,15 @@ export class PgSessionStore implements SessionStore {
            transcript_offset, transcript_length,
            classifier_provider, classifier_model, classifier_confidence,
            scope, agent_persona, parent_session_id,
-           primary_model, total_tokens, skill, tenant_id
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+           primary_model, total_tokens, skill, tenant_id, body_version
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
          ON CONFLICT (id) DO UPDATE SET
            ended_at = EXCLUDED.ended_at,
            duration_min = EXCLUDED.duration_min,
            label = EXCLUDED.label,
            summary = EXCLUDED.summary,
            body = EXCLUDED.body,
+           body_version = EXCLUDED.body_version,
            status = EXCLUDED.status,
            classifier_provider = EXCLUDED.classifier_provider,
            classifier_model = EXCLUDED.classifier_model,
@@ -540,6 +544,7 @@ export class PgSessionStore implements SessionStore {
           record.totalTokens ?? null,
           record.skill ?? null,
           tenantId,
+          record.body === null ? null : bodyVersion(record.body),
         ],
       );
       await client.query("DELETE FROM markers WHERE session_id = $1", [record.id]);
@@ -696,12 +701,12 @@ export class PgSessionStore implements SessionStore {
     const status: SessionStatus = session.status === "idle" ? "active" : session.status;
     await this.pool.query(
       `INSERT INTO sessions (id, runtime, runtime_session_id, started_at, ended_at,
-         duration_min, label, summary, body, status, transcript_kind, transcript_path, tenant_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+         duration_min, label, summary, body, status, transcript_kind, transcript_path, tenant_id, body_version)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
       [
         session.id, session.runtime, session.runtimeSessionId, session.startedAt,
         session.endedAt, session.durationMin, session.label, session.summary,
-        session.body, status, session.transcriptKind, session.transcriptPath, tenantId,
+        persistedText(session.body), status, session.transcriptKind, session.transcriptPath, tenantId, bodyVersion(session.body),
       ],
     );
     for (const e of session.entities) {
@@ -770,6 +775,13 @@ export class PgSessionStore implements SessionStore {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      const sourceTc = tenantClausePg(tenantId, 2);
+      const source = (await client.query<{ body: string | null }>(
+        `SELECT body FROM sessions WHERE id = $1 AND ${sourceTc.sql} FOR UPDATE`, [sessionId, sourceTc.param])).rows[0];
+      if (!source) throw new Error(`Session ${sessionId} not found`);
+      const updateTc = tenantClausePg(tenantId, 3);
+      await client.query(`UPDATE sessions SET body_version = $1 WHERE id = $2 AND ${updateTc.sql}`,
+        [source.body === null ? null : bodyVersion(source.body), sessionId, updateTc.param]);
       await ingestSessionFactsOnClient(client, tenantId, sessionId, facts, sessionScope);
       await client.query("COMMIT");
     } catch (err) {
@@ -897,6 +909,7 @@ function rowToSession(
     transcriptKind: row.transcript_kind ?? "",
     transcriptPath: row.transcript_path,
     body: row.body ?? "",
+    bodyVersion: row.body_version ?? null,
     entities: entitiesById.get(row.id) ?? [],
     decisions: [...rawDecisions, ...promotedDecisions],
     open: activeOpen,

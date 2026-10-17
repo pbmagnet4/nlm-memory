@@ -45,6 +45,7 @@ class ScriptedFactStore implements FactStore {
     private readonly bySubject: Map<string, Fact[]>,
     private readonly corroboration: Map<string, number>,
   ) {}
+  async summarizeCurrentValues(): Promise<never> { throw new Error("Unexpected current-value probe in this test"); }
   async insert() {}
   async insertMany() {}
   async getById() { return null; }
@@ -174,6 +175,7 @@ describe("pickRelatedFacts (Spec G.2)", () => {
 
   it("returns empty on FactStore error (fail-open)", async () => {
     class FailingStore implements FactStore {
+      async summarizeCurrentValues(): Promise<never> { throw new Error("Unexpected current-value probe in this test"); }
       async insert() {}
       async insertMany() {}
       async getById() { return null; }

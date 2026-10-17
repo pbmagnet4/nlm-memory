@@ -17,6 +17,7 @@ export interface StubEmbedderOpts {
 
 export class StubEmbedder implements LLMClient {
   calls = 0;
+  aborts = 0;
   private readonly _fail: boolean;
   private readonly _hang: boolean;
 
@@ -36,7 +37,7 @@ export class StubEmbedder implements LLMClient {
       await new Promise<void>((_res, rej) => {
         const sig = opts?.signal;
         if (sig?.aborted) { rej(new LLMUnreachableError("stub-embedder", "aborted")); return; }
-        sig?.addEventListener("abort", () => rej(new LLMUnreachableError("stub-embedder", "aborted")), { once: true });
+        sig?.addEventListener("abort", () => { this.aborts++; rej(new LLMUnreachableError("stub-embedder", "aborted")); }, { once: true });
       });
     }
     if (this._fail) throw new LLMUnreachableError("ollama");

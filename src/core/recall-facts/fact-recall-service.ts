@@ -1,3 +1,5 @@
+import { embedForRecall } from "@core/recall/request-budget.js";
+import { executionWorkstreamIds, type RecallExecutionOptions } from "@core/recall/execution-options.js";
 /**
  * FactRecallService — agent-facing recall over the FactStore.
  *
@@ -20,7 +22,7 @@
  * floor explicitly.
  */
 
-import type { FactStore } from "@ports/fact-store.js";
+import type { FactEligibility, FactStore } from "@ports/fact-store.js";
 import type { LLMClient } from "@ports/llm-client.js";
 import { LLMUnreachableError } from "@ports/llm-client.js";
 import type {
@@ -36,7 +38,7 @@ import { tokenSet } from "@core/recall/tokenize.js";
 
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 100;
-const DEFAULT_MIN_CONFIDENCE = 0.6;
+export const DEFAULT_FACT_MIN_CONFIDENCE = 0.6;
 const STORAGE_FETCH_CAP = 500;
 const SEMANTIC_OVERFETCH = 3;
 const DEFAULT_BOOST_CAP = 2.0;
@@ -55,16 +57,33 @@ const FIELD_WEIGHTS = {
   predicate: 1,
 } as const;
 
+export type CorroborationPolicy = (count: number) => number;
+
+export interface CorroborationRanking {
+  readonly factor: CorroborationPolicy;
+  readonly tieBreak: boolean;
+}
+
+export function corroborationRanking(cap: number, tieBreak = cap > 1): CorroborationRanking {
+  return { factor: (count) => Math.min(cap, 1 + Math.log10(Math.max(1, count))), tieBreak };
+}
+
 export interface FactRecallServiceDeps {
+  readonly corroborationRanking?: CorroborationRanking;
   readonly factStore: FactStore;
   readonly llm: LLMClient;
+  readonly resolveWorkstreamMembers?: (tenantId: string, idOrLabel: string) => Promise<readonly string[]>;
 }
 
 export class FactRecallService {
   constructor(private readonly deps: FactRecallServiceDeps) {}
 
-  async search(tenantId: string, input: FactRecallQuery): Promise<FactRecallResult> {
+  get embeddingClient(): LLMClient { return this.deps.llm; }
+
+  async search(tenantId: string, input: FactRecallQuery, options: RecallExecutionOptions = {}): Promise<FactRecallResult> {
+    options.signal?.throwIfAborted();
     const mode: RecallMode = input.mode ?? "hybrid";
+    const corroboration = new Map<string, number>();
     const limit = clampLimit(input.limit);
     const subject = input.subject ?? null;
     const predicate = input.predicate ?? null;
@@ -88,10 +107,14 @@ export class FactRecallService {
       return empty;
     }
 
+    const workstreamIds = await executionWorkstreamIds(tenantId, input.workstream, options, this.deps.resolveWorkstreamMembers);
+    options.signal?.throwIfAborted();
+    if (workstreamIds?.length === 0) return empty;
     const filter: Parameters<FactStore["listForRecall"]>[1] = {
       includeSuperseded: input.includeSuperseded === true,
-      minConfidence: input.minConfidence ?? DEFAULT_MIN_CONFIDENCE,
+      minConfidence: input.minConfidence ?? DEFAULT_FACT_MIN_CONFIDENCE,
       limit: STORAGE_FETCH_CAP,
+      ...(workstreamIds !== undefined ? { workstreamIds } : {}),
       ...(queryText && mode !== "semantic" ? { query: queryText } : {}),
       ...(input.subject !== undefined ? { subject: input.subject } : {}),
       ...(input.predicate !== undefined ? { predicate: input.predicate } : {}),
@@ -106,11 +129,17 @@ export class FactRecallService {
     // Both search legs reach the full corpus; resolve semantic neighbours
     // outside the bounded lexical candidate set through the same filters.
     const accept = makeFilterPredicate(filter);
+    const { query: _query, limit: _limit, ...eligibility } = filter;
 
     const kwHits =
       mode === "keyword" || mode === "hybrid"
         ? scoreAll(candidates, queryTokens)
         : [];
+
+    if (options.onPartialFacts && mode === "hybrid" && queryText) {
+      const boosted = await this.applyCorroboration(tenantId, mergeHybrid(kwHits, []), corroboration);
+      await options.onPartialFacts(finalize(queryText, subject, predicate, kind, mode, limit, boosted));
+    }
 
     let semHits: ReadonlyArray<SemanticHit> = [];
     let semError: "ollama_unreachable" | null = null;
@@ -119,7 +148,7 @@ export class FactRecallService {
         semError = "ollama_unreachable";
       } else {
         try {
-          semHits = await this.runSemantic(tenantId, queryText, byId, accept, limit * SEMANTIC_OVERFETCH);
+          semHits = await this.runSemantic(tenantId, queryText, byId, accept, limit * SEMANTIC_OVERFETCH, eligibility, options);
         } catch (err) {
           if (err instanceof LLMUnreachableError) {
             semError = "ollama_unreachable";
@@ -144,23 +173,23 @@ export class FactRecallService {
       const rows = candidates
         .slice(0, limit)
         .map((f) => factToHit(f, 0, []));
-      const boosted = await this.applyCorroboration(tenantId, rows);
+      const boosted = await this.applyCorroboration(tenantId, rows, corroboration);
       return finalize(queryText, subject, predicate, kind, mode, limit, boosted);
     }
 
     if (mode === "keyword") {
-      const boosted = await this.applyCorroboration(tenantId, kwHits.map(toKeywordHit));
+      const boosted = await this.applyCorroboration(tenantId, kwHits.map(toKeywordHit), corroboration);
       return finalize(queryText, subject, predicate, kind, mode, limit, boosted);
     }
 
     if (mode === "semantic") {
-      const boosted = await this.applyCorroboration(tenantId, semHits.map(toSemanticHit));
+      const boosted = await this.applyCorroboration(tenantId, semHits.map(toSemanticHit), corroboration);
       return finalize(queryText, subject, predicate, kind, mode, limit, boosted);
     }
 
     // hybrid
     const merged = mergeHybrid(kwHits, semHits);
-    const boosted = await this.applyCorroboration(tenantId, merged);
+    const boosted = await this.applyCorroboration(tenantId, merged, corroboration);
     const result = finalize(queryText, subject, predicate, kind, mode, limit, boosted);
     return semError ? { ...result, modeUnavailable: semError } : result;
   }
@@ -175,38 +204,29 @@ export class FactRecallService {
    * Failure mode: any DB error reverts to returning the raw hits unchanged.
    * The boost is a quality improvement, not a correctness contract.
    */
-  private async applyCorroboration(tenantId: string, hits: ReadonlyArray<FactHit>): Promise<ReadonlyArray<FactHit>> {
+  private async applyCorroboration(tenantId: string, hits: ReadonlyArray<FactHit>, counts: Map<string, number>): Promise<ReadonlyArray<FactHit>> {
     if (hits.length === 0) return hits;
     try {
-      const triples = hits.map((h) => ({
-        subject: h.subject,
-        predicate: h.predicate,
-        value: h.value,
-      }));
-      const counts = await this.deps.factStore.corroborationCounts(tenantId, triples);
-      const cap = readBoostCap();
+      const identity = (hit: { subject: string; predicate: string; value: string }) =>
+        JSON.stringify([tenantId, hit.subject, hit.predicate, hit.value]);
+      const missing = new Map(hits.filter((hit) => !counts.has(identity(hit))).map((hit) =>
+        [identity(hit), { subject: hit.subject, predicate: hit.predicate, value: hit.value }]));
+      if (missing.size > 0) {
+        const fetched = await this.deps.factStore.corroborationCounts(tenantId, [...missing.values()]);
+        for (const [key, triple] of missing) counts.set(key, fetched.get(`${triple.subject} ${triple.predicate} ${triple.value}`) ?? 1);
+      }
+      const ranking = this.deps.corroborationRanking ?? corroborationRanking(readBoostCap());
       const boosted: FactHit[] = hits.map((h) => {
-        const key = `${h.subject} ${h.predicate} ${h.value}`;
-        const count = counts.get(key) ?? 1;
-        const factor = Math.min(cap, 1 + Math.log10(Math.max(1, count)));
+        const count = counts.get(identity(h))!;
+        const factor = ranking.factor(count);
         return {
           ...h,
           matchScore: round4(h.matchScore * factor),
           corroborationCount: count,
         };
       });
-      // Sort by matchScore, then corroborationCount as tiebreaker — but only
-      // when the boost is active (cap > 1). Cap = 1 means "count is reported
-      // but never affects ranking", so the tiebreaker is skipped to preserve
-      // native order on ties.
-      if (cap > 1) {
-        boosted.sort((a, b) => {
-          if (b.matchScore !== a.matchScore) return b.matchScore - a.matchScore;
-          return (b.corroborationCount ?? 0) - (a.corroborationCount ?? 0);
-        });
-      } else {
-        boosted.sort((a, b) => b.matchScore - a.matchScore);
-      }
+      boosted.sort((a, b) => b.matchScore - a.matchScore || (ranking.tieBreak
+        ? (b.corroborationCount ?? 0) - (a.corroborationCount ?? 0) : 0));
       return boosted;
     } catch {
       // Best-effort: corroboration boost skipped on any FactStore failure - recall proceeds unboosted. If boosts seem globally absent, look here first.
@@ -220,9 +240,12 @@ export class FactRecallService {
     byId: ReadonlyMap<string, Fact>,
     accept: (fact: Fact) => boolean,
     fetchLimit: number,
+    eligibility: FactEligibility,
+    options: RecallExecutionOptions,
   ): Promise<ReadonlyArray<SemanticHit>> {
-    const embedding = await this.deps.llm.embed(query, "query");
-    const neighbors = await this.deps.factStore.semanticSearch(tenantId, embedding.vector, fetchLimit);
+    const embedding = await embedForRecall(this.deps.llm, query, options, 2_000);
+    options.signal?.throwIfAborted();
+    const neighbors = await this.deps.factStore.semanticSearch(tenantId, embedding.vector, fetchLimit, eligibility, options);
 
     // Resolve neighbours that fall outside the recency-capped keyword window
     // in one batch, then apply the same filters the SQL pre-filter would have.

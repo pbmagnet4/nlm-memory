@@ -19,17 +19,21 @@
  * as its non-optional first parameter. `facts` is a STAMP table; every
  * SELECT/UPDATE/DELETE routes its WHERE fragment through `tenantClause`,
  * and INSERTs stamp `tenant_id` explicitly. `fact_embeddings` carries no
- * tenant_id (DERIVE-VIA-FK, keyed by fact_id) — `semanticSearch`'s KNN scan
- * has no tenant awareness of its own, so callers (FactRecallService) resolve
- * neighbor ids back through the tenant-filtered `getByIds`/`getById` before
- * trusting them (program spec §4.3, vector-path rule).
+ * tenant_id (DERIVE-VIA-FK, keyed by fact_id). Semantic recall joins both
+ * tenant-owned facts and their source sessions before distance ranking.
  */
 
-type NeighborRow = { fact_id: string; distance: number };
 
+import { SOURCE_ANCHOR_COLUMNS, anchorColumns, anchorFromRow, type SourceAnchorRow } from "./fact-source-anchor.js";
+import { persistedText } from "@core/context/source-version.js";
 import type Database from "better-sqlite3";
+import { readSemanticFacts } from "./sqlite-semantic-facts.js";
+import type { SqliteSemanticReader } from "./sqlite-semantic-reader.js";
 import { tokenize } from "@core/recall/tokenize.js";
 import type {
+  CurrentValueQuery,
+  CurrentValueSummary,
+  FactEligibility,
   FactListFilter,
   FactQuery,
   FactSemanticNeighbor,
@@ -40,7 +44,13 @@ import type { Fact, FactHistoryChain, FactKind } from "@shared/types.js";
 import { collapseWinners } from "./fact-batch.js";
 import { tenantClause } from "@core/tenancy/tenant-clause.js";
 
-type FactRow = {
+// Alias every source column so existing fact predicates/orderings remain unambiguous.
+const SOURCE_ANCHOR_JOIN = `LEFT JOIN (
+  SELECT id AS anchor_source_id, tenant_id AS anchor_source_tenant, body_version AS current_source_body_version
+  FROM sessions
+) anchor_source ON anchor_source_id = facts.source_session_id AND anchor_source_tenant = facts.tenant_id`;
+
+type FactRow = SourceAnchorRow & {
   id: string;
   kind: FactKind;
   subject: string;
@@ -62,7 +72,7 @@ export class SqliteFactStore implements FactStore {
    * construction is preserved for the SqliteStorage adapter only; all
    * other callers should reach FactStore via storage.facts.
    */
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: Database.Database, private readonly semanticReader?: SqliteSemanticReader) {}
 
   private cachedInsertStmt: Database.Statement<FactRow> | undefined;
 
@@ -84,8 +94,8 @@ export class SqliteFactStore implements FactStore {
     const row = this.db
       .prepare<[string, string], FactRow>(
         `SELECT id, kind, subject, predicate, value, source_session_id,
-                source_quote, created_at, superseded_by, confidence, retired_at
-         FROM facts WHERE id = ? AND ${tc.sql}`,
+                source_quote, created_at, superseded_by, confidence, retired_at, ${SOURCE_ANCHOR_COLUMNS}
+         FROM facts ${SOURCE_ANCHOR_JOIN} WHERE id = ? AND ${tc.sql}`,
       )
       .get(id, tc.param);
     return row ? this.rowToFact(row) : null;
@@ -98,8 +108,8 @@ export class SqliteFactStore implements FactStore {
     const rows = this.db
       .prepare<unknown[], FactRow>(
         `SELECT id, kind, subject, predicate, value, source_session_id,
-                source_quote, created_at, superseded_by, confidence, retired_at
-         FROM facts WHERE id IN (${placeholders}) AND ${tc.sql}`,
+                source_quote, created_at, superseded_by, confidence, retired_at, ${SOURCE_ANCHOR_COLUMNS}
+         FROM facts ${SOURCE_ANCHOR_JOIN} WHERE id IN (${placeholders}) AND ${tc.sql}`,
       )
       .all(...ids, tc.param);
     return rows.map((r) => this.rowToFact(r));
@@ -110,8 +120,8 @@ export class SqliteFactStore implements FactStore {
     const row = this.db
       .prepare<[string, string, string], FactRow>(
         `SELECT id, kind, subject, predicate, value, source_session_id,
-                source_quote, created_at, superseded_by, confidence, retired_at
-         FROM facts
+                source_quote, created_at, superseded_by, confidence, retired_at, ${SOURCE_ANCHOR_COLUMNS}
+         FROM facts ${SOURCE_ANCHOR_JOIN}
          WHERE subject = ? AND predicate = ? AND superseded_by IS NULL AND retired_at IS NULL AND ${tc.sql}
          ORDER BY created_at DESC
          LIMIT 1`,
@@ -140,8 +150,8 @@ export class SqliteFactStore implements FactStore {
     const rows = this.db
       .prepare<Array<string | number>, FactRow>(
         `SELECT id, kind, subject, predicate, value, source_session_id,
-                source_quote, created_at, superseded_by, confidence, retired_at
-         FROM facts
+                source_quote, created_at, superseded_by, confidence, retired_at, ${SOURCE_ANCHOR_COLUMNS}
+         FROM facts ${SOURCE_ANCHOR_JOIN}
          WHERE ${where.join(" AND ")}
          ORDER BY created_at DESC
          LIMIT ?`,
@@ -155,8 +165,8 @@ export class SqliteFactStore implements FactStore {
     const rows = this.db
       .prepare<[string, string], FactRow>(
         `SELECT id, kind, subject, predicate, value, source_session_id,
-                source_quote, created_at, superseded_by, confidence, retired_at
-         FROM facts
+                source_quote, created_at, superseded_by, confidence, retired_at, ${SOURCE_ANCHOR_COLUMNS}
+         FROM facts ${SOURCE_ANCHOR_JOIN}
          WHERE source_session_id = ? AND ${tc.sql}
          ORDER BY created_at ASC`,
       )
@@ -172,8 +182,8 @@ export class SqliteFactStore implements FactStore {
     const rows = this.db
       .prepare<unknown[], FactRow>(
         `SELECT id, kind, subject, predicate, value, source_session_id,
-                source_quote, created_at, superseded_by, confidence, retired_at
-         FROM facts WHERE source_session_id IN (${ph}) AND ${tc.sql}${filter} ORDER BY created_at ASC`,
+                source_quote, created_at, superseded_by, confidence, retired_at, ${SOURCE_ANCHOR_COLUMNS}
+         FROM facts ${SOURCE_ANCHOR_JOIN} WHERE source_session_id IN (${ph}) AND ${tc.sql}${filter} ORDER BY created_at ASC`,
       )
       .all(...sessionIds, tc.param);
     return rows.map((r) => this.rowToFact(r));
@@ -203,6 +213,15 @@ export class SqliteFactStore implements FactStore {
       where.push("superseded_by IS NULL");
       where.push("retired_at IS NULL");
     }
+    const sourceTenant = tenantClause(tenantId);
+    const sourceWhere = [sourceTenant.sql];
+    params.push(sourceTenant.param);
+    if (filter.workstreamIds !== undefined) {
+      if (filter.workstreamIds.length === 0) return [];
+      sourceWhere.push(`workstream_id IN (${filter.workstreamIds.map(() => "?").join(",")})`);
+      params.push(...filter.workstreamIds);
+    }
+    where.push(`source_session_id IN (SELECT id FROM sessions WHERE ${sourceWhere.join(" AND ")})`);
     const tokens = [...new Set(tokenize(filter.query))];
     if (filter.query && tokens.length === 0) return [];
     const lexical = tokens.length > 0;
@@ -215,8 +234,8 @@ export class SqliteFactStore implements FactStore {
     params.push(limit);
     const sql = `${prefix}
       SELECT id, kind, subject, predicate, value, source_session_id,
-             source_quote, created_at, superseded_by, confidence, retired_at
-      FROM facts ${lexical ? "JOIN lexical ON lexical.rowid = facts.rowid" : ""}
+             source_quote, created_at, superseded_by, confidence, retired_at, ${SOURCE_ANCHOR_COLUMNS}
+      FROM facts ${SOURCE_ANCHOR_JOIN} ${lexical ? "JOIN lexical ON lexical.rowid = facts.rowid" : ""}
       WHERE ${where.join(" AND ")}
       ORDER BY ${order}
       LIMIT ?
@@ -227,46 +246,49 @@ export class SqliteFactStore implements FactStore {
     return rows.map((r) => this.rowToFact(r));
   }
 
+  async summarizeCurrentValues(tenantId: string, query: CurrentValueQuery): Promise<CurrentValueSummary> {
+    if (query.workstreamIds?.length === 0) return { distinctValueCount: 0, sourceSessionCount: 0, examples: [] };
+    const factTenant = tenantClause(tenantId, "f.tenant_id");
+    const sourceTenant = tenantClause(tenantId, "s.tenant_id");
+    const where = [factTenant.sql, sourceTenant.sql, "f.subject = ?", "f.predicate = ?",
+      "f.superseded_by IS NULL", "f.retired_at IS NULL"];
+    const params: (string | number)[] = [factTenant.param, sourceTenant.param, query.subject, query.predicate];
+    if (query.kind !== undefined) { where.push("f.kind = ?"); params.push(query.kind); }
+    if (query.minConfidence !== undefined) { where.push("f.confidence >= ?"); params.push(query.minConfidence); }
+    if (query.workstreamIds !== undefined) {
+      where.push(`s.workstream_id IN (${query.workstreamIds.map(() => "?").join(",")})`);
+      params.push(...query.workstreamIds);
+    }
+    const rows = this.db.prepare<(string | number)[], {
+      distinct_count: number; source_count: number; value: string | null; source_session_id: string | null;
+    }>(`
+      WITH eligible AS MATERIALIZED (
+        SELECT f.value, f.source_session_id FROM facts f JOIN sessions s ON s.id = f.source_session_id
+        WHERE ${where.join(" AND ")}
+      ), totals AS (
+        SELECT COUNT(DISTINCT value) AS distinct_count, COUNT(DISTINCT source_session_id) AS source_count FROM eligible
+      ), examples AS (
+        SELECT value, MIN(source_session_id) AS source_session_id FROM eligible
+        GROUP BY value ORDER BY value COLLATE BINARY LIMIT 2
+      )
+      SELECT totals.*, examples.* FROM totals LEFT JOIN examples ON TRUE ORDER BY value COLLATE BINARY
+    `).all(...params);
+    return { distinctValueCount: rows[0]!.distinct_count, sourceSessionCount: rows[0]!.source_count,
+      examples: rows.flatMap((r) => r.value === null ? [] : [{ value: r.value, sourceSessionId: r.source_session_id! }]) };
+  }
+
   async semanticSearch(
     tenantId: string,
     queryVector: Float32Array,
     limit: number,
+    eligibility?: FactEligibility,
+    execution?: { readonly signal?: AbortSignal },
   ): Promise<ReadonlyArray<FactSemanticNeighbor>> {
-    const k = Math.max(1, Math.trunc(limit));
-    const blob = Buffer.from(
-      queryVector.buffer,
-      queryVector.byteOffset,
-      queryVector.byteLength,
-    );
-    // fact_embeddings carries no tenant_id (DERIVE-VIA-FK) — the KNN scan
-    // returns neighbors from the whole corpus. Re-resolve candidate ids
-    // against the tenant-filtered `facts` table before returning, per the
-    // vector-path rule (program spec §4.3): a neighbor whose fact doesn't
-    // resolve within the caller's tenant is dropped, not down-ranked.
-    const overfetchK = k * 4;
-    const rows = this.db
-      .prepare<[Buffer, number], NeighborRow>(`
-        SELECT fact_id, distance
-        FROM fact_embeddings
-        WHERE embedding MATCH ?
-          AND k = ?
-        ORDER BY distance
-      `)
-      .all(blob, overfetchK);
-    if (rows.length === 0) return [];
-    const candidateIds = [...new Set(rows.map((r) => r.fact_id))];
-    const placeholders = candidateIds.map(() => "?").join(",");
-    const tc = tenantClause(tenantId);
-    const resolvedRows = this.db
-      .prepare<unknown[], { id: string }>(
-        `SELECT id FROM facts WHERE id IN (${placeholders}) AND ${tc.sql}`,
-      )
-      .all(...candidateIds, tc.param);
-    const resolved = new Set(resolvedRows.map((r) => r.id));
-    return rows
-      .filter((r) => resolved.has(r.fact_id))
-      .slice(0, k)
-      .map((r) => ({ factId: r.fact_id, distance: r.distance }));
+    if (execution?.signal && this.semanticReader) {
+      return this.semanticReader.read({ lane: "facts", tenantId, queryVector, limit, ...(eligibility ? { options: eligibility } : {}) }, execution.signal) as Promise<ReadonlyArray<FactSemanticNeighbor>>;
+    }
+    execution?.signal?.throwIfAborted();
+    return readSemanticFacts(this.db, tenantId, queryVector, limit, eligibility);
   }
 
   async getHistory(
@@ -277,13 +299,13 @@ export class SqliteFactStore implements FactStore {
     const tc = tenantClause(tenantId);
     const sql = predicate
       ? `SELECT id, kind, subject, predicate, value, source_session_id,
-                source_quote, created_at, superseded_by, confidence
-         FROM facts
+                source_quote, created_at, superseded_by, confidence, ${SOURCE_ANCHOR_COLUMNS}
+         FROM facts ${SOURCE_ANCHOR_JOIN}
          WHERE subject = ? AND predicate = ? AND ${tc.sql}
          ORDER BY predicate ASC, created_at DESC`
       : `SELECT id, kind, subject, predicate, value, source_session_id,
-                source_quote, created_at, superseded_by, confidence
-         FROM facts
+                source_quote, created_at, superseded_by, confidence, ${SOURCE_ANCHOR_COLUMNS}
+         FROM facts ${SOURCE_ANCHOR_JOIN}
          WHERE subject = ? AND ${tc.sql}
          ORDER BY predicate ASC, created_at DESC`;
     const rows = predicate
@@ -394,8 +416,8 @@ export class SqliteFactStore implements FactStore {
       const chunkRows = this.db
         .prepare<unknown[], FactRow>(
           `SELECT id, kind, subject, predicate, value, source_session_id,
-                  source_quote, created_at, superseded_by, confidence, retired_at
-           FROM facts
+                  source_quote, created_at, superseded_by, confidence, retired_at, ${SOURCE_ANCHOR_COLUMNS}
+           FROM facts ${SOURCE_ANCHOR_JOIN}
            WHERE subject IN (${placeholders}) AND retired_at IS NULL AND ${tc.sql}`,
         )
         .all(...chunk, tc.param);
@@ -595,11 +617,11 @@ export class SqliteFactStore implements FactStore {
         INSERT INTO facts (
           id, kind, subject, predicate, value, source_session_id,
           source_quote, created_at, superseded_by, confidence, retired_at,
-          scope, tenant_id
+          scope, tenant_id, source_start, source_end, source_body_version, source_quote_status
         ) VALUES (
           @id, @kind, @subject, @predicate, @value, @source_session_id,
           @source_quote, @created_at, @superseded_by, @confidence, @retired_at,
-          @scope, @tenant_id
+          @scope, @tenant_id, @source_start, @source_end, @source_body_version, @source_quote_status
         )
       `);
     }
@@ -614,7 +636,8 @@ export class SqliteFactStore implements FactStore {
       predicate: fact.predicate,
       value: fact.value,
       source_session_id: fact.sourceSessionId,
-      source_quote: fact.sourceQuote,
+      source_quote: fact.sourceQuote === null ? null : persistedText(fact.sourceQuote),
+      ...anchorColumns(fact.sourceAnchor),
       created_at: fact.createdAt,
       superseded_by: fact.supersededBy,
       confidence: fact.confidence,
@@ -633,6 +656,7 @@ export class SqliteFactStore implements FactStore {
       value: row.value,
       sourceSessionId: row.source_session_id,
       sourceQuote: row.source_quote,
+      sourceAnchor: anchorFromRow(row, row.source_quote),
       createdAt: row.created_at,
       supersededBy: row.superseded_by,
       confidence: row.confidence,

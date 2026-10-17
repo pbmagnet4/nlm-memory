@@ -3,7 +3,7 @@
  * Mirrors the recall-service.test.ts pattern.
  */
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FactRecallService } from "../../../../src/core/recall-facts/fact-recall-service.js";
 import type {
   FactListFilter,
@@ -24,6 +24,7 @@ class InMemoryFactStore implements FactStore {
     private readonly facts: Fact[],
     private readonly neighbors: FactSemanticNeighbor[] = [],
   ) {}
+  async summarizeCurrentValues(): Promise<never> { throw new Error("Unexpected current-value probe in this test"); }
   async insert(): Promise<void> {}
   async insertMany(): Promise<void> {}
   async getById(_tenantId: string, id: string): Promise<Fact | null> {
@@ -135,6 +136,22 @@ const corpus: Fact[] = [
 ];
 
 describe("FactRecallService.search (keyword)", () => {
+  it("passes metadata eligibility without lexical query/limit to semantic search", async () => {
+    const factStore = new InMemoryFactStore(corpus);
+    const semantic = vi.spyOn(factStore, "semanticSearch");
+    const svc = new FactRecallService({ factStore, llm: new StubEmbedder() });
+    await svc.search("team_local", { query: "different vocabulary", mode: "hybrid", subject: "nlm-memory-ts" }, { workstreamIds: ["ws_scope"] });
+    const eligibility = (semantic.mock.calls as unknown[][])[0]?.[3];
+    expect(eligibility).toEqual({ includeSuperseded: false, minConfidence: 0.6, subject: "nlm-memory-ts", workstreamIds: ["ws_scope"] });
+  });
+
+  it("fails closed for explicit selectors without a resolver and empty execution scope", async () => {
+    const svc = new FactRecallService({ factStore: new InMemoryFactStore(corpus), llm: new StubEmbedder() });
+    expect((await svc.search("team_local", { query: "Hono", mode: "keyword", workstream: "unknown" })).results).toEqual([]);
+    expect((await svc.search("team_local", { query: "Hono", mode: "keyword" }, { workstreamIds: [] })).results).toEqual([]);
+    expect((await svc.search("team_local", { query: "Hono", mode: "keyword" })).results.map((f) => f.id)).toContain("f_hono");
+  });
+
   it("returns empty when no query and no structured filter", async () => {
     const svc = new FactRecallService({
       factStore: new InMemoryFactStore(corpus),

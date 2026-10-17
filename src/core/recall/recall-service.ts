@@ -1,3 +1,5 @@
+import { RequestBudget, embedForRecall } from "./request-budget.js";
+import { executionWorkstreamIds, type RecallExecutionOptions } from "./execution-options.js";
 /**
  * RecallService — the use case. Composes filters, keyword scoring, and
  * semantic search into a single recall operation.
@@ -84,14 +86,7 @@ export interface RecallServiceDeps {
   readonly exemplarStore?: CodeExemplarStore;
   readonly codeEmbedder?: CodeEmbedder;
   readonly installScope?: string;
-  /**
-   * Optional resolver for workstream-filter queries. Given an idOrLabel,
-   * returns the array of member workstream ids (merge chains resolve to the
-   * live survivor). Passed as `workstreamIds` into both search legs so the
-   * SQL layer filters by workstream_id. When absent, `query.workstream` is a
-   * no-op. Injected by buildStack(); tests can stub with a plain fn.
-   */
-  readonly resolveWorkstreamMembers?: (idOrLabel: string) => Promise<ReadonlyArray<string>>;
+  readonly resolveWorkstreamMembers?: (tenantId: string, idOrLabel: string) => Promise<ReadonlyArray<string>>;
   /**
    * Learner-evidence recall (spec 2026-10-06): when present, search() can
    * attach `relatedConcepts` for callers that request `withRelatedConcepts`.
@@ -108,7 +103,11 @@ export class RecallService {
 
   constructor(private readonly deps: RecallServiceDeps) {}
 
-  async search(tenantId: string, input: RecallQuery): Promise<RecallResult> {
+  get embeddingClient(): LLMClient { return this.deps.llm; }
+  get embeddingTimeoutMs(): number { return EMBED_DEADLINE_MS; }
+
+  async search(tenantId: string, input: RecallQuery, options: RecallExecutionOptions = {}): Promise<RecallResult> {
+    options.signal?.throwIfAborted();
     const mode: RecallMode = input.mode ?? "keyword";
     const limit = clampLimit(input.limit);
     const entity = input.entity ?? null;
@@ -125,6 +124,10 @@ export class RecallService {
     };
 
     if (!input.query && !entity && !kind) return empty;
+
+    const workstreamIds = await executionWorkstreamIds(tenantId, input.workstream, options, this.deps.resolveWorkstreamMembers);
+    options.signal?.throwIfAborted();
+    if (workstreamIds?.length === 0) return empty;
 
     // 0. Optional query rewrite. Fails open on LLM unreachable / parse error:
     //    keyword and semantic both fall back to the raw query, preserving
@@ -149,23 +152,29 @@ export class RecallService {
       }
     }
 
-    // 1. Resolve workstream membership before the search legs so the SQL can
-    //    filter by workstream_id directly, eliminating the post-fetch JS filter.
-    let workstreamIds: ReadonlyArray<string> | null = null;
-    if (input.workstream && this.deps.resolveWorkstreamMembers) {
-      workstreamIds = await this.deps.resolveWorkstreamMembers(input.workstream);
-      if (workstreamIds.length === 0) return empty;
-    }
-
     const searchOpts: SearchOptions = {
       ...(input.includeSuperseded === true ? { includeSuperseded: true } : {}),
-      ...(workstreamIds ? { workstreamIds } : {}),
+      ...(workstreamIds !== undefined ? { workstreamIds } : {}),
     };
 
     const kwNeighbors: ReadonlyArray<KeywordNeighbor> =
       (mode === "keyword" || mode === "hybrid") && keywordQuery
         ? await this.deps.store.keywordSearch(tenantId, keywordQuery, limit * KEYWORD_OVERFETCH, searchOpts)
         : [];
+
+    if (options.onPartialSessions && mode === "hybrid") {
+      const lexicalSources = await this.deps.store.getByIds(tenantId, kwNeighbors.map((n) => n.sessionId));
+      const lexicalById = new Map(applyFilter(lexicalSources, {
+        ...(input.entity !== undefined ? { entity: input.entity } : {}),
+        ...(input.kind !== undefined ? { kind: input.kind } : {}),
+      }).map((s) => [s.id, s]));
+      const tokens = new Set(tokenSet(keywordQuery));
+      const hits = kwNeighbors.flatMap((n) => {
+        const session = lexicalById.get(n.sessionId);
+        return session ? [{ session, score: n.score, matchedIn: keywordMatchFields(session, tokens) }] : [];
+      });
+      await options.onPartialSessions(finalize(input.query, entity, kind, mode, limit, mergeHybrid(hits, []), tokens));
+    }
 
     let semNeighbors: ReadonlyArray<SemanticNeighbor> = [];
     let semError: "ollama_unreachable" | null = null;
@@ -175,24 +184,15 @@ export class RecallService {
       } else if (!tryAcquire()) {
         semError = "ollama_unreachable";
       } else {
-        const abort = new AbortController();
-        let deadlineTimer: ReturnType<typeof setTimeout>;
-        const deadline = new Promise<never>((_, rej) => {
-          deadlineTimer = setTimeout(() => {
-            abort.abort();
-            rej(new LLMUnreachableError("embed-deadline"));
-          }, EMBED_DEADLINE_MS);
-        });
         try {
-          const embedding = await Promise.race([
-            this.deps.llm.embed(semanticQuery, "query", { signal: abort.signal }),
-            deadline,
-          ]);
+          const embedding = await embedForRecall(this.deps.llm, semanticQuery, options, EMBED_DEADLINE_MS);
+          options.signal?.throwIfAborted();
           semNeighbors = await this.deps.store.semanticSearch(
             tenantId,
             embedding.vector,
             limit * SEMANTIC_OVERFETCH,
             searchOpts,
+            options,
           );
         } catch (err) {
           if (err instanceof LLMUnreachableError) {
@@ -201,7 +201,6 @@ export class RecallService {
             throw err;
           }
         } finally {
-          clearTimeout(deadlineTimer!);
           release();
         }
       }
@@ -288,7 +287,7 @@ export class RecallService {
     //    Only runs when the caller opts in AND a FactStore is wired. Failures
     //    silently no-op so recall never breaks because of fact lookup.
     //    (Note: citation boost in step 5 may have re-sorted results)
-    if (input.withRelatedFacts === true && this.deps.factStore && isFactInjectionEnabled()) {
+    if (workstreamIds === undefined && input.withRelatedFacts === true && this.deps.factStore && isFactInjectionEnabled()) {
       const relatedFacts = await pickRelatedFacts(tenantId, result.results, this.deps.factStore);
       if (relatedFacts.length > 0) {
         result = { ...result, relatedFacts };
@@ -298,7 +297,7 @@ export class RecallService {
     // 6a. Learner-evidence recall (spec 2026-10-06). Same posture as facts:
     //     opt-in flag + wired deps + kill switch; the picker itself is
     //     fail-open so recall never breaks because of concept lookup.
-    if (input.withRelatedConcepts === true && this.deps.learnerDeps && isConceptInjectionEnabled()) {
+    if (workstreamIds === undefined && input.withRelatedConcepts === true && this.deps.learnerDeps && isConceptInjectionEnabled()) {
       const relatedConcepts = await pickRelatedConcepts(tenantId, result.results, this.deps.learnerDeps);
       if (relatedConcepts.length > 0) {
         result = { ...result, relatedConcepts };
@@ -309,7 +308,7 @@ export class RecallService {
     //     timeout so a slow/cold CodeRankEmbed call can never blow the hook's
     //     latency budget — on timeout or error we simply omit exemplars.
     if (
-      input.withRelatedExemplars === true &&
+      workstreamIds === undefined && input.withRelatedExemplars === true &&
       this.deps.exemplarStore &&
       this.deps.codeEmbedder &&
       this.deps.installScope &&
@@ -320,27 +319,14 @@ export class RecallService {
       const embedder = this.deps.codeEmbedder;
       const scope = this.deps.installScope;
       const q = semanticQuery || input.query;
-      // AbortController lets us cancel the in-flight Ollama embed request the
-      // moment the race timeout fires, rather than leaving it running in the
-      // background where it ties up Ollama and delays the next embedding call.
-      const abort = new AbortController();
-      let timer: ReturnType<typeof setTimeout>;
-      const timeout = new Promise<never>((_, rej) => {
-        timer = setTimeout(() => {
-          abort.abort();
-          rej(new Error("exemplar recall timeout"));
-        }, EXEMPLAR_RECALL_TIMEOUT_MS);
-      });
+      const budget = new RequestBudget(EXEMPLAR_RECALL_TIMEOUT_MS, options);
       try {
-        const related = await Promise.race([
-          pickRelatedExemplars(tenantId, q, store, embedder, scope, { signal: abort.signal }),
-          timeout,
-        ]);
+        const related = await budget.run(() => pickRelatedExemplars(tenantId, q, store, embedder, scope, { signal: budget.signal }));
         if (related.length > 0) result = { ...result, relatedExemplars: related };
       } catch {
-        // timed out or failed — proceed without exemplars
+        // Optional related evidence must not erase completed recall.
       } finally {
-        clearTimeout(timer!);
+        budget.dispose();
       }
     }
 

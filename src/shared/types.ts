@@ -31,6 +31,7 @@ export interface Session {
   readonly transcriptKind: string;
   readonly transcriptPath: string | null;
   readonly body: string;
+  readonly bodyVersion?: string | null;
   readonly entities: ReadonlyArray<string>;
   readonly decisions: ReadonlyArray<string>;
   readonly open: ReadonlyArray<string>;
@@ -113,7 +114,8 @@ export interface RecallQuery {
    * high-confidence facts about the entities in the top hits. Defaults
    * to true for the HTTP hook caller (so the pointer block can include
    * structured context); other callers must opt in. Disable globally
-   * via NLM_HOOK_INJECT_FACTS=false. Spec G.2.
+   * via NLM_HOOK_INJECT_FACTS=false. Omitted for explicit workstream scopes
+   * until related-fact selection supports source-session membership. Spec G.2.
    */
   readonly withRelatedFacts?: boolean;
   /**
@@ -145,9 +147,9 @@ export interface RecallQuery {
   /**
    * Optional workstream id or label to filter recall results. When set, only
    * sessions bound to the resolved workstream (or any member of its merge
-   * chain) are returned. Merge chains resolve to the live survivor. No-op
-   * when omitted or when `resolveWorkstreamMembers` is not wired into
-   * RecallServiceDeps.
+   * chain) are returned. Merge chains resolve to the live survivor. Omitted
+   * means all accessible workstreams. An explicit selector without a wired
+   * resolver returns no results.
    */
   readonly workstream?: string;
 }
@@ -229,6 +231,12 @@ export interface RecallResult {
  */
 export type FactKind = "decision" | "open" | "attribute";
 
+export type SourceAnchor =
+  | { readonly status: "verified"; readonly start: number; readonly end: number; readonly bodyVersion: string }
+  | { readonly status: "invalid" | "ambiguous"; readonly bodyVersion?: string }
+  | { readonly status: "missing" }
+  | { readonly status: "stale" };
+
 export interface Fact {
   readonly id: string;
   readonly kind: FactKind;
@@ -237,6 +245,7 @@ export interface Fact {
   readonly value: string;
   readonly sourceSessionId: string;
   readonly sourceQuote: string | null;
+  readonly sourceAnchor?: SourceAnchor;
   readonly createdAt: string;
   readonly supersededBy: string | null;
   readonly confidence: number;
@@ -252,6 +261,7 @@ export interface Fact {
 export type FactMatchField = "value" | "subject" | "predicate" | "semantic";
 
 export interface FactRecallQuery {
+  readonly workstream?: string;
   readonly query?: string;
   readonly subject?: string;
   readonly predicate?: string;

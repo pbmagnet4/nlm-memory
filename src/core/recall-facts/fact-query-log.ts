@@ -22,6 +22,7 @@ import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import type { FactKind, RecallMode } from "@shared/types.js";
 
 export interface FactLogEntry {
+  readonly workstream?: string;
   readonly source: string;
   /** Calling agent runtime (claude-code / hermes / pi.dev / codex / etc).
    *  Logged from the MCP clientInfo or the x-recall-runtime header; null
@@ -78,6 +79,7 @@ export async function logFactQuery(
       limit: entry.limit,
       n_results: entry.nResults,
       returned_ids: entry.returnedIds,
+      ...(entry.workstream !== undefined ? { workstream: entry.workstream } : {}),
     };
     await appendFile(logPath, JSON.stringify(payload) + "\n", "utf8");
   } catch {

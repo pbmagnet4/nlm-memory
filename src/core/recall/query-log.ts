@@ -20,6 +20,7 @@ import type { RecallKindFilter, RecallMode } from "@shared/types.js";
 import { classifyQueryIntent, type QueryIntent } from "./query-intent.js";
 
 export interface LogEntry {
+  readonly workstream?: string;
   readonly source: string;
   /** Calling agent runtime (claude-code / hermes / pi.dev / codex / etc).
    *  Logged when the caller passes x-recall-runtime; null for legacy entries. */
@@ -73,6 +74,7 @@ export async function logQuery(
       limit: entry.limit,
       n_results: entry.nResults,
       returned_ids: entry.returnedIds,
+      ...(entry.workstream !== undefined ? { workstream: entry.workstream } : {}),
       intent: classifyQueryIntent(entry.query ?? ""),
     };
     await appendFile(logPath, JSON.stringify(payload) + "\n", "utf8");

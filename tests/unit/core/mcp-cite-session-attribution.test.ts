@@ -1,11 +1,3 @@
-// tests/unit/core/mcp-cite-session-attribution.test.ts
-//
-// Regression: cite_session resolved a conversation id only from the hook's
-// surfaced-memo. When the recall hook injects nothing the memo is empty, so
-// every call fell back to "mcp_tool", which appendCitation drops as
-// unattributable -- while the handler still answered {logged: true}. The
-// documented "call cite_session after using a recalled session" workflow
-// therefore wrote nothing, silently, for two months.
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,14 +31,14 @@ describe("cite_session conversation attribution", () => {
     writeFileSync(join(dir, `${conversationId}.jsonl`), contents, "utf8");
   }
 
-  it("attributes the citation to the conversation whose transcript names the cited id", async () => {
+  it("attributes the citation through tenant-bound trusted context", async () => {
     const conversationId = "11111111-2222-3333-4444-555555555555";
     writeTranscript(
       conversationId,
       `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"cite_session","input":{"id":"${SESSION_ID}"}}]}}\n`,
     );
 
-    const result = await citeSessionHandler("team_local", { id: SESSION_ID });
+    const result = await citeSessionHandler("team_local", { id: SESSION_ID }, { tenantId: "team_local", conversationId });
 
     expect(result.isError).toBeFalsy();
     expect(existsSync(logPath)).toBe(true);

@@ -17,7 +17,7 @@ function compact(value: unknown, textLimit: number, itemLimit: number): unknown 
   if (Array.isArray(value)) return value.slice(0, itemLimit).map((v) => compact(v, textLimit, itemLimit));
   if (value && typeof value === "object") {
     return Object.fromEntries(Object.entries(value).map(([key, v]) => [key,
-      /^(id|.*Id|supersededBy)$/.test(key) ? v : compact(v, textLimit, itemLimit)]));
+      /^(id|.*Id|supersededBy|subject|predicate|workstream)$/.test(key) ? v : compact(v, textLimit, itemLimit)]));
   }
   return value;
 }

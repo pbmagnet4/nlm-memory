@@ -22,6 +22,9 @@
  * to a tenant-filtered `sessions` row.
  */
 
+import { bodyVersion, persistedText } from "@core/context/source-version.js";
+import { readSemanticSessions } from "./sqlite-semantic-sessions.js";
+import type { SqliteSemanticReader } from "./sqlite-semantic-reader.js";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import Database from "better-sqlite3";
@@ -127,6 +130,7 @@ type SessionRow = {
   transcript_kind: string | null;
   transcript_path: string | null;
   body: string | null;
+  body_version?: string | null;
   workstream_id: string | null;
   classifier_provider?: string | null;
   classifier_model?: string | null;
@@ -141,7 +145,6 @@ type SessionRow = {
 
 type EntityRow = { session_id: string; entity_canonical: string };
 type MarkerRow = { session_id: string; kind: "decision" | "open"; text: string };
-type NeighborRow = { session_id: string; distance: number; chunk_idx: number };
 type KeywordRow = { session_id: string; score: number };
 
 export interface RecentWrite {
@@ -228,6 +231,7 @@ function findContinuesPredecessor(
 
 export class SqliteSessionStore implements SessionStore {
   private readonly db: Database.Database;
+  semanticReader?: SqliteSemanticReader;
   // Keyed by tenantId — a single-tenant Map entry today (DEFAULT_TEAM_ID),
   // but the overlay's content is tenant-scoped (program spec §4.6 hardening
   // 1) and must never bleed across tenants once M3 adds real multi-tenant
@@ -361,18 +365,19 @@ export class SqliteSessionStore implements SessionStore {
     supersedes: Supersedes | null = null,
     factSink: { factStore: SqliteFactStore; facts: ReadonlyArray<Fact> } | null = null,
   ): Promise<void> {
+    record = { ...record, body: record.body === null ? null : persistedText(record.body) };
     const db = this.db;
     const txn = db.transaction(() => {
       db.prepare(`
         INSERT INTO sessions (
           id, runtime, runtime_session_id, started_at, ended_at, duration_min,
-          label, summary, body, status,
+          label, summary, body, body_version, status,
           transcript_kind, transcript_path, transcript_offset, transcript_length,
           classifier_provider, classifier_model, classifier_confidence,
           scope, agent_persona, parent_session_id,
           primary_model, total_tokens, skill, tenant_id
         ) VALUES (@id, @runtime, @runtimeSessionId, @startedAt, @endedAt, @durationMin,
-          @label, @summary, @body, @status,
+          @label, @summary, @body, @bodyVersion, @status,
           @transcriptKind, @transcriptPath, @transcriptOffset, @transcriptLength,
           @classifierProvider, @classifierModel, @classifierConfidence,
           @scope, @agentPersona, @parentSessionId,
@@ -383,6 +388,7 @@ export class SqliteSessionStore implements SessionStore {
           label = excluded.label,
           summary = excluded.summary,
           body = excluded.body,
+          body_version = excluded.body_version,
           status = excluded.status,
           classifier_provider = excluded.classifier_provider,
           classifier_model = excluded.classifier_model,
@@ -404,6 +410,7 @@ export class SqliteSessionStore implements SessionStore {
         label: record.label,
         summary: record.summary,
         body: record.body,
+        bodyVersion: record.body === null ? null : bodyVersion(record.body),
         status: record.status === "idle" ? "active" : record.status,
         transcriptKind: record.transcriptKind,
         transcriptPath: record.transcriptPath,
@@ -642,7 +649,7 @@ export class SqliteSessionStore implements SessionStore {
   /**
    * Phase B.5 — backfill entry point. Writes facts (with deterministic
    * supersedence + best-effort embeddings) for an EXISTING session row
-   * without touching it. Opens its own transaction; callers must not be
+   * versioning its body atomically. Opens its own transaction; callers must not be
    * inside one. The session row must already exist in `sessions` or the
    * FK on facts.source_session_id rejects.
    *
@@ -663,6 +670,12 @@ export class SqliteSessionStore implements SessionStore {
     // callbacks must be sync; ingestSessionFactsInTxn is the sync core.
     const sessionScope = await this.getSessionScopeById(tenantId, sessionId);
     const txn = this.db.transaction(() => {
+      const sourceTc = tenantClause(tenantId);
+      const source = this.db.prepare<[string, string], { body: string | null }>(
+        `SELECT body FROM sessions WHERE id = ? AND ${sourceTc.sql}`).get(sessionId, sourceTc.param);
+      if (!source) throw new Error(`Session ${sessionId} not found`);
+      this.db.prepare(`UPDATE sessions SET body_version = ? WHERE id = ? AND ${sourceTc.sql}`)
+        .run(source.body === null ? null : bodyVersion(source.body), sessionId, sourceTc.param);
       factStore.ingestSessionFactsInTxn(tenantId, sessionId, facts, sessionScope);
     });
     txn();
@@ -734,7 +747,7 @@ export class SqliteSessionStore implements SessionStore {
     const row = this.db
       .prepare<[string, string], SessionRow>(`
         SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
-               label, summary, status, transcript_kind, transcript_path, body,
+               label, summary, status, transcript_kind, transcript_path, body, body_version, workstream_id,
                classifier_provider, classifier_model, classifier_confidence,
                agent_persona, parent_session_id,
                primary_model, total_tokens, skill
@@ -764,7 +777,7 @@ export class SqliteSessionStore implements SessionStore {
     const rows = this.db
       .prepare<unknown[], Omit<SessionRow, "body">>(`
         SELECT id, runtime, runtime_session_id, started_at, ended_at, duration_min,
-               label, summary, status, transcript_kind, transcript_path
+               label, summary, status, transcript_kind, transcript_path, body_version
         FROM sessions
         WHERE id IN (${placeholders}) AND ${tc.sql}
       `)
@@ -806,82 +819,13 @@ export class SqliteSessionStore implements SessionStore {
     queryVector: Float32Array,
     limit: number,
     opts?: SearchOptions,
+    execution?: { readonly signal?: AbortSignal },
   ): Promise<ReadonlyArray<SemanticNeighbor>> {
-    const k = Math.max(1, Math.trunc(limit));
-    const blob = Buffer.from(
-      queryVector.buffer,
-      queryVector.byteOffset,
-      queryVector.byteLength,
-    );
-    // Overfetch chunks so the max-pool grouping has enough unique sessions
-    // even when several top chunks come from the same session. Default 4
-    // ≈ average chunks per session on the LongMemEval-S benchmark. Env-
-    // tunable via NLM_CHUNK_OVERFETCH for per-type ablation against the
-    // preference/assistant regressions where displacement is hypothesized.
-    const envOverfetch = Number.parseInt(process.env["NLM_CHUNK_OVERFETCH"] ?? "", 10);
-    const CHUNK_OVERFETCH = Number.isFinite(envOverfetch) && envOverfetch > 0 ? envOverfetch : 4;
-    const chunkK = k * CHUNK_OVERFETCH;
-    // The vec0 KNN scan has no tenant awareness (session_embedding_chunks
-    // carries no tenant_id — DERIVE-VIA-FK), so it returns neighbors from the
-    // whole corpus. The tenant filter is re-applied below, in the
-    // id-resolution join against `sessions` (program spec §4.3, vector-path
-    // rule) — any candidate session id that doesn't resolve within the
-    // caller's tenant is excluded, not merely "not down-ranked".
-    const rows = this.db
-      .prepare<[Buffer, number], NeighborRow>(`
-        SELECT session_id, distance, chunk_idx
-        FROM session_embedding_chunks
-        WHERE embedding MATCH ?
-          AND k = ?
-        ORDER BY distance
-      `)
-      .all(blob, chunkK);
-
-    // Max-pool: keep the smallest distance (highest cosine) per session,
-    // filtering out superseded, replaced, out-of-workstream, and (via the
-    // tenant-filtered id-resolution join) out-of-tenant sessions.
-    const best = new Map<string, { distance: number; chunkIndex: number }>();
-    const excludedSessionIds = new Set<string>();
-    const wsIds = opts?.workstreamIds;
-    if (wsIds !== undefined && wsIds.length === 0) return [];
-    // First pass: resolve each unique candidate session id against the
-    // tenant-filtered sessions table to get its status + workstream. A
-    // candidate id that fails to resolve (wrong tenant or gone) is excluded
-    // outright, not merely left un-excluded.
-    const uniqueSessionIds = [...new Set(rows.map((r) => r.session_id))];
-    if (uniqueSessionIds.length > 0) {
-      const placeholders = uniqueSessionIds.map(() => "?").join(",");
-      const tc = tenantClause(tenantId);
-      const statusRows = this.db
-        .prepare<unknown[], { id: string; status: string; workstream_id: string | null }>(
-          `SELECT id, status, workstream_id FROM sessions WHERE id IN (${placeholders}) AND ${tc.sql}`,
-        )
-        .all(...uniqueSessionIds, tc.param);
-      const resolvedIds = new Set(statusRows.map((r) => r.id));
-      for (const id of uniqueSessionIds) {
-        if (!resolvedIds.has(id)) excludedSessionIds.add(id);
-      }
-      const excludeSuperseded = opts?.includeSuperseded !== true;
-      for (const sr of statusRows) {
-        const statusExcluded = sr.status === "replaced" || (excludeSuperseded && sr.status === "superseded");
-        const wsExcluded = wsIds?.length ? (sr.workstream_id === null || !wsIds.includes(sr.workstream_id)) : false;
-        if (statusExcluded || wsExcluded) {
-          excludedSessionIds.add(sr.id);
-        }
-      }
+    if (execution?.signal && this.semanticReader) {
+      return this.semanticReader.read({ lane: "sessions", tenantId, queryVector, limit, ...(opts ? { options: opts } : {}) }, execution.signal) as Promise<ReadonlyArray<SemanticNeighbor>>;
     }
-    // Second pass: max-pool, excluding superseded/replaced/out-of-tenant sessions
-    for (const r of rows) {
-      if (excludedSessionIds.has(r.session_id)) continue;
-      const cur = best.get(r.session_id);
-      if (cur === undefined || r.distance < cur.distance) {
-        best.set(r.session_id, { distance: r.distance, chunkIndex: Number(r.chunk_idx) });
-      }
-    }
-    return [...best.entries()]
-      .map(([sessionId, match]) => ({ sessionId, ...match }))
-      .sort((a, b) => a.distance - b.distance)
-      .slice(0, k);
+    execution?.signal?.throwIfAborted();
+    return readSemanticSessions(this.db, tenantId, queryVector, limit, opts);
   }
 
   /**
@@ -1112,10 +1056,10 @@ export class SqliteSessionStore implements SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO sessions (
         id, runtime, runtime_session_id, started_at, ended_at, duration_min,
-        label, summary, body, status, transcript_kind, transcript_path, tenant_id
+        label, summary, body, body_version, status, transcript_kind, transcript_path, tenant_id
       ) VALUES (
         @id, @runtime, @runtimeSessionId, @startedAt, @endedAt, @durationMin,
-        @label, @summary, @body, @status, @transcriptKind, @transcriptPath, @tenantId
+        @label, @summary, @body, @bodyVersion, @status, @transcriptKind, @transcriptPath, @tenantId
       )
     `);
     const status: SessionStatus = session.status === "idle" ? "active" : session.status;
@@ -1128,7 +1072,8 @@ export class SqliteSessionStore implements SessionStore {
       durationMin: session.durationMin,
       label: session.label,
       summary: session.summary,
-      body: session.body,
+      body: persistedText(session.body),
+      bodyVersion: bodyVersion(session.body),
       status,
       transcriptKind: session.transcriptKind,
       transcriptPath: session.transcriptPath,
@@ -1291,6 +1236,7 @@ export class SqliteSessionStore implements SessionStore {
       transcriptKind: row.transcript_kind ?? "",
       transcriptPath: row.transcript_path,
       body: row.body ?? "",
+      bodyVersion: row.body_version ?? null,
       entities: entitiesById.get(row.id) ?? [],
       decisions: [...rawDecisions, ...promotedDecisions],
       open: activeOpen,
