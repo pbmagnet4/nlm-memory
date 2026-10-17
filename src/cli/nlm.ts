@@ -1790,12 +1790,56 @@ program
     }
   });
 
+export async function runMcpStdio(
+  storage: { close(): Promise<void> },
+  createServer: () => ReturnType<typeof createMcpServer>,
+  transport = new StdioServerTransport(),
+): Promise<void> {
+  let server: ReturnType<typeof createMcpServer> | undefined;
+  let previousClose: (() => void) | undefined;
+  let closing: Promise<void> | undefined;
+  let finish!: () => void;
+  const stopped = new Promise<void>((resolve) => { finish = resolve; });
+  const shutdown = () => closing ??= Promise.resolve().then(async () => {
+    process.stdin.pause();
+    try { await server?.close(); }
+    finally { await storage.close(); }
+  }).finally(() => {
+    for (const event of ["end", "close", "error"] as const) process.stdin.off(event, onStop);
+    process.off("SIGINT", onStop);
+    process.off("SIGTERM", onStop);
+    if (server) {
+      if (previousClose) server.server.onclose = previousClose;
+      else delete server.server.onclose;
+    }
+    finish();
+  });
+  // Event callbacks notify the owner; its finally awaits and propagates cleanup failures.
+  const onStop = () => { void shutdown().then(finish, finish); };
+  for (const event of ["end", "close", "error"] as const) process.stdin.on(event, onStop);
+  process.on("SIGINT", onStop);
+  process.on("SIGTERM", onStop);
+  try {
+    server = createServer();
+    previousClose = server.server.onclose;
+    server.server.onclose = () => {
+      try { previousClose?.(); }
+      finally { onStop(); }
+    };
+    if (process.stdin.readableEnded || process.stdin.destroyed) onStop();
+    else await server.connect(transport);
+    await stopped;
+  } finally {
+    await shutdown();
+  }
+}
+
 program
   .command("mcp")
   .description("Run as an MCP stdio server (for ~/.mcp.json)")
   .action(async () => {
     const { recall, store, facts, factRecall, storage, scope, signals } = await buildStack();
-    const server = createMcpServer(
+    await runMcpStdio(storage, () => createMcpServer(
       {
         recall,
         store,
@@ -1816,9 +1860,7 @@ program
       // stdio MCP transport carries no bearer token — it is local-mode only
       // by construction (program spec §3), bound to the default team.
       DEFAULT_TEAM_ID,
-    );
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
+    ));
   });
 
 const LAUNCH_AGENT_LABEL = "com.github.pbmagnet4.nlm-memory";
