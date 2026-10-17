@@ -46,6 +46,7 @@ export interface ContextManifest {
   adversarialMatrix: Record<string, string>;
 }
 export interface EvalArm {
+  metadata?: Record<string, unknown>;
   commit: string;
   run(input: { question: string; workstream?: string }, emit: (event: CostEvent) => void): Promise<string>;
   close(): Promise<void>;
@@ -69,6 +70,7 @@ export interface CaseArmResult {
 export interface PairedCase { id: string; family: string; category: ContextCategory; answerable: boolean; baseline: CaseArmResult; candidate: CaseArmResult }
 export interface ConfidenceInterval { groups: number; samples: number; delta: number | null; lower: number | null; upper: number | null }
 export interface MemoryContextReport {
+  arms: { baseline: Record<string, unknown> | null; candidate: Record<string, unknown> | null };
   manifest: ContextManifest & { sha256: string; baseline: string; candidate: string; split: "dev" };
   perCase: PairedCase[];
   strata: Record<string, { n: number; baseline: number; candidate: number }>;

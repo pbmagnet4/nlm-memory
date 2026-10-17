@@ -7,7 +7,7 @@ import { runMemoryContextEval, sha256 } from "../../src/core/eval/context/run.js
 import type { ContextCase, ContextManifest, EvalDeps } from "../../src/core/eval/context/types.js";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { makeSession } from "../fixtures/sessions.js";
-import { createModelAttemptRecorder, isolatedArmEnvironment, extractiveReader, openPinnedArm } from "../../scripts/eval/memory-context.js";
+import { cachedEmbeddingClient, contextArguments, loadQueryVectors, sourceRepetition, createModelAttemptRecorder, isolatedArmEnvironment, extractiveReader, openPinnedArm } from "../../scripts/eval/memory-context.js";
 const dirs: string[] = [];
 afterEach(() => { vi.unstubAllEnvs(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 function fixture() {
@@ -126,4 +126,50 @@ describe("memory context evaluator", () => {
     expect(sha256(readFileSync(f.db))).toBe(f.manifest.snapshot.sha256);
     expect(report.manifest.baseline).toBe(revision);
   }, 60_000);
+});
+
+
+describe("frozen ranking-arm support", () => {
+  it("distinguishes omitted production default from explicit keyword and hybrid", () => {
+    expect(contextArguments({ question: "beacon" }, "default")).toEqual({ query: "beacon" });
+    expect(contextArguments({ question: "beacon" }, "hybrid")).toEqual({ query: "beacon", mode: "hybrid" });
+    expect(contextArguments({ question: "beacon" })).toEqual({ query: "beacon", mode: "keyword" });
+  });
+  it("verifies immutable vectors, records logical calls, and leaves billed usage unknown", async () => {
+    const f = fixture(); const path = join(f.dir, "vectors.json");
+    writeFileSync(path, JSON.stringify({ schema: 1, caseSha256: f.manifest.cases.sha256, dimension: 2, reportedModel: "synthetic", rows: [{ query: "beacon", kind: "query", model: "synthetic", vector: [1, 0] }] }));
+    const hash = sha256(readFileSync(path));
+    expect(() => loadQueryVectors(path, "wrong", f.manifest.cases.sha256)).toThrow("hash mismatch");
+    const events: import("../../src/core/eval/context/types.js").CostEvent[] = [];
+    const client = cachedEmbeddingClient(loadQueryVectors(path, hash, f.manifest.cases.sha256), (event) => events.push(event));
+    expect([...(await client.embed("beacon", "query")).vector]).toEqual([1, 0]);
+    await expect(client.embed("missing", "query")).rejects.toThrow("forbids missing");
+    await expect(client.embed("beacon", "document")).rejects.toThrow("forbids missing");
+    expect(events.map((e) => e.status)).toEqual(["ok", "failed", "failed"]);
+    expect(events.every((e) => e.usage === null)).toBe(true);
+  });
+  it("runs cached default and both-hybrid through pinned services with one shared logical embedding", async () => {
+    const f = fixture(); rmSync(f.db);
+    const storage = SqliteStorage.create({ dbPath: f.db, migrationsDir: resolve("migrations") }); await storage.init();
+    storage.embeddingConfig.upsertLane({ lane: "prose", provider: "openai", model: "synthetic", dim: 768 }, new Date(0).toISOString());
+    storage.sessions.insertSessionForTest(makeSession({ id: "source", label: "SQLite", summary: "SQLite uses a single writer", body: "SQLite uses a single writer" }), "team_local");
+    await storage.close();
+    f.manifest.snapshot.sha256 = sha256(readFileSync(f.db)); f.manifest.tokenizer = null;
+    const path = join(f.dir, "vectors.json");
+    writeFileSync(path, JSON.stringify({ schema: 1, caseSha256: f.manifest.cases.sha256, dimension: 768, reportedModel: "synthetic", rows: [{ query: f.cases[0]!.question, kind: "query", model: "synthetic", vector: [1, ...Array<number>(767).fill(0)] }] }));
+    const revision = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    for (const mode of ["keyword", "default", "hybrid"] as const) {
+      const arm = await openPinnedArm(resolve("."), revision, f.manifest, { mode, queryVectors: { path, sha256: sha256(readFileSync(path)) } });
+      try {
+        const events: import("../../src/core/eval/context/types.js").CostEvent[] = [];
+        await arm.run({ question: f.cases[0]!.question }, (event) => events.push(event));
+        expect(events.filter((event) => event.stage === "embedding")).toHaveLength(mode === "keyword" ? 0 : 1);
+        expect(events.filter((event) => event.stage === "embedding").every((event) => event.status === "ok")).toBe(true);
+      } finally { await arm.close(); }
+    }
+  }, 60_000);
+  it("reports copied sessions separately from source components without claiming independent truth", () => {
+    expect(sourceRepetition(["copy-a", "copy-b", "distinct", "copy-a"], new Map([["copy-a", "parent"], ["copy-b", "parent"], ["distinct", "other"]])))
+      .toEqual({ sourceSessions: 3, knownSourceComponents: 2, unclassifiedSources: 0, independentEvidence: null });
+  });
 });

@@ -5,7 +5,8 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createInterface } from "node:readline";
 import { performance } from "node:perf_hooks";
-import { runMemoryContextEval } from "../../src/core/eval/context/run.js";
+import type { LLMClient } from "../../src/ports/llm-client.js";
+import { runMemoryContextEval, sha256 } from "../../src/core/eval/context/run.js";
 import type { ContextManifest, CostEvent, EvalArm, EvidenceReader, ReaderAnswer } from "../../src/core/eval/context/types.js";
 
 export const extractiveReader: EvidenceReader = {
@@ -33,6 +34,56 @@ export function createModelAttemptRecorder(emit: (event: CostEvent) => void): (m
   return (method, args) => emit({ id: `model-${++sequence}`, stage: method === "embed" ? "embedding" : "router", status: "failed", input: JSON.stringify(args), output: null, usage: null, durationMs: null });
 }
 
+export interface PinnedArmOptions {
+  mode?: "keyword" | "default" | "hybrid";
+  policy?: "cap2" | "cap1" | "tie-only";
+  queryVectors?: { path: string; sha256: string };
+}
+interface QueryVectorCache {
+  schema: number;
+  caseSha256: string;
+  reportedModel: string;
+  dimension: number;
+  rows: { query: string; kind: string; model: string; vector: number[] }[];
+}
+
+export function loadQueryVectors(path: string, digest: string, casesDigest: string): QueryVectorCache {
+  const bytes = readFileSync(path);
+  if (sha256(bytes) !== digest) throw new Error("query vector cache hash mismatch");
+  const cache = JSON.parse(bytes.toString()) as QueryVectorCache;
+  if (cache.schema !== 1 || cache.caseSha256 !== casesDigest || !cache.reportedModel || !Number.isInteger(cache.dimension) || cache.dimension < 1) throw new Error("query vector cache metadata mismatch");
+  const queries = new Set<string>();
+  for (const row of cache.rows) {
+    if (!row.query || row.kind !== "query" || row.model !== cache.reportedModel || queries.has(row.query)
+      || row.vector.length !== cache.dimension || !row.vector.every(Number.isFinite)) throw new Error("invalid frozen query vector");
+    queries.add(row.query);
+  }
+  return cache;
+}
+
+export function cachedEmbeddingClient(cache: QueryVectorCache, emit: (event: CostEvent) => void): LLMClient {
+  const rows = new Map(cache.rows.map((row) => [row.query, row]));
+  let sequence = 0;
+  return new Proxy({} as LLMClient, { get(_target, method) { return async (...args: unknown[]) => {
+    const event: CostEvent = { id: `model-${++sequence}`, stage: method === "embed" ? "embedding" : "router", status: "failed",
+      input: JSON.stringify(args.slice(0, 2)), output: null, usage: null, durationMs: null };
+    const row = method === "embed" && args[1] === "query" ? rows.get(String(args[0])) : undefined;
+    if (!row) { emit(event); throw new Error(`frozen quality cache forbids missing/model call: ${String(method)}`); }
+    emit({ ...event, status: "ok", output: JSON.stringify({ cache: "frozen-query-vector", model: row.model, dimensions: row.vector.length, providerCalls: 0 }) });
+    return { vector: Float32Array.from(row.vector), model: row.model };
+  }; } });
+}
+
+export function contextArguments(input: { question: string; workstream?: string }, mode: PinnedArmOptions["mode"] = "keyword") {
+  return { query: input.question, ...(mode === "default" ? {} : { mode }), ...(input.workstream ? { workstream: input.workstream } : {}) };
+}
+
+export function sourceRepetition(sourceIds: readonly string[], components: ReadonlyMap<string, string>) {
+  const ids = [...new Set(sourceIds)];
+  return { sourceSessions: ids.length, knownSourceComponents: new Set(ids.flatMap((id) => components.has(id) ? [components.get(id)!] : [])).size,
+    unclassifiedSources: ids.filter((id) => !components.has(id)).length, independentEvidence: null };
+}
+
 export function isolatedArmEnvironment(dir: string, inherited: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const key of ["PATH", "LANG", "LC_ALL", "TZ", "SYSTEMROOT", "WINDIR", "PATHEXT"]) {
@@ -43,28 +94,32 @@ export function isolatedArmEnvironment(dir: string, inherited: NodeJS.ProcessEnv
     NLM_HOME: join(dir, "state"), NLM_STATE_ROOT: join(dir, "state"), NLM_FORMAT: "json", NLM_QUERY_LOG: join(dir, "queries.jsonl"), NLM_FACT_QUERY_LOG: join(dir, "facts.jsonl") };
 }
 
-function runnerSource(worktree: string, db: string, manifest: ContextManifest): string {
+function runnerSource(worktree: string, db: string, manifest: ContextManifest, options: PinnedArmOptions): string {
   const mod = (path: string): string => JSON.stringify(pathToFileURL(join(worktree, path)).href);
   return `import { createInterface } from 'node:readline';
 import { performance } from 'node:perf_hooks';
 import { SqliteStorage } from ${mod("src/core/storage/sqlite-storage.ts")};
 import { RecallService } from ${mod("src/core/recall/recall-service.ts")};
-import { FactRecallService } from ${mod("src/core/recall-facts/fact-recall-service.ts")};
+import * as factModule from ${mod("src/core/recall-facts/fact-recall-service.ts")};
 import { recallContextHandler } from ${mod("src/mcp/server.ts")};
-import { createModelAttemptRecorder } from ${JSON.stringify(import.meta.url)};
+import { createModelAttemptRecorder, cachedEmbeddingClient, loadQueryVectors, contextArguments } from ${JSON.stringify(import.meta.url)};
+const options=${JSON.stringify(options)};
+const cache=options.queryVectors?loadQueryVectors(options.queryVectors.path,options.queryVectors.sha256,${JSON.stringify(manifest.cases.sha256)}):null;
 const send = (x) => process.stdout.write('NLM_EVAL:'+JSON.stringify(x)+'\\n');
 const recordAttempt = createModelAttemptRecorder(event => send({event}));
-const llm = new Proxy({}, {get(_t, method) { return async (...args) => {
+const llm = cache ? cachedEmbeddingClient(cache,event=>send({event})) : new Proxy({}, {get(_t, method) { return async (...args) => {
  recordAttempt(String(method),args); throw new Error('keyword control forbids model call: '+String(method));
 }}});
 const storage = SqliteStorage.create({dbPath:${JSON.stringify(db)},migrationsDir:${JSON.stringify(join(worktree, "migrations"))}});
 await storage.init();
-const deps = {workstreams:{store:storage.workstreams,sessions:storage.sessions,facts:storage.facts,exemplars:storage.exemplars},store:storage.sessions,factStore:storage.facts,recall:new RecallService({store:storage.sessions,llm}),factRecall:new FactRecallService({factStore:storage.facts,llm})};
+if(cache){const config=storage.embeddingConfig.getLane('prose');if(config?.model!==cache.reportedModel||config?.dim!==cache.dimension)throw new Error('snapshot embedding model/dimension mismatch');}
+const ranking = options.policy ? factModule.corroborationRanking(options.policy==='cap2'?2:1,options.policy!=='cap1') : undefined;
+const deps = {workstreams:{store:storage.workstreams,sessions:storage.sessions,facts:storage.facts,exemplars:storage.exemplars},store:storage.sessions,factStore:storage.facts,recall:new RecallService({store:storage.sessions,llm}),factRecall:new factModule.FactRecallService({factStore:storage.facts,llm,...(ranking?{corroborationRanking:ranking}:{})})};
 send({ready:true});
 try {
  for await (const line of createInterface({input:process.stdin})) {
   const input=JSON.parse(line); const start=performance.now();
-  const args={query:input.question,mode:'keyword',...(input.workstream?{workstream:input.workstream}:{})};
+  const args=contextArguments(input,options.mode);
   const event={id:'retrieval',stage:'retrieval',status:'started',input:JSON.stringify(args),output:null,usage:null,durationMs:null}; send({event});
   try {
    const result=await recallContextHandler(deps,${JSON.stringify(manifest.tenantId)},args);
@@ -77,7 +132,8 @@ try {
 `;
 }
 
-export async function openPinnedArm(repo: string, revision: string, manifest: ContextManifest): Promise<EvalArm> {
+export async function openPinnedArm(repo: string, revision: string, manifest: ContextManifest, options: PinnedArmOptions = {}): Promise<EvalArm> {
+  if (options.queryVectors) loadQueryVectors(options.queryVectors.path, options.queryVectors.sha256, manifest.cases.sha256);
   const commit = execFileSync("git", ["rev-parse", "--verify", `${revision}^{commit}`], { cwd: repo, encoding: "utf8" }).trim();
   const parent = join(homedir(), ".nxtos", "worktrees");
   mkdirSync(parent, { recursive: true });
@@ -100,7 +156,7 @@ export async function openPinnedArm(repo: string, revision: string, manifest: Co
     copyFileSync(manifest.snapshot.path, db, constants.COPYFILE_FICLONE);
     chmodSync(db, 0o600);
     const runner = join(dir, "runner.mts");
-    writeFileSync(runner, runnerSource(worktree, db, manifest), { mode: 0o600 });
+    writeFileSync(runner, runnerSource(worktree, db, manifest, options), { mode: 0o600 });
     for (const path of ["home/.claude/projects", "home/.codex", "home/.pi/agent/sessions", "data/muse/sessions", "config", "cache", "state", "tmp"]) mkdirSync(join(dir, path), { recursive: true });
     child = spawn(process.execPath, ["--import", pathToFileURL(join(repo, "node_modules/tsx/dist/loader.mjs")).href, runner], {
       cwd: worktree, stdio: ["pipe", "pipe", "pipe"],
@@ -127,7 +183,7 @@ export async function openPinnedArm(repo: string, revision: string, manifest: Co
       return JSON.parse(await new Promise<string>((resolve, reject) => { pending = { resolve, reject }; })) as Record<string, unknown>;
     };
     if (!(await next())["ready"]) throw new Error("arm did not initialize");
-    return { commit, close: cleanup, async run(input, emit) {
+    return { commit, metadata: { ...options, mode: options.mode ?? "keyword", cacheQualityOnly: !!options.queryVectors, livePerformanceAvailable: false, providerCalls: 0, embeddingUsage: null, weightDigest: null }, close: cleanup, async run(input, emit) {
       child!.stdin!.write(JSON.stringify(input) + "\n");
       for (;;) {
         const response = await next();
@@ -147,6 +203,16 @@ async function main(): Promise<void> {
     if (!value || value.startsWith("--")) throw new Error(`required --${key} <value>`);
     return value;
   };
+  const optional = (key: string): string | undefined => args.includes(`--${key}`) ? get(key) : undefined;
+  const mode = (key: string): PinnedArmOptions["mode"] => {
+    const value = optional(key) ?? "keyword";
+    if (!["keyword", "default", "hybrid"].includes(value)) throw new Error(`invalid --${key}`);
+    return value as PinnedArmOptions["mode"];
+  };
+  const policy = optional("candidate-policy");
+  if (policy && !["cap2", "cap1", "tie-only"].includes(policy)) throw new Error("invalid --candidate-policy");
+  const vectors = optional("vectors");
+  const queryVectors = vectors ? { path: resolve(vectors), sha256: get("vectors-sha256") } : undefined;
   const manifestPath = resolve(get("manifest"));
   const raw = JSON.parse(readFileSync(manifestPath, "utf8")) as ContextManifest;
   if (raw.tokenizer !== null) throw new Error("this CLI has no pinned consumer tokenizer; set manifest tokenizer null, or supply an audited EvalDeps counter programmatically");
@@ -154,8 +220,17 @@ async function main(): Promise<void> {
   const outputPath = resolve(get("out"));
   if (existsSync(outputPath)) throw new Error("refusing to overwrite report");
   mkdirSync(dirname(outputPath), { recursive: true, mode: 0o700 });
+  let opened = 0;
   const report = await runMemoryContextEval({ manifestPath, baseline: get("baseline"), candidate: get("candidate"), outputPath }, {
-    tokenizer: null, reader: extractiveReader, openArm: (commit, manifest) => openPinnedArm(repo, commit, manifest), now: () => performance.now(),
+    tokenizer: null, reader: extractiveReader,
+    openArm: (commit, manifest) => {
+      const candidate = opened++ === 1;
+      return openPinnedArm(repo, commit, manifest, {
+        mode: mode(candidate ? "candidate-mode" : "baseline-mode")!,
+        ...(candidate && policy ? { policy: policy as NonNullable<PinnedArmOptions["policy"]> } : {}),
+        ...(queryVectors ? { queryVectors } : {}),
+      });
+    }, now: () => performance.now(),
   });
   console.log(JSON.stringify({ out: outputPath, n: report.perCase.length, strata: report.strata, failures: report.failures.length,
     promotion: report.promotion, runEnvironment: { host: hostname(), load: loadavg() } }));

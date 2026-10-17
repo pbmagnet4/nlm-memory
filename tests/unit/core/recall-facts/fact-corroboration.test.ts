@@ -6,7 +6,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { FactRecallService } from "../../../../src/core/recall-facts/fact-recall-service.js";
+import { corroborationRanking, FactRecallService } from "../../../../src/core/recall-facts/fact-recall-service.js";
 import type {
   FactListFilter,
   FactQuery,
@@ -195,5 +195,48 @@ describe("fact corroboration boost (Spec G.1)", () => {
     // Search still succeeded; hit is returned without corroborationCount.
     expect(result.results.map((r) => r.id)).toEqual(["f1"]);
     expect(result.results[0]!.corroborationCount).toBeUndefined();
+  });
+});
+
+
+describe("injected corroboration policies", () => {
+  const facts = [
+    makeFact({ id: "relevant", subject: "beacon", predicate: "uses", value: "postgres postgres cluster" }),
+    makeFact({ id: "repeated", subject: "beacon", predicate: "uses", value: "postgres" }),
+    makeFact({ id: "nonmatch", subject: "elsewhere", predicate: "runs", value: "unrelated" }),
+  ];
+  const counts = new Map([["beacon uses postgres", 1_000_000], ["elsewhere runs unrelated", 1_000_000]]);
+  const search = (cap: number, tieBreak = cap > 1) => new FactRecallService({
+    factStore: new ScriptedFactStore(facts, counts), llm: new StubLLM(), corroborationRanking: corroborationRanking(cap, tieBreak),
+  }).search("team_local", { query: "postgres cluster", mode: "keyword" });
+
+  it("isolates concurrent arms and retains counts when the boost is disabled", async () => {
+    const [current, disabled, ties] = await Promise.all([search(2), search(1), search(1, true)]);
+    expect(current.results.map((f) => f.id)).toEqual(["repeated", "relevant"]);
+    for (const result of [disabled, ties]) {
+      expect(result.results.map((f) => f.id)).toEqual(["relevant", "repeated"]);
+      expect(result.results[1]!.corroborationCount).toBe(1_000_000);
+    }
+  });
+
+  it("cannot turn zero keyword relevance into a match in any arm", async () => {
+    for (const result of await Promise.all([search(2), search(1), search(1, true)])) {
+      expect(result.results.some((f) => f.id === "nonmatch")).toBe(false);
+    }
+  });
+
+  it("uses counts only on relevance ties without retiring alternative facets", async () => {
+    const variants = [
+      makeFact({ id: "primary", subject: "beacon", predicate: "uses", value: "postgres" }),
+      makeFact({ id: "facet", subject: "beacon", predicate: "uses", value: "duckdb" }),
+    ];
+    for (const [tieBreak, expected] of [[false, ["primary", "facet"]], [true, ["facet", "primary"]]] as const) {
+      const svc = new FactRecallService({ factStore: new ScriptedFactStore(variants, new Map([["beacon uses duckdb", 10]])),
+        llm: new StubLLM(), corroborationRanking: corroborationRanking(1, tieBreak) });
+      const result = await svc.search("team_local", { query: "beacon", mode: "keyword" });
+      expect(result.results.map((f) => f.id)).toEqual(expected);
+      expect(result.results.map((f) => f.value).sort()).toEqual(["duckdb", "postgres"]);
+      expect(result.results.every((f) => f.supersededBy === null)).toBe(true);
+    }
   });
 });

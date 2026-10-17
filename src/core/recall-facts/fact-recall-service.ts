@@ -57,7 +57,19 @@ const FIELD_WEIGHTS = {
   predicate: 1,
 } as const;
 
+export type CorroborationPolicy = (count: number) => number;
+
+export interface CorroborationRanking {
+  readonly factor: CorroborationPolicy;
+  readonly tieBreak: boolean;
+}
+
+export function corroborationRanking(cap: number, tieBreak = cap > 1): CorroborationRanking {
+  return { factor: (count) => Math.min(cap, 1 + Math.log10(Math.max(1, count))), tieBreak };
+}
+
 export interface FactRecallServiceDeps {
+  readonly corroborationRanking?: CorroborationRanking;
   readonly factStore: FactStore;
   readonly llm: LLMClient;
   readonly resolveWorkstreamMembers?: (tenantId: string, idOrLabel: string) => Promise<readonly string[]>;
@@ -203,28 +215,18 @@ export class FactRecallService {
         const fetched = await this.deps.factStore.corroborationCounts(tenantId, [...missing.values()]);
         for (const [key, triple] of missing) counts.set(key, fetched.get(`${triple.subject} ${triple.predicate} ${triple.value}`) ?? 1);
       }
-      const cap = readBoostCap();
+      const ranking = this.deps.corroborationRanking ?? corroborationRanking(readBoostCap());
       const boosted: FactHit[] = hits.map((h) => {
         const count = counts.get(identity(h))!;
-        const factor = Math.min(cap, 1 + Math.log10(Math.max(1, count)));
+        const factor = ranking.factor(count);
         return {
           ...h,
           matchScore: round4(h.matchScore * factor),
           corroborationCount: count,
         };
       });
-      // Sort by matchScore, then corroborationCount as tiebreaker — but only
-      // when the boost is active (cap > 1). Cap = 1 means "count is reported
-      // but never affects ranking", so the tiebreaker is skipped to preserve
-      // native order on ties.
-      if (cap > 1) {
-        boosted.sort((a, b) => {
-          if (b.matchScore !== a.matchScore) return b.matchScore - a.matchScore;
-          return (b.corroborationCount ?? 0) - (a.corroborationCount ?? 0);
-        });
-      } else {
-        boosted.sort((a, b) => b.matchScore - a.matchScore);
-      }
+      boosted.sort((a, b) => b.matchScore - a.matchScore || (ranking.tieBreak
+        ? (b.corroborationCount ?? 0) - (a.corroborationCount ?? 0) : 0));
       return boosted;
     } catch {
       // Best-effort: corroboration boost skipped on any FactStore failure - recall proceeds unboosted. If boosts seem globally absent, look here first.

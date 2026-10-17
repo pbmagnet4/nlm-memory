@@ -109,6 +109,7 @@ export async function runMemoryContextEval(input: { manifestPath: string; baseli
     };
   };
   const report: MemoryContextReport = {
+    arms: { baseline: baseline.metadata ?? null, candidate: candidate!.metadata ?? null },
     manifest: { ...manifest, sha256: hash, baseline: baseline.commit, candidate: candidate!.commit, split: "dev" }, perCase, strata,
     answerMetrics: { baseline: answerMetrics("baseline"), candidate: answerMetrics("candidate") },
     characterDiagnostics: { baseline: perCase.reduce((sum, r) => sum + r.baseline.events.reduce((n, e) => n + e.input.length + (e.output?.length ?? 0), 0), 0), candidate: perCase.reduce((sum, r) => sum + r.candidate.events.reduce((n, e) => n + e.input.length + (e.output?.length ?? 0), 0), 0) },
