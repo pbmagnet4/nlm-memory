@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-16-memory-retrieval-improvements.md` (binding authority; section 5 owns numeric experiment thresholds).
 
-**Status:** Execution in progress under T806, from local main `a9f0729` (retrieval baseline `e391597`); planning task T805. Task 1 evaluator engineering is implemented in `1ed8763`/`80063e4` and independently reviewed. The verified diagnostic pilot has 26 cases, leaving a 94-case promotion-data shortfall; exact consumer token counting is unavailable. Task 2 is next. Existing T527/T679 are related work, not duplicate new tickets.
+**Status:** Execution in progress under T806, from local main `a9f0729` (retrieval baseline `e391597`); planning task T805. Task 1 evaluator engineering is implemented in `1ed8763`/`80063e4` and independently reviewed. An independent source audit has now frozen 120 cases (65 dev / 55 sealed holdout; 36 sources, 10 families). Task 2 is implemented in `8fbdf4d`/`b17190f`, independently reviewed, with 199 covering tests including PG. Task 3 is in progress. Exact consumer token counting and scientific promotion evidence remain unavailable. Existing T527/T679 are related work, not duplicate new tickets.
 
 ## Global Constraints
 
@@ -72,12 +72,12 @@ Names/signatures below are proposed new contracts. Baseline symbols above exist;
 - `runMemoryContextEval(input: {manifestPath:string; baseline:string; candidate:string; outputPath:string}, deps: EvalDeps): Promise<MemoryContextReport>`.
 - `TokenCounter.count(text:string):number`, plus immutable tokenizer/model revision metadata; unavailable counters are explicit nulls in reports. `EvidenceReader` receives question plus bundle only; labels/original sources never enter that reader's input.
 
-- [ ] Write scoring tests proving that a correct value without its required rationale/source fails a rationale case; missing one alternative fails ambiguity; unrelated text fails no-answer; ten duplicated cases do not create ten independent bootstrap groups.
-- [ ] Run `npx vitest run tests/unit/core/eval/context-score.test.ts`; confirm the new assertions fail before implementation.
-- [ ] Implement the scorer/orchestrator and CLI. Reuse snapshots/scoring pieces, not the broad harness's unrelated quadratic re-derivation scan. Run pinned baseline/candidate commits in isolated executor-owned worktrees; do not mutate production or fake the baseline by globally monkeypatching current code. Sample CLI contract: `npx tsx scripts/eval/memory-context.ts --manifest <private-manifest> --baseline e391597 --candidate <sha> --out <private-report>`.
-- [ ] Build and freeze the spec's >=120 source-checked question set, family-disjoint split, adversarial matrix, tokenizer/reader/model/prompt manifest and proposed thresholds before tuning. Independently audit source labels; document shortages/inconclusive strata. Character diagnostics remain separate from actual token totals.
+- [x] Write scoring tests proving that a correct value without its required rationale/source fails a rationale case; missing one alternative fails ambiguity; unrelated text fails no-answer; ten duplicated cases do not create ten independent bootstrap groups.
+- [x] Run `npx vitest run tests/unit/core/eval/context-score.test.ts`; confirm the new assertions fail before implementation.
+- [x] Implement the scorer/orchestrator and CLI. Reuse snapshots/scoring pieces, not the broad harness's unrelated quadratic re-derivation scan. Run pinned baseline/candidate commits in isolated executor-owned worktrees; do not mutate production or fake the baseline by globally monkeypatching current code. Sample CLI contract: `npx tsx scripts/eval/memory-context.ts --manifest <private-manifest> --baseline e391597 --candidate <sha> --out <private-report>`.
+- [x] Build and freeze the spec's >=120 source-checked question set, family-disjoint split, adversarial matrix, tokenizer/reader/model/prompt manifest and proposed thresholds before tuning. Independently audit source labels; document shortages/inconclusive strata. Character diagnostics remain separate from actual token totals.
 - [ ] Run the synthetic integration suite and a baseline-vs-identical-baseline replay: identical deterministic evidence scores, identical token counts with fixed tokenizer, every costed call represented. Live latency records embedder/cache/load conditions. Check model usage cannot disappear when a stage fails.
-- [ ] Obtain the task review, record baseline artifacts/hashes/aggregate numbers and accepted/rejected findings, then commit evaluator and documentation only. No optimization result is claimed yet.
+- [x] Obtain the task review, record baseline artifacts/hashes/aggregate numbers and accepted/rejected findings, then commit evaluator and documentation only. No optimization result is claimed yet.
 
 ## Task 2: Resolve and propagate tenant-owned workstream scope
 
@@ -87,12 +87,12 @@ Names/signatures below are proposed new contracts. Baseline symbols above exist;
 
 **Interfaces:** Produces `ResolvedRecallScope` and `resolveRecallScope(...)` exactly as spec section 4. `RecallExecutionOptions` initially has `workstreamIds?:readonly string[]`. Both `search(tenantId,input,options?)` methods consume it. `FactEligibility` contains the eligibility fields in the spec; FactListFilter adds query/limit. Public context/expansion schemas add `workstream?:string` only.
 
-- [ ] Add failing contracts for duplicate labels in two tenants, merged workstreams, explicit unknown/foreign selector, missing binding, cyclic merge chain and rebind between retrieval/expansion. Assert correct IDs and zero out-of-scope values/quotes; never assert only result count.
-- [ ] Run the relevant workstream/tenant/context tests and confirm new scope cases fail on the baseline.
-- [ ] Implement the shared resolver and replace the DEFAULT_TEAM_ID closure with `(tenantId,idOrLabel)` resolution. Apply source-session workstream joins to lexical facts before LIMIT and preserve undefined-vs-empty eligibility. Pass requested scope through session/fact retrieval, telemetry and all emitted expansion arguments; recheck tenant and current membership on expansion, including scoped fact history.
-- [ ] Run `npx vitest run tests/integration/recall-workstream-filter.test.ts tests/integration/mcp-context.test.ts tests/integration/tenant-leak-contract.test.ts tests/integration/tenant-leak-contract.pg.test.ts tests/integration/sqlite-fact-store.test.ts tests/integration/fact-store.pg.test.ts`. Require both adapters to run (a skipped PG lane is not parity evidence).
-- [ ] Replay scoped cases and measure irrelevant evidence/token share. Report capability failures separately from ranking failures; the baseline did not support the new selector, but both readers receive the same natural-language project question.
-- [ ] Security/spec/quality review the task as one diff, fix findings, commit. Do not claim semantic starvation fixed until Task 3 passes its oracle.
+- [x] Add failing contracts for duplicate labels in two tenants, merged workstreams, explicit unknown/foreign selector, missing binding, cyclic merge chain and rebind between retrieval/expansion. Assert correct IDs and zero out-of-scope values/quotes; never assert only result count.
+- [x] Run the relevant workstream/tenant/context tests and confirm new scope cases fail on the baseline.
+- [x] Implement the shared resolver and replace the DEFAULT_TEAM_ID closure with `(tenantId,idOrLabel)` resolution. Apply source-session workstream joins to lexical facts before LIMIT and preserve undefined-vs-empty eligibility. Pass requested scope through session/fact retrieval, telemetry and all emitted expansion arguments; recheck tenant and current membership on expansion, including scoped fact history.
+- [x] Run `npx vitest run tests/integration/recall-workstream-filter.test.ts tests/integration/mcp-context.test.ts tests/integration/tenant-leak-contract.test.ts tests/integration/tenant-leak-contract.pg.test.ts tests/integration/sqlite-fact-store.test.ts tests/integration/fact-store.pg.test.ts`. Require both adapters to run (a skipped PG lane is not parity evidence).
+- [x] Replay scoped cases and measure irrelevant evidence/token share. Report capability failures separately from ranking failures; the baseline did not support the new selector, but both readers receive the same natural-language project question.
+- [x] Security/spec/quality review the task as one diff, fix findings, commit. Do not claim semantic starvation fixed until Task 3 passes its oracle.
 
 ## Task 3: Retrieve eligible semantic neighbors without global-window starvation
 
