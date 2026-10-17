@@ -13,7 +13,7 @@ async function fileSha256(path: string): Promise<string> {
   return hash.digest("hex");
 }
 
-export async function loadManifest(path: string): Promise<{ manifest: ContextManifest; cases: ContextCase[]; hash: string }> {
+export async function loadManifest(path: string, split: "dev" | "holdout" = "dev"): Promise<{ manifest: ContextManifest; cases: ContextCase[]; hash: string }> {
   const raw = readFileSync(path, "utf8");
   const manifest = JSON.parse(raw) as ContextManifest;
   if (manifest.schema !== 1 || manifest.mode !== "keyword" || manifest.cache !== "disabled") throw new Error("unsupported context manifest contract");
@@ -34,7 +34,7 @@ export async function loadManifest(path: string): Promise<{ manifest: ContextMan
       if (r.start < 0 || r.end <= r.start || r.text.length !== r.end - r.start) throw new Error(`invalid UTF-16 range: ${c.id}`);
     }
   }
-  return { manifest, cases: cases.filter((c) => c.split === "dev"), hash: sha256(raw) };
+  return { manifest, cases: cases.filter((c) => c.split === split), hash: sha256(raw) };
 }
 
 async function execute(arm: EvalArm, c: ContextCase, deps: EvalDeps, manifest: ContextManifest): Promise<CaseArmResult> {
@@ -61,11 +61,37 @@ async function execute(arm: EvalArm, c: ContextCase, deps: EvalDeps, manifest: C
 
 const p95 = (values: number[]): number | null => values.length ? [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.95) - 1]! : null;
 
-export async function runMemoryContextEval(input: { manifestPath: string; baseline: string; candidate: string; outputPath: string }, deps: EvalDeps): Promise<MemoryContextReport> {
-  const { manifest, cases, hash } = await loadManifest(input.manifestPath);
+export interface HoldoutRegistration {
+  schema: 1;
+  purpose: "literal-diagnostic-only";
+  baseline: string;
+  candidate: string;
+  manifestSha256: string;
+  fixedN: number;
+  contrasts: readonly ["candidate-minus-baseline"];
+}
+
+export async function runMemoryContextEval(input: { manifestPath: string; baseline: string; candidate: string; outputPath: string;
+  holdout?: { registrationPath: string; sha256: string } }, deps: EvalDeps): Promise<MemoryContextReport> {
+  let registration: HoldoutRegistration | undefined;
+  if (input.holdout) {
+    const raw = readFileSync(input.holdout.registrationPath);
+    if (sha256(raw) !== input.holdout.sha256) throw new Error("preregistration hash mismatch");
+    registration = JSON.parse(raw.toString()) as HoldoutRegistration;
+    if (registration.schema !== 1 || registration.purpose !== "literal-diagnostic-only"
+      || !/^[a-f0-9]{40}$/.test(registration.baseline) || !/^[a-f0-9]{40}$/.test(registration.candidate)
+      || registration.baseline !== input.baseline || registration.candidate !== input.candidate
+      || registration.manifestSha256 !== sha256(readFileSync(input.manifestPath))
+      || !Number.isInteger(registration.fixedN) || registration.fixedN < 1 || registration.fixedN > 240
+      || JSON.stringify(registration.contrasts) !== '["candidate-minus-baseline"]') throw new Error("invalid preregistration");
+    writeFileSync(`${input.holdout.registrationPath}.consumed`, JSON.stringify({ sha256: input.holdout.sha256, outputPath: input.outputPath }), { flag: "wx", mode: 0o600 });
+  }
+  const split = registration ? "holdout" : "dev";
+  const { manifest, cases, hash } = await loadManifest(input.manifestPath, split);
+  if (registration && cases.length !== registration.fixedN) throw new Error("fixed holdout sample mismatch");
   if (JSON.stringify(deps.tokenizer?.metadata ?? null) !== JSON.stringify(manifest.tokenizer)) throw new Error("tokenizer revision mismatch");
   if (JSON.stringify(deps.reader.metadata) !== JSON.stringify(manifest.reader)) throw new Error("reader revision mismatch");
-  if (!cases.length) throw new Error("no development cases");
+  if (!cases.length) throw new Error(`no ${split} cases`);
   const loadStart = loadavg();
   const baseline = await deps.openArm(input.baseline, manifest);
   let candidate: EvalArm | undefined;
@@ -110,13 +136,13 @@ export async function runMemoryContextEval(input: { manifestPath: string; baseli
   };
   const report: MemoryContextReport = {
     arms: { baseline: baseline.metadata ?? null, candidate: candidate!.metadata ?? null },
-    manifest: { ...manifest, sha256: hash, baseline: baseline.commit, candidate: candidate!.commit, split: "dev" }, perCase, strata,
+    manifest: { ...manifest, sha256: hash, baseline: baseline.commit, candidate: candidate!.commit, split, ...(input.holdout ? { preregistrationSha256: input.holdout.sha256 } : {}) }, perCase, strata,
     answerMetrics: { baseline: answerMetrics("baseline"), candidate: answerMetrics("candidate") },
     characterDiagnostics: { baseline: perCase.reduce((sum, r) => sum + r.baseline.events.reduce((n, e) => n + e.input.length + (e.output?.length ?? 0), 0), 0), candidate: perCase.reduce((sum, r) => sum + r.candidate.events.reduce((n, e) => n + e.input.length + (e.output?.length ?? 0), 0), 0) },
     tokenTotals: { incremental: { baseline: total("baseline") === null || !deps.tokenizer ? null : total("baseline")! - perCase.length * deps.tokenizer.count(manifest.initialContext), candidate: total("candidate") === null || !deps.tokenizer ? null : total("candidate")! - perCase.length * deps.tokenizer.count(manifest.initialContext) }, baseline: total("baseline"), candidate: total("candidate"), perSupportedAnswer: { baseline: perSupported("baseline"), candidate: perSupported("candidate") }, unavailable: deps.tokenizer ? failures.length ? "failed or incomplete stages" : null : "pinned consumer tokenizer unavailable" },
     latency: { baselineP95Ms: p95(perCase.map((r) => r.baseline.durationMs)), candidateP95Ms: p95(perCase.map((r) => r.candidate.durationMs)), conditions: { ...manifest.environment, observedHost: hostname(), observedLoadStart: JSON.stringify(loadStart), observedLoadEnd: JSON.stringify(loadavg()), node: process.version, sqlTiming: "unavailable" } }, failures,
     confidenceIntervals: groupedBootstrap(perCase.map((r) => ({ family: r.family, baseline: Number(r.baseline.score.sufficient), candidate: Number(r.candidate.score.sufficient) }))),
-    promotion: { eligible: false, reasons: ["development-only measurement; holdout sealed", ...(manifest.labelAudit !== "complete" ? ["source label audit pending"] : []), ...(!deps.tokenizer ? ["consumer token measurements unavailable"] : []), "extractive literal evidence diagnostic; blinded supported-answer review still required"] },
+    promotion: { eligible: false, reasons: [registration ? "preregistered heldout literal diagnostic; primary quality/power unavailable" : "development-only measurement; holdout sealed", ...(manifest.labelAudit !== "complete" ? ["source label audit pending"] : []), ...(!deps.tokenizer ? ["consumer token measurements unavailable"] : []), "extractive literal evidence diagnostic; blinded supported-answer review still required"] },
   };
   writeFileSync(input.outputPath, JSON.stringify(report, null, 2), { flag: "wx", mode: 0o600 });
   return report;

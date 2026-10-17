@@ -40,6 +40,32 @@ describe("memory context evaluator", () => {
     expect(report.perCase[0]!.baseline.events.map((e) => e.stage)).toEqual(["retrieval", "reader"]);
     expect(report.promotion.eligible).toBe(false);
   });
+  it("requires frozen registration, retains holdout identity and consumes it once", async () => {
+    const f = fixture();
+    const registrationPath = join(f.dir, "registration.json");
+    const baseline = "a".repeat(40), candidate = "b".repeat(40);
+    writeFileSync(registrationPath, JSON.stringify({ schema: 1, purpose: "literal-diagnostic-only", baseline, candidate,
+      manifestSha256: sha256(readFileSync(f.manifestPath)), fixedN: 1, contrasts: ["candidate-minus-baseline"] }));
+    const input = { manifestPath: f.manifestPath, baseline, candidate, outputPath: join(f.dir, "heldout.json"),
+      holdout: { registrationPath, sha256: sha256(readFileSync(registrationPath)) } };
+    await expect(runMemoryContextEval({ ...input, candidate: "c".repeat(40) }, dependencies())).rejects.toThrow("invalid preregistration");
+    await expect(runMemoryContextEval({ ...input, holdout: { registrationPath, sha256: "wrong" } }, dependencies())).rejects.toThrow("preregistration hash mismatch");
+    const report = await runMemoryContextEval(input, dependencies());
+    expect(report.perCase.map((row) => row.id)).toEqual(["holdout"]);
+    expect(report.manifest.split).toBe("holdout");
+    expect(report.promotion.eligible).toBe(false);
+    await expect(runMemoryContextEval(input, dependencies())).rejects.toThrow("EEXIST");
+  });
+  it("retains a consumed attempt when fixed holdout N is wrong", async () => {
+    const f = fixture(); const registrationPath = join(f.dir, "registration.json");
+    const commit = "a".repeat(40);
+    writeFileSync(registrationPath, JSON.stringify({ schema: 1, purpose: "literal-diagnostic-only", baseline: commit, candidate: commit,
+      manifestSha256: sha256(readFileSync(f.manifestPath)), fixedN: 2, contrasts: ["candidate-minus-baseline"] }));
+    const input = { manifestPath: f.manifestPath, baseline: commit, candidate: commit, outputPath: join(f.dir, "heldout.json"),
+      holdout: { registrationPath, sha256: sha256(readFileSync(registrationPath)) } };
+    await expect(runMemoryContextEval(input, dependencies())).rejects.toThrow("fixed holdout sample mismatch");
+    expect(readFileSync(`${registrationPath}.consumed`, "utf8")).toContain(input.holdout.sha256);
+  });
   it("reports false abstentions in the predicted-abstention precision denominator", async () => {
     const f = fixture();
     f.cases.push({ ...f.cases[0]!, id: "negative-dev", category: "no-answer", sourceFamily: "negative", expected: { answerable: false, claims: [], alternatives: [], sourceRanges: [] } });

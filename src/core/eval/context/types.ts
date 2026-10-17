@@ -71,7 +71,7 @@ export interface PairedCase { id: string; family: string; category: ContextCateg
 export interface ConfidenceInterval { groups: number; samples: number; delta: number | null; lower: number | null; upper: number | null }
 export interface MemoryContextReport {
   arms: { baseline: Record<string, unknown> | null; candidate: Record<string, unknown> | null };
-  manifest: ContextManifest & { sha256: string; baseline: string; candidate: string; split: "dev" };
+  manifest: ContextManifest & { sha256: string; baseline: string; candidate: string; split: "dev" | "holdout"; preregistrationSha256?: string };
   perCase: PairedCase[];
   strata: Record<string, { n: number; baseline: number; candidate: number }>;
   answerMetrics: Record<"baseline" | "candidate", { answerableCoverage: { correct: number; total: number; rate: number | null }; noAnswerSuccess: { correct: number; total: number; rate: number | null }; abstentionPrecision: { correct: number; total: number; rate: number | null } }>;
