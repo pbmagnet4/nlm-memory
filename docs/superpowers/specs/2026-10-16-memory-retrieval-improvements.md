@@ -155,7 +155,7 @@ server-owned operations, not external SQL; pool size is bounded and shutdown rea
 Add optional `Fact.sourceAnchor` and additive fields in both adapters: facts source_start,
 source_end, source_body_version, source_quote_status; sessions body_version.
 Verified anchor shape: `{status:'verified'; start:number; end:number; bodyVersion:string}`.
-Unverified shape: `{status:'missing'|'invalid'|'ambiguous'|'stale'}` with no trusted offsets.
+Unverified shapes carry no offsets. Missing/stale are `{status:'missing'|'stale'}`; invalid/ambiguous may carry `{status:'invalid'|'ambiguous'; bodyVersion?:string}`. This optional version identifies the exact body assessed, not a verified quote location. Reuse a negative assessment only while it matches the current tenant-owned source version; changed/missing versions are stale and require fresh bounded verification. Historical null negative versions retain the legacy fallback.
 Use one shared `bodyVersion(body):string` helper matching the existing 16-hex SHA-256 transcript
 version contract. Historical versions/anchors may be null; no startup-wide hashing/backfill.
 
