@@ -105,8 +105,8 @@ npx tsx scripts/eval/memory-context.ts \
 
 Both revisions are resolved to immutable commits and run in separate detached,
 executor-owned worktrees under `~/.nxtos/worktrees/`. Each gets a disposable
-snapshot clone and private query logs; cleanup reaps workers and removes their
-worktrees. The production compact handler and recall services come from each
+snapshot clone, private HOME/XDG/runtime/state roots and private query logs.
+Cleanup reaps workers and removes their worktrees. The production compact handler and recall services come from each
 pinned arm, even when comparing a baseline with itself. No production store is
 opened. This path does not run the broad harness's re-derivation scan.
 
@@ -149,7 +149,8 @@ model-token measurements. Cost accounting includes schema/instructions,
 requests/responses, reader input/output and identical initial caller context;
 expansion/model adapters must emit their own complete call ledger if added.
 Unknown or incomplete stage costs keep totals null. Reports separate
-incremental chain tokens from total tokens and show tokens per supported case.
+incremental chain tokens from total tokens and show tokens per supported
+answerable case. Abstention successes are excluded from this efficiency denominator.
 
 Paired execution alternates arm order. Confidence intervals resample entire
 source families; one family has unavailable bounds even with ten duplicate

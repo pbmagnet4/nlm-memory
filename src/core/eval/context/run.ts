@@ -93,7 +93,10 @@ export async function runMemoryContextEval(input: { manifestPath: string; baseli
     }
   }
   const total = (arm: "baseline" | "candidate"): number | null => perCase.some((r) => r[arm].totalTokens === null) ? null : perCase.reduce((s, r) => s + r[arm].totalTokens!, 0);
-  const perSupported = (arm: "baseline" | "candidate"): number | null => total(arm) === null || !strata["overall"]![arm] ? null : total(arm)! / strata["overall"]![arm];
+  const perSupported = (arm: "baseline" | "candidate"): number | null => {
+    const supported = perCase.filter((r) => r.answerable && r[arm].score.sufficient).length;
+    return total(arm) === null || !supported ? null : total(arm)! / supported;
+  };
   const answerMetrics = (arm: "baseline" | "candidate") => {
     const metric = (rows: PairedCase[], correct: (r: PairedCase) => boolean) => {
       const n = rows.filter(correct).length;

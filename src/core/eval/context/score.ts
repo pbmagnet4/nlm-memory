@@ -27,8 +27,11 @@ export function groupedBootstrap(rows: readonly { family: string; baseline: numb
     let sum = 0;
     let n = 0;
     for (let j = 0; j < families.length; j++) {
-      seed = (Math.imul(1664525, seed) + 1013904223) >>> 0;
-      const group = families[seed % families.length]!;
+      seed = (seed + 0x6d2b79f5) >>> 0;
+      let bits = Math.imul(seed ^ (seed >>> 15), seed | 1);
+      bits ^= bits + Math.imul(bits ^ (bits >>> 7), bits | 61);
+      const random = ((bits ^ (bits >>> 14)) >>> 0) / 4_294_967_296;
+      const group = families[Math.floor(random * families.length)]!;
       sum += group.reduce((a, b) => a + b, 0);
       n += group.length;
     }

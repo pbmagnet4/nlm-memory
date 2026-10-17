@@ -19,6 +19,16 @@ describe("source-grounded evidence sufficiency", () => {
     expect(scoreContext(c, answer("the answer is SQLite")).sufficient).toBe(false);
     expect(scoreContext(c, { text: "Insufficient evidence", abstained: true, evidence: [] }).sufficient).toBe(true);
   });
+  it("samples opposing two-family effects with replacement", () => {
+    const rows = [{ family: "up", baseline: 0, candidate: 1 }, { family: "down", baseline: 1, candidate: 0 }];
+    expect(groupedBootstrap(rows).lower).toBe(-1);
+    expect(groupedBootstrap(rows).upper).toBe(1);
+  });
+  it("does not force even-family draws into balanced parity groups", () => {
+    const rows = [1, 1, -1, -1].map((delta, i) => ({ family: String(i), baseline: delta < 0 ? 1 : 0, candidate: delta > 0 ? 1 : 0 }));
+    expect(groupedBootstrap(rows).lower).toBe(-1);
+    expect(groupedBootstrap(rows).upper).toBe(1);
+  });
   it("bootstraps families, so ten duplicate questions remain one group", () => {
     const rows = Array.from({ length: 10 }, () => ({ family: "one", baseline: 0, candidate: 1 }));
     expect(groupedBootstrap(rows, 100).groups).toBe(1);

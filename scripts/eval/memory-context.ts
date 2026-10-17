@@ -28,6 +28,21 @@ export const extractiveReader: EvidenceReader = {
   },
 };
 
+export function createModelAttemptRecorder(emit: (event: CostEvent) => void): (method: string, args: unknown[]) => void {
+  let sequence = 0;
+  return (method, args) => emit({ id: `model-${++sequence}`, stage: method === "embed" ? "embedding" : "router", status: "failed", input: JSON.stringify(args), output: null, usage: null, durationMs: null });
+}
+
+export function isolatedArmEnvironment(dir: string, inherited: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of ["PATH", "LANG", "LC_ALL", "TZ", "SYSTEMROOT", "WINDIR", "PATHEXT"]) {
+    if (inherited[key] !== undefined) env[key] = inherited[key];
+  }
+  return { ...env, TMPDIR: join(dir, "tmp"), TMP: join(dir, "tmp"), TEMP: join(dir, "tmp"), HOME: join(dir, "home"), XDG_DATA_HOME: join(dir, "data"), XDG_CONFIG_HOME: join(dir, "config"), XDG_CACHE_HOME: join(dir, "cache"),
+    NLM_CLAUDE_PROJECTS_ROOT: join(dir, "home", ".claude", "projects"), CODEX_HOME: join(dir, "home", ".codex"),
+    NLM_HOME: join(dir, "state"), NLM_STATE_ROOT: join(dir, "state"), NLM_FORMAT: "json", NLM_QUERY_LOG: join(dir, "queries.jsonl"), NLM_FACT_QUERY_LOG: join(dir, "facts.jsonl") };
+}
+
 function runnerSource(worktree: string, db: string, manifest: ContextManifest): string {
   const mod = (path: string): string => JSON.stringify(pathToFileURL(join(worktree, path)).href);
   return `import { createInterface } from 'node:readline';
@@ -36,10 +51,11 @@ import { SqliteStorage } from ${mod("src/core/storage/sqlite-storage.ts")};
 import { RecallService } from ${mod("src/core/recall/recall-service.ts")};
 import { FactRecallService } from ${mod("src/core/recall-facts/fact-recall-service.ts")};
 import { recallContextHandler } from ${mod("src/mcp/server.ts")};
+import { createModelAttemptRecorder } from ${JSON.stringify(import.meta.url)};
 const send = (x) => process.stdout.write('NLM_EVAL:'+JSON.stringify(x)+'\\n');
+const recordAttempt = createModelAttemptRecorder(event => send({event}));
 const llm = new Proxy({}, {get(_t, method) { return async (...args) => {
- const event={id:'model-'+Date.now(),stage:method==='embed'?'embedding':'router',status:'failed',input:JSON.stringify(args),output:null,usage:null,durationMs:null};
- send({event}); throw new Error('keyword control forbids model call: '+String(method));
+ recordAttempt(String(method),args); throw new Error('keyword control forbids model call: '+String(method));
 }}});
 const storage = SqliteStorage.create({dbPath:${JSON.stringify(db)},migrationsDir:${JSON.stringify(join(worktree, "migrations"))}});
 await storage.init();
@@ -85,9 +101,10 @@ export async function openPinnedArm(repo: string, revision: string, manifest: Co
     chmodSync(db, 0o600);
     const runner = join(dir, "runner.mts");
     writeFileSync(runner, runnerSource(worktree, db, manifest), { mode: 0o600 });
+    for (const path of ["home/.claude/projects", "home/.codex", "home/.pi/agent/sessions", "data/muse/sessions", "config", "cache", "state", "tmp"]) mkdirSync(join(dir, path), { recursive: true });
     child = spawn(process.execPath, ["--import", pathToFileURL(join(repo, "node_modules/tsx/dist/loader.mjs")).href, runner], {
       cwd: worktree, stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, TSX_TSCONFIG_PATH: join(worktree, "tsconfig.json"), NLM_FORMAT: "json", NLM_QUERY_LOG: join(dir, "queries.jsonl"), NLM_FACT_QUERY_LOG: join(dir, "facts.jsonl"), NLM_HOME: dir, NLM_STATE_ROOT: dir },
+      env: { ...isolatedArmEnvironment(dir, process.env), TSX_TSCONFIG_PATH: join(worktree, "tsconfig.json") },
     });
     let stderr = "";
     child.stderr!.on("data", (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-4_000); });
