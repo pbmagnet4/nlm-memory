@@ -138,3 +138,10 @@ defect: exact fact lookups logged a phantom session search. Accepted and fixed;
 regression coverage verifies the fact event without a session event. Later
 semantic-only, short-identifier and covering-index refinements were verified
 against source excerpts and the shared storage/integration gates.
+
+## Proposed next steps
+
+The [measurable retrieval specification](superpowers/specs/2026-10-16-memory-retrieval-improvements.md)
+and [SDD implementation plan](superpowers/plans/2026-10-16-memory-retrieval-improvements.md)
+define the next correctness, evaluation and efficiency work. They are planning artifacts;
+their acceptance thresholds are proposed targets, and their features are not implemented.
