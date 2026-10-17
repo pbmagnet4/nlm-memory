@@ -1,4 +1,14 @@
+import type { EmbedResult, EmbeddingKind, LLMClient } from "@ports/llm-client.js";
+import type { FactRecallResult, RecallResult } from "@shared/types.js";
+
 export interface RecallExecutionOptions {
+  readonly signal?: AbortSignal;
+  readonly deadlineAt?: number;
+  readonly now?: () => number;
+  readonly queryEmbedding?: Promise<EmbedResult>;
+  readonly queryEmbeddingIdentity?: { readonly text: string; readonly kind: EmbeddingKind; readonly client: LLMClient };
+  readonly onPartialFacts?: (result: FactRecallResult) => Promise<void>;
+  readonly onPartialSessions?: (result: RecallResult) => Promise<void>;
   readonly workstreamIds?: readonly string[];
 }
 

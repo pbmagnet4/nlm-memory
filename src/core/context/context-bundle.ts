@@ -1,3 +1,4 @@
+import type { ContextCoverage } from "./recall-context.js";
 import type { ResolvedRecallScope } from "@core/recall/resolve-scope.js";
 import type { FactHit, RecallHit, Session } from "@shared/types.js";
 import { matchedPassages, relevantStrings } from "./session-evidence.js";
@@ -11,7 +12,8 @@ export interface ContextLookup {
 }
 
 export interface ContextMetadata {
-  readonly intent: string;
+  readonly intent?: string | undefined;
+  readonly coverage?: ContextCoverage;
   readonly scope: ResolvedRecallScope & { workstream?: string };
   readonly modeUnavailable?: string;
   readonly factsUnavailable?: boolean;
@@ -69,7 +71,7 @@ export function buildContextBundle(
     ...(lookupRecord ? { lookup: lookupRecord } : {}),
     query: query.slice(0, 200) as string | undefined, queryShortened: (query.length > 200) as boolean | undefined, facts: [] as typeof factRecords, sessions: [] as typeof sessionRecords,
     omitted: { facts: factRecords.length, sessions: sessionRecords.length },
-    budgetChars: maxChars,
+    budgetChars: maxChars as number | undefined,
     expand: [...sessionRecords.map((s) => s.expand),
       ...facts.slice(0, 2).map((f) => ({ id: f.sourceSessionId, ...scopeArgs }))].slice(0, 3),
   };
@@ -77,15 +79,33 @@ export function buildContextBundle(
   if (size() > maxChars) bundle.expand = [];
   if (size() > maxChars && bundle.scope) delete bundle.scope.workstream;
   if (size() > maxChars) { bundle.query = undefined; bundle.queryShortened = undefined; }
+  if (size() > maxChars) { bundle.intent = undefined; bundle.budgetChars = undefined; }
   if (size() > maxChars) throw new Error("Response metadata exceeds the response budget; narrow the query.");
   // Expansion selectors and evidence stay exact; only complete optional display
   // fields may be removed before packing records into the final envelope.
+  let coverageOverhead = metadata?.coverage ? size() - serialize({ ...bundle, coverage: undefined }).length : 0;
+  const optionalDisplay = [
+    () => { bundle.query = undefined; bundle.queryShortened = undefined; },
+    () => { bundle.intent = undefined; bundle.budgetChars = undefined; },
+    () => { delete bundle.modeUnavailable; delete bundle.factsUnavailable; },
+    () => { if (bundle.scope) delete bundle.scope.workstream; },
+    () => { bundle.expand = []; },
+  ];
+  const compensateCoverage = (limit: number) => {
+    // Only compensate new coverage overhead; retain the existing evidence allocation policy.
+    while (coverageOverhead > 0 && size() > limit && optionalDisplay.length) {
+      const before = size();
+      optionalDisplay.shift()!();
+      coverageOverhead -= before - size();
+    }
+  };
   const reserve = sessionRecords.length > 0
     ? Math.min(maxChars - 1_000, serialize(sessionRecords[0]).length + 50) : 0;
   const factBudget = Math.min(sessionRecords.length ? Math.floor(maxChars * 0.45) : maxChars, maxChars - reserve);
   for (const fact of factRecords) {
     bundle.facts.push(fact);
     bundle.omitted.facts--;
+    compensateCoverage(factBudget);
     if (size() > factBudget) {
       bundle.facts.pop();
       bundle.omitted.facts++;
@@ -94,6 +114,7 @@ export function buildContextBundle(
   for (const session of sessionRecords) {
     bundle.sessions.push(session);
     bundle.omitted.sessions--;
+    compensateCoverage(maxChars);
     if (size() > maxChars) {
       bundle.sessions.pop();
       bundle.omitted.sessions++;

@@ -23,10 +23,10 @@
  * tenant-owned facts and their source sessions before distance ranking.
  */
 
-type NeighborRow = { fact_id: string; distance: number };
 
 import type Database from "better-sqlite3";
-import { completeSemanticTopK } from "./sqlite-semantic-top-k.js";
+import { readSemanticFacts } from "./sqlite-semantic-facts.js";
+import type { SqliteSemanticReader } from "./sqlite-semantic-reader.js";
 import { tokenize } from "@core/recall/tokenize.js";
 import type {
   CurrentValueQuery,
@@ -64,7 +64,7 @@ export class SqliteFactStore implements FactStore {
    * construction is preserved for the SqliteStorage adapter only; all
    * other callers should reach FactStore via storage.facts.
    */
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: Database.Database, private readonly semanticReader?: SqliteSemanticReader) {}
 
   private cachedInsertStmt: Database.Statement<FactRow> | undefined;
 
@@ -274,60 +274,13 @@ export class SqliteFactStore implements FactStore {
     queryVector: Float32Array,
     limit: number,
     eligibility?: FactEligibility,
+    execution?: { readonly signal?: AbortSignal },
   ): Promise<ReadonlyArray<FactSemanticNeighbor>> {
-    if (eligibility?.workstreamIds?.length === 0) return [];
-    const factTenant = tenantClause(tenantId, "f.tenant_id");
-    const sourceTenant = tenantClause(tenantId, "s.tenant_id");
-    const where = [factTenant.sql, sourceTenant.sql];
-    const blob = Buffer.from(queryVector.buffer, queryVector.byteOffset, queryVector.byteLength);
-    const params: unknown[] = [blob, factTenant.param, sourceTenant.param];
-    for (const field of ["subject", "predicate", "kind"] as const) {
-      if (eligibility?.[field] !== undefined) {
-        where.push(`f.${field} = ?`);
-        params.push(eligibility[field]);
-      }
+    if (execution?.signal && this.semanticReader) {
+      return this.semanticReader.read({ lane: "facts", tenantId, queryVector, limit, ...(eligibility ? { options: eligibility } : {}) }, execution.signal) as Promise<ReadonlyArray<FactSemanticNeighbor>>;
     }
-    if (eligibility?.minConfidence !== undefined) {
-      where.push("f.confidence >= ?");
-      params.push(eligibility.minConfidence);
-    }
-    if (eligibility?.includeSuperseded !== true) {
-      where.push("f.superseded_by IS NULL", "f.retired_at IS NULL");
-    }
-    if (eligibility?.workstreamIds !== undefined) {
-      where.push(`s.workstream_id IN (${eligibility.workstreamIds.map(() => "?").join(",")})`);
-      params.push(...eligibility.workstreamIds);
-    }
-    const k = Math.max(1, Math.trunc(limit));
-    params.push(k);
-    const exact = (): readonly FactSemanticNeighbor[] => this.db.prepare<unknown[], NeighborRow>(`
-      SELECT fe.fact_id, vec_distance_L2(fe.embedding, ?) AS distance
-      FROM fact_embeddings fe
-      JOIN facts f ON f.id = fe.fact_id
-      JOIN sessions s ON s.id = f.source_session_id
-      WHERE ${where.join(" AND ")}
-      ORDER BY distance, fe.fact_id
-      LIMIT ?
-    `).all(...params).map((r) => ({ factId: r.fact_id, distance: r.distance }));
-    if (eligibility?.workstreamIds !== undefined) return exact();
-    return this.db.transaction(() => completeSemanticTopK(k,
-      (window) => this.db.prepare<[Buffer, number], NeighborRow>(`
-        SELECT fact_id, distance FROM fact_embeddings
-        WHERE embedding MATCH ? AND k = ? ORDER BY distance
-      `).all(blob, window),
-      (candidates) => {
-        if (candidates.length === 0) return [];
-        const ids = candidates.map((r) => r.fact_id);
-        const owned = this.db.prepare<unknown[], { id: string }>(`
-          SELECT f.id FROM facts f JOIN sessions s ON s.id = f.source_session_id
-          WHERE ${where.join(" AND ")} AND f.id IN (${ids.map(() => "?").join(",")})
-        `).all(...params.slice(1, -1), ...ids);
-        const eligibleIds = new Set(owned.map((r) => r.id));
-        return candidates.filter((r) => eligibleIds.has(r.fact_id))
-          .map((r) => ({ factId: r.fact_id, distance: r.distance }))
-          .sort((a, b) => a.distance - b.distance || Buffer.compare(Buffer.from(a.factId), Buffer.from(b.factId)))
-          .slice(0, k);
-      }, exact)).deferred();
+    execution?.signal?.throwIfAborted();
+    return readSemanticFacts(this.db, tenantId, queryVector, limit, eligibility);
   }
 
   async getHistory(

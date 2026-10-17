@@ -22,7 +22,8 @@
  * to a tenant-filtered `sessions` row.
  */
 
-import { completeSemanticTopK } from "./sqlite-semantic-top-k.js";
+import { readSemanticSessions } from "./sqlite-semantic-sessions.js";
+import type { SqliteSemanticReader } from "./sqlite-semantic-reader.js";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import Database from "better-sqlite3";
@@ -142,7 +143,6 @@ type SessionRow = {
 
 type EntityRow = { session_id: string; entity_canonical: string };
 type MarkerRow = { session_id: string; kind: "decision" | "open"; text: string };
-type NeighborRow = { session_id: string; distance: number; chunk_idx: number };
 type KeywordRow = { session_id: string; score: number };
 
 export interface RecentWrite {
@@ -229,6 +229,7 @@ function findContinuesPredecessor(
 
 export class SqliteSessionStore implements SessionStore {
   private readonly db: Database.Database;
+  semanticReader?: SqliteSemanticReader;
   // Keyed by tenantId — a single-tenant Map entry today (DEFAULT_TEAM_ID),
   // but the overlay's content is tenant-scoped (program spec §4.6 hardening
   // 1) and must never bleed across tenants once M3 adds real multi-tenant
@@ -807,62 +808,13 @@ export class SqliteSessionStore implements SessionStore {
     queryVector: Float32Array,
     limit: number,
     opts?: SearchOptions,
+    execution?: { readonly signal?: AbortSignal },
   ): Promise<ReadonlyArray<SemanticNeighbor>> {
-    if (opts?.workstreamIds?.length === 0) return [];
-    const tc = tenantClause(tenantId, "s.tenant_id");
-    const where = [tc.sql, opts?.includeSuperseded === true
-      ? "s.status != 'replaced'" : "s.status NOT IN ('superseded', 'replaced')"];
-    const blob = Buffer.from(queryVector.buffer, queryVector.byteOffset, queryVector.byteLength);
-    const params: unknown[] = [blob, tc.param];
-    if (opts?.workstreamIds !== undefined) {
-      where.push(`s.workstream_id IN (${opts.workstreamIds.map(() => "?").join(",")})`);
-      params.push(...opts.workstreamIds);
+    if (execution?.signal && this.semanticReader) {
+      return this.semanticReader.read({ lane: "sessions", tenantId, queryVector, limit, ...(opts ? { options: opts } : {}) }, execution.signal) as Promise<ReadonlyArray<SemanticNeighbor>>;
     }
-    const k = Math.max(1, Math.trunc(limit));
-    params.push(k);
-    // The embedding's own attribution survives historical gaps in session_chunk_map.
-    const exact = (): readonly SemanticNeighbor[] => this.db.prepare<unknown[], NeighborRow>(`
-      WITH eligible AS MATERIALIZED (
-        SELECT sec.session_id, sec.chunk_idx, sec.chunk_id,
-               vec_distance_L2(sec.embedding, ?) AS distance
-        FROM session_embedding_chunks sec
-        JOIN sessions s ON s.id = sec.session_id
-        WHERE ${where.join(" AND ")}
-      ), ranked AS (
-        SELECT session_id, chunk_idx, distance,
-               ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY distance, chunk_idx, chunk_id) AS rank
-        FROM eligible
-      )
-      SELECT session_id, chunk_idx, distance FROM ranked
-      WHERE rank = 1
-      ORDER BY distance, session_id
-      LIMIT ?
-    `).all(...params).map((r) => ({ sessionId: r.session_id, distance: r.distance, chunkIndex: Number(r.chunk_idx) }));
-    if (opts?.workstreamIds !== undefined) return exact();
-    return this.db.transaction(() => completeSemanticTopK(k,
-      (window) => this.db.prepare<[Buffer, number], NeighborRow>(`
-        SELECT session_id, distance, chunk_idx FROM session_embedding_chunks
-        WHERE embedding MATCH ? AND k = ? ORDER BY distance
-      `).all(blob, window),
-      (candidates) => {
-        if (candidates.length === 0) return [];
-        const ids = [...new Set(candidates.map((r) => r.session_id))];
-        const owned = this.db.prepare<unknown[], { id: string }>(`
-          SELECT s.id FROM sessions s
-          WHERE ${where.join(" AND ")} AND s.id IN (${ids.map(() => "?").join(",")})
-        `).all(...params.slice(1, -1), ...ids);
-        const eligibleIds = new Set(owned.map((r) => r.id));
-        const best = new Map<string, SemanticNeighbor>();
-        for (const r of candidates) {
-          if (!eligibleIds.has(r.session_id)) continue;
-          const chunkIndex = Number(r.chunk_idx);
-          const prior = best.get(r.session_id);
-          if (!prior || r.distance < prior.distance || (r.distance === prior.distance && chunkIndex < prior.chunkIndex!)) {
-            best.set(r.session_id, { sessionId: r.session_id, distance: r.distance, chunkIndex });
-          }
-        }
-        return [...best.values()].sort((a, b) => a.distance - b.distance || Buffer.compare(Buffer.from(a.sessionId), Buffer.from(b.sessionId))).slice(0, k);
-      }, exact)).deferred();
+    execution?.signal?.throwIfAborted();
+    return readSemanticSessions(this.db, tenantId, queryVector, limit, opts);
   }
 
   /**

@@ -1,3 +1,4 @@
+import { RequestBudget, embedForRecall } from "./request-budget.js";
 import { executionWorkstreamIds, type RecallExecutionOptions } from "./execution-options.js";
 /**
  * RecallService — the use case. Composes filters, keyword scoring, and
@@ -102,7 +103,11 @@ export class RecallService {
 
   constructor(private readonly deps: RecallServiceDeps) {}
 
+  get embeddingClient(): LLMClient { return this.deps.llm; }
+  get embeddingTimeoutMs(): number { return EMBED_DEADLINE_MS; }
+
   async search(tenantId: string, input: RecallQuery, options: RecallExecutionOptions = {}): Promise<RecallResult> {
+    options.signal?.throwIfAborted();
     const mode: RecallMode = input.mode ?? "keyword";
     const limit = clampLimit(input.limit);
     const entity = input.entity ?? null;
@@ -121,6 +126,7 @@ export class RecallService {
     if (!input.query && !entity && !kind) return empty;
 
     const workstreamIds = await executionWorkstreamIds(tenantId, input.workstream, options, this.deps.resolveWorkstreamMembers);
+    options.signal?.throwIfAborted();
     if (workstreamIds?.length === 0) return empty;
 
     // 0. Optional query rewrite. Fails open on LLM unreachable / parse error:
@@ -156,6 +162,20 @@ export class RecallService {
         ? await this.deps.store.keywordSearch(tenantId, keywordQuery, limit * KEYWORD_OVERFETCH, searchOpts)
         : [];
 
+    if (options.onPartialSessions && mode === "hybrid") {
+      const lexicalSources = await this.deps.store.getByIds(tenantId, kwNeighbors.map((n) => n.sessionId));
+      const lexicalById = new Map(applyFilter(lexicalSources, {
+        ...(input.entity !== undefined ? { entity: input.entity } : {}),
+        ...(input.kind !== undefined ? { kind: input.kind } : {}),
+      }).map((s) => [s.id, s]));
+      const tokens = new Set(tokenSet(keywordQuery));
+      const hits = kwNeighbors.flatMap((n) => {
+        const session = lexicalById.get(n.sessionId);
+        return session ? [{ session, score: n.score, matchedIn: keywordMatchFields(session, tokens) }] : [];
+      });
+      await options.onPartialSessions(finalize(input.query, entity, kind, mode, limit, mergeHybrid(hits, []), tokens));
+    }
+
     let semNeighbors: ReadonlyArray<SemanticNeighbor> = [];
     let semError: "ollama_unreachable" | null = null;
     if ((mode === "semantic" || mode === "hybrid") && semanticQuery) {
@@ -164,24 +184,15 @@ export class RecallService {
       } else if (!tryAcquire()) {
         semError = "ollama_unreachable";
       } else {
-        const abort = new AbortController();
-        let deadlineTimer: ReturnType<typeof setTimeout>;
-        const deadline = new Promise<never>((_, rej) => {
-          deadlineTimer = setTimeout(() => {
-            abort.abort();
-            rej(new LLMUnreachableError("embed-deadline"));
-          }, EMBED_DEADLINE_MS);
-        });
         try {
-          const embedding = await Promise.race([
-            this.deps.llm.embed(semanticQuery, "query", { signal: abort.signal }),
-            deadline,
-          ]);
+          const embedding = await embedForRecall(this.deps.llm, semanticQuery, options, EMBED_DEADLINE_MS);
+          options.signal?.throwIfAborted();
           semNeighbors = await this.deps.store.semanticSearch(
             tenantId,
             embedding.vector,
             limit * SEMANTIC_OVERFETCH,
             searchOpts,
+            options,
           );
         } catch (err) {
           if (err instanceof LLMUnreachableError) {
@@ -190,7 +201,6 @@ export class RecallService {
             throw err;
           }
         } finally {
-          clearTimeout(deadlineTimer!);
           release();
         }
       }
@@ -309,27 +319,14 @@ export class RecallService {
       const embedder = this.deps.codeEmbedder;
       const scope = this.deps.installScope;
       const q = semanticQuery || input.query;
-      // AbortController lets us cancel the in-flight Ollama embed request the
-      // moment the race timeout fires, rather than leaving it running in the
-      // background where it ties up Ollama and delays the next embedding call.
-      const abort = new AbortController();
-      let timer: ReturnType<typeof setTimeout>;
-      const timeout = new Promise<never>((_, rej) => {
-        timer = setTimeout(() => {
-          abort.abort();
-          rej(new Error("exemplar recall timeout"));
-        }, EXEMPLAR_RECALL_TIMEOUT_MS);
-      });
+      const budget = new RequestBudget(EXEMPLAR_RECALL_TIMEOUT_MS, options);
       try {
-        const related = await Promise.race([
-          pickRelatedExemplars(tenantId, q, store, embedder, scope, { signal: abort.signal }),
-          timeout,
-        ]);
+        const related = await budget.run(() => pickRelatedExemplars(tenantId, q, store, embedder, scope, { signal: budget.signal }));
         if (related.length > 0) result = { ...result, relatedExemplars: related };
       } catch {
-        // timed out or failed — proceed without exemplars
+        // Optional related evidence must not erase completed recall.
       } finally {
-        clearTimeout(timer!);
+        budget.dispose();
       }
     }
 

@@ -179,6 +179,7 @@ export interface FactStore {
     queryVector: Float32Array,
     limit: number,
     eligibility?: FactEligibility,
+    execution?: { readonly signal?: AbortSignal },
   ): Promise<ReadonlyArray<FactSemanticNeighbor>>;
 
   /**

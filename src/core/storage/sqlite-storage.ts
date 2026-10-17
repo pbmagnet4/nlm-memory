@@ -1,3 +1,4 @@
+import { SqliteSemanticReader } from "./sqlite-semantic-reader.js";
 /**
  * SqliteStorage — canonical Storage adapter for better-sqlite3 + sqlite-vec.
  *
@@ -71,7 +72,9 @@ export class SqliteStorage implements Storage {
   static create(opts: SqliteStorageOptions): SqliteStorage {
     const sessions = new SqliteSessionStore(opts);
     const db = sessions.rawDb();
-    const facts = new SqliteFactStore(db);
+    const reader = new SqliteSemanticReader(db.name);
+    sessions.semanticReader = reader;
+    const facts = new SqliteFactStore(db, reader);
     const signals = new SqliteSignalStore(db);
     const exemplars = new SqliteCodeExemplarStore(db);
     const workstreams = new SqliteWorkstreamStore(db);
@@ -91,6 +94,7 @@ export class SqliteStorage implements Storage {
   }
 
   async close(): Promise<void> {
+    await this.sessions.semanticReader?.close();
     this.sessions.close();
   }
 

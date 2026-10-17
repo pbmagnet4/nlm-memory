@@ -536,3 +536,15 @@ describe("RecallService.search", () => {
     });
   });
 });
+
+it("lexical progress uses the same hybrid fallback scores and ordering as a failed semantic lane", async () => {
+  resetLaneHealthForTests(); resetForTests();
+  const sessions = [makeSession({ id: "older", startedAt: "2026-01-01T00:00:00Z" }), makeSession({ id: "newer", startedAt: "2026-10-01T00:00:00Z" })];
+  const store = new InMemoryStore(sessions, [], [{ sessionId: "older", score: 50 }, { sessionId: "newer", score: 20 }]);
+  const service = new RecallService({ store, llm: new StubEmbedder(true) });
+  let progress: unknown;
+  const final = await service.search("team_local", { query: "alpha", mode: "hybrid" }, {
+    onPartialSessions: async (result) => { progress = result.results; },
+  });
+  expect(progress).toEqual(final.results);
+});

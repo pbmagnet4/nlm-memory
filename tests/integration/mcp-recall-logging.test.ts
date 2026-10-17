@@ -147,7 +147,7 @@ describe("MCP recall handlers log resolved conversation_id", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("recall_sessions logs conversation_id when query resolves to a transcript", async () => {
+  it("recall_sessions logs conversation_id with tenant-bound trusted context", async () => {
     const query = "pgvector FTS5 performance index";
     const projDir = join(projectsDir, "proj-a");
     mkdirSync(projDir);
@@ -157,6 +157,7 @@ describe("MCP recall handlers log resolved conversation_id", () => {
     );
 
     const deps = {
+      requestContext: { tenantId: "team_local", conversationId: "conv-target" },
       recall: {
         search: async () => ({ query, entity: null, kind: null, mode: "keyword", limit: 10, total: 1, results: [{ id: "s1" }] }),
       },
@@ -168,7 +169,7 @@ describe("MCP recall handlers log resolved conversation_id", () => {
     expect(entry.conversation_id).toBe("conv-target");
   });
 
-  it("recall_sessions omits conversation_id when query does not match any transcript", async () => {
+  it("recall_sessions omits conversation_id without trusted context", async () => {
     const deps = {
       recall: {
         search: async () => ({ query: "hono middleware routing", entity: null, kind: null, mode: "keyword", limit: 10, total: 0, results: [] }),
@@ -181,7 +182,7 @@ describe("MCP recall handlers log resolved conversation_id", () => {
     expect(entry.conversation_id).toBeUndefined();
   });
 
-  it("recall_facts logs conversation_id when query resolves to a transcript", async () => {
+  it("recall_facts logs conversation_id with tenant-bound trusted context", async () => {
     const query = "qdrant collection embedding dimension";
     const projDir = join(projectsDir, "proj-b");
     mkdirSync(projDir);
@@ -191,6 +192,7 @@ describe("MCP recall handlers log resolved conversation_id", () => {
     );
 
     const deps = {
+      requestContext: { tenantId: "team_local", conversationId: "conv-facts" },
       factRecall: {
         search: async () => ({ query, total: 1, results: [{ id: "fact_1" }] }),
       },
@@ -202,7 +204,7 @@ describe("MCP recall handlers log resolved conversation_id", () => {
     expect(entry.conversation_id).toBe("conv-facts");
   });
 
-  it("recall_facts omits conversation_id when query does not match any transcript", async () => {
+  it("recall_facts omits conversation_id without trusted context", async () => {
     const deps = {
       factRecall: {
         search: async () => ({ query: "duckdb schema table", total: 0, results: [] }),
@@ -222,6 +224,7 @@ describe("MCP recall handlers log resolved conversation_id", () => {
     writeFileSync(join(projDir, "conv-lm.jsonl"), `{"query":"${query}"}\n`);
 
     const deps = {
+      requestContext: { tenantId: "team_local", conversationId: "conv-lm" },
       factRecall: {
         search: async () => ({ query, total: 1, results: [{ id: "fact_2" }] }),
       },

@@ -9,13 +9,47 @@ decision-model request is added to the retrieval path.
 {"query":"Why did we choose SQLite?","intent":"decision","maxChars":8000}
 ```
 
-For exact values, pass normalized `subject` and `predicate`. A lookup with one
-matching fact skips session search and embeddings. Otherwise the fact lane uses
-hybrid retrieval and the session lane uses keyword retrieval by default. These
+For exact values, pass normalized `subject` and `predicate`. A lookup whose complete SQL probe finds exactly one
+distinct eligible value skips session search and embeddings. Exact fact filters use
+keyword retrieval. Broad lookup uses hybrid retrieval for facts and the session lane uses keyword retrieval by default. These
 preserve the existing measured lane policies; `mode` overrides both. `intent`
 accepts `auto`, `lookup`, `decision`, `state`, and `history`. History includes
 superseded sessions; other intents exclude them. An unavailable embedding lane
-is reported with `modeUnavailable`, rather than presented as full hybrid recall.
+is reported in `coverage`, with `modeUnavailable` also included when space allows.
+
+## Request budget and partial coverage
+
+`timeoutMs` defaults to 1500 milliseconds and accepts 100–5000. The core request
+budget includes scope resolution, the complete exact-value probe, independent
+fact/session lanes, and source hydration. Non-exact lanes run concurrently.
+Explicit hybrid-both requests share one lazy embedding only for identical query
+text, embedding kind, and client identity, within that request. Existing session
+and hook embedding caps compose with the remaining request budget.
+
+`coverage` reports `facts` and `sessions` as `complete`, `partial`, or
+`unavailable`, with machine-readable `reasons`. Complete means that lane finished
+its bounded retrieval contract; it does not assert corpus-wide recall. An exact
+unique probe can fulfill that contract without launching the session lane.
+`lookup.complete` separately reports exact-value probe completeness. Semantic
+failure or a deadline preserves lexical evidence already prepared by each lane;
+a late result cannot change the returned response.
+
+File-backed SQLite context semantic reads run in a pool capped at two read-only
+workers and eight queued reads, using the same exact eligibility/top-k SQL as the
+cooperative direct adapter. These workers run no migrations or writes. Abort
+settles the caller and requests worker termination; native SQLite may continue
+until it returns from C++, so its slot remains occupied until actual worker exit.
+Storage shutdown waits for all workers. Other main-thread SQLite reads and direct
+adapter callers remain cooperative: timers cannot preempt synchronous SQL. The
+1500 ms default is a service budget, not a demonstrated end-to-end SLO.
+
+MCP calls never scan ambient transcript directories for attribution. Logs use a
+trusted transport context only when its tenant matches the authenticated tenant;
+otherwise recall still records the query and returned IDs without a consumer
+conversation ID. Citations retain their explicit `conversation_id`, trusted
+context, and tenant-bound hook memo paths; an unattributable citation reports
+`logged:false`. There is no background transcript crawl. Existing transports that
+provide no trusted conversation context therefore lose heuristic attribution.
 
 ## Evidence contract
 
@@ -39,7 +73,10 @@ is reported with `modeUnavailable`, rather than presented as full hybrid recall.
 
 `maxChars` bounds serialized response characters (default 8000, range 2000 to
 20000), not model tokens. The budget reserves space for sources and tool
-metadata. Long queries are not echoed repeatedly. Facts share the budget with
+metadata. When new coverage metadata would displace a record, optional display
+fields may be removed whole to compensate for its measured serialized overhead;
+mandatory scope, lookup and per-record expansion selectors stay exact. Long queries
+are not echoed repeatedly. Facts share the budget with
 session context so a list of triples does not crowd out rationale.
 
 ## Targeted expansion

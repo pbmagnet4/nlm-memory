@@ -54,6 +54,7 @@ export interface SessionStore {
     queryVector: Float32Array,
     limit: number,
     opts?: SearchOptions,
+    execution?: { readonly signal?: AbortSignal },
   ): Promise<ReadonlyArray<SemanticNeighbor>>;
 
   keywordSearch(

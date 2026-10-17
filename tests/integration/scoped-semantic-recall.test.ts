@@ -36,6 +36,36 @@ runScopedSemanticRecallContract({
   },
 });
 
+runScopedSemanticRecallContract({
+  name: "SQLite read-only worker",
+  async setup() {
+    const dir = mkdtempSync(join(tmpdir(), "nlm-semantic-"));
+    const storage = SqliteStorage.create({ dbPath: join(dir, "corpus.sqlite"), migrationsDir: resolve("migrations") });
+    await storage.init();
+    const sessionRead = storage.sessions.semanticSearch.bind(storage.sessions);
+    const factRead = storage.facts.semanticSearch.bind(storage.facts);
+    storage.sessions.semanticSearch = (tenant, vector, limit, options) => sessionRead(tenant, vector, limit, options, { signal: new AbortController().signal });
+    storage.facts.semanticSearch = (tenant, vector, limit, options) => factRead(tenant, vector, limit, options, { signal: new AbortController().signal });
+    dirs.set(storage, dir);
+    return storage;
+  },
+  async teardown(storage) {
+    await storage.close();
+    rmSync(dirs.get(storage)!, { recursive: true, force: true });
+  },
+  async foreignTeam(storage) {
+    (storage as SqliteStorage).rawDb().prepare("INSERT INTO teams (id, name) VALUES (?, ?)").run("team_foreign", "Foreign");
+  },
+  async seedSession(storage, session, tenantId) {
+    (storage as SqliteStorage).sessions.insertSessionForTest(session, tenantId);
+  },
+  async seedChunk(storage, sessionId, chunkIndex, vector, mapped) {
+    const db = (storage as SqliteStorage).rawDb();
+    const row = db.prepare("INSERT INTO session_embedding_chunks (session_id, chunk_idx, embedding) VALUES (?, ?, ?)").run(sessionId, BigInt(chunkIndex), Buffer.from(vector.buffer));
+    if (mapped) db.prepare("INSERT INTO session_chunk_map (chunk_id, session_id, chunk_idx) VALUES (?, ?, ?)").run(Number(row.lastInsertRowid), sessionId, chunkIndex);
+  },
+});
+
 it.each(["session", "fact"] as const)("pins %s candidate distances and eligibility to one read snapshot", async (lane) => {
   const dir = mkdtempSync(join(tmpdir(), "nlm-semantic-snapshot-"));
   const dbPath = join(dir, "corpus.sqlite");
