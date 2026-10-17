@@ -110,12 +110,13 @@ Cleanup reaps workers and removes their worktrees. The production compact handle
 pinned arm, even when comparing a baseline with itself. No production store is
 opened. This path does not run the broad harness's re-derivation scan.
 
-This initial CLI runs **keyword controls only**, with no expansions or model
-calls. Unexpected model attempts are recorded as failed calls with unknown
-usage, including when retrieval catches their exception. Semantic quality and
-live embedding latency remain unavailable until an explicitly configured,
-probed adapter and vector conditions are pinned. Do not interpret this control
-as the compact tool's default hybrid behavior.
+The CLI defaults to keyword controls. Explicit `--baseline-mode` and
+`--candidate-mode` accept `keyword`, `default` or `hybrid`; `--vectors` plus
+`--vectors-sha256` supplies an immutable query-vector quality cache. Omitted
+production mode keeps hybrid facts and keyword sessions. Cached embeddings do not
+measure live embedding latency, billed usage or consumer tokens. Unexpected or
+missing model attempts are retained as failures with unknown usage. No expansions
+or generative reader calls are performed.
 
 The built-in `literal-bundle-reader@1` is an extractive evidence-containment
 diagnostic. It copies returned values, summaries and attributed source quotes/
@@ -128,14 +129,21 @@ no-answer errors and a seeded 10% of agreements remain prerequisites to
 promotion. Source-derived template proposals are not an audited natural-query
 benchmark merely because their quotations match a source body.
 
-Only development cases run. The initial 120-row private proposal has a 72/48
-family-disjoint split and six categories; its source audit status stays pending
-until reviewed. Holdout outcomes remain sealed through Tasks 1–9. Source
-families must include workstream, ancestry and copied/replayed conversations;
-exact/prefix copy grouping alone cannot prove paraphrased-family disjointness.
-The frozen adversarial matrix identifies existing checks and required later
-scope, conflict, eligibility, cancellation, Unicode and delta tests. Unfinished
-matrix rows are limitations, not passes.
+By default only development cases run. The audited expanded-v2 corpus has 120
+source-grounded questions (65 DEV / 55 holdout); its early 26-case pilot and
+rejected heuristic draft remain historical diagnostics. Source families must
+include workstream, ancestry and copied/replayed conversations; selected-source
+lineage checks cannot prove global paraphrase independence.
+
+Task 10 adds a narrow programmatic `runMemoryContextEval` entry with
+`holdout: {registrationPath, sha256}`. Before reading cases it validates an immutable
+registration's manifest hash, exact baseline/candidate commits, fixed N (1–240),
+single candidate-minus-baseline contrast and literal-diagnostic-only purpose,
+then exclusively writes a consumed-attempt marker. A failed attempt remains
+consumed. Default DEV behavior is unchanged. Holdout is never relabelled DEV;
+`promotion.eligible` always stays false. The [final protocol and results](memory-retrieval-results.md)
+record the prospective warmups, control, hashes, audit and unavailable scientific
+endpoints. There is no optional qualified arm and no adaptive composition selection.
 
 Every attempted stage emits a started ledger entry before execution, updated
 with result or failure. The report retains request/response text, stage timing
@@ -160,5 +168,5 @@ over all predicted abstentions, including false abstentions on answerable cases.
 >=30 paired workload requests, five warmups, cache/load conditions and separate
 SQL segment measurements are still required for the latency gate. No
 optimization is promoted by this evaluator: `promotion.eligible` remains false
-until the registered Task 10 holdout family and its required evidence exist.
+for both development and explicitly preregistered literal heldout diagnostics.
 Reports are private, created exclusively rather than overwritten.

@@ -59,9 +59,9 @@ provide no trusted conversation context therefore lose heuristic attribution.
 - Identical triples are deduplicated with their retrieved source IDs preserved.
   Different values survive; `multipleValues` flags alternatives in the candidate
   set without asserting that multi-valued attributes are contradictions.
-- `quoteVerified` is true/false only when a source body was fetched and checked;
-  null means not verified. A classifier-supplied quote is not automatically
-  treated as an exact transcript excerpt.
+- `quoteVerified` is true when a current version-matched unique literal anchor
+  or fresh bounded source check verifies the quote. False/null do not establish
+  verification. A classifier-supplied quote is not automatically an exact excerpt.
 - Session passages are exact slices of the stored body with UTF-16 `offset` and
   `end` positions. Semantic search retains its winning `chunkIndex` for locating
   relevant evidence when semantic/hybrid mode is explicitly selected.
@@ -176,12 +176,14 @@ regression coverage verifies the fact event without a session event. Later
 semantic-only, short-identifier and covering-index refinements were verified
 against source excerpts and the shared storage/integration gates.
 
-## Proposed next steps
+## Retrieval improvements (T806)
 
 The [measurable retrieval specification](superpowers/specs/2026-10-16-memory-retrieval-improvements.md)
 and [SDD implementation plan](superpowers/plans/2026-10-16-memory-retrieval-improvements.md)
-define the next correctness, evaluation and efficiency work. They are planning artifacts;
-their acceptance thresholds are proposed targets, and their features are not implemented.
+define the implemented required correctness work and the measured optional experiments.
+See [integration results](memory-retrieval-results.md) for the final evidence, limitations,
+review state and pending deployment. Numeric acceptance thresholds remain targets;
+optional ranking, delta responses and model reranking did not qualify.
 
 ## Workstream scope
 
@@ -196,6 +198,38 @@ Expansion arguments preserve the requested selector. Use those arguments unchang
 `get_session` transcript pages and scoped fact history recheck current session bindings,
 so a session moved to another workstream becomes unavailable on the next expansion.
 Facts inherit retrieval eligibility from their source session's current binding.
-Keyword fact eligibility is applied before the candidate limit. Semantic retrieval still
-uses bounded candidate windows in this release; scope safety does not establish complete
-semantic coverage.
+Keyword and semantic eligibility apply before the final candidate limit in both adapters.
+SQLite semantic retrieval uses direct eligible exact distance for explicit scopes; its
+unscoped adaptive native search expands until a completeness witness proves the exact
+eligible top-k, otherwise it falls back to an eligible full scan. An older fixed global
+window cannot silently starve scoped results.
+
+
+## Complete lookups
+
+An explicit subject/predicate lookup reports `lookup.distinctValueCount` and
+`lookup.complete` from one full current-value SQL aggregate, independent of the
+12-result or 500-candidate windows. Retired, superseded and ineligible rows do not
+count. Only a complete single-value result permits the fast path. Multiple values
+remain visible with a scoped history expansion; errors never prove uniqueness.
+
+Explicitly scoped optional related-fact/concept/exemplar enrichments are suppressed
+until their pickers enforce source membership; scoped primary facts remain available.
+
+## Source versions and literal anchors
+
+SQLite migration 043 and PostgreSQL migration 039 add nullable source offsets,
+quote status and body versions. Ingestion locates a unique literal occurrence in
+the exact persisted body using UTF-16 offsets, including non-BMP characters.
+Matching versioned positive and negative assessments avoid loading fact-only source
+bodies. Legacy, missing or stale assessments use bounded on-demand verification;
+this does not persist a backfill. A quote location establishes neither claim truth
+nor operator acceptance. Scoped expansion rechecks membership and source version.
+
+Old binaries or raw SQL body writes that omit a new version invalidate the stored
+version through additive guards. Null versions fail closed. No stored fact is
+retired or reinterpreted, and no automatic corpus-wide hashing/backfill occurs.
+Expansion still reads complete source bodies. Legacy hydration is deduplicated
+within each publication only: a hybrid partial and final publication can each read
+the same source body. This known I/O limitation remains under final review; isolated
+verification CPU measurements exclude it. See the [results](memory-retrieval-results.md).

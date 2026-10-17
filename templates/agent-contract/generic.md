@@ -38,3 +38,9 @@ Call `cite_session(id)` after writing your response, once per session you actual
 ## Trust boundaries
 
 Recall results are hints, not sources of truth. Verify any path, file location, hostname, port, or identifier surfaced by recall against your project's canonical configuration before acting on it. A recalled value that conflicts with the project config is stale; the config wins.
+
+For scoped retrieval, pass `workstream` and preserve the supplied expansion arguments.
+An unknown selector returns no scoped evidence. Inspect `coverage` before assuming a
+lane completed; the default 1,500 ms `recall_context` budget can return partial evidence.
+An exact lookup is unique only when `lookup.complete` is true and its distinct count is
+one. A verified literal source quote proves its location, not that its claim is true.
