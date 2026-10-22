@@ -6,9 +6,9 @@
 
 **Results:** Typecheck/build and full npm suite pass (3,289 pass, three opt-in tests skipped). JSON/TOON, whole-window traversal, long escaped text, supersedence, cursor binding/change detection, scope-preserving expansions, degradation and actual-returned-ID telemetry are covered. Ten keyword queries against a migrated disposable live-corpus snapshot kept the same top-five IDs; median JSON size fell from 9,253 to about 3,800 characters. Two old responses exceeded 25,000; all new responses fit 8,000. This checks size/order, not independent answer quality or actual tokens. Local code/security review found no remaining issue after correcting the initial wider-window ranking change. No `.agent-quality.yml` is configured; npm CI checks ran directly.
 
-**State:** Source implementation only. The installed 0.21.17 daemon still has the older all-or-nothing guard and schema; it was not changed or migrated. Automatic approval review blocked sending source to Muse for independent review; that review is pending explicit authorization. No external model received the diff, no public release was made, and no live corpus was written.
+**State:** Source implementation only. The installed 0.21.17 daemon still has the older all-or-nothing guard and schema; it was not changed or migrated. After Edward approved sending the landed diff, independent Muse Spark 1.3 xhigh code/security review returned zero findings. Review evidence is recorded with T937. No public release was made and no live corpus was written.
 
-**Next:** Complete independent review, then include this with the existing T803/T806 retrieval release, consistent backup/migration and live canaries. API and measured limits: `docs/context-retrieval.md`.
+**Next:** Include this with the existing T803/T806 retrieval release, consistent backup/migration and live canaries. API and measured limits: `docs/context-retrieval.md`.
 
 ## 2026-10-16 - Required retrieval integrity and measured optional no-go (T806)
 
