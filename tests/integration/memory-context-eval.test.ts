@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -133,7 +133,7 @@ describe("memory context evaluator", () => {
     const parent = join(homedir(), ".nxtos", "worktrees");
     const revision = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     const report = await runMemoryContextEval({ manifestPath: f.manifestPath, baseline: revision, candidate: revision, outputPath: join(f.dir, "report.json") }, { tokenizer: null, reader: extractiveReader, now: () => performance.now(), openArm: async (commit, manifest) => {
-      const beforeOpen = new Set(readdirSync(parent));
+      const beforeOpen = new Set(existsSync(parent) ? readdirSync(parent) : []);
       const arm = await openPinnedArm(resolve("."), commit, manifest);
       const created = readdirSync(parent).filter((name) => name.startsWith("nlm-context-eval-") && !beforeOpen.has(name));
       const run = arm.run.bind(arm);
