@@ -1,5 +1,15 @@
 # nlm-memory CHANGELOG
 
+## 2026-10-21 - Compact, budgeted MCP session discovery (T937)
+
+**Changes:** `recall_sessions` now returns five compact hits within 8,000 formatted characters by default. Query-selected decisions/open questions, explicit omission counts, source expansion selectors, and scoped continuation cursors replace verbose unbounded hits. The existing ten-candidate retrieval window remains the default; widening it is explicit because it can change ranking. Paging detects changed candidate order and telemetry records only displayed IDs. Reused existing compact `get_session` and lossless transcript paging; no storage, provider, ranking algorithm or fact-recall changes.
+
+**Results:** Typecheck/build and full npm suite pass (3,289 pass, three opt-in tests skipped). JSON/TOON, whole-window traversal, long escaped text, supersedence, cursor binding/change detection, scope-preserving expansions, degradation and actual-returned-ID telemetry are covered. Ten keyword queries against a migrated disposable live-corpus snapshot kept the same top-five IDs; median JSON size fell from 9,253 to about 3,800 characters. Two old responses exceeded 25,000; all new responses fit 8,000. This checks size/order, not independent answer quality or actual tokens. Local code/security review found no remaining issue after correcting the initial wider-window ranking change. No `.agent-quality.yml` is configured; npm CI checks ran directly.
+
+**State:** Source implementation only. The installed 0.21.17 daemon still has the older all-or-nothing guard and schema; it was not changed or migrated. Automatic approval review blocked sending source to Muse for independent review; that review is pending explicit authorization. No external model received the diff, no public release was made, and no live corpus was written.
+
+**Next:** Complete independent review, then include this with the existing T803/T806 retrieval release, consistent backup/migration and live canaries. API and measured limits: `docs/context-retrieval.md`.
+
 ## 2026-10-16 - Required retrieval integrity and measured optional no-go (T806)
 
 **Changes:** Tenant/workstream fencing, eligible exact semantic top-k, complete current-value probes, shared request budgets/embedding promises, bounded SQLite read workers, trusted attribution, and nullable literal UTF-16 source anchors with old-writer guards. Optional ranking, deltas and decision-model reranking remain off. Added frozen one-shot diagnostic entry and durable results/rulings.
@@ -92,10 +102,4 @@ Session-level log per session protocol. Cap: 10 entries — archive older to `CH
 
 **State:** Corroboration boost (`NLM_FACT_CORROBORATION_BOOST_CAP`, default 2.0) costs fact recall heavily for both models: nomic hybrid paraphrase R@1 27% boosted vs 81% at cap 1. The eval targets one specific fact, so it may undervalue corroborated facts; validating against real recall citations is a follow-up task before retuning.
 
-## 2026-10-09 - `nlm transcript current` in source (T525)
-
-**Changes:** session-close's scanner normalizes the live transcript through `nlm transcript current`, but that command only ever existed in a private 0.21.5 tarball installed at `~/.local/share/nlm-session-close`; it was never committed. Any shell that missed that build fell back to the deployed `nlm` and died with `unknown command 'transcript'`. Ported it into source: `src/core/transcript/current-session.ts` (runtime aliases, session-ID env detection, exact-ID-else-newest-in-project resolution) plus the CLI subcommand, which builds adapters from the registered sources. Now covers Muse too. Same JSON envelope (`schemaVersion: 1`, adapter, selection, session). 10 new unit tests; live check resolved this Claude Code session by exact ID (296 turns), plus Muse and Codex newest-in-project.
-
-**Decisions:** reads `CLAUDE_CODE_SESSION_ID` (what Claude Code actually exports) as well as `CLAUDE_SESSION_ID`; the old build only knew the latter, so `--runtime auto` never pinned Claude Code sessions. A session with no projectDir no longer matches an arbitrary cwd (refuse over guess, the scanner's own rule). No per-runtime default-adapter fallback: `seedDefaults` registers every runtime.
-
-**State:** landed on main, not yet released. Once a release with it is installed, session-close's scan.py can drop the dedicated-build lookup and `~/.local/share/nlm-session-close` can go.
+_Older entries archived in CHANGELOG-2026.md_

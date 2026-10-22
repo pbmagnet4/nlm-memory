@@ -93,3 +93,11 @@ _Older entries archived in CHANGELOG-2026.md_
 **Decisions:** 0.21.12 over moving the v0.21.11 tag (public repo, tags immutable). Parse-from-first-`[` over --ignore-scripts (npm 10 runs prepare on pack anyway, verified locally; parsing is version-proof). No daemon reinstall for .12: the delta from the live 0.21.11 install is release-script only.
 
 **State:** Daemon live on 0.21.11. npm latest still 0.21.0 until the v0.21.12 tag CI publishes. fix/dataset-sqlite-variable-limit (Edward's staged classifier work) untouched throughout. Release tooling note: the nxtgit session from the 0.21.11 cut was ended, and an ended record still pins the harness session (peek ignores status), so checkout/commit/push all refuse with no new identity obtainable mid-conversation; the .12 line was assembled in a scratch worktree instead.
+
+## 2026-10-09 - `nlm transcript current` in source (T525)
+
+**Changes:** session-close's scanner normalizes the live transcript through `nlm transcript current`, but that command only ever existed in a private 0.21.5 tarball installed at `~/.local/share/nlm-session-close`; it was never committed. Any shell that missed that build fell back to the deployed `nlm` and died with `unknown command 'transcript'`. Ported it into source: `src/core/transcript/current-session.ts` (runtime aliases, session-ID env detection, exact-ID-else-newest-in-project resolution) plus the CLI subcommand, which builds adapters from the registered sources. Now covers Muse too. Same JSON envelope (`schemaVersion: 1`, adapter, selection, session). 10 new unit tests; live check resolved this Claude Code session by exact ID (296 turns), plus Muse and Codex newest-in-project.
+
+**Decisions:** reads `CLAUDE_CODE_SESSION_ID` (what Claude Code actually exports) as well as `CLAUDE_SESSION_ID`; the old build only knew the latter, so `--runtime auto` never pinned Claude Code sessions. A session with no projectDir no longer matches an arbitrary cwd (refuse over guess, the scanner's own rule). No per-runtime default-adapter fallback: `seedDefaults` registers every runtime.
+
+**State:** landed on main, not yet released. Once a release with it is installed, session-close's scan.py can drop the dedicated-build lookup and `~/.local/share/nlm-session-close` can go.

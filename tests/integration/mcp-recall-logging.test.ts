@@ -15,6 +15,8 @@ import {
   type McpDeps,
 } from "../../src/mcp/server.js";
 
+const sessionHit = (id: string) => ({ id, label: "Session", summary: "Summary", entities: [], decisions: [], open: [], status: "closed", startedAt: "2026-10-21", supersededBy: null });
+
 // logQuery is fire-and-forget (void) in the handler; poll for the line.
 async function waitForLine(path: string): Promise<string> {
   for (let i = 0; i < 60; i++) {
@@ -52,7 +54,7 @@ describe("MCP recall handlers write telemetry", () => {
           mode: "keyword",
           limit: 10,
           total: 2,
-          results: [{ id: "s1" }, { id: "s2" }],
+          results: [sessionHit("s1"), sessionHit("s2")],
         }),
       },
     } as unknown as McpDeps;
@@ -68,6 +70,16 @@ describe("MCP recall handlers write telemetry", () => {
     expect(entry.runtime).toBeNull();
   });
 
+  it("logs only the IDs actually displayed in the response page", async () => {
+    const deps = { recall: { search: async () => ({ query: "SQLite", entity: null,
+      kind: null, mode: "keyword", limit: 10, total: 2,
+      results: [sessionHit("shown"), sessionHit("next-page")] }) } } as unknown as McpDeps;
+    const response = await recallSessionsHandler(deps, "team_local", { query: "SQLite", rewrite: false, limit: 1 });
+    expect(response.isError).toBeUndefined();
+    const entry = JSON.parse(await waitForLine(process.env["NLM_QUERY_LOG"] as string));
+    expect(entry.returned_ids).toEqual(["shown"]);
+  });
+
   it("recall_sessions records the caller runtime when attributed", async () => {
     const deps = {
       recall: {
@@ -78,7 +90,7 @@ describe("MCP recall handlers write telemetry", () => {
           mode: "keyword",
           limit: 10,
           total: 1,
-          results: [{ id: "s1" }],
+          results: [sessionHit("s1")],
         }),
       },
     } as unknown as McpDeps;
@@ -159,7 +171,7 @@ describe("MCP recall handlers log resolved conversation_id", () => {
     const deps = {
       requestContext: { tenantId: "team_local", conversationId: "conv-target" },
       recall: {
-        search: async () => ({ query, entity: null, kind: null, mode: "keyword", limit: 10, total: 1, results: [{ id: "s1" }] }),
+        search: async () => ({ query, entity: null, kind: null, mode: "keyword", limit: 10, total: 1, results: [sessionHit("s1")] }),
       },
     } as unknown as McpDeps;
 

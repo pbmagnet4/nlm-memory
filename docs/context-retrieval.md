@@ -100,6 +100,52 @@ The shared response guard also preserves partial records for oversized legacy
 search/history responses instead of replacing the entire payload with a notice.
 It labels shortened output explicitly. Use targeted expansion for complete text.
 
+## Session search pages
+
+`recall_sessions` is the discovery tool when you want a list of sessions rather
+than a combined answer bundle. Its defaults are five hits per response (`limit`),
+an 8,000-character serialized budget (`maxChars`, range 2,000–20,000), and the
+existing ten-candidate retrieval window (`candidateLimit`, range 1–100). Budgets
+are characters, not measured model tokens. Candidate selection/ranking is
+unchanged at the default window. Raising `candidateLimit` explicitly widens the
+retrieval pool and can change ranking; it is not just a presentation setting.
+
+Each hit retains its ID, title, date, status and successor pointer, with a summary
+of up to 400 characters, two relevant decisions and one relevant open question.
+Entities are omitted. `omitted` reports omitted array items and shortened text;
+shortened excerpts carry a visible marker. These excerpts are discovery aids,
+not complete source evidence. Follow `expand` with `get_session`; queries longer
+than 300 characters are not repeated per hit, so add the original `query` yourself
+when you need matching passages. Existing context/transcript views provide the
+remaining evidence without adding another transcript pagination mechanism.
+
+Whole hits are fitted to the formatted JSON or TOON budget. An oversized first
+hit falls back to a smaller summary and expansion pointer. Exceptional metadata
+that cannot fit even that form returns an explicit budget error. No successful
+search response is replaced by a bare truncation notice.
+
+When `has_more` is true, repeat the same search with `cursor=nextCursor`. Preserve
+query, entity, kind, mode, rewrite, workstream and candidateLimit; page `limit`
+and `maxChars` may change. Cursors bind to tenant, search selectors and ordered
+candidate IDs. A changed ranking requires restarting without a cursor rather
+than silently skipping or duplicating hits. They are consistency checks, not
+credentials: retrieval still runs under the authenticated tenant on every call.
+
+`availableResults` counts the retrieved window, `omittedResults` counts remaining
+hits after this page, and `outsideWindow` counts candidates known to the service
+but outside that window. `total` reflects the service's bounded candidate search,
+not an exhaustive corpus count. A final page can have `outsideWindow > 0`; widen
+`candidateLimit` or narrow the query for those candidates. Telemetry records only
+the IDs actually sent in the page.
+
+T937 size check (2026-10-21): ten keyword queries on a private, migrated snapshot
+of the operator corpus, with rewrite disabled in both arms. Median raw JSON
+response size fell from 9,253 characters for the former ten-hit response to about
+3,800 for the compact five-hit response. Two former responses exceeded 25,000
+characters; every new response fit 8,000. All ten queries retained the same top
+five IDs. This is a response-size/ranking check, not an answer-quality, model-token
+or latency benchmark. The live database and installed daemon were unchanged.
+
 ## Fact candidate coverage
 
 SQLite migration 042 adds a maintained FTS5 index on fact subject/predicate/value.
