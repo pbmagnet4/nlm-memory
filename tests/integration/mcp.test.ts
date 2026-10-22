@@ -114,13 +114,13 @@ describe("MCP adapter", () => {
     expect(body.results[0]?.id).toBe("sess_b");
   });
 
-  it("recall_sessions defaults to keyword mode + 10-item limit", async () => {
+  it("recall_sessions defaults to keyword mode + 5-item limit", async () => {
     const result = await recallSessionsHandler(
       { recall, store },
       "team_local", { query: "hono" });
     const body = parsePayload(result) as { mode: string; limit: number };
     expect(body.mode).toBe("keyword");
-    expect(body.limit).toBe(10);
+    expect(body.limit).toBe(5);
   });
 
   it("recall_sessions threads entity + kind filters into RecallService", async () => {

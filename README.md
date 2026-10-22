@@ -269,7 +269,7 @@ Off by default — enable with `NLM_CODE_EXEMPLARS_ENABLED=1`. Capture rides the
 
 | Tool | What it does |
 |---|---|
-| `recall_sessions` | Hybrid keyword+semantic search across the full session corpus. Returns label, started_at, snippet, match score, `status`, and `superseded_by`. Superseded sessions are included (down-ranked, badged) so a decision investigation sees overturned reasoning; prefer the `superseded_by` successor for current state. |
+| `recall_sessions` | Compact session discovery: five hits and 8,000 characters per page by default. Relevant decisions/open questions, status, successor IDs, omission counts and source expansion pointers. Follow `nextCursor` for remaining candidates. The default ten-candidate search window preserves existing ranking; `candidateLimit` widens it explicitly. [Paging contract](docs/context-retrieval.md#session-search-pages). |
 | `recall_context` | Preferred compact retrieval: tenant/workstream-scoped facts and source passages, complete exact-value conflict probes, and explicit partial/deadline coverage. See [context retrieval](docs/context-retrieval.md) and [measured limitations](docs/memory-retrieval-results.md). |
 | `get_session` | Compact context by default; add `query` for matching passages. Explicit `view="transcript"` returns bounded original-text pages with continuation arguments. Includes supersedence and outcome context. |
 | `recall_facts` | Search structured facts: decisions, open questions, project state. Filterable by entity and kind. |

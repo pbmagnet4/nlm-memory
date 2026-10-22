@@ -60,6 +60,7 @@ import type Database from "better-sqlite3";
 
 import { buildContextBundle } from "@core/context/context-bundle.js";
 import { boundedFormat } from "./response-budget.js";
+import { sessionRecallInput, readRecallCursor, sessionRecallPage } from "./session-recall-page.js";
 import { matchedPassages, relevantStrings, transcriptPage } from "@core/context/session-evidence.js";
 
 function trustedConversationId(deps: McpDeps, tenantId: string): string | undefined {
@@ -160,15 +161,7 @@ function err(error: unknown): ToolResult {
 // Pure handler functions — exported so tests can exercise them without an
 // MCP transport. The McpServer wrapper below just registers these.
 
-export interface RecallToolInput {
-  query: string | undefined;
-  entity: string | undefined;
-  kind: RecallKindFilter | undefined;
-  mode: RecallMode | undefined;
-  limit: number | undefined;
-  rewrite: boolean | undefined;
-  workstream: string | undefined;
-}
+export type RecallToolInput = z.input<typeof sessionRecallInput>;
 
 function mcpRewriteDefault(): boolean {
   // MCP callers default to rewrite=true since they're already in explicit
@@ -200,21 +193,25 @@ export async function recallSessionsHandler(
   runtime: string | null = null,
 ): Promise<ToolResult> {
   try {
-    const rewrite = input.rewrite ?? mcpRewriteDefault();
+    const args = sessionRecallInput.parse(input);
+    args.rewrite ??= mcpRewriteDefault();
+    const cursor = readRecallCursor(args, tenantId);
+    const rewrite = args.rewrite;
     const query: RecallQuery = {
-      query: input.query ?? "",
-      mode: input.mode ?? "keyword",
-      limit: input.limit ?? DEFAULT_LIMIT,
+      query: args.query,
+      mode: args.mode,
+      limit: args.candidateLimit,
       rewrite,
       // Investigative surface: include superseded sessions, down-ranked and
       // badged with their successor in `supersededBy`, so an agent chasing a
       // decision sees the overturned reasoning rather than a silent gap. Task #303.
       includeSuperseded: true,
-      ...(input.entity !== undefined ? { entity: input.entity } : {}),
-      ...(input.kind !== undefined ? { kind: input.kind } : {}),
-      ...(input.workstream !== undefined ? { workstream: input.workstream } : {}),
+      ...(args.entity !== undefined ? { entity: args.entity } : {}),
+      ...(args.kind !== undefined ? { kind: args.kind } : {}),
+      ...(args.workstream !== undefined ? { workstream: args.workstream } : {}),
     };
     const result = await deps.recall.search(tenantId, query);
+    const page = sessionRecallPage(result, args, cursor, format);
     const conversationId = trustedConversationId(deps, tenantId);
     // Telemetry — the MCP path is the real agent-usage path; without this it
     // is invisible to query_log.jsonl and the Recall page. Fire-and-forget,
@@ -222,17 +219,17 @@ export async function recallSessionsHandler(
     void logQuery(tenantId, {
       source: "mcp",
       runtime,
-      query: input.query ?? null,
-      entity: input.entity ?? null,
-      kind: input.kind ?? null,
-      mode: input.mode ?? "keyword",
-      limit: input.limit ?? DEFAULT_LIMIT,
+      query: args.query ?? null,
+      entity: args.entity ?? null,
+      kind: args.kind ?? null,
+      mode: args.mode ?? "keyword",
+      limit: args.limit,
       nResults: result.total,
-      returnedIds: result.results.map((r) => r.id),
-      ...(input.workstream !== undefined ? { workstream: input.workstream } : {}),
+      returnedIds: page.returnedIds,
+      ...(args.workstream !== undefined ? { workstream: args.workstream } : {}),
       ...(conversationId !== undefined ? { conversationId } : {}),
     });
-    return ok(result);
+    return { content: [{ type: "text", text: page.text }] };
   } catch (e) {
     return err(e);
   }
@@ -694,9 +691,16 @@ Not calling when the user references past work is the failure mode this tool exi
 to prevent: re-derivation of already-solved problems, contradicting prior decisions,
 re-litigating resolved open questions, ignoring the user's accumulated context.
 
-Returns ranked session digests (id, label, summary, entities, decisions, open
-questions, status, superseded_by). Call get_session with query for source evidence when a
-digest looks relevant.
+Returns compact ranked session digests: ID, title, date, short summary, relevant
+decisions/open questions, status and supersededBy. Omitted fields and shortened text
+are marked. Pass a hit's expand arguments to get_session for source evidence.
+Responses fit maxChars (default 8000 characters, not tokens). When has_more is true,
+repeat the same search arguments with cursor=nextCursor. Keep query, filters, mode
+and rewrite/candidateLimit unchanged; limit and maxChars may change. Cursors detect ranking changes
+and require a restart rather than silently skipping results. candidateLimit defaults
+to 10, preserving the existing retrieval window; raise it explicitly (up to 100)
+for a wider search. It can change ranking, not just page count. total, availableResults
+and outsideWindow describe candidate coverage, not an exhaustive corpus match count. Prefer recall_context for answers combining facts and sources.
 
 Superseded sessions ARE included here, down-ranked below active matches and
 flagged with status="superseded" and a superseded_by pointer to the session
@@ -718,7 +722,10 @@ Args:
           kind. Omit for any. Optional.
   - mode: Defaults to keyword (FTS5 BM25); hybrid and semantic are available.
           Optional.
-  - limit: max results (1-100, default 10).`;
+  - limit: max results per page (1-100, default 5).
+  - candidateLimit: retrieved candidate window (1-100, default 10).
+  - maxChars: response character budget (2000-20000, default 8000).
+  - cursor: nextCursor from a prior page of this same search.`;
 
 const GET_SESSION_DESCRIPTION = `Read a session's compact structured context: summary, decisions, open questions,
 current facts, supersedence and outcome. Pass query to include matching original
@@ -1269,41 +1276,7 @@ export function createMcpServer(deps: McpDeps, tenantId: string): McpServer {
     {
       title: "Recall Sessions from NLM",
       description: RECALL_DESCRIPTION,
-      inputSchema: {
-        query: z
-          .string()
-          .default("")
-          .describe("Keyword(s) to search. Optional if entity or kind is set."),
-        entity: z
-          .string()
-          .optional()
-          .describe("Filter to sessions tagged with this entity name."),
-        kind: z
-          .enum(["decision", "open"])
-          .optional()
-          .describe("Filter to sessions with a decision or open marker."),
-        mode: z
-          .enum(["keyword", "semantic", "hybrid"])
-          .optional()
-          .describe("Search mode. Defaults to keyword (FTS5 BM25); hybrid and semantic are available."),
-        limit: z
-          .number()
-          .int()
-          .min(1)
-          .max(100)
-          .default(DEFAULT_LIMIT)
-          .describe("Max results to return."),
-        rewrite: z
-          .boolean()
-          .optional()
-          .describe(
-            "If true, run a small LLM rewrite on the query before search — extracts entities and strips conversational filler. Set true for vague natural-language queries ('that pgvector thing'); set false for exact-token queries. Defaults to true server-side for MCP callers; the hot-path HTTP hook caller forces it off regardless.",
-          ),
-        workstream: z
-          .string()
-          .optional()
-          .describe("Filter to sessions bound to this workstream (id or label; merge chains resolve)."),
-      },
+      inputSchema: sessionRecallInput.shape,
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
