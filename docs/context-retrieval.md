@@ -100,6 +100,10 @@ The shared response guard also preserves partial records for oversized legacy
 search/history responses instead of replacing the entire payload with a notice.
 It labels shortened output explicitly. Use targeted expansion for complete text.
 
+TOON output is checked for decodability before it is returned. Some bracketed
+transcript strings trigger an encoder/decoder incompatibility; those responses
+fall back to JSON, with the same serialized character budget and exact source text.
+
 ## Session search pages
 
 `recall_sessions` is the discovery tool when you want a list of sessions rather

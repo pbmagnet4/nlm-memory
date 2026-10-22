@@ -1,3 +1,4 @@
+import { decode as toonDecode } from "@toon-format/toon";
 import { locateSourceAnchor } from "../../src/core/facts/source-anchor.js";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -313,6 +314,28 @@ describe("bounded structured memory context", () => {
       offset = p.next.offset;
     }
     expect(recovered).toBe(body);
+  });
+
+  it("falls back to JSON for bracketed transcript text TOON cannot decode", async () => {
+    vi.stubEnv("NLM_FORMAT", "toon");
+    const original = "[user] Review a change: run git diff a b. 😀\n".repeat(200);
+    storage.sessions.insertSessionForTest(makeSession({ id: "bracketed", body: original }));
+    let next: Parameters<typeof getSessionHandler>[2] | null = { id: "bracketed", view: "transcript", maxChars: 2_000 };
+    let recovered = "";
+    let jsonFallbacks = 0;
+    while (next) {
+      const response = await getSessionHandler(deps, tenant, next);
+      expect(response.isError).toBeUndefined();
+      const text = response.content[0]!.text;
+      expect(text.length).toBeLessThanOrEqual(2_000);
+      let page;
+      if (text.startsWith("{")) { page = JSON.parse(text); jsonFallbacks++; }
+      else page = toonDecode(text) as { body: string; next: typeof next };
+      recovered += page.body;
+      next = page.next;
+    }
+    expect(jsonFallbacks).toBeGreaterThan(0);
+    expect(recovered).toBe(original);
   });
 
   it("fits escaped Unicode transcript pages and rejects a changed source version", async () => {

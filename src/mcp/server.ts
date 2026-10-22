@@ -15,7 +15,7 @@ import { resolveRecallScope, type ResolvedRecallScope } from "@core/recall/resol
 
 import { createHash } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { encode as toonEncode } from "@toon-format/toon";
+import { encode as toonEncode, decode as toonDecode } from "@toon-format/toon";
 import { z } from "zod";
 import { logQuery } from "@core/recall/query-log.js";
 import { logFactQuery } from "@core/recall-facts/fact-query-log.js";
@@ -130,7 +130,10 @@ export interface ToolResult {
 function format(data: unknown): string {
   if (useToon()) {
     try {
-      return toonEncode(data);
+      const text = toonEncode(data);
+      // Some bracketed transcript strings encode successfully but cannot be decoded.
+      toonDecode(text);
+      return text;
     } catch {
       return JSON.stringify(data);
     }
