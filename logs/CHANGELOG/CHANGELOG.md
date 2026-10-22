@@ -1,5 +1,15 @@
 # nlm-memory CHANGELOG
 
+## 2026-10-21 - Retrieval release published and active as 0.21.20 (T939)
+
+**Changes:** Published the reviewed T803/T806 retrieval work and T937 compact recall through GitHub/npm, then installed the SHA-512-verified 0.21.20 artifact in the managed runtime and restarted the daemon. Fixed a clean-runner test assumption caught by CI (0.21.18 stopped before npm; 0.21.19 passed). A live transcript canary then reproduced a TOON encoder/decoder mismatch for bracketed chat markers; 0.21.20 validates decodability and falls back to JSON under the same response budget. Added full Unicode page-reconstruction coverage. Generated bundle diffs were version-only.
+
+**Results:** Local build/typecheck/packed-plugin contract and 3,290 tests pass (three opt-in skips); final GitHub Release and PostgreSQL-backed CI both pass. Independent public-source reviews found no blocker; low CI-test leads were checked and rejected, formatter review informational only. All 37 live MCP assertions pass, and this conversation's existing connector returns compact hits/cursors. Schema is 43; corpus counts increased normally through activation. Full evidence and measurement limits: `docs/memory-retrieval-results.md`.
+
+**State:** npm latest and the active daemon are 0.21.20. Consistent pre-migration SQLite/config backup verified; original 0.21.17 and compatible 0.21.19 installations preserved for rollback. Provider configuration unchanged. Scientific promotion remains inconclusive as recorded in T806; no optional ranking/model feature was enabled.
+
+**Next:** Routine operation. Existing T810 hydration advisory and T527/T679 remain separate follow-ups.
+
 ## 2026-10-21 - Compact, budgeted MCP session discovery (T937)
 
 **Changes:** `recall_sessions` now returns five compact hits within 8,000 formatted characters by default. Query-selected decisions/open questions, explicit omission counts, source expansion selectors, and scoped continuation cursors replace verbose unbounded hits. The existing ten-candidate retrieval window remains the default; widening it is explicit because it can change ranking. Paging detects changed candidate order and telemetry records only displayed IDs. Reused existing compact `get_session` and lossless transcript paging; no storage, provider, ranking algorithm or fact-recall changes.
@@ -91,15 +101,5 @@ Session-level log per session protocol. Cap: 10 entries — archive older to `CH
 **State:** Landed on main. Nothing in the daemon calls Clef yet and the shadow logger is not scheduled.
 
 **Next:** a flag-gated, fail-open ingest gate (T615). The judge and session-close experiments in the plan were not run.
-
-## 2026-10-09 - EmbeddingGemma-2 A/B: stay on nomic + CodeRank; corroboration boost flagged (T504)
-
-**Changes:** Evals made embedder-agnostic so any model can be A/B'd in one command. LongMemEval harness embeds through `buildEmbedder` (the daemon's lane) with one cache file per embed model and records the embedder in the report. `fact-recall-eval` uses `buildEmbedder`, gains `--reembed-facts` (rebuilds the sandbox's fact vectors with the arm's model), `--gold=topic,paraphrase` and `--boost-caps=default,1` scored over one set of vectors; its paraphrase question writer now calls the classifier lane (LiteLLM) and fails loud instead of silently falling back to the topic string when raw Ollama was down. New `scripts/eval/code-embed-ab.ts`: code-lane retrieval over the production exemplar corpus (query = session label, relevant = that session's exemplars). The EmbeddingGemma prompt support used for the trial was reverted: nothing uses it.
-
-**Results (embeddinggemma-2-mxfp8 on oMLX vs production lanes):** LongMemEval-S n=500 semantic R@1 87.8% vs nomic 81.0%, R@5 98.6% vs 95.4%; hybrid identical (96.6%) because session hybrid is keyword-primary. Fact recall, 300 live decision facts, both arms re-embedded on one snapshot, boost off: paraphrase semantic R@1 76.3% vs nomic 87.0%, hybrid 70.3% vs 81.3%; topic semantic 69.3% vs 87.7%. Code lane (1554 exemplars): production-format MRR 0.787 (0.797 with the generic search prompt) vs CodeRank 0.853; code-only tie (0.50 vs 0.49). Speed: gemma ~110 ms/chunk serial, 3x faster than CodeRank in bulk; full corpus re-embed ~3h.
-
-**Decisions:** keep nomic (prose) + CodeRank (code). Gemma's session win is mostly in semantic mode (sessions default to keyword) while its fact loss hits hybrid (the fact default), and facts share the prose lane.
-
-**State:** Corroboration boost (`NLM_FACT_CORROBORATION_BOOST_CAP`, default 2.0) costs fact recall heavily for both models: nomic hybrid paraphrase R@1 27% boosted vs 81% at cap 1. The eval targets one specific fact, so it may undervalue corroborated facts; validating against real recall citations is a follow-up task before retuning.
 
 _Older entries archived in CHANGELOG-2026.md_

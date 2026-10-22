@@ -1,6 +1,36 @@
 # Memory retrieval integration results (T806)
 
-Required correctness work is implemented; optional ranking, evidence deltas and decision-model reranking remain off. Final independent whole-branch review passed engineering/spec/security with one low advisory. Local landing is recorded in T806/git; installed deployment and live canary remain pending. This document is the aggregate results source of truth; private corpus and raw reports remain outside git.
+Required correctness work is implemented; optional ranking, evidence deltas and decision-model reranking remain off. Final independent whole-branch review passed engineering/spec/security with one low advisory. Local landing is recorded in T806/git; deployment and live canaries completed in T939 as recorded below. This document is the aggregate results source of truth; private corpus and raw reports remain outside git.
+
+## Deployed release (2026-10-21, T939)
+
+[NLM 0.21.20](https://github.com/pbmagnet4/nlm-memory/releases/tag/v0.21.20)
+is published to npm and active in the NxtOS-managed local daemon. The published
+artifact passed registry SHA-512 verification before activation. Both the
+[release workflow](https://github.com/pbmagnet4/nlm-memory/actions/runs/39707051472)
+and [PostgreSQL-backed CI](https://github.com/pbmagnet4/nlm-memory/actions/runs/39707051391)
+passed. Local checks passed build, typecheck, packed-plugin verification and
+3,290 tests (three opt-in tests skipped).
+
+A consistent SQLite backup passed quick_check before migration; the prior
+compatible binary and configuration are preserved privately. The installed
+schema advanced from 41 to 43. Thirty-seven read-only live MCP assertions passed:
+bounded cursor traversal, literal source passages and transcript slices,
+surrogate-safe page boundaries, stale-version rejection, unknown-scope fencing,
+repeated bounded context requests and daemon health/version. The conversation's
+existing MCP connector also returned compact hits with continuation metadata.
+These are engineering canaries, not a new answer-quality or token-cost study;
+the scientific rulings below remain in force. Outage and broader tenant/hidden
+value cases remain covered by the integration contracts, not by injected live
+fixtures or disruption of production services.
+
+The release incorporates T803/T806 and compact session search T937. Publication
+caught a test assuming a pre-existing worktree parent (fixed in 0.21.19). Live
+transcript verification then exposed a TOON encoder/decoder incompatibility;
+0.21.20 checks decodability and uses the existing JSON fallback while preserving
+the serialized budget. Its regression reconstructs bracketed Unicode text across
+all pages. Independent reviews of both public fixes found no blocking issue;
+CI-fix low-severity leads were verified and rejected as unrealistic or pre-existing.
 
 ## Frozen final diagnostic protocol
 
@@ -23,7 +53,6 @@ Private evidence root: `~/.nlm/eval/memory-context/2026-10-16-T806/task10-final/
 | Frozen DEV vectors | `46a401d2556014cfe04013c5d700e96ac8b9f2299671ffe6da6776072f104c78` |
 
 A warmup-order wording correction was made before either control outcomes or heldout content was opened; the superseded registration is retained privately. Exact final manifest hash is verified when reporting results.
-
 
 ## Final heldout diagnostic
 
@@ -173,7 +202,7 @@ the final full run with PostgreSQL enabled.
 | Prospective N/contrasts/control, grouped bounds, no tuning | Task 10: consumed registration gate | Evaluator tests reject changed hash/pins/N and repeated attempt; final frozen N55 one contrast. No scientific promotion. |
 | Conditional optional ranking/delta/model gates | Tasks 7–9 | Evaluated capability/DEV prerequisites; all no-go. Unimplemented delta invalidation/model-cap tests are not claimed as passes. |
 | Full gates, generated parity, review, local landing | Task 10 + controller | Full results below; final independent combined Task10/whole-branch review passed; local landing/task evidence is controller-owned and recorded in T806/git. |
-| Compatible binary, backup, deployed MCP canaries | Controller release scope | Pending deployment authorization. No backup/migration/install/live canary performed here. |
+| Compatible binary, backup, deployed MCP canaries | T939 release scope | Completed for 0.21.20; see deployed-release evidence above. |
 
 ## Review findings and integration verification
 
@@ -215,21 +244,21 @@ occurred. Prior live benchmarks were not repeated for documentation-only changes
 
 ## Installed state and rollout
 
-The installed CLI still resolves `~/.local/share/nxt/os/nlm/current` to
+At T806 close, the installed CLI resolved `~/.local/share/nxt/os/nlm/current` to
 `versions/0.21.17-t730`, package 0.21.17. Its **app/**`dist/mcp/server.js` SHA-256 is
 `80edf8e088fc7a3053db18da814f2c16b2c8e5714c65a9e2c2f6ca14adac9f88`;
-it lacks `recall_context`. Source and installed features therefore differ even
-though package versions match. Earlier capture/schema task titles cannot prove
+it lacked `recall_context`. Source and installed features therefore differed even
+though package versions matched. Earlier capture/schema task titles cannot prove
 this branch is deployed or that installed hook latency is fixed.
 
 Final independent review of `a9f0729..6738cf9` passed EngineeringSpec, EngineeringQuality (Low A1 retained) and Security; no blocking fix wave was required. Native in-session review replaced the previously denied external review destination. The full report is preserved privately at `task10-final/final-review.md`, SHA-256 `f56011d08050cc7302747a7bedc403b0e58be641379666705856d964c8ab9235`. This verifies engineering contracts, not scientific promotion.
 
-Local landing and task synchronization are recorded by `nxtgit`/T806. Before deployment, preserve a consistent backup and prior compatible binary, then use
-the authorized installer. Additive migrations retain null legacy state and
-old-writer guards; rollback restores the compatible binary and never deletes the
-corpus. Live MCP scope/hidden-value/mid-transcript Unicode/stale-version/outage/
-repeated-context-reset canaries and emitted usage/payload checks remain pending.
-No public publish, push, live DB write or installed config change occurred here.
+Local landing and task synchronization are recorded by `nxtgit`/T806. At that
+implementation close, publication, installation and live canaries were pending;
+T939 subsequently completed the release and checks listed above. Additive
+migrations retain null legacy state and old-writer guards. Keep the consistent
+backup and compatible binary for rollback; never delete the corpus to roll back.
+The original T806 evaluation made no public push or live database/config change.
 
 ## Evidence digests
 
