@@ -1610,6 +1610,35 @@ program
   });
 
 program
+  .command("backfill-exemplar-outcomes")
+  .description("Relabel pass exemplars whose commits were later reverted as fail")
+  .option("-l, --limit <n>", "exemplar cap (default: all)", (v) => Number.parseInt(v, 10))
+  .option("--roots <dirs>", "colon-separated project roots (default NLM_PROJECT_ROOTS or ~/Documents/Coding Projects:~/.projects)")
+  .option("--dry-run", "report what would change without writing")
+  .action(async (opts) => {
+    const { runBackfillExemplarOutcomes } = await import("../core/exemplars/backfill-outcomes.js");
+    const { defaultProjectRoots } = await import("../core/exemplars/detect-reverts.js");
+    const { storage } = await buildStack();
+    try {
+      const report = await runBackfillExemplarOutcomes({
+        store: storage.exemplars,
+        tenantId: DEFAULT_TEAM_ID,
+        roots: opts.roots
+          ? String(opts.roots).split(":").filter((s) => s.length > 0)
+          : defaultProjectRoots(),
+        ...(opts.limit ? { limit: opts.limit } : {}),
+        ...(opts.dryRun ? { dryRun: true } : {}),
+        onProgress: (m: string) => {
+          process.stderr.write(`  ${m}\n`);
+        },
+      });
+      process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+    } finally {
+      await storage.close();
+    }
+  });
+
+program
   .command("reclassify-oversized")
   .description("One-shot: re-classify large sessions that never ingested (hierarchical classify), recover into the corpus")
   .option("-l, --limit <n>", "max sessions to process", (v) => Number.parseInt(v, 10))

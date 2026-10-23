@@ -48,6 +48,11 @@ export interface CodeExemplarStore {
   getById(tenantId: string, id: string): Promise<CodeExemplar | null>;
 
   /**
+   * List non-retired exemplars with the given outcome (revert sweeps, audits).
+   */
+  listByOutcome(tenantId: string, outcome: CodeExemplarOutcome): Promise<ReadonlyArray<CodeExemplar>>;
+
+  /**
    * List non-retired exemplars across all given sessions. Empty input
    * returns [] immediately.
    */
