@@ -202,10 +202,15 @@ describe("fact corroboration boost (Spec G.1)", () => {
 describe("injected corroboration policies", () => {
   const facts = [
     makeFact({ id: "relevant", subject: "beacon", predicate: "uses", value: "postgres postgres cluster" }),
-    makeFact({ id: "repeated", subject: "beacon", predicate: "uses", value: "postgres" }),
+    // Cross-field partial match: "postgres" in value, "cluster" in subject.
+    // BM25 rates this close to (but strictly below) the full value match, so
+    // the 2x corroboration boost still arbitrates — the tie-adjacent case
+    // this test is about. (Retired the old fixture whose exact tie was an
+    // artifact of raw-overlap coarseness; see T1036 M2.)
+    makeFact({ id: "repeated", subject: "beacon cluster", predicate: "uses", value: "postgres" }),
     makeFact({ id: "nonmatch", subject: "elsewhere", predicate: "runs", value: "unrelated" }),
   ];
-  const counts = new Map([["beacon uses postgres", 1_000_000], ["elsewhere runs unrelated", 1_000_000]]);
+  const counts = new Map([["beacon cluster uses postgres", 1_000_000], ["elsewhere runs unrelated", 1_000_000]]);
   const search = (cap: number, tieBreak = cap > 1) => new FactRecallService({
     factStore: new ScriptedFactStore(facts, counts), llm: new StubLLM(), corroborationRanking: corroborationRanking(cap, tieBreak),
   }).search("team_local", { query: "postgres cluster", mode: "keyword" });
