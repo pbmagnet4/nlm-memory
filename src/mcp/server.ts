@@ -646,6 +646,64 @@ export async function recallFactsHandler(
   }
 }
 
+export interface RecallCodeInput {
+  readonly query: string;
+  readonly repo?: string | undefined;
+  readonly lang?: string | undefined;
+  readonly k?: number | undefined;
+  readonly include_negatives?: boolean | undefined;
+}
+
+export async function recallCodeHandler(
+  deps: McpDeps,
+  tenantId: string,
+  input: RecallCodeInput,
+  runtime: string | null = null,
+): Promise<ToolResult> {
+  if (!deps.exemplarStore || !deps.installScope) {
+    return err(new Error("code exemplars not wired in this deployment"));
+  }
+  try {
+    const result = await recallCode(
+      tenantId,
+      {
+        query: input.query,
+        installScope: deps.installScope,
+        ...(input.repo ? { repo: input.repo } : {}),
+        ...(input.lang ? { lang: input.lang } : {}),
+        k: input.k ?? 5,
+        includeNegatives: input.include_negatives ?? true,
+      },
+      deps.exemplarStore,
+      deps.codeEmbedder ?? null,
+      null,
+    );
+    const conversationId = trustedConversationId(deps, tenantId);
+    const allIds = [
+      ...result.positives.map((e) => e.id),
+      ...result.negatives.map((e) => e.id),
+    ];
+    // Telemetry — marks the pull as a code pull so usefulness evals can
+    // attribute it without overloading the kind filter enum.
+    void logQuery(tenantId, {
+      source: "mcp",
+      runtime,
+      query: input.query,
+      entity: null,
+      kind: null,
+      mode: "semantic",
+      limit: input.k ?? 5,
+      nResults: allIds.length,
+      returnedIds: allIds,
+      tool: "recall_code",
+      ...(conversationId !== undefined ? { conversationId } : {}),
+    });
+    return { content: [{ type: "text", text: format(result) }] };
+  } catch (e) {
+    return err(e);
+  }
+}
+
 export async function getFactHistoryHandler(
   deps: McpDeps,
   tenantId: string,
@@ -1653,9 +1711,7 @@ for more source context, or view=transcript with offset for original text.`,
     process.env["NLM_CODE_EXEMPLARS_ENABLED"] === "1"
   ) {
     const exemplarStore = deps.exemplarStore;
-    const codeEmbedder = deps.codeEmbedder ?? null;
-    const installScope = deps.installScope;
-
+    const runtime = mcpRuntimeFromClient(server.server.getClientVersion());
     server.registerTool(
       "recall_code",
       {
@@ -1693,40 +1749,7 @@ for more source context, or view=transcript with offset for original text.`,
           openWorldHint: false,
         },
       },
-      async (args) => {
-        const result = await recallCode(
-          tenantId,
-          {
-            query: args.query,
-            installScope,
-            ...(args.repo ? { repo: args.repo } : {}),
-            ...(args.lang ? { lang: args.lang } : {}),
-            k: args.k ?? 5,
-            includeNegatives: args.include_negatives ?? true,
-          },
-          exemplarStore,
-          codeEmbedder,
-          null,
-        );
-        const conversationId = trustedConversationId(deps, tenantId);
-        const allIds = [
-          ...result.positives.map((e) => e.id),
-          ...result.negatives.map((e) => e.id),
-        ];
-        void logQuery(tenantId, {
-          source: "mcp",
-          runtime: mcpRuntimeFromClient(server.server.getClientVersion()),
-          query: args.query,
-          entity: null,
-          kind: null,
-          mode: "semantic",
-          limit: args.k ?? 5,
-          nResults: allIds.length,
-          returnedIds: allIds,
-          ...(conversationId !== undefined ? { conversationId } : {}),
-        });
-        return { content: [{ type: "text" as const, text: format(result) }] };
-      },
+      async (args) => recallCodeHandler(deps, tenantId, args, runtime) as never,
     );
 
     server.registerTool(

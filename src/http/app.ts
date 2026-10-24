@@ -863,6 +863,9 @@ function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
         limit,
         nResults: result.total,
         returnedIds: result.results.map((r) => r.id),
+        ...((result.relatedExemplars ?? []).length > 0
+          ? { returnedExemplarIds: (result.relatedExemplars ?? []).map((e) => e.id) }
+          : {}),
         ...(conversationIdParam !== undefined ? { conversationId: conversationIdParam } : {}),
       },
       ...(deps.queryLogPath !== undefined ? [deps.queryLogPath] : []),

@@ -49,11 +49,44 @@ export function parseVerdict(s: string | undefined): Verdict {
 
 export interface Triple { prompt: string; context: string; response: string }
 
+export interface JudgeOptions {
+  /**
+   * Transport: "ollama" speaks /api/chat (default, unchanged); "openai"
+   * speaks OpenAI-compatible /v1/chat/completions, for running the judge
+   * through the LiteLLM gateway now that no local Ollama remains.
+   */
+  readonly api?: "ollama" | "openai";
+  /** Bearer token for the OpenAI-compatible endpoint. Unused for ollama. */
+  readonly key?: string;
+}
+
 export async function judgeUsefulness(
   url: string,
   model: string,
   t: Triple,
+  opts?: JudgeOptions,
 ): Promise<Verdict> {
+  const userText =
+    `USER PROMPT:\n${t.prompt}\n\nINJECTED CONTEXT:\n${t.context}\n\nASSISTANT RESPONSE:\n${t.response}`;
+  if (opts?.api === "openai") {
+    const res = await fetch(`${url.replace(/\/$/, "")}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(opts.key ? { Authorization: `Bearer ${opts.key}` } : {}),
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0,
+        messages: [
+          { role: "system", content: USEFULNESS_SYSTEM },
+          { role: "user", content: userText },
+        ],
+      }),
+    });
+    const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    return parseVerdict(data.choices?.[0]?.message?.content ?? "{}");
+  }
   const res = await fetch(`${url}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -65,7 +98,7 @@ export async function judgeUsefulness(
       options: OPTS,
       messages: [
         { role: "system", content: USEFULNESS_SYSTEM },
-        { role: "user", content: `USER PROMPT:\n${t.prompt}\n\nINJECTED CONTEXT:\n${t.context}\n\nASSISTANT RESPONSE:\n${t.response}` },
+        { role: "user", content: userText },
       ],
     }),
   });
