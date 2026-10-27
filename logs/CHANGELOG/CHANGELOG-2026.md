@@ -125,3 +125,13 @@ _Older entries archived in CHANGELOG-2026.md_
 **Next:** a flag-gated, fail-open ingest gate (T615). The judge and session-close experiments in the plan were not run.
 
 _Older entries archived in CHANGELOG-2026.md_
+
+## 2026-10-13 - Clef ingest gate and workstream-binding eval (T642, T640)
+
+**Changes:** The daemon can consult Clef before the classifier: `NLM_INGEST_GATE=off|shadow|live` (default off), `NLM_INGEST_GATE_THRESHOLD` (default 1.5). In live mode a session scoring under the threshold is stored and embedded with its adapter label but no extraction, stamped `clef-gate` provenance, and not bound to a workstream. Clef errors fail open to the classifier. The Clef client and the calibrated triage panel moved from `scripts/eval/lib` to `src/llm/clef-client.ts` and `src/core/classifier/triage-panel.ts`. New `scripts/eval/clef-workstream.ts`.
+
+**Results:** Workstream binding with Clef was not adopted: on the 50-row matcher gold it never beat the production namer (13 of 17 correct, 1 false bind) without adding false binds.
+
+**State:** Gate code landed, off by default. Shadow mode is the next step on this install.
+
+**Next:** a week of shadow data, then a live decision with Edward.
