@@ -1,6 +1,6 @@
 # Canonical memory properties
 
-**Unreleased source:** these features are in the 0.21.21-property.1 source candidate, not the stable npm 0.21.20 package. See [release status](release-status.md).
+**Unreleased source:** these features are in the 0.21.21-rc.1 source candidate, not the stable npm 0.21.20 package. See [release status](release-status.md).
 
 A property identifies the project a memory concerns. Properties are tenant-scoped and separate from workstreams and directory scopes. Directory scope is not an authorization boundary; tenant checks remain mandatory.
 

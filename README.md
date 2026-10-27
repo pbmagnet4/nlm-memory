@@ -25,7 +25,7 @@ NLM indexes AI sessions into a local searchable store. Recover an earlier decisi
 | Channel | What you can use |
 |---|---|
 | **Stable npm: 0.21.20** | Cross-runtime session capture, bounded session/context recall, source expansion and an editable timeline. [Release notes](https://github.com/pbmagnet4/nlm-memory/releases/tag/v0.21.20). |
-| **Unreleased source: 0.21.21-property.1** | Canonical property catalogs, explicit fact/session associations, repository-origin session references and property-filtered recall. Build from source to try these; the stable npm package does not contain them. |
+| **Release candidate: 0.21.21-rc.1** | Canonical property catalogs, explicit fact/session associations, repository-origin session references and property-filtered recall. Publication to the opt-in `next` channel is pending; build from source in the meantime. Stable npm does not contain these features. |
 | **Experimental, disabled by default** | Automatic fact ownership and entity-name session associations. Evaluation found wrong-project matches; neither a subject label nor a project name inside a quote reliably proves ownership. |
 
 [Full status and upgrade notes](docs/release-status.md). Source availability is not a promise that an experimental feature has passed its evaluation gate.
