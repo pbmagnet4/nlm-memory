@@ -15,7 +15,7 @@
 | `NLM_CITATION_LOG` | `~/.nlm/citation-log.jsonl` | Stop-hook citation events |
 | `NLM_MISS_LOG` | `~/.nlm/miss-log.jsonl` | Stop-hook miss events — sessions the agent explicitly fetched via `get_session`/`cite_session` that the hook never surfaced. Reviewed via `nlm misses`. |
 | `NLM_MISS_LOG_ENABLED` | `true` | Set to `0` to disable miss-log emission entirely. |
-| `NLM_MCP_TOKEN` | auto-generated | 256-bit bearer for `/api/*` (non-browser) and `/mcp` |
+| `NLM_MCP_TOKEN` | auto-generated | Bearer credential for `/mcp` and authenticated API modes; see [Security](../SECURITY.md) |
 | `NLM_MCP_CONFIG` | `~/.mcp.json` | Path the `connect`/`disconnect` commands modify |
 | `NLM_CLASSIFIER` | `ollama` | `ollama` (local, default), `deepseek`, `openai`, `anthropic`, `openrouter`, or `openai-compatible` |
 | `NLM_CLASSIFIER_MODEL` | `qwen3.5:4b` | Model id for the chosen provider. `qwen3.5:4b` (Q4_K_M, 4.7B) is the recommended local default. For measured tier expectations, see [docs/classifier-tiers.md](classifier-tiers.md). |
