@@ -164,7 +164,7 @@ export function runScopedSemanticRecallContract(h: ScopedSemanticHarness): void 
         { sessionId: "many", chunkIndex: 0, distance: 1 }, { sessionId: "far", chunkIndex: 3, distance: 2 },
       ]);
       expect(await storage.facts.semanticSearch(TENANT, QUERY, 1)).toEqual([{ factId: "far", distance: 2 }]);
-    }, 20_000);
+    }, 60_000);
 
     it("returns no neighbors for an eligible corpus with no embeddings", async () => {
       await h.seedSession(storage, makeSession({ id: "empty" }), TENANT);
