@@ -1,9 +1,11 @@
+import { propertySlug } from "@core/properties/model.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { relevantStrings, transcriptPage } from "@core/context/session-evidence.js";
 import type { RecallHit, RecallResult } from "@shared/types.js";
 
 export const sessionRecallInput = z.object({
+  property: propertySlug.optional(),
   query: z.string().max(2_000).default(""),
   entity: z.string().min(1).max(500).optional(),
   kind: z.enum(["decision", "open"]).optional(),
@@ -28,7 +30,7 @@ function hash(value: unknown): string {
 }
 
 export function readRecallCursor(input: Input, tenantId: string) {
-  const request = hash([tenantId, input.query, input.entity, input.kind, input.mode, input.rewrite, input.workstream, input.candidateLimit]);
+  const request = hash([tenantId, input.query, input.entity, input.kind, input.mode, input.rewrite, input.workstream, input.candidateLimit, input.property]);
   if (!input.cursor) return { offset: 0, request, ranking: null };
   let cursor;
   try {

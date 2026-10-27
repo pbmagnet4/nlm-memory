@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  recallCodeHandler,
   recallFactsHandler,
   recallSessionsHandler,
   type McpDeps,
@@ -136,6 +137,31 @@ describe("MCP recall handlers write telemetry", () => {
     const entry = JSON.parse(await waitForLine(process.env["NLM_FACT_QUERY_LOG"] as string));
     expect(entry.source).toBe("mcp");
     expect(entry.runtime).toBe("claude-code");
+  });
+
+  it("recall_code logs an mcp-source pull tagged with the tool", async () => {
+    const hit = (id: string, outcome: "pass" | "fail") => ({
+      id, outcome, taskContext: "t", code: "c", repo: "r", lang: "ts",
+      distance: outcome === "pass" ? 0.1 : 0.9,
+    });
+    const deps = {
+      exemplarStore: {
+        searchByVector: async () => [hit("e1", "pass"), hit("e2", "fail")],
+      },
+      codeEmbedder: {
+        embed: async () => ({ vector: new Float32Array([1, 0, 0]), dim: 3 }),
+      },
+      installScope: "local",
+    } as unknown as McpDeps;
+
+    await recallCodeHandler(deps, "team_local", { query: "parse json" }, "pi");
+
+    const entry = JSON.parse(await waitForLine(process.env["NLM_QUERY_LOG"] as string));
+    expect(entry.source).toBe("mcp");
+    expect(entry.tool).toBe("recall_code");
+    expect(entry.query).toBe("parse json");
+    expect(entry.runtime).toBe("pi");
+    expect(entry.returned_ids).toEqual(["e1", "e2"]);
   });
 });
 

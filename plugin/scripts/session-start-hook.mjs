@@ -36,7 +36,7 @@ function tenantStatePath(tenantId, ...segments) {
 // package.json
 var package_default = {
   name: "nlm-memory",
-  version: "0.21.20",
+  version: "0.21.21-property.1",
   description: "Local-first non-linear memory operating system for AI operators.",
   type: "module",
   license: "Apache-2.0",
@@ -250,7 +250,7 @@ function formatPointerBlock(hits, facts = [], exemplars = [], concepts = []) {
     out.push("## Known facts about top entities");
     for (const f of facts) {
       const tag = f.corroborationCount > 1 ? ` [${f.corroborationCount} sessions]` : "";
-      out.push(`- ${f.subject} ${f.predicate}: ${f.value}${tag}`);
+      out.push(`- ${f.property ? `[${f.property}] ` : ""}${f.subject} ${f.predicate}: ${f.value}${tag}`);
     }
   }
   if (exemplars.length > 0) {
@@ -585,6 +585,7 @@ async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword",
       ...r.summary !== void 0 ? { summary: r.summary } : {}
     }));
     const facts = (body.relatedFacts ?? []).map((f) => ({
+      ...f.property ? { property: f.property } : {},
       subject: f.subject,
       predicate: f.predicate,
       value: f.value,

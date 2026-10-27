@@ -20,6 +20,7 @@ export interface PointerHit {
 }
 
 export interface PointerFact {
+  readonly property?: string;
   readonly subject: string;
   readonly predicate: string;
   readonly value: string;
@@ -86,7 +87,7 @@ export function formatPointerBlock(
     out.push("## Known facts about top entities");
     for (const f of facts) {
       const tag = f.corroborationCount > 1 ? ` [${f.corroborationCount} sessions]` : "";
-      out.push(`- ${f.subject} ${f.predicate}: ${f.value}${tag}`);
+      out.push(`- ${f.property ? `[${f.property}] ` : ""}${f.subject} ${f.predicate}: ${f.value}${tag}`);
     }
   }
   if (exemplars.length > 0) {

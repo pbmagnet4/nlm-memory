@@ -1,3 +1,4 @@
+import { propertyAssociationsEnabled } from "@core/properties/model.js";
 /**
  * Write-time fact judge (T734 / E3).
  *
@@ -174,15 +175,16 @@ export async function findCandidates(
   fresh: Fact,
   opts: CandidateOptions = {},
 ): Promise<Fact[]> {
+  if (propertyAssociationsEnabled() && fresh.property?.slug == null) return [];
   const limit = opts.limit ?? MAX_CANDIDATES;
-  const ok = (f: Fact): boolean => f.id !== fresh.id && isActive(f) && (opts.accept?.(f) ?? true);
+  const ok = (f: Fact): boolean => f.id !== fresh.id && (f.property?.slug ?? null) === (fresh.property?.slug ?? null) && isActive(f) && (opts.accept?.(f) ?? true);
   const picked = new Map<string, Fact>();
-  const sameKey = await store.list(tenantId, { subject: fresh.subject, predicate: fresh.predicate, limit: limit * 4 });
+  const sameKey = await store.list(tenantId, { ...(fresh.property?.slug ? { property: fresh.property.slug } : {}), subject: fresh.subject, predicate: fresh.predicate, limit: limit * 4 });
   for (const f of sameKey) if (ok(f) && picked.size < limit) picked.set(f.id, f);
   if (picked.size < limit && opts.embedder) {
     try {
       const { vector } = await opts.embedder.embed(composeFactEmbedText(fresh.subject, fresh.predicate, fresh.value), "document");
-      const near = await store.semanticSearch(tenantId, vector, limit * 4);
+      const near = await store.semanticSearch(tenantId, vector, limit * 4, fresh.property?.slug ? { property: fresh.property.slug } : {});
       const nearFacts = await store.getByIds(tenantId, near.map((n) => n.factId));
       const byId = new Map(nearFacts.map((f) => [f.id, f]));
       for (const n of near) {

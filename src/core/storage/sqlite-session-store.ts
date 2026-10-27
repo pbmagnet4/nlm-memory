@@ -1,3 +1,4 @@
+import { SqlitePropertyStore } from "./sqlite-property-store.js";
 /**
  * SqliteSessionStore — the canonical SessionStore implementation backed by
  * better-sqlite3 with the sqlite-vec extension loaded for KNN search.
@@ -45,10 +46,10 @@ import { loadActionOverlay, openQuestionId } from "@core/actions/overlay.js";
 import type { ActionOverlay } from "@core/actions/overlay.js";
 import type { Fact } from "@shared/types.js";
 import { runMigrations } from "./migrate.js";
-import type { SqliteFactStore } from "./sqlite-fact-store.js";
+import { SqliteFactStore } from "./sqlite-fact-store.js";
 import { tokenize } from "@core/recall/tokenize.js";
 import { chunkSessionText } from "@core/embedding/chunk-body.js";
-import { batchWinners } from "./fact-batch.js";
+import { storedBatchWinners } from "./fact-batch.js";
 import type { FactJudge } from "@core/facts/write-judge.js";
 import { tenantClause } from "@core/tenancy/tenant-clause.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
@@ -64,6 +65,7 @@ export interface SqliteSessionStoreOptions {
 
 /** Full ingest payload for SqliteSessionStore.insertSession. */
 export interface IngestRecord {
+  readonly projectDir?: string;
   readonly id: string;
   readonly runtime: string;
   readonly runtimeSessionId: string | null;
@@ -531,6 +533,7 @@ export class SqliteSessionStore implements SessionStore {
       // earlier ingest of this session superseded a fact from another
       // session, deleting our prior fact unlinks the chain; the loop below
       // re-establishes it with the freshly-inserted row.
+      new SqlitePropertyStore(this.db).attributeSession(tenantId, record);
       if (factSink !== null) {
         // Delegate to the canonical sync ingest so this LIVE path (scheduler ->
         // insertSession) shares the replace + deterministic-collapse +
@@ -701,7 +704,7 @@ export class SqliteSessionStore implements SessionStore {
   private async judgeNewFacts(tenantId: string, facts: ReadonlyArray<Fact>): Promise<void> {
     if (!this.factJudge || this.factJudge.mode === "off") return;
     try {
-      await this.factJudge.run(tenantId, batchWinners(facts));
+      await this.factJudge.run(tenantId, await storedBatchWinners(new SqliteFactStore(this.db), tenantId, facts));
     } catch (err) {
       process.stderr.write(`[nlm] fact judge failed: ${String(err)}\n`);
     }
@@ -713,7 +716,7 @@ export class SqliteSessionStore implements SessionStore {
     facts: ReadonlyArray<Fact>,
     embedder: import("@ports/llm-client.js").LLMClient,
   ): Promise<void> {
-    for (const fact of batchWinners(facts)) {
+    for (const fact of await storedBatchWinners(factStore, tenantId, facts)) {
       const factText = composeFactEmbedText(fact.subject, fact.predicate, fact.value);
       if (!factText) continue;
       if (!tryAcquire()) {
@@ -858,6 +861,10 @@ export class SqliteSessionStore implements SessionStore {
       wsFilter = `AND s.workstream_id IN (${ph})`;
       params.push(...wsIds);
     }
+    if (opts?.property !== undefined) {
+      wsFilter += " AND (EXISTS (SELECT 1 FROM facts pf WHERE pf.source_session_id = s.id AND pf.tenant_id = s.tenant_id AND pf.property_slug = ?) OR EXISTS (SELECT 1 FROM session_properties sp WHERE sp.session_id = s.id AND sp.tenant_id = s.tenant_id AND sp.property_slug = ?))";
+      params.push(opts.property, opts.property);
+    }
     params.push(tc.param);
     params.push(k);
     const rows = this.db
@@ -987,12 +994,12 @@ export class SqliteSessionStore implements SessionStore {
 
       // Cascade supersedence to facts: link predecessor facts to their successors
       const predFactsTc = tenantClause(tenantId);
-      const selectPredFacts = this.db.prepare<unknown[], { id: string; subject: string; predicate: string }>(
-        `SELECT id, subject, predicate FROM facts WHERE source_session_id = ? AND ${predFactsTc.sql}`
+      const selectPredFacts = this.db.prepare<unknown[], { id: string; subject: string; predicate: string; property_slug: string | null }>(
+        `SELECT id, subject, predicate, property_slug FROM facts WHERE source_session_id = ? AND ${predFactsTc.sql}`
       );
       const succFactTc = tenantClause(tenantId);
       const selectSuccFact = this.db.prepare<unknown[], { id: string }>(
-        `SELECT id FROM facts WHERE source_session_id = ? AND subject = ? AND predicate = ? AND superseded_by IS NULL AND ${succFactTc.sql} LIMIT 1`
+        `SELECT id FROM facts WHERE source_session_id = ? AND subject = ? AND predicate = ? AND property_slug IS ? AND superseded_by IS NULL AND ${succFactTc.sql} LIMIT 1`
       );
       const updateFactTc = tenantClause(tenantId);
       const updateFactSuperseded = this.db.prepare(
@@ -1002,7 +1009,7 @@ export class SqliteSessionStore implements SessionStore {
 
       const predecessorFacts = selectPredFacts.all(predecessorId, predFactsTc.param);
       for (const pFact of predecessorFacts) {
-        const successor = selectSuccFact.get(successorId, pFact.subject, pFact.predicate, succFactTc.param);
+        const successor = selectSuccFact.get(successorId, pFact.subject, pFact.predicate, pFact.property_slug, succFactTc.param);
         if (successor) {
           updateFactSuperseded.run(successor.id, pFact.id, updateFactTc.param);
           delFactEmbedding.run(pFact.id);
