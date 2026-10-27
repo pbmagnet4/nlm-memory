@@ -1,3 +1,4 @@
+import { SqlitePropertyStore } from "./sqlite-property-store.js";
 import { SqliteSemanticReader } from "./sqlite-semantic-reader.js";
 /**
  * SqliteStorage — canonical Storage adapter for better-sqlite3 + sqlite-vec.
@@ -33,6 +34,7 @@ export interface SqliteStorageOptions {
 export class SqliteStorage implements Storage {
   readonly sessions: SqliteSessionStore;
   readonly facts: SqliteFactStore;
+  readonly properties: SqlitePropertyStore;
   readonly signals: SqliteSignalStore;
   readonly exemplars: SqliteCodeExemplarStore;
   readonly workstreams: SqliteWorkstreamStore;
@@ -58,6 +60,7 @@ export class SqliteStorage implements Storage {
   ) {
     this.sessions = sessions;
     this.facts = facts;
+    this.properties = new SqlitePropertyStore(sessions.rawDb());
     this.signals = signals;
     this.exemplars = exemplars;
     this.workstreams = workstreams;

@@ -20,6 +20,7 @@ import type { RecallKindFilter, RecallMode } from "@shared/types.js";
 import { classifyQueryIntent, type QueryIntent } from "./query-intent.js";
 
 export interface LogEntry {
+  readonly property?: string;
   readonly workstream?: string;
   readonly source: string;
   /** Calling agent runtime (claude-code / hermes / pi.dev / codex / etc).
@@ -33,6 +34,14 @@ export interface LogEntry {
   readonly nResults: number;
   readonly returnedIds: ReadonlyArray<string>;
   readonly conversationId?: string;
+  /**
+   * Tool that produced the pull (e.g. "recall_code"). Absent for prose
+   * session/fact recall. Lets usefulness evals attribute pulls per tool
+   * without overloading the kind filter enum.
+   */
+  readonly tool?: string;
+  /** Exemplar ids attached to a prose recall (passive code-exemplar recall). */
+  readonly returnedExemplarIds?: ReadonlyArray<string>;
   /** Heuristic intent label for Phase 4 relational-recall telemetry.
    *  Absent on log entries written before this field was added. */
   readonly intent?: QueryIntent;
@@ -75,6 +84,11 @@ export async function logQuery(
       n_results: entry.nResults,
       returned_ids: entry.returnedIds,
       ...(entry.workstream !== undefined ? { workstream: entry.workstream } : {}),
+      ...(entry.property !== undefined ? { property: entry.property } : {}),
+      ...(entry.tool !== undefined ? { tool: entry.tool } : {}),
+      ...(entry.returnedExemplarIds !== undefined
+        ? { returned_exemplar_ids: entry.returnedExemplarIds }
+        : {}),
       intent: classifyQueryIntent(entry.query ?? ""),
     };
     await appendFile(logPath, JSON.stringify(payload) + "\n", "utf8");
@@ -113,7 +127,17 @@ export async function readQueryLog(
         mode: (obj["mode"] as LogEntry["mode"]) ?? "keyword",
         limit: Number(obj["limit"] ?? 5),
         nResults: Number(obj["n_results"] ?? 0),
-        returnedIds: (obj["returned_ids"] as unknown[]).filter((x): x is string => typeof x === "string"),
+        returnedIds: Array.isArray(obj["returned_ids"])
+          ? (obj["returned_ids"] as unknown[]).filter((x): x is string => typeof x === "string")
+          : [],
+        ...(typeof obj["tool"] === "string" ? { tool: obj["tool"] } : {}),
+        ...(Array.isArray(obj["returned_exemplar_ids"])
+          ? {
+              returnedExemplarIds: (obj["returned_exemplar_ids"] as unknown[]).filter(
+                (x): x is string => typeof x === "string",
+              ),
+            }
+          : {}),
         ...(typeof intentRaw === "string" ? { intent: intentRaw as QueryIntent } : {}),
       };
       results.push({ conversationId: convId, entry });

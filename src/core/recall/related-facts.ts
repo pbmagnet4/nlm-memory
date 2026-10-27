@@ -1,3 +1,4 @@
+import { corroborationKey } from "@ports/fact-store.js";
 /**
  * pickRelatedFacts — Spec G.2 server-side helper that selects 3–5 current
  * high-confidence facts about the entities in the top recall hits.
@@ -96,6 +97,7 @@ export async function pickRelatedFacts(
       subject: f.subject,
       predicate: f.predicate,
       value: f.value,
+        ...(f.property?.slug ? { property: f.property.slug } : {}),
     }));
     const counts = await factStore.corroborationCounts(tenantId, triples);
 
@@ -105,10 +107,10 @@ export async function pickRelatedFacts(
     //    "beacon uses: postgres" as if both were current.
     const byKey = new Map<string, RelatedFact & { confidence: number }>();
     for (const f of candidates) {
-      const corrKey = `${f.subject} ${f.predicate} ${f.value}`;
+      const corrKey = corroborationKey(f.subject, f.predicate, f.value, f.property?.slug);
       const corroborationCount = counts.get(corrKey) ?? 1;
       if (corroborationCount < minCorroboration) continue;
-      const dedupeKey = `${f.subject} ${f.predicate}`;
+      const dedupeKey = JSON.stringify([f.property?.slug ?? null, f.subject, f.predicate]);
       const existing = byKey.get(dedupeKey);
       if (
         !existing ||
@@ -119,6 +121,7 @@ export async function pickRelatedFacts(
           subject: f.subject,
           predicate: f.predicate,
           value: f.value,
+        ...(f.property?.slug ? { property: f.property.slug } : {}),
           corroborationCount,
           confidence: f.confidence,
         });
@@ -136,6 +139,7 @@ export async function pickRelatedFacts(
       subject: r.subject,
       predicate: r.predicate,
       value: r.value,
+      ...(r.property ? { property: r.property } : {}),
       corroborationCount: r.corroborationCount,
     }));
   } catch {

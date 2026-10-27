@@ -32,6 +32,7 @@ export interface KeywordNeighbor {
  * recall can surface them down-ranked; when false (default), they are excluded.
  */
 export interface SearchOptions {
+  readonly property?: string;
   readonly includeSuperseded?: boolean;
   readonly workstreamIds?: ReadonlyArray<string>;
 }

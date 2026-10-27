@@ -6,6 +6,9 @@ Dispositions per program spec §2: **STAMP** = carries `tenant_id NOT NULL`; **D
 |---|---|---|
 | sessions | STAMP | corpus |
 | facts | STAMP | corpus |
+| memory_properties | STAMP | canonical property catalog; explicit tenant required |
+| property_overrides | STAMP | durable source/assertion corrections |
+| session_properties | STAMP | session relevance evidence; source session tenant also checked |
 | code_exemplars | STAMP | corpus |
 | signals | STAMP | corpus |
 | workstreams | STAMP | corpus |

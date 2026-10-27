@@ -1,3 +1,5 @@
+import { requireProperty } from "@core/properties/model.js";
+import type { PropertyStore } from "@ports/property-store.js";
 /**
  * Hono app factory. Routes mirror the Python daemon's API surface (GET
  * /api/recall, GET /api/recall/stats, GET /api/session/:id, GET /api/health)
@@ -127,6 +129,7 @@ import type { JobSupervisor, JobSnapshot } from "@core/jobs/job-supervisor.js";
 const HERMES_RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 
 export interface HttpDeps {
+  readonly properties?: Pick<PropertyStore, "list">;
   readonly recall: RecallService;
   readonly store: SessionStore;
   /** Pass the concrete store when /live endpoints (recent-writes / recent-markers) should be served. */
@@ -836,7 +839,10 @@ function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     const includeSuperseded =
       supersededParam === "true" || supersededParam === "1" ? true : undefined;
 
+    const property = c.req.query("property");
+    try { await requireProperty(tenantId, property, deps.properties); } catch (e) { return c.json({ error: String(e) }, 400); }
     const query: RecallQuery = {
+      ...(property !== undefined ? { property } : {}),
       query: q,
       mode: mode as RecallMode,
       limit,
@@ -863,6 +869,9 @@ function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
         limit,
         nResults: result.total,
         returnedIds: result.results.map((r) => r.id),
+        ...((result.relatedExemplars ?? []).length > 0
+          ? { returnedExemplarIds: (result.relatedExemplars ?? []).map((e) => e.id) }
+          : {}),
         ...(conversationIdParam !== undefined ? { conversationId: conversationIdParam } : {}),
       },
       ...(deps.queryLogPath !== undefined ? [deps.queryLogPath] : []),
@@ -1194,7 +1203,10 @@ function registerFactRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
       }
     }
 
+    const property = c.req.query("property");
+    try { await requireProperty(tenantId, property, deps.properties); } catch (e) { return c.json({ error: String(e) }, 400); }
     const query: FactRecallQuery = {
+      ...(property !== undefined ? { property } : {}),
       query: q,
       mode: mode as RecallMode,
       limit,
@@ -1242,7 +1254,9 @@ function registerFactRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     }
     const predicate = c.req.query("predicate");
     const tenantId = c.get("tenantId");
-    const chains = await deps.factStore.getHistory(tenantId, subject, predicate);
+    const property = c.req.query("property");
+    try { await requireProperty(tenantId, property, deps.properties); } catch (e) { return c.json({ error: String(e) }, 400); }
+    const chains = await deps.factStore.getHistory(tenantId, subject, predicate, property);
     return c.json({ subject, predicate: predicate ?? null, chains });
   });
 

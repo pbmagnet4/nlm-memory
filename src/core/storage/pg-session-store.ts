@@ -1,3 +1,4 @@
+import { PgPropertyStore } from "./pg-property-store.js";
 /**
  * PgSessionStore — SessionStore implementation over pg.Pool + pgvector.
  *
@@ -25,7 +26,7 @@ import { tokenize } from "@core/recall/tokenize.js";
 import type { PgFactStore } from "./pg-fact-store.js";
 import { ingestSessionFactsOnClient } from "./pg-fact-ingest.js";
 import { chunkSessionText } from "@core/embedding/chunk-body.js";
-import { batchWinners } from "./fact-batch.js";
+import { storedBatchWinners } from "./fact-batch.js";
 import { loadActionOverlayPg, openQuestionId } from "@core/actions/overlay.js";
 import type { ActionOverlay } from "@core/actions/overlay.js";
 import { liveSessionStatus } from "./live-status.js";
@@ -209,6 +210,10 @@ export class PgSessionStore implements SessionStore {
     // Tenant filter is applied in the id-resolution join against `sessions`
     // (program spec §4.3, vector-path rule) — the `<->` KNN scan over
     // session_embedding_chunks has no tenant column of its own.
+    if (opts?.property !== undefined) {
+      params.push(opts.property);
+      wsClause += ` AND (EXISTS (SELECT 1 FROM facts pf WHERE pf.source_session_id = s.id AND pf.tenant_id = s.tenant_id AND pf.property_slug = $${params.length}) OR EXISTS (SELECT 1 FROM session_properties sp WHERE sp.session_id = s.id AND sp.tenant_id = s.tenant_id AND sp.property_slug = $${params.length}))`;
+    }
     const tc = tenantClausePg(tenantId, params.length + 1, "s.tenant_id");
     params.push(tc.param);
     const limitParam = `$${params.length + 1}`;
@@ -253,6 +258,10 @@ export class PgSessionStore implements SessionStore {
     if (wsIds?.length) {
       params.push(wsIds);
       wsClause = `AND workstream_id = ANY($${params.length}::text[])`;
+    }
+    if (opts?.property !== undefined) {
+      params.push(opts.property);
+      wsClause += ` AND (EXISTS (SELECT 1 FROM facts pf WHERE pf.source_session_id = sessions.id AND pf.tenant_id = sessions.tenant_id AND pf.property_slug = $${params.length}) OR EXISTS (SELECT 1 FROM session_properties sp WHERE sp.session_id = sessions.id AND sp.tenant_id = sessions.tenant_id AND sp.property_slug = $${params.length}))`;
     }
     const tc = tenantClausePg(tenantId, params.length + 1);
     params.push(tc.param);
@@ -374,6 +383,7 @@ export class PgSessionStore implements SessionStore {
           WHERE s.source_session_id = $2
             AND s.subject = p.subject
             AND s.predicate = p.predicate
+            AND s.property_slug IS NOT DISTINCT FROM p.property_slug
             AND s.superseded_by IS NULL
             AND ${sTc.sql}
           LIMIT 1
@@ -385,6 +395,7 @@ export class PgSessionStore implements SessionStore {
             WHERE s.source_session_id = $2
               AND s.subject = p.subject
               AND s.predicate = p.predicate
+            AND s.property_slug IS NOT DISTINCT FROM p.property_slug
               AND s.superseded_by IS NULL
               AND ${sTc.sql}
           )
@@ -640,6 +651,7 @@ export class PgSessionStore implements SessionStore {
       }
 
       // Atomic session+facts ingest on the session's own client. Single source of truth: pg-fact-ingest.ts.
+      await new PgPropertyStore(client).attributeSession(tenantId, record);
       if (factSink !== null) {
         await ingestSessionFactsOnClient(client, tenantId, record.id, factSink.facts, record.scope);
       }
@@ -680,7 +692,7 @@ export class PgSessionStore implements SessionStore {
       // SQLite path. A per-fact embed failure leaves the fact current but
       // semantically unreachable until a future re-ingest.
       if (factSink !== null) {
-        for (const fact of batchWinners(factSink.facts)) {
+        for (const fact of await storedBatchWinners(factSink.factStore, tenantId, factSink.facts)) {
           const factText = `${fact.subject} ${fact.predicate} ${fact.value}`.trim();
           if (!factText) continue;
           try {
@@ -791,7 +803,7 @@ export class PgSessionStore implements SessionStore {
       client.release();
     }
     if (embedder) {
-      for (const fact of batchWinners(facts)) {
+      for (const fact of await storedBatchWinners(factStore, tenantId, facts)) {
         const factText = `${fact.subject} ${fact.predicate} ${fact.value}`.trim();
         if (!factText) continue;
         try {

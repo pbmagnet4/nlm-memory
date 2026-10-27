@@ -1,3 +1,6 @@
+import { corroborationKey } from "@ports/fact-store.js";
+import { requireProperty } from "@core/properties/model.js";
+import type { PropertyStore } from "@ports/property-store.js";
 import { embedForRecall } from "@core/recall/request-budget.js";
 import { executionWorkstreamIds, type RecallExecutionOptions } from "@core/recall/execution-options.js";
 /**
@@ -11,10 +14,14 @@ import { executionWorkstreamIds, type RecallExecutionOptions } from "@core/recal
  * Filter pipeline:
  *   1. Storage pre-filter (subject, predicate, kind, minConfidence,
  *      includeSuperseded). Cheap SQL.
- *   2. Keyword scoring over (value, subject, predicate). Pure, in-memory.
+ *   2. BM25 keyword scoring over (value, subject, predicate) with field
+ *      boosts. Pure, in-memory; IDF/length stats computed over the
+ *      recency-capped candidate window. M2 (T1036).
  *   3. Semantic KNN via fact_embeddings vec0 (when mode != keyword).
- *   4. Hybrid merge: 0.6 semantic + 0.4 keyword, matching the session
- *      recall weights.
+ *   4. Hybrid merge: semantic hits occupy the upper band, ordered by
+ *      reciprocal rank fusion of the semantic and keyword rankings (M2);
+ *      keyword-only hits backfill the lower band. Co-occurrence is NOT
+ *      rewarded as a score — that was the dilution source.
  *
  * Confidence policy: default `minConfidence` is 0.6 (Section 1 of the plan).
  * Facts with classifier confidence in [0.4, 0.6) get written by
@@ -57,6 +64,16 @@ const FIELD_WEIGHTS = {
   predicate: 1,
 } as const;
 
+type FactTextField = "value" | "subject" | "predicate";
+const FACT_TEXT_FIELDS: ReadonlyArray<FactTextField> = ["value", "subject", "predicate"];
+
+// BM25 tuning (M2). Standard defaults; IDF and length norms are computed
+// over the recency-capped candidate window, not the whole corpus.
+const BM25_K1 = 1.2;
+const BM25_B = 0.75;
+// Reciprocal rank fusion constant for upper-band ordering (M2).
+const RRF_K = 60;
+
 export type CorroborationPolicy = (count: number) => number;
 
 export interface CorroborationRanking {
@@ -69,6 +86,7 @@ export function corroborationRanking(cap: number, tieBreak = cap > 1): Corrobora
 }
 
 export interface FactRecallServiceDeps {
+  readonly properties?: Pick<PropertyStore, "list">;
   readonly corroborationRanking?: CorroborationRanking;
   readonly factStore: FactStore;
   readonly llm: LLMClient;
@@ -82,6 +100,7 @@ export class FactRecallService {
 
   async search(tenantId: string, input: FactRecallQuery, options: RecallExecutionOptions = {}): Promise<FactRecallResult> {
     options.signal?.throwIfAborted();
+    await requireProperty(tenantId, input.property, this.deps.properties);
     const mode: RecallMode = input.mode ?? "hybrid";
     const corroboration = new Map<string, number>();
     const limit = clampLimit(input.limit);
@@ -103,7 +122,7 @@ export class FactRecallService {
 
     // A query with no signal at all → empty. Either free-text query, or a
     // structured filter (subject / predicate / kind) must be provided.
-    if (!queryText && subject === null && predicate === null && kind === null) {
+    if (!queryText && subject === null && predicate === null && kind === null && input.property === undefined) {
       return empty;
     }
 
@@ -114,6 +133,7 @@ export class FactRecallService {
       includeSuperseded: input.includeSuperseded === true,
       minConfidence: input.minConfidence ?? DEFAULT_FACT_MIN_CONFIDENCE,
       limit: STORAGE_FETCH_CAP,
+      ...(input.property !== undefined ? { property: input.property } : {}),
       ...(workstreamIds !== undefined ? { workstreamIds } : {}),
       ...(queryText && mode !== "semantic" ? { query: queryText } : {}),
       ...(input.subject !== undefined ? { subject: input.subject } : {}),
@@ -207,13 +227,13 @@ export class FactRecallService {
   private async applyCorroboration(tenantId: string, hits: ReadonlyArray<FactHit>, counts: Map<string, number>): Promise<ReadonlyArray<FactHit>> {
     if (hits.length === 0) return hits;
     try {
-      const identity = (hit: { subject: string; predicate: string; value: string }) =>
-        JSON.stringify([tenantId, hit.subject, hit.predicate, hit.value]);
+      const identity = (hit: Pick<Fact, "subject" | "predicate" | "value" | "property">) =>
+        JSON.stringify([tenantId, hit.property?.slug ?? null, hit.subject, hit.predicate, hit.value]);
       const missing = new Map(hits.filter((hit) => !counts.has(identity(hit))).map((hit) =>
-        [identity(hit), { subject: hit.subject, predicate: hit.predicate, value: hit.value }]));
+        [identity(hit), { subject: hit.subject, predicate: hit.predicate, value: hit.value, ...(hit.property?.slug ? { property: hit.property.slug } : {}) }]));
       if (missing.size > 0) {
         const fetched = await this.deps.factStore.corroborationCounts(tenantId, [...missing.values()]);
-        for (const [key, triple] of missing) counts.set(key, fetched.get(`${triple.subject} ${triple.predicate} ${triple.value}`) ?? 1);
+        for (const [key, triple] of missing) counts.set(key, fetched.get(corroborationKey(triple.subject, triple.predicate, triple.value, triple.property)) ?? 1);
       }
       const ranking = this.deps.corroborationRanking ?? corroborationRanking(readBoostCap());
       const boosted: FactHit[] = hits.map((h) => {
@@ -277,6 +297,7 @@ function makeFilterPredicate(
     // may be null, so the supersededBy gate below does not catch it. The SQL
     // pre-filter already excludes retired_at IS NOT NULL; this guards semantic
     // neighbours resolved outside that window from leaking a retired fact.
+    if (filter.property !== undefined && f.property?.slug !== filter.property) return false;
     if (f.retiredAt != null) return false;
     if (filter.includeSuperseded !== true && f.supersededBy !== null) return false;
     if (filter.minConfidence !== undefined && f.confidence < filter.minConfidence) return false;
@@ -300,14 +321,57 @@ interface SemanticHit {
   readonly similarity: number;
 }
 
+interface FieldCorpusStats {
+  readonly docFreq: ReadonlyMap<string, number>;
+  readonly avgLen: number;
+}
+
+function fieldTokens(fact: Fact, field: FactTextField): ReadonlyArray<string> {
+  return [...tokenSet(fact[field])];
+}
+
+/**
+ * BM25 support stats over the candidate window: per-field document
+ * frequencies (query tokens only) and mean field length. Computed once per
+ * search; the window is capped at STORAGE_FETCH_CAP rows.
+ */
+function collectFieldStats(
+  facts: ReadonlyArray<Fact>,
+  queryTokens: ReadonlySet<string>,
+): Record<FactTextField, FieldCorpusStats> {
+  const stats = {} as Record<FactTextField, FieldCorpusStats>;
+  for (const field of FACT_TEXT_FIELDS) {
+    const docFreq = new Map<string, number>();
+    let totalLen = 0;
+    for (const f of facts) {
+      const toks = fieldTokens(f, field);
+      totalLen += toks.length;
+      const seen = new Set<string>();
+      for (const t of toks) {
+        if (queryTokens.has(t)) seen.add(t);
+      }
+      for (const t of seen) docFreq.set(t, (docFreq.get(t) ?? 0) + 1);
+    }
+    stats[field] = { docFreq, avgLen: facts.length > 0 ? totalLen / facts.length : 0 };
+  }
+  return stats;
+}
+
+function bm25TermScore(tf: number, df: number, nDocs: number, fieldLen: number, avgLen: number): number {
+  const idf = Math.log(1 + (nDocs - df + 0.5) / (df + 0.5));
+  const norm = 1 - BM25_B + BM25_B * (avgLen > 0 ? fieldLen / avgLen : 1);
+  return (idf * (tf * (BM25_K1 + 1))) / (tf + BM25_K1 * norm);
+}
+
 function scoreAll(
   facts: ReadonlyArray<Fact>,
   queryTokens: ReadonlySet<string>,
 ): ReadonlyArray<KeywordHit> {
   if (queryTokens.size === 0) return [];
+  const stats = collectFieldStats(facts, queryTokens);
   const hits: KeywordHit[] = [];
   for (const f of facts) {
-    const { score, matchedIn } = scoreFact(f, queryTokens);
+    const { score, matchedIn } = scoreFact(f, queryTokens, stats, facts.length);
     if (score > 0) hits.push({ fact: f, score, matchedIn });
   }
   hits.sort((a, b) => b.score - a.score);
@@ -317,26 +381,27 @@ function scoreAll(
 function scoreFact(
   fact: Fact,
   queryTokens: ReadonlySet<string>,
+  stats: Record<FactTextField, FieldCorpusStats>,
+  nDocs: number,
 ): { score: number; matchedIn: ReadonlyArray<FactMatchField> } {
   let score = 0;
   const matchedIn: FactMatchField[] = [];
 
-  const valueMatches = intersectionSize(queryTokens, tokenSet(fact.value));
-  if (valueMatches > 0) {
-    score += FIELD_WEIGHTS.value * valueMatches;
-    matchedIn.push("value");
-  }
-
-  const subjectMatches = intersectionSize(queryTokens, tokenSet(fact.subject));
-  if (subjectMatches > 0) {
-    score += FIELD_WEIGHTS.subject * subjectMatches;
-    matchedIn.push("subject");
-  }
-
-  const predicateMatches = intersectionSize(queryTokens, tokenSet(fact.predicate));
-  if (predicateMatches > 0) {
-    score += FIELD_WEIGHTS.predicate * predicateMatches;
-    matchedIn.push("predicate");
+  for (const field of FACT_TEXT_FIELDS) {
+    const toks = fieldTokens(fact, field);
+    if (toks.length === 0) continue;
+    const tfByToken = new Map<string, number>();
+    for (const t of toks) {
+      if (queryTokens.has(t)) tfByToken.set(t, (tfByToken.get(t) ?? 0) + 1);
+    }
+    if (tfByToken.size === 0) continue;
+    const { docFreq, avgLen } = stats[field];
+    let fieldScore = 0;
+    for (const [token, tf] of tfByToken) {
+      fieldScore += bm25TermScore(tf, docFreq.get(token) ?? 0, nDocs, toks.length, avgLen);
+    }
+    score += FIELD_WEIGHTS[field] * fieldScore;
+    matchedIn.push(field);
   }
 
   return { score, matchedIn };
@@ -351,11 +416,15 @@ function scoreFact(
  * recent-but-wrong facts dilute strong semantic hits — measured ~14pts of R@5
  * lost vs pure semantic on the paraphrase gold set (2026-06-16 report).
  *
- * So semantic hits occupy the upper score band [0.5, 1.0] (ranked by
- * similarity); keyword-only hits — facts semantic never surfaced — backfill the
- * lower band [0, 0.5). Co-occurrence isn't rewarded (that was the dilution
- * source). When semantic is unavailable (Ollama down) semHits is empty and this
- * degrades to pure keyword, preserving the graceful-degradation contract.
+ * So semantic hits occupy the upper score band [0.5, 1.0], ordered by
+ * reciprocal rank fusion of the semantic ranking and the BM25 keyword
+ * ranking (M2) — consensus across both legs outranks a single-leg standout,
+ * but a semantic-only hit is never pushed below the band. Keyword-only
+ * hits — facts semantic never surfaced — backfill the lower band [0, 0.5).
+ * Raw-score co-occurrence is NOT rewarded (that was the dilution source);
+ * only ranks fuse. When semantic is unavailable (Ollama down) semHits is
+ * empty and this degrades to pure keyword, preserving the
+ * graceful-degradation contract.
  */
 function mergeHybrid(
   kwHits: ReadonlyArray<KeywordHit>,
@@ -364,16 +433,31 @@ function mergeHybrid(
   const maxSem = Math.max(1, ...semHits.map((h) => h.similarity));
   const maxKw = Math.max(1, ...kwHits.map((h) => h.score));
   const kwMap = new Map<string, KeywordHit>(kwHits.map((h) => [h.fact.id, h]));
+  const kwRank = new Map<string, number>(kwHits.map((h, i) => [h.fact.id, i + 1]));
+  const missingKwRank = kwHits.length + 1;
+
+  const ranked = semHits.map((sem, i) => {
+    const semRank = i + 1;
+    const kRank = kwRank.get(sem.fact.id) ?? missingKwRank;
+    return { sem, rrf: 1 / (RRF_K + semRank) + 1 / (RRF_K + kRank) };
+  });
+  ranked.sort(
+    (a, b) =>
+      b.rrf - a.rrf ||
+      b.sem.similarity - a.sem.similarity ||
+      (a.sem.fact.id < b.sem.fact.id ? -1 : 1),
+  );
+  const maxRrf = Math.max(...ranked.map((r) => r.rrf), Number.EPSILON);
 
   const rows: FactHit[] = [];
   const seen = new Set<string>();
 
-  for (const sem of semHits) {
+  for (const { sem, rrf } of ranked) {
     const semNorm = sem.similarity / maxSem;
     const kw = kwMap.get(sem.fact.id);
     rows.push({
       ...sem.fact,
-      matchScore: round4(0.5 + 0.5 * semNorm),
+      matchScore: round4(0.5 + 0.5 * (rrf / maxRrf)),
       matchedIn: uniqueFields(kw?.matchedIn ?? [], ["semantic"]),
       keywordScore: round4(kw ? kw.score / maxKw : 0),
       semanticScore: round4(semNorm),
@@ -446,13 +530,6 @@ function cosineFromL2(distance: number): number {
 
 function round4(value: number): number {
   return Math.round(value * 10_000) / 10_000;
-}
-
-function intersectionSize<T>(a: ReadonlySet<T>, b: ReadonlySet<T>): number {
-  const [small, large] = a.size <= b.size ? [a, b] : [b, a];
-  let count = 0;
-  for (const item of small) if (large.has(item)) count += 1;
-  return count;
 }
 
 function uniqueFields(

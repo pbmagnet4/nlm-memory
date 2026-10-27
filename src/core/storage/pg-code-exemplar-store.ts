@@ -220,6 +220,15 @@ export class PgCodeExemplarStore implements CodeExemplarStore {
     return res.rows.map((r) => this.rowToExemplar(r));
   }
 
+  async listByOutcome(tenantId: string, outcome: CodeExemplarOutcome): Promise<ReadonlyArray<CodeExemplar>> {
+    const tc = tenantClausePg(tenantId, 2);
+    const res = await this.pool.query<ExemplarRow>(
+      `SELECT ${COLUMNS} FROM code_exemplars WHERE outcome = $1 AND retired_at IS NULL AND ${tc.sql} ORDER BY ts ASC`,
+      [outcome, tc.param],
+    );
+    return res.rows.map((r) => this.rowToExemplar(r));
+  }
+
   async applyBucketCap(tenantId: string, installScope: string, maxPerBucket: number): Promise<number> {
     // Window-rank within each (repo, lang, outcome-class) bucket newest-first,
     // delete everything past the cap. Cascade clears the embeddings.

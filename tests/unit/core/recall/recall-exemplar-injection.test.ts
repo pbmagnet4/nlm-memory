@@ -20,6 +20,7 @@ function exemplarStore(): CodeExemplarStore {
     async pruneReverted() { return 0; },
     async pruneOlderThan() { return 0; },
     async setVerdict() { return { status: "not_found" as const }; },
+    async listByOutcome() { return []; },
     async listBySessions() { return []; },
   };
 }

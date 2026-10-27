@@ -1,3 +1,4 @@
+import { PgPropertyStore } from "./pg-property-store.js";
 /**
  * PgStorage — canonical Storage adapter for PostgreSQL + pgvector.
  *
@@ -30,6 +31,7 @@ export interface PgStorageOptions {
 
 export class PgStorage implements Storage {
   readonly facts: PgFactStore;
+  readonly properties: PgPropertyStore;
   readonly sessions: PgSessionStore;
   readonly signals: PgSignalStore;
   readonly exemplars: PgCodeExemplarStore;
@@ -47,6 +49,7 @@ export class PgStorage implements Storage {
     this._pool = pool;
     this._migrationsDir = migrationsDir;
     this.facts = new PgFactStore(pool);
+    this.properties = new PgPropertyStore(pool);
     this.sessions = new PgSessionStore(pool);
     this.signals = new PgSignalStore(pool);
     this.exemplars = new PgCodeExemplarStore(pool);

@@ -9,6 +9,8 @@
  *
  * Run: npx tsx scripts/eval/pull-usefulness.ts [--days=0] [--limit=60]
  *        [--db=<sqlite path>] [--model=qwen3.5:4b] [--ollama=<url>]
+ *        [--tool=code] [--judge-api=openai] [--judge-base=<url>]
+ *        [--judge-model=<model>] [--judge-key=<token>]
  *        [--verbose] [--json=<out>]
  */
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -34,6 +36,16 @@ interface Args {
   db: string;
   model: string;
   ollamaUrl: string;
+  /** restricts scoring to one tool lane ("session" | "fact" | "code" | "workstream"); default all. */
+  tool: string | null;
+  /** judge transport: "ollama" (/api/chat, default) or "openai" (/v1/chat/completions via gateway). */
+  judgeApi: "ollama" | "openai";
+  /** base URL for the judge; defaults to ollamaUrl. */
+  judgeBase: string | null;
+  /** judge model; defaults to model. */
+  judgeModel: string | null;
+  /** bearer token for the OpenAI-compatible judge endpoint. */
+  judgeKey: string;
   json: string | null;
   verbose: boolean;
   qlog: string;
@@ -51,6 +63,11 @@ function parseArgs(argv: string[]): Args {
     db: get("db") ?? join(homedir(), ".nlm", "canonical.sqlite"),
     model: get("model") ?? USEFULNESS_MODEL,
     ollamaUrl: get("ollama") ?? process.env["OLLAMA_URL"] ?? "http://localhost:11434",
+    tool: get("tool") ?? null,
+    judgeApi: (get("judge-api") ?? "ollama") as "ollama" | "openai",
+    judgeBase: get("judge-base") ?? null,
+    judgeModel: get("judge-model") ?? null,
+    judgeKey: get("judge-key") ?? process.env["JUDGE_API_KEY"] ?? "",
     json: get("json") ?? null,
     verbose: argv.includes("--verbose"),
     qlog: get("qlog") ?? join(homedir(), ".nlm", "query_log.jsonl"),
@@ -114,7 +131,13 @@ function readSessionPulls(logPath: string, cutoff: number): { seen: number; pull
       .filter((x): x is string => typeof x === "string")
       .slice(0, 3);
     const kind = typeof obj["kind"] === "string" ? obj["kind"] : null;
-    const tool: ToolLabel = kind === "code" ? "code" : kind === "workstream" ? "workstream" : "session";
+    const loggedTool = typeof obj["tool"] === "string" ? obj["tool"] : "";
+    const tool: ToolLabel =
+      loggedTool === "recall_code" || kind === "code"
+        ? "code"
+        : kind === "workstream"
+          ? "workstream"
+          : "session";
     pulls.push({
       tool,
       query,
@@ -335,7 +358,10 @@ async function judgeWithDeadline(
   });
   try {
     return await Promise.race([
-      judgeUsefulness(args.ollamaUrl, args.model, triple).catch((): Verdict => "unused"),
+      judgeUsefulness(args.judgeBase ?? args.ollamaUrl, args.judgeModel ?? args.model, triple, {
+        api: args.judgeApi,
+        ...(args.judgeKey ? { key: args.judgeKey } : {}),
+      }).catch((): Verdict => "unused"),
       timeout,
     ]);
   } finally {
@@ -361,18 +387,29 @@ async function main(): Promise<void> {
   const conn: {
     db: Database.Database | null;
     summStmt: Database.Statement<[string], { label: string; summary: string; body: string }> | null;
-  } = { db: null, summStmt: null };
+    exStmt:
+      | Database.Statement<[string], { task_context: string; code: string }>
+      | null;
+  } = { db: null, summStmt: null, exStmt: null };
 
-  function ctxOf(ids: string[]): string {
+  function ctxOf(ids: string[], tool: ToolLabel): string {
     if (ids.length === 0) return "";
     if (!conn.db) {
       conn.db = new Database(args.db, { readonly: true });
       conn.summStmt = conn.db.prepare<[string], { label: string; summary: string; body: string }>(
         "SELECT label, COALESCE(summary,'') AS summary, COALESCE(substr(body,1,500),'') AS body FROM sessions WHERE id = ?",
       );
+      conn.exStmt = conn.db.prepare<[string], { task_context: string; code: string }>(
+        "SELECT task_context, COALESCE(substr(code,1,800),'') AS code FROM code_exemplars WHERE id = ?",
+      );
     }
     const parts: string[] = [];
     for (const id of ids) {
+      if (tool === "code") {
+        const r = conn.exStmt!.get(id);
+        if (r) parts.push(`${r.task_context}\n${r.code}`.trim());
+        continue;
+      }
       const r = conn.summStmt!.get(id);
       if (r) parts.push(`${r.label}\n${r.summary}\n${r.body}`.trim());
     }
@@ -386,7 +423,8 @@ async function main(): Promise<void> {
   let joined = 0;
   let unjoinable = 0;
 
-  for (const pull of allPulls) {
+  const wanted = args.tool ? allPulls.filter((p) => p.tool === args.tool) : allPulls;
+  for (const pull of wanted) {
     if (scored >= args.limit) break;
 
     const jr = pull.conversationId
@@ -405,7 +443,7 @@ async function main(): Promise<void> {
     }
 
     joined += 1;
-    const context = ctxOf(pull.returnedIds);
+    const context = ctxOf(pull.returnedIds, pull.tool);
     const verdict = await judgeWithDeadline(args, { prompt: pull.query, context, response });
     if (verdict === null) continue;
 

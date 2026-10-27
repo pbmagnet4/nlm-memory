@@ -222,8 +222,8 @@ function tenantStatePath(tenantId, ...segments) {
 // package.json
 var package_default = {
   name: "nlm-memory",
-  version: "0.21.20",
-  description: "Local-first non-linear memory operating system for AI operators.",
+  version: "0.21.21-property.1",
+  description: "Local-first memory for AI agents across tools, sessions and projects.",
   type: "module",
   license: "Apache-2.0",
   engines: {
@@ -298,7 +298,8 @@ var package_default = {
     "eval:rederiv-calibrate": "tsx scripts/eval/re-derivation-calibrate.ts",
     "eval:fact-judge-replay": "tsx scripts/eval/fact-judge-replay.ts",
     "eval:fact-judge-label": "tsx scripts/eval/fact-judge-label.ts",
-    "eval:fact-class-replay": "tsx scripts/eval/fact-class-replay.ts"
+    "eval:fact-class-replay": "tsx scripts/eval/fact-class-replay.ts",
+    "demo:memory": "tsx scripts/demo/project-memory.ts"
   },
   dependencies: {
     "@clack/prompts": "^1.4.0",
@@ -436,7 +437,7 @@ function formatPointerBlock(hits, facts = [], exemplars = [], concepts = []) {
     out.push("## Known facts about top entities");
     for (const f of facts) {
       const tag = f.corroborationCount > 1 ? ` [${f.corroborationCount} sessions]` : "";
-      out.push(`- ${f.subject} ${f.predicate}: ${f.value}${tag}`);
+      out.push(`- ${f.property ? `[${f.property}] ` : ""}${f.subject} ${f.predicate}: ${f.value}${tag}`);
     }
   }
   if (exemplars.length > 0) {
@@ -757,6 +758,7 @@ async function recallOverHttp(prompt, runtime, conversationId, mode = "keyword",
       ...r.summary !== void 0 ? { summary: r.summary } : {}
     }));
     const facts = (body.relatedFacts ?? []).map((f) => ({
+      ...f.property ? { property: f.property } : {},
       subject: f.subject,
       predicate: f.predicate,
       value: f.value,

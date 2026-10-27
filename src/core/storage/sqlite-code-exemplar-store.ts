@@ -230,6 +230,18 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
     return rows.map((r) => this.rowToExemplar(r));
   }
 
+  async listByOutcome(tenantId: string, outcome: CodeExemplarOutcome): Promise<ReadonlyArray<CodeExemplar>> {
+    const tc = tenantClause(tenantId);
+    const rows = this.db
+      .prepare<[string, string], ExemplarRow>(
+        `SELECT id, install_scope, signal_id, session_id, repo, model, lang,
+                task_context, code, code_hash, outcome, git_sha, survived, ts, created_at, retired_at, label_source
+         FROM code_exemplars WHERE outcome = ? AND retired_at IS NULL AND ${tc.sql} ORDER BY ts ASC`,
+      )
+      .all(outcome, tc.param) as ExemplarRow[];
+    return rows.map((r) => this.rowToExemplar(r));
+  }
+
   /** Sweep guard for bulk exemplar deletes. False means refused: caller deletes nothing. */
   private sweepAllowed(sweep: string, tenantId: string, touching: number): boolean {
     if (touching === 0) return true;

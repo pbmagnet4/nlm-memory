@@ -1,13 +1,8 @@
 # Security Policy
 
-## Supported Versions
+## Supported versions
 
-NLM is in active development. Security fixes are only backported to the latest minor release.
-
-| Version | Supported |
-|---------|-----------|
-| 0.5.x   | Yes |
-| < 0.5   | No — please upgrade |
+Report vulnerabilities against the latest published stable release. Source candidates and experimental features are not stable releases. The [release-status page](docs/release-status.md) distinguishes the channels; unsupported older versions should be upgraded.
 
 ## Reporting a Vulnerability
 
@@ -34,42 +29,35 @@ In scope:
 
 Full scope and out-of-scope items are listed under the Threat Model below.
 
-## Threat Model
+## Threat model and data flow
 
-NLM is designed for single-user, local use. Its trust boundary is the loopback interface and the local user's filesystem.
+Local use trusts the operating-system user who owns NLM's state. The default daemon binds to loopback. A process running as the same user can read that user's files and memory database. Do not treat project/property filters, workstreams or directory scopes as access-control boundaries.
 
-### Defenses in place
+### Access controls
 
-- 127.0.0.1-only bind on the HTTP API (`NLM_PORT`, default 3940)
-- Host header validation on `/api/*` (defeats DNS rebinding via browser)
-- Origin header validation when present (defeats cross-origin drive-by)
-- Bearer token (`NLM_MCP_TOKEN`, 256-bit) for non-browser API and `/mcp` access; `timingSafeEqual` comparison
-- Optional opt-in UI cookie auth (`NLM_UI_AUTH=cookie`) with HMAC-derived cookie value, rolling expiry, and a nonce-based bootstrap so the token never appears in a URL
-- File permissions `0600` on `~/.nlm/.env`, `~/.nlm/canonical.sqlite`, and other state files
-- Directory permissions `0700` on `~/.nlm/`, re-asserted on every daemon start
+- Host and Origin checks protect local `/api/*` requests against browser-origin attacks.
+- `/mcp` requires a bearer token and resolves its tenant from that token.
+- Local API mode without UI authentication permits local requests after Host/Origin checks. Setting `NLM_UI_AUTH=cookie` adds cookie or bearer authentication. Hosted mode requires a resolvable bearer token. Local mode should not be exposed directly to the internet.
+- Tenant-scoped storage queries and recall filters implement team isolation. Stdio MCP is local and bound to the default team; use the HTTP transport for token-resolved team access.
+- State-file permissions are hardened to the local user. Provider credentials currently live in the SQLite provider registry in plaintext; protect the database and every backup as you would a credential file.
 
-A vulnerability is anything that bypasses one of the above or exposes session data outside the local user account.
+### Data leaving the machine
 
-### Known limitations (not vulnerabilities)
+| Configuration or action | Data/destination |
+|---|---|
+| Local Ollama classifier/embeddings | Content goes to the configured local endpoint. |
+| Remote classification, query rewriting or fact judging | Relevant transcript, query or fact content goes to the selected endpoint. Anything pasted into a session may be included. |
+| Remote prose/code embeddings | Relevant text/code goes to the configured embedding provider. |
+| Update checks | Requests to the npm registry; disable with `NLM_DISABLE_UPDATE_CHECK=1`. |
+| Opt-in Telegram digest or alert webhook | Digest or event payloads go to the configured notification destination. |
+| Manually invoked evaluation tools | Model-backed evaluation can send the supplied examples to its configured judge/generator. Inspect the tool and configuration before running it on private data. |
 
-The following are intentional design choices in the current release. Reports about them are appreciated but won't be triaged as security issues until a hardening release commits to closing them.
+There is no analytics SDK or required NLM account for local use. Local-first does not mean that a remote model configuration keeps content on the machine. Transcript filesystem reads themselves are local I/O, not outbound network traffic.
 
-- **Cloud-classifier data egress.** If you opt into a cloud classifier (DeepSeek, OpenAI, Anthropic, OpenRouter, or any OpenAI-compatible endpoint), session transcripts — including anything pasted into them — are sent to that vendor. The setup wizard surfaces this; the default classifier is local Ollama.
-- **Provider API keys stored in plaintext.** Keys for cloud providers live in the `providers.api_key` column of `~/.nlm/canonical.sqlite`. The file is `0600` in a `0700` directory, so the OS user is the trust boundary. OS-keychain migration is on the roadmap.
-- **Untrusted indexed content reaches the classifier.** Sessions written by other AI runtimes can carry prompt-injection payloads. NLM's classifier output is structured (label/entities/decisions/open questions) and is not executed; downstream agents that act on that output must treat it as untrusted.
-- **The recall hook fails open.** Any error in the Claude Code hook yields a clean exit (it must never block the model). A silently-broken hook is detectable via the daily digest's `WARN hook silent` canary.
-- **Single-user assumption.** A shared-user host (e.g., multiple humans `su`ing into the same Unix account) breaks the threat model. NLM is not multi-tenant.
+### Untrusted memory and operational limits
 
-### What is in scope as a vulnerability
+Indexed sessions and retrieved passages can contain malicious instructions. Treat them as untrusted source material, not privileged agent instructions. Structured classifier output is not executed by NLM, but downstream agents must not automatically trust it.
 
-- Any path that exposes session content, provider keys, or `NLM_MCP_TOKEN` to a process running as a different OS user
-- Any path that lets a cross-origin web page in a browser read or write `/api/*` or `/mcp`
-- Any path that lets a malicious indexed session execute code in the daemon, mutate other sessions' content, or bypass supersedence audit logging
-- Any path that exfiltrates data to a destination not in the README's outbound-traffic table
+Hooks fail open to avoid blocking the calling runtime. Use health checks and the digest's hook-liveness reporting to detect silent failure. Hostile local-user processes, root access, shared-account abuse and upstream dependency behavior are outside NLM's local-user isolation guarantee. Report a reproducible boundary bypass privately rather than assuming a known limitation makes every related report out of scope.
 
-### Out of scope
-
-- Vulnerabilities requiring local root, physical access, or shared-account abuse
-- Denial of service via excessive recall queries (single-user, local-only)
-- Issues in upstream dependencies that have not been patched upstream
-- The five "known limitations" above (file feature requests instead)
+Backups contain memories and can contain provider credentials. Do not attach them to public issues. See [release status](docs/release-status.md) before upgrading or downgrading a database writer.

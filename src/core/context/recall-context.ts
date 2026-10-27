@@ -1,3 +1,5 @@
+import { requireProperty } from "@core/properties/model.js";
+import type { PropertyStore } from "@ports/property-store.js";
 import { hasCurrentSourceAssessment } from "@core/facts/source-anchor.js";
 import type { FactStore, CurrentValueSummary } from "@ports/fact-store.js";
 import type { SessionStore } from "@ports/session-store.js";
@@ -11,6 +13,7 @@ import { resolveRecallScope, type ResolvedRecallScope } from "@core/recall/resol
 import type { ContextLookup } from "./context-bundle.js";
 
 export interface ContextRequest {
+  readonly property?: string | undefined;
   readonly query: string;
   readonly workstream?: string | undefined;
   readonly subject?: string | undefined;
@@ -22,6 +25,7 @@ export interface ContextRequest {
   readonly deadlineAt?: number;
 }
 export interface ContextDeps {
+  readonly properties?: Pick<PropertyStore, "list">;
   readonly recall: RecallService;
   readonly factRecall?: FactRecallService;
   readonly factStore?: FactStore;
@@ -50,6 +54,10 @@ export interface ContextResult {
 
 export async function recallContext(tenantId: string, input: ContextRequest, deps: ContextDeps): Promise<ContextResult> {
   const budget = new RequestBudget(input.timeoutMs ?? 1_500, { ...input, ...(deps.now ? { now: deps.now } : {}) });
+  if (input.property !== undefined) {
+    try { await budget.run(() => requireProperty(tenantId, input.property, deps.properties)); }
+    catch (error) { budget.dispose(); throw error; }
+  }
   const intent = input.intent && input.intent !== "auto" ? input.intent
     : /\b(why|rationale|reason|decide|decided|choose|chose)\b/i.test(input.query) ? "decision"
       : /\b(left off|still open|status|blocked|next step)\b/i.test(input.query) ? "state" : "lookup";
@@ -113,6 +121,7 @@ export async function recallContext(tenantId: string, input: ContextRequest, dep
     if (exact && deps.factStore) {
       try {
         current = await budget.run(() => deps.factStore!.summarizeCurrentValues(tenantId, {
+          ...(input.property !== undefined ? { property: input.property } : {}),
           subject: input.subject!, predicate: input.predicate!, minConfidence: DEFAULT_FACT_MIN_CONFIDENCE,
           ...(scope.status === "all" ? {} : { workstreamIds: scope.workstreamIds }),
         }));
@@ -137,6 +146,7 @@ export async function recallContext(tenantId: string, input: ContextRequest, dep
           if (!deps.factRecall) return Promise.resolve({ results: [] });
           factsExecuted = true;
           return deps.factRecall.search(tenantId, {
+            ...(input.property !== undefined ? { property: input.property } : {}),
             query: exact ? "" : input.query, mode: exact ? "keyword" : input.mode ?? "hybrid", limit: 12,
             ...(input.subject ? { subject: input.subject } : {}),
             ...(input.predicate ? { predicate: input.predicate } : {}),
@@ -150,7 +160,7 @@ export async function recallContext(tenantId: string, input: ContextRequest, dep
             const sourceFacts = await budget.run(() => deps.factStore!.listBySessions(tenantId, [...new Set(missing.map((e) => e.sourceSessionId))]));
             hits = [...missing.flatMap((e) => {
               const fact = sourceFacts.find((f) => f.subject === input.subject && f.predicate === input.predicate
-                && f.value === e.value && f.sourceSessionId === e.sourceSessionId && f.confidence >= DEFAULT_FACT_MIN_CONFIDENCE);
+                && (input.property === undefined || f.property?.slug === input.property) && f.value === e.value && f.sourceSessionId === e.sourceSessionId && f.confidence >= DEFAULT_FACT_MIN_CONFIDENCE);
               return fact ? [{ ...fact, matchScore: 0, matchedIn: [] }] : [];
             }), ...hits];
           }
@@ -166,6 +176,7 @@ export async function recallContext(tenantId: string, input: ContextRequest, dep
         const result = await budget.run(() => {
           sessionsExecuted = true;
           return deps.recall.search(tenantId, { query: input.query, mode: input.mode ?? "keyword", limit: 4,
+            ...(input.property !== undefined ? { property: input.property } : {}),
             rewrite: false, includeSuperseded: intent === "history" }, options);
         });
         await publishSessions(result);
