@@ -25,7 +25,7 @@ NLM indexes AI sessions into a local searchable store. Recover an earlier decisi
 | Channel | What you can use |
 |---|---|
 | **Stable npm: 0.21.20** | Cross-runtime session capture, bounded session/context recall, source expansion and an editable timeline. [Release notes](https://github.com/pbmagnet4/nlm-memory/releases/tag/v0.21.20). |
-| **Release candidate: 0.21.21-rc.1** | Canonical property catalogs, explicit fact/session associations, repository-origin session references and property-filtered recall. This release track uses the opt-in npm `next` channel; stable npm does not contain these features. Check [publication status](docs/release-status.md) before installing. |
+| **Public prerelease: 0.21.21-rc.1** | Canonical property catalogs, explicit fact/session associations, repository-origin session references and property-filtered recall. Install explicitly with `npm install -g nlm-memory@next`. Stable npm does not contain these features. [Prerelease notes](https://github.com/pbmagnet4/nlm-memory/releases/tag/v0.21.21-rc.1). |
 | **Experimental, disabled by default** | Automatic fact ownership and entity-name session associations. Evaluation found wrong-project matches; neither a subject label nor a project name inside a quote reliably proves ownership. |
 
 [Full status and upgrade notes](docs/release-status.md). Source availability is not a promise that an experimental feature has passed its evaluation gate.
@@ -52,7 +52,7 @@ If you use local Ollama, make the configured classifier and embedding models ava
 | “Show me the evidence.” | `get_session` retrieves matching passages or bounded original transcript pages. |
 | “What is the current value, and is there disagreement?” | `recall_context`, `recall_facts` and `get_fact_history` expose structured facts, provenance and history. Inspect partial-coverage indicators. |
 | “That earlier decision is obsolete.” | `mark_superseded` records the replacement relationship; history remains inspectable. |
-| “Only show memories associated with this project.” | The release candidate accepts canonical `property` filters. Explicit assignments and repository relevance are separate from inferred fact ownership. |
+| “Only show memories associated with this project.” | The prerelease accepts canonical `property` filters. Explicit assignments and repository relevance are separate from inferred fact ownership. |
 
 MCP over the local daemon's `/mcp` endpoint is the default connection. Automatic hooks depend on the runtime; capture support does not imply hook support. Per-prompt ambient recall is off by default on fresh installs. [Runtime matrix and hooks](docs/runtimes.md) · [MCP/HTTP reference](docs/api.md).
 
@@ -86,7 +86,7 @@ Methods, dates, configuration and limitations: [evaluation guide](docs/evaluatio
 - [MCP tools and HTTP API](docs/api.md)
 - [Context retrieval and response budgets](docs/context-retrieval.md)
 - [Editable timeline](docs/supersedence.md)
-- [Canonical memory properties](docs/properties.md) — release candidate
+- [Canonical memory properties](docs/properties.md) — prerelease
 - [Configuration](docs/configuration.md)
 - [Signals and optional code exemplars](docs/signals.md)
 - [Digest and UI](docs/operations.md)
