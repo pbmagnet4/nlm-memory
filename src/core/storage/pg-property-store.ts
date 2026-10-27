@@ -114,10 +114,10 @@ export class PgPropertyStore implements PropertyStore {
       for (const r of rows) {
         if (r.property_source === "operator") continue;
         const f = attributed.get(r.id)!;
-        if (!f.property || f.property.slug === r.property_slug) continue;
+        if ((f.property?.slug ?? null) === r.property_slug && (f.property?.source ?? null) === r.property_source && (f.property?.evidence ?? null) === r.property_evidence) continue;
         if (apply) await store.db.query(`UPDATE facts SET property_slug = $1, property_source = $2, property_evidence = $3 WHERE id = $4 AND property_source IS DISTINCT FROM 'operator' AND ${tc.sql}`,
-          [f.property.slug, f.property.source, f.property.evidence, f.id, tc.param]);
-        results.push({ factId: f.id, slug: f.property.slug, source: f.property.source });
+          [f.property?.slug ?? null, f.property?.source ?? null, f.property?.evidence ?? null, f.id, tc.param]);
+        results.push({ factId: f.id, slug: f.property?.slug ?? null, source: f.property?.source ?? null });
       }
       const st = tenantClausePg(tenantId, 1);
       const { rows: entities } = await store.db.query<{ session_id: string; entity_canonical: string }>(`SELECT session_id, entity_canonical FROM session_entities WHERE ${st.sql}`, [st.param]);

@@ -101,10 +101,10 @@ export class SqlitePropertyStore implements PropertyStore {
       const attributed = attributeFactGroups(rows.map((r) => ({ fact: toFact(r), sourceIdentity: r.source_identity, sourceVersion: r.current_source_body_version })), catalog, this.overrides(tenantId));
       const changes: PropertyBackfillRow[] = rows.filter((r) => r.property_source !== "operator").flatMap((r) => {
         const f = attributed.get(r.id)!;
-        if (!f.property || f.property.slug === r.property_slug) return [];
+        if ((f.property?.slug ?? null) === r.property_slug && (f.property?.source ?? null) === r.property_source && (f.property?.evidence ?? null) === r.property_evidence) return [];
         if (apply) this.db.prepare(`UPDATE facts SET property_slug = ?, property_source = ?, property_evidence = ? WHERE id = ? AND ${tc.sql}`)
-          .run(f.property.slug, f.property.source, f.property.evidence, f.id, tc.param);
-        return [{ factId: f.id, slug: f.property.slug, source: f.property.source }];
+          .run(f.property?.slug ?? null, f.property?.source ?? null, f.property?.evidence ?? null, f.id, tc.param);
+        return [{ factId: f.id, slug: f.property?.slug ?? null, source: f.property?.source ?? null }];
       });
       const entities = this.db.prepare<[string], { session_id: string; entity_canonical: string }>(`SELECT session_id, entity_canonical FROM session_entities WHERE ${tc.sql}`).all(tc.param);
       const bySession = new Map<string, string[]>();

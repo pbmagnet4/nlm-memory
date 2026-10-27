@@ -51,7 +51,7 @@ export function attributeFacts(facts: readonly Fact[], properties: readonly Memo
       if (fact.property.slug !== null && !properties.some((p) => p.slug === fact.property!.slug)) throw new Error(`Unknown property: ${fact.property.slug}`);
       return fact;
     }
-    if (!infer) return fact;
+    if (!infer) return { ...fact, property: undefined };
     const subject = properties.filter((p) => [p.slug, p.label, ...p.aliases].some((a) => normalizeName(a) === normalizeName(fact.subject)));
     if (fact.sourceAnchor?.status === "verified" && fact.sourceQuote) {
       const matches = properties.filter((p) => [p.label, ...p.aliases].some((a) => namesProperty(fact.sourceQuote!, a)));
