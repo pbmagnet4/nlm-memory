@@ -158,3 +158,13 @@ _Older entries archived in CHANGELOG-2026.md_
 **State:** Released as 0.21.16 (log faults) and 0.21.17 (dataset stall). `tests/integration/mcp-recall-logging.test.ts` is flaky under full-suite load (passes alone); the Postgres integration tests need a local Postgres. The 64 codex fork files were queued for re-ingest by clearing their adapter_state rows (backup in `~/.nlm/adapter_state-codex-forks-20261013.json`).
 
 **Next:** the dataset build still holds the event loop about 2 s per UI load, enough to time out a concurrent session-start recall (2 s budget); moving it to a worker thread removes that. 4 real I7b-1 orphans have no `doctor --fix` branch.
+
+## 2026-10-15 - Polite classifier client: in-flight cap, re-touch dedupe, per-chunk budget, outage backoff (T720)
+
+**Changes:** Every daemon classifier request goes through one limiter (`NLM_CLASSIFY_MAX_INFLIGHT`, default 1), chunks of an oversized session included; chunks now dispatch through it and each gets its own timeout once it holds a slot, with surviving chunks kept as a partial result. The scheduler hashes the normalized session text per source and skips a resumed source whose text is unchanged. Infrastructure errors (unreachable, reset, DNS, 5xx, timeout) defer the session with 30 s doubling to 10 min backoff, stop the tick, and never count toward the 3-strike ceiling; non-JSON and schema failures still do. `TickReport` gains `deferred`.
+
+**Results:** Tests cover cap 1 and 2 across 3 chunks, a 5-chunk slow client exceeding one chunk's budget, touch-only and noise-append skips, append reclassification, and a 500-then-success recovery.
+
+**State:** The dedupe hash and backoff clocks live in daemon memory, so a restart costs at most one extra classification per grown source. Clearing `adapter_state` rows still forces re-ingest.
+
+**Next:** none.
