@@ -5,9 +5,9 @@ Status recorded 2026-10-27. The npm version badge and GitHub Releases show the c
 | Channel | Version | Availability |
 |---|---|---|
 | Published stable | 0.21.20 | `npm install -g nlm-memory`; [release](https://github.com/pbmagnet4/nlm-memory/releases/tag/v0.21.20). |
-| Source candidate | 0.21.21-rc.1 | Build from main. Publication to the opt-in `next` channel is pending. This is not a stable-channel upgrade. |
+| Public prerelease (`next`) | 0.21.21-rc.1 | `npm install -g nlm-memory@next`; [prerelease notes](https://github.com/pbmagnet4/nlm-memory/releases/tag/v0.21.21-rc.1). Not a stable-channel upgrade. |
 
-## Changes in the source candidate
+## Changes in the prerelease
 
 - Tenant-scoped canonical property catalogs; explicit fact corrections and session associations.
 - Session relevance from captured repository origin, including extant Git worktrees. Missing or ambiguous origin evidence abstains.
@@ -26,3 +26,5 @@ Ordinary stable installation instructions remain on the [README](../README.md#in
 ## Release channels
 
 The release workflow validates that the tag matches package.json. Prerelease versions publish to npm `next` and are marked prerelease/non-latest on GitHub; stable versions publish to npm `latest`. A prerelease must not move the stable dist-tag.
+
+Publication verified 2026-10-27: npm `next` resolves to 0.21.21-rc.1 and `latest` remains 0.21.20. The release is marked prerelease/non-latest on GitHub. The published tarball passed registry SHA-512 verification and an isolated installed-artifact smoke check using fictional data. Engineering gates passed 3,367 tests (three opt-in skips), typecheck, build, packed-plugin validation and independent review. These are release checks, not a new answer-quality measurement.
