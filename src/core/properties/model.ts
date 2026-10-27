@@ -33,6 +33,12 @@ export function assertionKey(fact: Pick<Fact, "kind" | "subject" | "predicate" |
     .map((s) => s.normalize("NFC").trim().replace(/\s+/g, " ")))).digest("hex");
 }
 export function propertyAssociationsEnabled(): boolean { return process.env["NLM_PROPERTY_ASSOCIATIONS"] === "1"; }
+export function propertyInferenceEnabled(): boolean { return process.env["NLM_PROPERTY_INFERENCE"] === "1"; }
+function namesProperty(quote: string, name: string): boolean {
+  const literal = name.trim().split(/[\s_-]+/).map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[\\s_-]+");
+  // Runtime paths, code identifiers and reverse-DNS namespaces are not ownership evidence.
+  return new RegExp(`(^|[^\\p{L}\\p{N}_./:@-])${literal}(?=$|[^\\p{L}\\p{N}_./:@-])`, "iu").test(quote);
+}
 export function attributeFacts(facts: readonly Fact[], properties: readonly MemoryProperty[], overrides: readonly PropertyOverride[], infer = true, sourceVersion?: string | null): Fact[] {
   const corrections = new Map(overrides.map((o) => [o.assertionKey, o]));
   const counts = new Map<string, number>();
@@ -47,11 +53,11 @@ export function attributeFacts(facts: readonly Fact[], properties: readonly Memo
     }
     if (!infer) return fact;
     const subject = properties.filter((p) => [p.slug, p.label, ...p.aliases].some((a) => normalizeName(a) === normalizeName(fact.subject)));
-    if (subject.length === 1) return { ...fact, property: { slug: subject[0]!.slug, source: "subject", evidence: fact.subject } };
     if (fact.sourceAnchor?.status === "verified" && fact.sourceQuote) {
-      const text = ` ${normalizeName(fact.sourceQuote).replace(/[^\p{L}\p{N} ]/gu, " ").replace(/\s+/g, " ")} `;
-      const matches = properties.filter((p) => [p.slug, p.label, ...p.aliases].some((a) => text.includes(` ${normalizeName(a)} `)));
-      if (matches.length === 1) return { ...fact, property: { slug: matches[0]!.slug, source: "source-quote", evidence: fact.sourceQuote } };
+      const matches = properties.filter((p) => [p.label, ...p.aliases].some((a) => namesProperty(fact.sourceQuote!, a)));
+      if (matches.length === 1 && (subject.length === 0 || subject[0]!.slug === matches[0]!.slug)) {
+        return { ...fact, property: { slug: matches[0]!.slug, source: subject.length === 1 ? "subject" : "source-quote", evidence: fact.sourceQuote } };
+      }
     }
     return { ...fact, property: undefined };
   });
