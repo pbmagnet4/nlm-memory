@@ -5,7 +5,7 @@ Status recorded 2026-10-27. The npm version badge and GitHub Releases show the c
 | Channel | Version | Availability |
 |---|---|---|
 | Published stable | 0.21.20 | `npm install -g nlm-memory`; [release](https://github.com/pbmagnet4/nlm-memory/releases/tag/v0.21.20). |
-| Source candidate | 0.21.21-property.1 | Build from main. This version is not a published npm release or a stable-channel upgrade. |
+| Source candidate | 0.21.21-rc.1 | Build from main. Publication to the opt-in `next` channel is pending. This is not a stable-channel upgrade. |
 
 ## Changes in the source candidate
 
@@ -22,3 +22,7 @@ Status recorded 2026-10-27. The npm version badge and GitHub Releases show the c
 Source builds include new database migrations. Back up the database and configuration before trying them. A downgrade after applying property associations must restore the matching pre-upgrade database/configuration as well as the old binary: an older writer does not understand the new attribution boundaries.
 
 Ordinary stable installation instructions remain on the [README](../README.md#install). Trying the synthetic demo does not migrate your real database. See [properties](properties.md) for configuration and correction semantics.
+
+## Release channels
+
+The release workflow validates that the tag matches package.json. Prerelease versions publish to npm `next` and are marked prerelease/non-latest on GitHub; stable versions publish to npm `latest`. A prerelease must not move the stable dist-tag.
