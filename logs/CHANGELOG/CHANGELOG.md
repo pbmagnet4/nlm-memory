@@ -1,5 +1,14 @@
 # nlm-memory CHANGELOG
 
+## 2026-10-27 - Approved session-close captures and agent guide (T1172)
+
+**Changes:** Added the short AGENTS.md router for development, property attribution, release channels and reviewed public ancestry (guide commit 1af338a; local landing 245aeec). Updated existing Backlog task T943 with verified Codex response_item.message coverage evidence rather than creating a duplicate. No normalization fix was made.
+
+**Results:** Three approved wiki syntheses cover ownership evidence and transcript coverage, public Git ancestry, and npm channel/artifact verification. Metadata, dated track records and ingest log entries were verified in vault commit 2b2b420. Guide links and whitespace checks pass; these documentation captures do not change runtime behavior.
+
+**State:** NLM guide landed locally. Vault landing is blocked by inherited overlapping edits: the normal guard refused without moving main or changing those files. Approved captures are committed in ~/.nxtos/worktrees/vault-T1172-close on docs/T1172-approved-close; T1172 remains blocked until safe vault integration. Private evidence: ~/.nxtos/state/session-close/01a17879-d2f8-7791-9b99-90fc8b37feb0/. No public push or release was made by this close.
+
+**Next:** Integrate the retained vault commit after the existing edits are finalized; keep T943 as the separate capture-coverage bug.
 
 ## 2026-10-27 - Public next-channel prerelease 0.21.21-rc.1 (T1156)
 
@@ -84,16 +93,6 @@
 **State:** Implementation is local; the installed daemon is unchanged. Tests cover source offsets, Unicode and changed-source paging, semantic-only passages, short identifiers, tenant isolation, old facts, conflicts, budgets, and telemetry. API contract and measurement limits: `docs/context-retrieval.md`.
 
 **Next:** Release/deploy through the normal NLM installer to activate the new MCP tool and migrations; independently labelled answer-quality evaluation remains separate from the existing synthetic/citation ranking checks.
-
-## 2026-10-15 - Polite classifier client: in-flight cap, re-touch dedupe, per-chunk budget, outage backoff (T720)
-
-**Changes:** Every daemon classifier request goes through one limiter (`NLM_CLASSIFY_MAX_INFLIGHT`, default 1), chunks of an oversized session included; chunks now dispatch through it and each gets its own timeout once it holds a slot, with surviving chunks kept as a partial result. The scheduler hashes the normalized session text per source and skips a resumed source whose text is unchanged. Infrastructure errors (unreachable, reset, DNS, 5xx, timeout) defer the session with 30 s doubling to 10 min backoff, stop the tick, and never count toward the 3-strike ceiling; non-JSON and schema failures still do. `TickReport` gains `deferred`.
-
-**Results:** Tests cover cap 1 and 2 across 3 chunks, a 5-chunk slow client exceeding one chunk's budget, touch-only and noise-append skips, append reclassification, and a 500-then-success recovery.
-
-**State:** The dedupe hash and backoff clocks live in daemon memory, so a restart costs at most one extra classification per grown source. Clearing `adapter_state` rows still forces re-ingest.
-
-**Next:** none.
 
 Session-level log per session protocol. Cap: 10 entries — archive older to `CHANGELOG-YYYY.md` when exceeded.
 
