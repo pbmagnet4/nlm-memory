@@ -417,6 +417,7 @@ export class ScanScheduler {
           decisions: classification.decisions,
           openQuestions: classification.open,
           scope: chunkScope,
+          projectDir: chunk.projectDir,
           agentPersona: subagentMeta.persona,
           parentSessionId: subagentMeta.parentSessionId,
           primaryModel: transcriptDerivables.primaryModel,

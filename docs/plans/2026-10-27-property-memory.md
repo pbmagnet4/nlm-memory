@@ -1,0 +1,25 @@
+# Canonical memory properties (T1128)
+
+Properties identify what an assertion concerns. Tenant identity remains authorization; directory scopes retain their existing semantics. A workstream is a thread of work, not a property identifier.
+
+## Invariants
+
+- A fact has one assertion context, or is unresolved. Comparative statements remain unresolved until split or corrected. A session can concern multiple properties through its facts.
+- Origin repositories are catalog metadata, not blanket fact ownership. An orchestrator working directory cannot attribute every assertion to the orchestrator.
+- Attribute facts before destructive lifecycle changes. Supersession and corroboration compare assertion contexts, not overlapping session tags.
+- Operator corrections bind to runtime session identity plus an assertion/evidence digest, never random fact IDs. Missing quotes bind corrections to the source body version. A changed assertion leaves the correction pending. Ambiguous duplicate assertions refuse correction.
+- No classifier-based property assignment or automatic injection until independent corpus evaluation passes. Literal evidence or an exact subject alias is the deterministic first lane.
+
+## Rollout
+
+Schema and explicit property reads are additive. `NLM_PROPERTY_ASSOCIATIONS=1` opts ingestion into deterministic attribution and disables automatic collapse of unresolved facts. With it unset, legacy unassigned ingestion retains its existing behavior; assigned facts always remain isolated. Import a reviewed catalog, inspect a dry-run backfill, apply only after reviewing it, and use explicit property recall before changing hook defaults.
+
+A backfill changes attribution only. It does not revive previously superseded facts or rewrite history. Historical erroneous supersession requires a separate reviewed repair.
+
+Before automatic injection, independently label real single-property, mixed-property, orchestrator, worktree, missing-evidence and ambiguous-alias sessions. Freeze the sample and acceptance thresholds before tuning. Report coverage separately from precision and unresolved cases. Synthetic tests verify mechanisms, not real-world classifier quality.
+
+## Read-only corpus baseline (2026-10-27)
+
+The current 67-property workspace registry has no exact normalized name collisions. Against tenant `team_local`, the read-only coverage tool measured 40,398 active facts: 680 proposed associations (668 exact subjects, 12 verified quotes), 39,718 unresolved. It found entity references in 8,846 of 24,514 sessions; 937 reference multiple properties. This is coverage only, not an independently labeled precision result. Broader inference and automatic hook selection remain gated.
+
+The implementation includes both storage adapters, session origin/reference associations, explicit correction and backfill CLI operations, property filters on MCP/HTTP/session CLI recall, and a shared backend contract. Public behavior is documented in `docs/properties.md`.

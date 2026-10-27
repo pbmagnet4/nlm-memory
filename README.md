@@ -64,6 +64,8 @@ Stop or remove: `nlm uninstall`.
 
 ---
 
+Canonical project associations, explicit property filters, corrections and conservative backfill are documented in [Memory properties](docs/properties.md).
+
 ## Quick Start
 
 After `nlm setup` finishes, open **http://localhost:3940/ui** — the daemon is running. (If you changed `NLM_PORT`, substitute your port in all examples below.) A 30-second sanity check:

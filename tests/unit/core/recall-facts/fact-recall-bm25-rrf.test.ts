@@ -45,6 +45,9 @@ class Store implements FactStore {
   async listBySession(): Promise<ReadonlyArray<Fact>> {
     return this.facts;
   }
+  async summarizeCurrentValues() { return { distinctValueCount: 0, sourceSessionCount: 0, examples: [] }; }
+  async listSubjectStats() { return []; }
+  async listBySubjects() { return []; }
   async listBySessions(): Promise<ReadonlyArray<Fact>> {
     return this.facts;
   }

@@ -1,3 +1,5 @@
+import { PgPropertyStore } from "./pg-property-store.js";
+import { propertyValues } from "./property-attribution.js";
 /**
  * Single source of truth for pg fact-ingest. Caller owns the transaction:
  * this function MUST run on a client that already issued BEGIN.
@@ -25,6 +27,7 @@ export async function ingestSessionFactsOnClient(
   facts: ReadonlyArray<Fact>,
   scope: string | null = null,
 ): Promise<void> {
+  facts = await new PgPropertyStore(client).prepareFacts(tenantId, sessionId, facts);
   const deleteTc = tenantClausePg(tenantId, 2);
   await client.query(`DELETE FROM facts WHERE source_session_id = $1 AND ${deleteTc.sql}`, [sessionId, deleteTc.param]);
   if (facts.length === 0) return;
@@ -32,10 +35,10 @@ export async function ingestSessionFactsOnClient(
   for (const f of facts) {
     await client.query(
       `INSERT INTO facts (id, kind, subject, predicate, value, source_session_id,
-         source_quote, created_at, superseded_by, confidence, retired_at, scope, tenant_id, source_start, source_end, source_body_version, source_quote_status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+         source_quote, created_at, superseded_by, confidence, retired_at, scope, tenant_id, source_start, source_end, source_body_version, source_quote_status, property_slug, property_source, property_evidence)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
       [f.id, f.kind, f.subject, f.predicate, f.value, f.sourceSessionId,
-       f.sourceQuote === null ? null : persistedText(f.sourceQuote), f.createdAt, f.supersededBy, f.confidence, f.retiredAt, scope, tenantId, ...anchorValues(f.sourceAnchor)],
+       f.sourceQuote === null ? null : persistedText(f.sourceQuote), f.createdAt, f.supersededBy, f.confidence, f.retiredAt, scope, tenantId, ...anchorValues(f.sourceAnchor), ...propertyValues(f.property)],
     );
   }
 
@@ -43,9 +46,9 @@ export async function ingestSessionFactsOnClient(
     const collapseTc = tenantClausePg(tenantId, 4);
     const collapsed = await client.query<{ id: string }>(
       `UPDATE facts SET superseded_by = $1
-       WHERE subject = $2 AND predicate = $3 AND superseded_by IS NULL AND id != $1 AND ${collapseTc.sql}
+       WHERE subject = $2 AND predicate = $3 AND superseded_by IS NULL AND id != $1 AND property_slug IS NOT DISTINCT FROM $5 AND ${collapseTc.sql}
        RETURNING id`,
-      [f.id, f.subject, f.predicate, collapseTc.param],
+      [f.id, f.subject, f.predicate, collapseTc.param, f.property?.slug ?? null],
     );
     const ids = collapsed.rows.map((r) => r.id);
     if (ids.length > 0) {

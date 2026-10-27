@@ -1,3 +1,4 @@
+import type { PropertyAttribution } from "@core/properties/model.js";
 /**
  * Shared domain types crossed by core, http, mcp, and ui layers.
  * No runtime behavior here — types only.
@@ -94,6 +95,7 @@ export type RecallMode = "keyword" | "semantic" | "hybrid";
 export type RecallKindFilter = "decision" | "open";
 
 export interface RecallQuery {
+  readonly property?: string;
   readonly query: string;
   readonly entity?: string;
   readonly kind?: RecallKindFilter;
@@ -238,6 +240,7 @@ export type SourceAnchor =
   | { readonly status: "stale" };
 
 export interface Fact {
+  readonly property?: PropertyAttribution | undefined;
   readonly id: string;
   readonly kind: FactKind;
   readonly subject: string;
@@ -261,6 +264,7 @@ export interface Fact {
 export type FactMatchField = "value" | "subject" | "predicate" | "semantic";
 
 export interface FactRecallQuery {
+  readonly property?: string;
   readonly workstream?: string;
   readonly query?: string;
   readonly subject?: string;
@@ -306,6 +310,7 @@ export interface FactRecallResult {
  * confidence filter, and the spec G.1 corroborationCount.
  */
 export interface RelatedFact {
+  readonly property?: string;
   readonly subject: string;
   readonly predicate: string;
   readonly value: string;
@@ -321,6 +326,7 @@ export interface RelatedConcept {
 }
 
 export interface FactHistoryChain {
+  readonly property?: string;
   readonly subject: string;
   readonly predicate: string;
   readonly history: ReadonlyArray<Fact>;

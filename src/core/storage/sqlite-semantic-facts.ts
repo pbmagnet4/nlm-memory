@@ -22,6 +22,7 @@ export function readSemanticFacts(
       params.push(eligibility[field]);
     }
   }
+  if (eligibility?.property !== undefined) { where.push("f.property_slug = ?"); params.push(eligibility.property); }
   if (eligibility?.minConfidence !== undefined) {
     where.push("f.confidence >= ?");
     params.push(eligibility.minConfidence);
@@ -45,7 +46,7 @@ export function readSemanticFacts(
     ORDER BY distance, fe.fact_id
     LIMIT ?
   `).all(...params).map((r) => ({ factId: r.fact_id, distance: r.distance }));
-  if (eligibility?.workstreamIds !== undefined) return exact();
+  if (eligibility?.workstreamIds !== undefined || eligibility?.property !== undefined) return exact();
   return db.transaction(() => completeSemanticTopK(k,
     (window) => db.prepare<[Buffer, number], NeighborRow>(`
       SELECT fact_id, distance FROM fact_embeddings

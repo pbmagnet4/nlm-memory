@@ -45,6 +45,9 @@ const ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "../..");
 const STAMP_TABLES = [
   "sessions",
   "facts",
+  "memory_properties",
+  "property_overrides",
+  "session_properties",
   "code_exemplars",
   "signals",
   "workstreams",

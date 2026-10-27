@@ -1,3 +1,4 @@
+import type { PropertyStore } from "./property-store.js";
 /**
  * Storage — top-level handle for NLM's fact + session corpus. Owns lifecycle
  * (init/close). Read and write paths use the bare .facts / .sessions handles;
@@ -21,6 +22,7 @@ import type { ProviderRegistryPort } from "@core/providers/provider-registry.js"
 import type { TeamTokenStorePort } from "@core/tenancy/team-token-store.js";
 
 export interface Storage {
+  readonly properties: PropertyStore;
   readonly facts: FactStore;
   readonly sessions: SessionStore;
   readonly signals: SignalStore;

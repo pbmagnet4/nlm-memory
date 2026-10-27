@@ -22,6 +22,7 @@ import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import type { FactKind, RecallMode } from "@shared/types.js";
 
 export interface FactLogEntry {
+  readonly property?: string;
   readonly workstream?: string;
   readonly source: string;
   /** Calling agent runtime (claude-code / hermes / pi.dev / codex / etc).
@@ -80,6 +81,7 @@ export async function logFactQuery(
       n_results: entry.nResults,
       returned_ids: entry.returnedIds,
       ...(entry.workstream !== undefined ? { workstream: entry.workstream } : {}),
+      ...(entry.property !== undefined ? { property: entry.property } : {}),
     };
     await appendFile(logPath, JSON.stringify(payload) + "\n", "utf8");
   } catch {

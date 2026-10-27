@@ -1,3 +1,6 @@
+import { corroborationKey } from "@ports/fact-store.js";
+import { requireProperty } from "@core/properties/model.js";
+import type { PropertyStore } from "@ports/property-store.js";
 import { embedForRecall } from "@core/recall/request-budget.js";
 import { executionWorkstreamIds, type RecallExecutionOptions } from "@core/recall/execution-options.js";
 /**
@@ -83,6 +86,7 @@ export function corroborationRanking(cap: number, tieBreak = cap > 1): Corrobora
 }
 
 export interface FactRecallServiceDeps {
+  readonly properties?: Pick<PropertyStore, "list">;
   readonly corroborationRanking?: CorroborationRanking;
   readonly factStore: FactStore;
   readonly llm: LLMClient;
@@ -95,6 +99,7 @@ export class FactRecallService {
   get embeddingClient(): LLMClient { return this.deps.llm; }
 
   async search(tenantId: string, input: FactRecallQuery, options: RecallExecutionOptions = {}): Promise<FactRecallResult> {
+    await requireProperty(tenantId, input.property, this.deps.properties);
     options.signal?.throwIfAborted();
     const mode: RecallMode = input.mode ?? "hybrid";
     const corroboration = new Map<string, number>();
@@ -117,7 +122,7 @@ export class FactRecallService {
 
     // A query with no signal at all → empty. Either free-text query, or a
     // structured filter (subject / predicate / kind) must be provided.
-    if (!queryText && subject === null && predicate === null && kind === null) {
+    if (!queryText && subject === null && predicate === null && kind === null && input.property === undefined) {
       return empty;
     }
 
@@ -128,6 +133,7 @@ export class FactRecallService {
       includeSuperseded: input.includeSuperseded === true,
       minConfidence: input.minConfidence ?? DEFAULT_FACT_MIN_CONFIDENCE,
       limit: STORAGE_FETCH_CAP,
+      ...(input.property !== undefined ? { property: input.property } : {}),
       ...(workstreamIds !== undefined ? { workstreamIds } : {}),
       ...(queryText && mode !== "semantic" ? { query: queryText } : {}),
       ...(input.subject !== undefined ? { subject: input.subject } : {}),
@@ -221,13 +227,13 @@ export class FactRecallService {
   private async applyCorroboration(tenantId: string, hits: ReadonlyArray<FactHit>, counts: Map<string, number>): Promise<ReadonlyArray<FactHit>> {
     if (hits.length === 0) return hits;
     try {
-      const identity = (hit: { subject: string; predicate: string; value: string }) =>
-        JSON.stringify([tenantId, hit.subject, hit.predicate, hit.value]);
+      const identity = (hit: Pick<Fact, "subject" | "predicate" | "value" | "property">) =>
+        JSON.stringify([tenantId, hit.property?.slug ?? null, hit.subject, hit.predicate, hit.value]);
       const missing = new Map(hits.filter((hit) => !counts.has(identity(hit))).map((hit) =>
-        [identity(hit), { subject: hit.subject, predicate: hit.predicate, value: hit.value }]));
+        [identity(hit), { subject: hit.subject, predicate: hit.predicate, value: hit.value, ...(hit.property?.slug ? { property: hit.property.slug } : {}) }]));
       if (missing.size > 0) {
         const fetched = await this.deps.factStore.corroborationCounts(tenantId, [...missing.values()]);
-        for (const [key, triple] of missing) counts.set(key, fetched.get(`${triple.subject} ${triple.predicate} ${triple.value}`) ?? 1);
+        for (const [key, triple] of missing) counts.set(key, fetched.get(corroborationKey(triple.subject, triple.predicate, triple.value, triple.property)) ?? 1);
       }
       const ranking = this.deps.corroborationRanking ?? corroborationRanking(readBoostCap());
       const boosted: FactHit[] = hits.map((h) => {
@@ -291,6 +297,7 @@ function makeFilterPredicate(
     // may be null, so the supersededBy gate below does not catch it. The SQL
     // pre-filter already excludes retired_at IS NOT NULL; this guards semantic
     // neighbours resolved outside that window from leaking a retired fact.
+    if (filter.property !== undefined && f.property?.slug !== filter.property) return false;
     if (f.retiredAt != null) return false;
     if (filter.includeSuperseded !== true && f.supersededBy !== null) return false;
     if (filter.minConfidence !== undefined && f.confidence < filter.minConfidence) return false;
