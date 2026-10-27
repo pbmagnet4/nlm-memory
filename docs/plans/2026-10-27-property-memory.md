@@ -23,3 +23,11 @@ Before automatic injection, independently label real single-property, mixed-prop
 The current 67-property workspace registry has no exact normalized name collisions. Against tenant `team_local`, the read-only coverage tool measured 40,398 active facts: 680 proposed associations (668 exact subjects, 12 verified quotes), 39,718 unresolved. It found entity references in 8,846 of 24,514 sessions; 937 reference multiple properties. This is coverage only, not an independently labeled precision result. Broader inference and automatic hook selection remain gated.
 
 The implementation includes both storage adapters, session origin/reference associations, explicit correction and backfill CLI operations, property filters on MCP/HTTP/session CLI recall, and a shared backend contract. Public behavior is documented in `docs/properties.md`.
+
+## Review and validation
+
+Independent Muse Spark 1.3 xhigh review of the implementation commit completed in 321 seconds with two leads. The PostgreSQL maintenance embedding lead was reproduced with a shared contract: SQLite passed and PostgreSQL lost one property's semantic hit when stored corrections applied with inference disabled. Fixed by sharing stored-attribution winner selection across ingestion, maintenance and judge paths. The repository-prefix recommendation was rejected: a known independent nested Git repository must abstain rather than inherit a non-repository parent's property. Added a regression and narrowed the documentation to the actual fail-closed fallback rule.
+
+Direct review additionally fixed evidence-bound correction identity, property-specific session cascades, context deadline accounting and preservation of labels through existing hook formatting. Packaged hooks were regenerated from source. Broader inference and automatic property selection remain behind the independent corpus-evaluation gate.
+
+Validation artifacts: `/private/tmp/nlm-T1128-final-tests.log`, `/private/tmp/nlm-T1128-typecheck.log`, `/private/tmp/nlm-T1128-build.log`, `/private/tmp/nlm-T1128-coverage.json`, `/private/tmp/ocr-nlm-T1128.json`. The repo has no `.agent-quality.yml`; targeted Vitest, all three TypeScript configurations, server build and existing UI build were run directly.

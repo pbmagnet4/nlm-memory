@@ -30,3 +30,11 @@ export function collapseWinners(facts: ReadonlyArray<Fact>): ReadonlyArray<Fact>
   const classes = factClassesEnabled();
   return batchWinners(facts).filter((f) => !(f.property?.slug == null && (propertyAssociationsEnabled() || f.property?.source === "operator"))).filter((f) => !(classes && factClassOf(f.predicate) === "event"));
 }
+
+export async function storedBatchWinners(
+  store: Pick<import("@ports/fact-store.js").FactStore, "getByIds">, tenantId: string, facts: readonly Fact[],
+): Promise<readonly Fact[]> {
+  const stored = new Map((await store.getByIds(tenantId, facts.map((f) => f.id))).map((f) => [f.id, f]));
+  const attributed = facts.flatMap((f) => stored.has(f.id) ? [stored.get(f.id)!] : []);
+  return batchWinners(attributed).filter((f) => f.supersededBy === null && f.retiredAt == null);
+}

@@ -10,7 +10,7 @@ A property identifies the project a memory concerns. Properties are tenant-scope
 [{"slug":"example-app","label":"Example App","aliases":["Example"],"repositories":["/projects/example-app"]}]
 ```
 
-Slugs are stable identifiers. Imports update labels, aliases and repository paths for existing slugs. Imports reject alias collisions and do not delete properties or rewrite existing attribution. Multiple host paths can identify the same repository. A task worktree matches through its common Git directory. Unavailable repository paths fall back to path-prefix matching; ambiguous matches abstain.
+Slugs are stable identifiers. Imports update labels, aliases and repository paths for existing slugs. Imports reject alias collisions and do not delete properties or rewrite existing attribution. Multiple host paths can identify the same repository. A task worktree matches through its common Git directory. A captured directory that cannot be resolved locally falls back to path-prefix matching. When the captured directory has a known Git identity, a catalog path without that identity abstains; an independent nested repository must not inherit its parent directory's property. Ambiguous matches abstain.
 
 Keep the catalog generated from the installation's existing project registry. NLM has no dependency on Whtnxt YAML or any particular registry service.
 

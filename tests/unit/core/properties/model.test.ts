@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -27,6 +27,10 @@ describe("property evidence", () => {
       execFileSync("git", ["-C", repo, "worktree", "add", "--quiet", "--detach", worktree]);
       const properties = parseProperties([{ slug: "project", label: "Project", repositories: [repo] }]);
       expect(repositoryProperty(worktree, properties)).toBe("project");
+      const unrelatedParent = join(tmp, "unrelated-parent"); const nested = join(unrelatedParent, "nested");
+      mkdirSync(unrelatedParent);
+      execFileSync("git", ["init", "--quiet", nested]);
+      expect(repositoryProperty(nested, parseProperties([{ slug: "parent", label: "Parent", repositories: [unrelatedParent] }]))).toBeNull();
       expect(repositoryProperty(worktree, [...properties, { ...properties[0]!, slug: "ambiguous" }])).toBeNull();
     } finally { rmSync(tmp, { recursive: true, force: true }); }
   });

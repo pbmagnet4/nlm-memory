@@ -11,7 +11,7 @@ import { FixedEmbedder } from "../fixtures/llm-stubs.js";
 import { corroborationKey } from "../../src/ports/fact-store.js";
 import { anchorRecord } from "./source-anchor.contract.js";
 
-export function runPropertyMemoryContract(h: { setup(): Promise<Storage>; close(s: Storage): Promise<void>; ingest(s: Storage, record: IngestRecord, facts: readonly Fact[], embedder?: LLMClient): Promise<void> }) {
+export function runPropertyMemoryContract(h: { maintain(s: Storage, sessionId: string, facts: readonly Fact[], embedder: LLMClient): Promise<void>; setup(): Promise<Storage>; close(s: Storage): Promise<void>; ingest(s: Storage, record: IngestRecord, facts: readonly Fact[], embedder?: LLMClient): Promise<void> }) {
   describe("property memory", () => {
     let storage: Storage;
     const tenant = "team_local";
@@ -51,6 +51,22 @@ export function runPropertyMemoryContract(h: { setup(): Promise<Storage>; close(
       const query = (await llm.embed()).vector;
       expect((await storage.facts.semanticSearch(tenant, query, 5, { property: "nxtseo" })).map((f) => f.factId)).toEqual(["seo"]);
       expect((await storage.facts.semanticSearch(tenant, query, 5, { property: "nxtads" })).map((f) => f.factId)).toEqual(["ads"]);
+    });
+    it("embeds maintained facts using stored corrections even with inference disabled", async () => {
+      const body = "API port 3940. API port 8000.";
+      const llm = new FixedEmbedder();
+      const raw = [
+        { ...fact("seo", "s1"), value: "3940", sourceQuote: "API port 3940", sourceAnchor: locateSourceAnchor(body, "API port 3940") },
+        { ...fact("ads", "s1"), value: "8000", sourceQuote: "API port 8000", sourceAnchor: locateSourceAnchor(body, "API port 8000") },
+      ];
+      await h.ingest(storage, anchorRecord(body, "s1"), raw);
+      await storage.properties.correctFact(tenant, "seo", "nxtseo");
+      await storage.properties.correctFact(tenant, "ads", "nxtads");
+      vi.stubEnv("NLM_PROPERTY_ASSOCIATIONS", "0");
+      await h.maintain(storage, "s1", raw.map((f) => ({ ...f, id: f.id + "-new" })), llm);
+      const query = (await llm.embed()).vector;
+      expect((await storage.facts.semanticSearch(tenant, query, 5, { property: "nxtseo" })).map((f) => f.factId)).toEqual(["seo-new"]);
+      expect((await storage.facts.semanticSearch(tenant, query, 5, { property: "nxtads" })).map((f) => f.factId)).toEqual(["ads-new"]);
     });
     it("keeps corrections through new fact IDs, and reports changed assertions as pending", async () => {
       const original = { ...fact("original", "s1"), value: "3940" };

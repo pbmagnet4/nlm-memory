@@ -26,7 +26,7 @@ import { tokenize } from "@core/recall/tokenize.js";
 import type { PgFactStore } from "./pg-fact-store.js";
 import { ingestSessionFactsOnClient } from "./pg-fact-ingest.js";
 import { chunkSessionText } from "@core/embedding/chunk-body.js";
-import { batchWinners } from "./fact-batch.js";
+import { storedBatchWinners } from "./fact-batch.js";
 import { loadActionOverlayPg, openQuestionId } from "@core/actions/overlay.js";
 import type { ActionOverlay } from "@core/actions/overlay.js";
 import { liveSessionStatus } from "./live-status.js";
@@ -692,9 +692,7 @@ export class PgSessionStore implements SessionStore {
       // SQLite path. A per-fact embed failure leaves the fact current but
       // semantically unreachable until a future re-ingest.
       if (factSink !== null) {
-        const stored = new Map((await factSink.factStore.getByIds(tenantId, factSink.facts.map((f) => f.id))).map((f) => [f.id, f]));
-        const attributed = factSink.facts.flatMap((f) => stored.has(f.id) ? [stored.get(f.id)!] : []);
-        for (const fact of batchWinners(attributed).filter((f) => f.supersededBy === null)) {
+        for (const fact of await storedBatchWinners(factSink.factStore, tenantId, factSink.facts)) {
           const factText = `${fact.subject} ${fact.predicate} ${fact.value}`.trim();
           if (!factText) continue;
           try {
@@ -805,7 +803,7 @@ export class PgSessionStore implements SessionStore {
       client.release();
     }
     if (embedder) {
-      for (const fact of batchWinners(facts)) {
+      for (const fact of await storedBatchWinners(factStore, tenantId, facts)) {
         const factText = `${fact.subject} ${fact.predicate} ${fact.value}`.trim();
         if (!factText) continue;
         try {

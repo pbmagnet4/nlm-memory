@@ -7,5 +7,6 @@ let tmp: string;
 runPropertyMemoryContract({
   async setup() { tmp = mkdtempSync(join(tmpdir(), "nlm-properties-")); return SqliteStorage.create({ dbPath: join(tmp, "db.sqlite"), migrationsDir: resolve("migrations") }); },
   async close(s) { await s.close(); rmSync(tmp, { recursive: true, force: true }); },
+  async maintain(s, sessionId, facts, embedder) { const storage = s as SqliteStorage; await storage.sessions.insertFactsForSession("team_local", sessionId, storage.facts, facts, embedder); },
   async ingest(s, record, facts, embedder) { const storage = s as SqliteStorage; await storage.sessions.insertSession("team_local", record, embedder ?? null, null, { factStore: storage.facts, facts }); },
 });

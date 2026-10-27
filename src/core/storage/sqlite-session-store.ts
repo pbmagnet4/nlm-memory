@@ -49,7 +49,7 @@ import { runMigrations } from "./migrate.js";
 import { SqliteFactStore } from "./sqlite-fact-store.js";
 import { tokenize } from "@core/recall/tokenize.js";
 import { chunkSessionText } from "@core/embedding/chunk-body.js";
-import { batchWinners } from "./fact-batch.js";
+import { storedBatchWinners } from "./fact-batch.js";
 import type { FactJudge } from "@core/facts/write-judge.js";
 import { tenantClause } from "@core/tenancy/tenant-clause.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
@@ -704,7 +704,7 @@ export class SqliteSessionStore implements SessionStore {
   private async judgeNewFacts(tenantId: string, facts: ReadonlyArray<Fact>): Promise<void> {
     if (!this.factJudge || this.factJudge.mode === "off") return;
     try {
-      await this.factJudge.run(tenantId, batchWinners(await new SqliteFactStore(this.db).getByIds(tenantId, facts.map((f) => f.id))));
+      await this.factJudge.run(tenantId, await storedBatchWinners(new SqliteFactStore(this.db), tenantId, facts));
     } catch (err) {
       process.stderr.write(`[nlm] fact judge failed: ${String(err)}\n`);
     }
@@ -716,9 +716,7 @@ export class SqliteSessionStore implements SessionStore {
     facts: ReadonlyArray<Fact>,
     embedder: import("@ports/llm-client.js").LLMClient,
   ): Promise<void> {
-    const stored = new Map((await factStore.getByIds(tenantId, facts.map((f) => f.id))).map((f) => [f.id, f]));
-    const attributed = facts.flatMap((f) => stored.has(f.id) ? [stored.get(f.id)!] : []);
-    for (const fact of batchWinners(attributed).filter((f) => f.supersededBy === null)) {
+    for (const fact of await storedBatchWinners(factStore, tenantId, facts)) {
       const factText = composeFactEmbedText(fact.subject, fact.predicate, fact.value);
       if (!factText) continue;
       if (!tryAcquire()) {
