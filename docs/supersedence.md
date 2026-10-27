@@ -87,3 +87,7 @@ Atomic-on-ingest supersedence remains the primary path — when a runtime adapte
 - `src/core/actions/overlay.ts` — entity-level retire/snooze/label overlays
 - `src/mcp/server.ts` — `get_session` enrichment that surfaces supersedence labels to callers
 - `src/ui/pages/River.tsx` — superseded-lane rendering
+
+## Fact assertion context
+
+Fact collapse and session-to-fact cascades match property context as well as subject and predicate. Property-aware history and corroboration keep contexts separate. Unresolved assertions abstain from automatic collapse when property attribution is enabled. See [Memory properties](properties.md) for the rollout and correction contract.

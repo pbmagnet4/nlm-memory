@@ -108,6 +108,7 @@ export async function recallOverHttp(
         summary?: string;
       }>;
       relatedFacts?: ReadonlyArray<{
+        property?: string;
         subject: string;
         predicate: string;
         value: string;
@@ -140,6 +141,7 @@ export async function recallOverHttp(
       ...(r.summary !== undefined ? { summary: r.summary } : {}),
     }));
     const facts = (body.relatedFacts ?? []).map((f) => ({
+      ...(f.property ? { property: f.property } : {}),
       subject: f.subject,
       predicate: f.predicate,
       value: f.value,

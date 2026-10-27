@@ -20,6 +20,7 @@ import type { RecallKindFilter, RecallMode } from "@shared/types.js";
 import { classifyQueryIntent, type QueryIntent } from "./query-intent.js";
 
 export interface LogEntry {
+  readonly property?: string;
   readonly workstream?: string;
   readonly source: string;
   /** Calling agent runtime (claude-code / hermes / pi.dev / codex / etc).
@@ -83,6 +84,7 @@ export async function logQuery(
       n_results: entry.nResults,
       returned_ids: entry.returnedIds,
       ...(entry.workstream !== undefined ? { workstream: entry.workstream } : {}),
+      ...(entry.property !== undefined ? { property: entry.property } : {}),
       ...(entry.tool !== undefined ? { tool: entry.tool } : {}),
       ...(entry.returnedExemplarIds !== undefined
         ? { returned_exemplar_ids: entry.returnedExemplarIds }

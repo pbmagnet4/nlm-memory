@@ -1,3 +1,5 @@
+import type { PropertyStore } from "@ports/property-store.js";
+import { requireProperty, propertySlug } from "@core/properties/model.js";
 import { validateSourceAnchor } from "@core/facts/source-anchor.js";
 import { bodyVersion } from "@core/context/source-version.js";
 import { resolveRecallScope, type ResolvedRecallScope } from "@core/recall/resolve-scope.js";
@@ -83,6 +85,7 @@ const SERVER_VERSION = "0.5.9";
 const useToon = (): boolean => process.env.NLM_FORMAT === "toon";
 
 export interface McpDeps {
+  readonly properties?: Pick<PropertyStore, "list">;
   readonly recall: RecallService;
   readonly requestContext?: { readonly tenantId: string; readonly conversationId?: string; readonly signal?: AbortSignal };
   readonly store: SessionStore;
@@ -212,6 +215,7 @@ export async function recallSessionsHandler(
       ...(args.entity !== undefined ? { entity: args.entity } : {}),
       ...(args.kind !== undefined ? { kind: args.kind } : {}),
       ...(args.workstream !== undefined ? { workstream: args.workstream } : {}),
+      ...(args.property !== undefined ? { property: args.property } : {}),
     };
     const result = await deps.recall.search(tenantId, query);
     const page = sessionRecallPage(result, args, cursor, format);
@@ -230,6 +234,7 @@ export async function recallSessionsHandler(
       nResults: result.total,
       returnedIds: page.returnedIds,
       ...(args.workstream !== undefined ? { workstream: args.workstream } : {}),
+      ...(args.property !== undefined ? { property: args.property } : {}),
       ...(conversationId !== undefined ? { conversationId } : {}),
     });
     return { content: [{ type: "text", text: page.text }] };
@@ -417,6 +422,7 @@ async function scopedSessionIds(deps: McpDeps, tenantId: string, ids: readonly s
 }
 
 const contextInput = z.object({
+  property: propertySlug.optional(),
   timeoutMs: z.number().int().min(100).max(5_000).default(1_500),
   workstream: z.string().min(1).max(500).optional(),
   query: z.string().min(1).max(2_000),
@@ -436,7 +442,7 @@ export async function recallContextHandler(
       ...(deps.requestContext?.tenantId === tenantId && deps.requestContext.signal ? { signal: deps.requestContext.signal } : {}),
     }, deps);
     const { intent, exact } = context;
-    const responseMetadata = { intent, scope: { ...context.scope, ...(args.workstream !== undefined ? { workstream: args.workstream } : {}) },
+    const responseMetadata = { intent, scope: { ...context.scope, ...(args.property !== undefined ? { property: args.property } : {}), ...(args.workstream !== undefined ? { workstream: args.workstream } : {}) },
       coverage: context.coverage,
       ...(context.modeUnavailable ? { modeUnavailable: context.modeUnavailable } : {}),
       ...(!deps.factRecall ? { factsUnavailable: true } : {}),
@@ -448,6 +454,7 @@ export async function recallContextHandler(
       kind: null, mode: args.mode ?? "keyword", limit: 4, nResults: bundle.sessions.length,
       returnedIds: bundle.sessions.map((s) => s.id),
       ...(args.workstream !== undefined ? { workstream: args.workstream } : {}),
+      ...(args.property !== undefined ? { property: args.property } : {}),
       ...(conversationId ? { conversationId } : {}),
     });
     if (context.factsExecuted) void logFactQuery(tenantId, { source: "mcp", runtime, query: args.query,
@@ -455,6 +462,7 @@ export async function recallContextHandler(
       kind: intent === "decision" ? "decision" : null, mode: exact ? "keyword" : args.mode ?? "hybrid", limit: 12,
       nResults: bundle.facts.length, returnedIds: bundle.facts.map((f) => f.id),
       ...(args.workstream !== undefined ? { workstream: args.workstream } : {}),
+      ...(args.property !== undefined ? { property: args.property } : {}),
       ...(conversationId ? { conversationId } : {}),
     });
     return { content: [{ type: "text", text: format(bundle) }] };
@@ -587,6 +595,7 @@ export async function getSessionHandler(
 }
 
 export interface RecallFactsInput {
+  property: string | undefined;
   workstream: string | undefined;
   query: string | undefined;
   subject: string | undefined;
@@ -610,6 +619,7 @@ export async function recallFactsHandler(
   try {
     const query: FactRecallQuery = {
       query: input.query ?? "",
+      ...(input.property !== undefined ? { property: input.property } : {}),
       ...(input.workstream !== undefined ? { workstream: input.workstream } : {}),
       mode: input.mode ?? "hybrid",
       limit: input.limit ?? DEFAULT_LIMIT,
@@ -638,6 +648,7 @@ export async function recallFactsHandler(
       nResults: result.total,
       returnedIds: result.results.map((r) => r.id),
       ...(input.workstream !== undefined ? { workstream: input.workstream } : {}),
+      ...(input.property !== undefined ? { property: input.property } : {}),
       ...(conversationId !== undefined ? { conversationId } : {}),
     });
     return ok(result);
@@ -707,14 +718,15 @@ export async function recallCodeHandler(
 export async function getFactHistoryHandler(
   deps: McpDeps,
   tenantId: string,
-  input: { subject: string; predicate?: string | undefined; workstream?: string | undefined },
+  input: { subject: string; predicate?: string | undefined; workstream?: string | undefined; property?: string | undefined },
 ): Promise<ToolResult> {
   if (!deps.factStore) {
     return err(new Error("fact store not wired in this deployment"));
   }
   try {
     const scope = await requestedScope(deps, tenantId, input.workstream);
-    const raw = scope.status === "not_found" ? [] : await deps.factStore.getHistory(tenantId, input.subject, input.predicate);
+    await requireProperty(tenantId, input.property, deps.properties);
+    const raw = scope.status === "not_found" ? [] : await deps.factStore.getHistory(tenantId, input.subject, input.predicate, input.property);
     const allowed = await scopedSessionIds(deps, tenantId, raw.flatMap((c) => c.history.map((f) => f.sourceSessionId)), scope);
     const chains = raw.map((c) => ({ ...c, history: c.history.filter((f) => allowed.has(f.sourceSessionId)) }))
       .filter((c) => c.history.length > 0);
@@ -1412,6 +1424,7 @@ for more source context, or view=transcript with offset for original text.`,
             .default("")
             .describe("Free-text search against fact values. Optional if subject/predicate/kind set."),
           workstream: z.string().min(1).max(500).optional(),
+          property: propertySlug.optional(),
           subject: z
             .string()
             .optional()
@@ -1470,6 +1483,7 @@ for more source context, or view=transcript with offset for original text.`,
         inputSchema: {
           subject: z.string().min(1).describe("Normalized entity/topic name."),
           workstream: z.string().min(1).max(500).optional(),
+          property: propertySlug.optional(),
           predicate: z
             .string()
             .optional()

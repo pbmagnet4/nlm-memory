@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { registerPropertyCommands } from "./property-commands.js";
 /**
  * nlm — CLI entry point. Composition root for the whole stack.
  *
@@ -427,6 +428,7 @@ async function buildStack() {
   const recall = new RecallService({
     store,
     llm: embedder,
+    properties: storage.properties,
     factStore: facts,
     learnerDeps: { learners: storage.learners, sessions: store },
     exemplarStore: storage.exemplars,
@@ -434,7 +436,7 @@ async function buildStack() {
     installScope: scope,
     resolveWorkstreamMembers: async (tenantId, selector) => (await resolveRecallScope(wsStore, tenantId, selector)).workstreamIds ?? [],
   });
-  const factRecall = new FactRecallService({ factStore: facts, llm: embedder,
+  const factRecall = new FactRecallService({ factStore: facts, llm: embedder, properties: storage.properties,
     resolveWorkstreamMembers: async (tenantId, selector) => (await resolveRecallScope(wsStore, tenantId, selector)).workstreamIds ?? [],
   });
   return { storage, store, facts, signals, scope, sources, providers, recall, factRecall, embedder, classifier };
@@ -566,6 +568,7 @@ program
       },
     });
     const app = createApp({
+      properties: storage.properties,
       recall,
       store,
       liveStore: store,
@@ -615,6 +618,7 @@ program
               signalStore: signals,
               sessionScopeReader: store,
               workDigest: { store, topicProvider: loadTopicProvider(), workstreams: storage.workstreams, ...workDigestEnv() },
+              properties: storage.properties,
               workstreams: { store: storage.workstreams, sessions: store, facts: facts, exemplars: storage.exemplars },
               learners: { store: storage.learners, workstreams: storage.workstreams, sessions: store },
             },
@@ -974,6 +978,7 @@ program
   .option("-k, --kind <kind>", "filter by marker kind (decision|open)")
   .option("-m, --mode <mode>", "recall mode: keyword, semantic, or hybrid (default: keyword)", "keyword")
   .option("-l, --limit <n>", "max results", (v) => Number.parseInt(v, 10), 10)
+  .option("--property <slug>", "filter by canonical property")
   .option("-w, --workstream <idOrLabel>", "filter by workstream (id or label; merge chains resolve)")
   .option("--json", "emit the raw JSON result instead of rendered lines")
   .action(async (query, opts) => {
@@ -989,6 +994,7 @@ program
         ...(opts.entity ? { entity: opts.entity } : {}),
         ...(opts.kind ? { kind: opts.kind } : {}),
         ...(opts.workstream ? { workstream: opts.workstream } : {}),
+        ...(opts.property ? { property: opts.property } : {}),
       });
       if (opts.json) {
         process.stdout.write(JSON.stringify(result, null, 2) + "\n");
@@ -1880,6 +1886,7 @@ program
         signalStore: signals,
         sessionScopeReader: store,
         workDigest: { store, topicProvider: loadTopicProvider(), workstreams: storage.workstreams, ...workDigestEnv() },
+        properties: storage.properties,
         workstreams: { store: storage.workstreams, sessions: store, facts: facts, exemplars: storage.exemplars },
         learners: { store: storage.learners, workstreams: storage.workstreams, sessions: store },
         // Tier-B outcome rollup (#352 phase 2) only has a SQLite adapter today;
@@ -3459,6 +3466,8 @@ scopeCmd
 // vitest ran the CLI against the test runner's argv and exited the worker.
 const entryPath = process.argv[1];
 if (entryPath && import.meta.url === pathToFileURL(realpathSync(entryPath)).href) {
+  registerPropertyCommands(program, async () => { autoloadEnv(); return buildStorage(dbPath()); }, DEFAULT_TEAM_ID);
+
   program.parseAsync().catch((e) => {
     console.error("nlm: fatal", e);
     process.exit(1);

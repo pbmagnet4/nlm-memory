@@ -20,6 +20,10 @@ export function readSemanticSessions(
     where.push(`s.workstream_id IN (${opts.workstreamIds.map(() => "?").join(",")})`);
     params.push(...opts.workstreamIds);
   }
+  if (opts?.property !== undefined) {
+    where.push("(EXISTS (SELECT 1 FROM facts pf WHERE pf.source_session_id = s.id AND pf.tenant_id = s.tenant_id AND pf.property_slug = ?) OR EXISTS (SELECT 1 FROM session_properties sp WHERE sp.session_id = s.id AND sp.tenant_id = s.tenant_id AND sp.property_slug = ?))");
+    params.push(opts.property, opts.property);
+  }
   const k = Math.max(1, Math.trunc(limit));
   params.push(k);
   // The embedding's own attribution survives historical gaps in session_chunk_map.
@@ -40,7 +44,7 @@ export function readSemanticSessions(
     ORDER BY distance, session_id
     LIMIT ?
   `).all(...params).map((r) => ({ sessionId: r.session_id, distance: r.distance, chunkIndex: Number(r.chunk_idx) }));
-  if (opts?.workstreamIds !== undefined) return exact();
+  if (opts?.workstreamIds !== undefined || opts?.property !== undefined) return exact();
   return db.transaction(() => completeSemanticTopK(k,
     (window) => db.prepare<[Buffer, number], NeighborRow>(`
       SELECT session_id, distance, chunk_idx FROM session_embedding_chunks

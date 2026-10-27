@@ -29,22 +29,23 @@ export function buildContextBundle(
   const byId = new Map(sources.map((s) => [s.id, s]));
   const groups = new Map<string, Set<string>>();
   for (const fact of facts) {
-    const key = JSON.stringify([fact.subject, fact.predicate]);
+    const key = JSON.stringify([fact.property?.slug ?? null, fact.subject, fact.predicate]);
     if (!groups.has(key)) groups.set(key, new Set());
     groups.get(key)!.add(fact.value);
   }
   const seen = new Set<string>();
   const factRecords = facts.flatMap((f) => {
-    const key = JSON.stringify([f.subject, f.predicate, f.value]);
+    const key = JSON.stringify([f.property?.slug ?? null, f.subject, f.predicate, f.value]);
     if (seen.has(key)) return [];
     seen.add(key);
     const source = byId.get(f.sourceSessionId);
     return [{ id: f.id, kind: f.kind, subject: f.subject, predicate: f.predicate,
+      ...(f.property ? { property: f.property } : {}),
       value: f.value, createdAt: f.createdAt, confidence: f.confidence,
       multipleValues: lookup?.complete && lookup.subject === f.subject && lookup.predicate === f.predicate
-        ? lookup.distinctValueCount! > 1 : groups.get(JSON.stringify([f.subject, f.predicate]))!.size > 1,
+        ? lookup.distinctValueCount! > 1 : groups.get(JSON.stringify([f.property?.slug ?? null, f.subject, f.predicate]))!.size > 1,
       multipleValuesScope: lookup?.complete && lookup.subject === f.subject && lookup.predicate === f.predicate ? "corpus" : "candidates",
-      sourceSessionIds: [...new Set(facts.filter((other) => other.subject === f.subject && other.predicate === f.predicate && other.value === f.value)
+      sourceSessionIds: [...new Set(facts.filter((other) => other.property?.slug === f.property?.slug && other.subject === f.subject && other.predicate === f.predicate && other.value === f.value)
         .map((other) => other.sourceSessionId))],
       source: { id: f.sourceSessionId, status: source?.status ?? "unavailable",
         supersededBy: source?.supersededBy ?? null },

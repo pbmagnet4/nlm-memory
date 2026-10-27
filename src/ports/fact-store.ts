@@ -15,6 +15,7 @@
 import type { Fact, FactHistoryChain, FactKind } from "@shared/types.js";
 
 export interface FactQuery {
+  readonly property?: string;
   readonly subject: string;
   readonly predicate?: string;
   readonly includeSuperseded?: boolean;
@@ -40,6 +41,7 @@ export interface SubjectStat {
 
 /** Eligibility applied before lexical limits and final semantic top-k. */
 export interface FactEligibility {
+  readonly property?: string;
   readonly workstreamIds?: readonly string[];
   readonly subject?: string;
   readonly predicate?: string;
@@ -88,7 +90,7 @@ export interface FactStore {
    * subject+predicate pair. Returns null if none exists. This is the hot
    * path for deterministic supersedence on ingest (Phase B.4).
    */
-  findCurrent(tenantId: string, subject: string, predicate: string): Promise<Fact | null>;
+  findCurrent(tenantId: string, subject: string, predicate: string, property?: string): Promise<Fact | null>;
 
   /**
    * List facts matching the query. Defaults: current (non-superseded) only,
@@ -194,6 +196,7 @@ export interface FactStore {
     tenantId: string,
     subject: string,
     predicate?: string,
+    property?: string,
   ): Promise<ReadonlyArray<FactHistoryChain>>;
 
   /**
@@ -211,6 +214,7 @@ export interface FactStore {
       readonly subject: string;
       readonly predicate: string;
       readonly value: string;
+      readonly property?: string | null;
     }>,
   ): Promise<Map<string, number>>;
 
@@ -230,6 +234,6 @@ export interface FactStore {
 }
 
 /** Key encoding for corroborationCounts result map. */
-export function corroborationKey(subject: string, predicate: string, value: string): string {
-  return `${subject} ${predicate} ${value}`;
+export function corroborationKey(subject: string, predicate: string, value: string, property?: string | null): string {
+  return property ? JSON.stringify([property, subject, predicate, value]) : `${subject} ${predicate} ${value}`;
 }

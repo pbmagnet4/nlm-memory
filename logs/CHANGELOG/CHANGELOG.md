@@ -1,5 +1,15 @@
 # nlm-memory CHANGELOG
 
+## 2026-10-27 - Canonical memory properties and assertion-context isolation (T1128)
+
+**Changes:** Added a tenant-scoped property catalog, session relevance from exact entities/repository origin (including task worktrees), per-fact attribution before collapse, durable evidence-bound corrections, conservative backfill, and explicit property filters across MCP, HTTP and CLI recall. Fact history, corroboration, context deduplication, embeddings, the write-time judge and session-supersession cascades respect assertion context. Added a read-only coverage tool and shared SQLite/PostgreSQL contracts.
+
+**Results:** A read-only baseline against 67 registry properties found deterministic proposals for 680 of 40,398 active facts and entity references in 8,846 of 24,514 sessions. This measures coverage, not precision. Backend, transport and regression checks are recorded in the task plan.
+
+**State:** Implementation is source-only, with automatic attribution opt-in and broader inference/injection gated. Live memories and the installed runtime were not changed. Public usage and correction semantics are in `docs/properties.md`.
+
+**Next:** Independently label corpus cases and freeze acceptance thresholds before broader inference or automatic property selection. Review a backfill preview before applying it; repair previously incorrect supersession separately.
+
 ## 2026-10-21 - Retrieval release published and active as 0.21.20 (T939)
 
 **Changes:** Published the reviewed T803/T806 retrieval work and T937 compact recall through GitHub/npm, then installed the SHA-512-verified 0.21.20 artifact in the managed runtime and restarted the daemon. Fixed a clean-runner test assumption caught by CI (0.21.18 stopped before npm; 0.21.19 passed). A live transcript canary then reproduced a TOON encoder/decoder mismatch for bracketed chat markers; 0.21.20 validates decodability and falls back to JSON under the same response budget. Added full Unicode page-reconstruction coverage. Generated bundle diffs were version-only.
@@ -91,15 +101,3 @@ Session-level log per session protocol. Cap: 10 entries — archive older to `CH
 **State:** Gate code landed, off by default. Shadow mode is the next step on this install.
 
 **Next:** a week of shadow data, then a live decision with Edward.
-
-## 2026-10-10 - Clef decision-model evaluation tooling and findings (T533)
-
-**Changes:** `scripts/eval/` gains a fail-open Clef client (`lib/clef-client.ts`), stats and panel helpers, `clef-triage.ts` (an importance gate scored against audited labels), `clef-yield.ts` (the gate's cost against stored decisions and facts) and `clef-shadow.ts` (logs what the gate would do on newly ingested sessions). `docs/clef-decision-panel-findings.md` records the results. No product code changed.
-
-**Results:** An importance score under 1.5 skips 28.5% of sessions on 799 random historical sessions and keeps 99.5% of stored decisions and 97.6% of stored facts; on 63 audited held-out sessions it skipped none of the 43 worthwhile ones.
-
-**State:** Landed on main. Nothing in the daemon calls Clef yet and the shadow logger is not scheduled.
-
-**Next:** a flag-gated, fail-open ingest gate (T615). The judge and session-close experiments in the plan were not run.
-
-_Older entries archived in CHANGELOG-2026.md_

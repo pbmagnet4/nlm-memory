@@ -1,3 +1,5 @@
+import { requireProperty } from "@core/properties/model.js";
+import type { PropertyStore } from "@ports/property-store.js";
 import { RequestBudget, embedForRecall } from "./request-budget.js";
 import { executionWorkstreamIds, type RecallExecutionOptions } from "./execution-options.js";
 /**
@@ -72,6 +74,7 @@ const KEYWORD_OVERFETCH = 3;
 const SUPERSEDED_SCORE_MULTIPLIER = 0.7;
 
 export interface RecallServiceDeps {
+  readonly properties?: Pick<PropertyStore, "list">;
   readonly store: SessionStore;
   readonly llm: LLMClient;
   /**
@@ -108,6 +111,7 @@ export class RecallService {
 
   async search(tenantId: string, input: RecallQuery, options: RecallExecutionOptions = {}): Promise<RecallResult> {
     options.signal?.throwIfAborted();
+    await requireProperty(tenantId, input.property, this.deps.properties);
     const mode: RecallMode = input.mode ?? "keyword";
     const limit = clampLimit(input.limit);
     const entity = input.entity ?? null;
@@ -155,6 +159,7 @@ export class RecallService {
     const searchOpts: SearchOptions = {
       ...(input.includeSuperseded === true ? { includeSuperseded: true } : {}),
       ...(workstreamIds !== undefined ? { workstreamIds } : {}),
+      ...(input.property !== undefined ? { property: input.property } : {}),
     };
 
     const kwNeighbors: ReadonlyArray<KeywordNeighbor> =
@@ -287,7 +292,7 @@ export class RecallService {
     //    Only runs when the caller opts in AND a FactStore is wired. Failures
     //    silently no-op so recall never breaks because of fact lookup.
     //    (Note: citation boost in step 5 may have re-sorted results)
-    if (workstreamIds === undefined && input.withRelatedFacts === true && this.deps.factStore && isFactInjectionEnabled()) {
+    if (input.property === undefined && workstreamIds === undefined && input.withRelatedFacts === true && this.deps.factStore && isFactInjectionEnabled()) {
       const relatedFacts = await pickRelatedFacts(tenantId, result.results, this.deps.factStore);
       if (relatedFacts.length > 0) {
         result = { ...result, relatedFacts };
@@ -297,7 +302,7 @@ export class RecallService {
     // 6a. Learner-evidence recall (spec 2026-10-06). Same posture as facts:
     //     opt-in flag + wired deps + kill switch; the picker itself is
     //     fail-open so recall never breaks because of concept lookup.
-    if (workstreamIds === undefined && input.withRelatedConcepts === true && this.deps.learnerDeps && isConceptInjectionEnabled()) {
+    if (input.property === undefined && workstreamIds === undefined && input.withRelatedConcepts === true && this.deps.learnerDeps && isConceptInjectionEnabled()) {
       const relatedConcepts = await pickRelatedConcepts(tenantId, result.results, this.deps.learnerDeps);
       if (relatedConcepts.length > 0) {
         result = { ...result, relatedConcepts };
@@ -308,7 +313,7 @@ export class RecallService {
     //     timeout so a slow/cold CodeRankEmbed call can never blow the hook's
     //     latency budget — on timeout or error we simply omit exemplars.
     if (
-      workstreamIds === undefined && input.withRelatedExemplars === true &&
+      input.property === undefined && workstreamIds === undefined && input.withRelatedExemplars === true &&
       this.deps.exemplarStore &&
       this.deps.codeEmbedder &&
       this.deps.installScope &&

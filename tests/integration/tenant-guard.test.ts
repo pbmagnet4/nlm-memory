@@ -23,7 +23,8 @@
  * 2. Import requirement — any scanned file whose SQL touches a STAMP table
  *    (the M1 census: sessions, facts, code_exemplars, signals, workstreams,
  *    sources, providers, entities, entity_variants, session_entities,
- *    workstream_entities) must import tenantClause or tenantClausePg, unless
+ *    workstream_entities, memory_properties, property_overrides,
+ *    session_properties) must import tenantClause or tenantClausePg, unless
  *    the file is on the explicit ALLOWLIST below. This catches the more
  *    dangerous omission the literal scan can't see: a STAMP-table query with
  *    NO tenant_id reference of any kind, not even a wrong one.
@@ -45,6 +46,9 @@ const ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "../..");
 const STAMP_TABLES = [
   "sessions",
   "facts",
+  "memory_properties",
+  "property_overrides",
+  "session_properties",
   "code_exemplars",
   "signals",
   "workstreams",

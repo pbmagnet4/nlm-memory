@@ -113,3 +113,15 @@ _Older entries archived in CHANGELOG-2026.md_
 **State:** Corroboration boost (`NLM_FACT_CORROBORATION_BOOST_CAP`, default 2.0) costs fact recall heavily for both models: nomic hybrid paraphrase R@1 27% boosted vs 81% at cap 1. The eval targets one specific fact, so it may undervalue corroborated facts; validating against real recall citations is a follow-up task before retuning.
 
 _Older entries archived in CHANGELOG-2026.md_
+
+## 2026-10-10 - Clef decision-model evaluation tooling and findings (T533)
+
+**Changes:** `scripts/eval/` gains a fail-open Clef client (`lib/clef-client.ts`), stats and panel helpers, `clef-triage.ts` (an importance gate scored against audited labels), `clef-yield.ts` (the gate's cost against stored decisions and facts) and `clef-shadow.ts` (logs what the gate would do on newly ingested sessions). `docs/clef-decision-panel-findings.md` records the results. No product code changed.
+
+**Results:** An importance score under 1.5 skips 28.5% of sessions on 799 random historical sessions and keeps 99.5% of stored decisions and 97.6% of stored facts; on 63 audited held-out sessions it skipped none of the 43 worthwhile ones.
+
+**State:** Landed on main. Nothing in the daemon calls Clef yet and the shadow logger is not scheduled.
+
+**Next:** a flag-gated, fail-open ingest gate (T615). The judge and session-close experiments in the plan were not run.
+
+_Older entries archived in CHANGELOG-2026.md_
