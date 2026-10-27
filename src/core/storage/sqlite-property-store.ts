@@ -56,6 +56,7 @@ export class SqlitePropertyStore implements PropertyStore {
   }
   attributeSession(tenantId: string, record: { id: string; entities: readonly string[]; projectDir?: string }): void {
     const tc = tenantClause(tenantId);
+    if (!this.db.prepare(`SELECT id FROM sessions WHERE id = ? AND ${tc.sql}`).get(record.id, tc.param)) throw new Error("Source session not found");
     this.db.prepare(`DELETE FROM session_properties WHERE session_id = ? AND source IN ('entity', 'repository') AND ${tc.sql}`).run(record.id, tc.param);
     if (!propertyAssociationsEnabled()) return;
     const origin = repositoryProperty(record.projectDir, this.listSync(tenantId));

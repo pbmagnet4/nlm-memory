@@ -11,7 +11,7 @@ import { FixedEmbedder } from "../fixtures/llm-stubs.js";
 import { corroborationKey } from "../../src/ports/fact-store.js";
 import { anchorRecord } from "./source-anchor.contract.js";
 
-export function runPropertyMemoryContract(h: { maintain(s: Storage, sessionId: string, facts: readonly Fact[], embedder: LLMClient): Promise<void>; setup(): Promise<Storage>; close(s: Storage): Promise<void>; ingest(s: Storage, record: IngestRecord, facts: readonly Fact[], embedder?: LLMClient): Promise<void> }) {
+export function runPropertyMemoryContract(h: { attributeSession(s: Storage, tenantId: string, record: { id: string; entities: readonly string[] }): Promise<void>; maintain(s: Storage, sessionId: string, facts: readonly Fact[], embedder: LLMClient): Promise<void>; setup(): Promise<Storage>; close(s: Storage): Promise<void>; ingest(s: Storage, record: IngestRecord, facts: readonly Fact[], embedder?: LLMClient): Promise<void> }) {
   describe("property memory", () => {
     let storage: Storage;
     const tenant = "team_local";
@@ -126,6 +126,11 @@ export function runPropertyMemoryContract(h: { maintain(s: Storage, sessionId: s
       const hits = await factRecall.search(tenant, { subject: "api", property: "nxtseo", mode: "keyword" });
       expect(hits.results[0]?.corroborationCount).toBe(1);
       await expect(factRecall.search(tenant, { subject: "api", property: "missing" })).rejects.toThrow("Unknown property");
+    });
+    it("rejects a foreign source session at the attribution write boundary", async () => {
+      await ingest("s1", []);
+      await storage.properties.import("other-tenant", catalog);
+      await expect(h.attributeSession(storage, "other-tenant", { id: "s1", entities: ["NxtSEO"] })).rejects.toThrow("Source session not found");
     });
     it("associates sessions without assigning ownership to their facts", async () => {
       await h.ingest(storage, { ...anchorRecord("mixed project conversation", "s1"), entities: ["NxtSEO", "NxtAds"] }, [fact("unknown", "s1")]);

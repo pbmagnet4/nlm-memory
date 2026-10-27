@@ -66,6 +66,8 @@ export class PgPropertyStore implements PropertyStore {
   }
   async attributeSession(tenantId: string, record: { id: string; entities: readonly string[]; projectDir?: string }): Promise<void> {
     const tc = tenantClausePg(tenantId, 2);
+    const owned = await this.db.query(`SELECT id FROM sessions WHERE id = $1 AND ${tc.sql}`, [record.id, tc.param]);
+    if (!owned.rows.length) throw new Error("Source session not found");
     await this.db.query(`DELETE FROM session_properties WHERE session_id = $1 AND source IN ('entity', 'repository') AND ${tc.sql}`, [record.id, tc.param]);
     if (!propertyAssociationsEnabled()) return;
     const origin = repositoryProperty(record.projectDir, await this.list(tenantId));

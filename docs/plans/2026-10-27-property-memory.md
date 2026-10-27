@@ -32,4 +32,6 @@ Direct review additionally fixed evidence-bound correction identity, property-sp
 
 Validation artifacts: `/private/tmp/nlm-T1128-final-tests.log`, `/private/tmp/nlm-T1128-typecheck.log`, `/private/tmp/nlm-T1128-build.log`, `/private/tmp/nlm-T1128-coverage.json`, `/private/tmp/ocr-nlm-T1128.json`. The repo has no `.agent-quality.yml`; targeted Vitest, all three TypeScript configurations, server build and existing UI build were run directly.
 
-Final focused verification: 63 test files, 676 tests passed on SQLite and the real isolated-schema PostgreSQL lane. All TypeScript configurations and server/UI builds passed; hook bundles were regenerated and their formatter/HTTP contracts passed. The installed runtime and live corpus remain unchanged.
+Final focused verification: 63 test files, 678 tests passed on SQLite and the real isolated-schema PostgreSQL lane. All TypeScript configurations and server/UI builds passed; hook bundles were regenerated and their formatter/HTTP contracts passed. The installed runtime and live corpus remain unchanged.
+
+The required pre-land guard review completed in 303 seconds and identified missing parent-session ownership checks in both attribution adapters. Both were reproduced by calling the write boundary with a foreign tenant's valid session ID; added ownership checks and shared regression coverage. Updated the guard's census documentation as requested. Report: `/Users/echalupa/.nxtos/logs/landing-reviews/c0c0729b.json`.
