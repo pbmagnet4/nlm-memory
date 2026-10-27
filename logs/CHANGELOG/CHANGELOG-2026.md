@@ -113,3 +113,38 @@ _Older entries archived in CHANGELOG-2026.md_
 **State:** Corroboration boost (`NLM_FACT_CORROBORATION_BOOST_CAP`, default 2.0) costs fact recall heavily for both models: nomic hybrid paraphrase R@1 27% boosted vs 81% at cap 1. The eval targets one specific fact, so it may undervalue corroborated facts; validating against real recall citations is a follow-up task before retuning.
 
 _Older entries archived in CHANGELOG-2026.md_
+
+## 2026-10-10 - Clef decision-model evaluation tooling and findings (T533)
+
+**Changes:** `scripts/eval/` gains a fail-open Clef client (`lib/clef-client.ts`), stats and panel helpers, `clef-triage.ts` (an importance gate scored against audited labels), `clef-yield.ts` (the gate's cost against stored decisions and facts) and `clef-shadow.ts` (logs what the gate would do on newly ingested sessions). `docs/clef-decision-panel-findings.md` records the results. No product code changed.
+
+**Results:** An importance score under 1.5 skips 28.5% of sessions on 799 random historical sessions and keeps 99.5% of stored decisions and 97.6% of stored facts; on 63 audited held-out sessions it skipped none of the 43 worthwhile ones.
+
+**State:** Landed on main. Nothing in the daemon calls Clef yet and the shadow logger is not scheduled.
+
+**Next:** a flag-gated, fail-open ingest gate (T615). The judge and session-close experiments in the plan were not run.
+
+_Older entries archived in CHANGELOG-2026.md_
+
+## 2026-10-13 - Clef ingest gate and workstream-binding eval (T642, T640)
+
+**Changes:** The daemon can consult Clef before the classifier: `NLM_INGEST_GATE=off|shadow|live` (default off), `NLM_INGEST_GATE_THRESHOLD` (default 1.5). In live mode a session scoring under the threshold is stored and embedded with its adapter label but no extraction, stamped `clef-gate` provenance, and not bound to a workstream. Clef errors fail open to the classifier. The Clef client and the calibrated triage panel moved from `scripts/eval/lib` to `src/llm/clef-client.ts` and `src/core/classifier/triage-panel.ts`. New `scripts/eval/clef-workstream.ts`.
+
+**Results:** Workstream binding with Clef was not adopted: on the 50-row matcher gold it never beat the production namer (13 of 17 correct, 1 false bind) without adding false binds.
+
+**State:** Gate code landed, off by default. Shadow mode is the next step on this install.
+
+**Next:** a week of shadow data, then a live decision with Edward.
+
+## 2026-10-13 - Clef ingest gate tuned on stored-output labels (T644)
+
+**Changes:** The gate asks four more Clef questions in the same call (`gateQuestions()`) and combines the answers with session length in a fitted logistic model (`src/core/classifier/gate-model.ts`, generated `gate-model-params.ts`) that predicts whether the classifier would store anything. `NLM_INGEST_GATE_THRESHOLD` is gone: the threshold is fitted with the model. Shadow lines now log P(stored). New `scripts/eval/clef-gate-collect.ts`, `clef-gate-fit.ts` and `lib/logreg.ts`; `clef-shadow.ts` backfills with the production gate.
+
+**Results:** On held-out sessions the fitted gate beats importance < 1.5 everywhere: historical AUC 0.919 vs 0.863 (facts lost 0.2% vs 1.4%), live 0.714 vs 0.683 (0.5% vs 2.2%), audited 0.966 vs 0.933 with no worthwhile session skipped. It skips fewer sessions (live 4.8%).
+
+**State:** Released in 0.21.15, then rejected on cost the same day: the gate takes 2 to 10 s on every session and only skips short ones the classifier handles in 6 to 15 s; break-even needs about 40% skipped against 4.8% live. `NLM_INGEST_GATE=off` on this install. Verdict in `docs/clef-decision-panel-findings.md`.
+
+**Next:** none for the ingest gate. Further Clef candidates are measured on cost against the call they replace before any tuning.
+
+
+_Older entries archived in CHANGELOG-2026.md_

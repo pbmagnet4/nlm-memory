@@ -1,5 +1,31 @@
 # nlm-memory CHANGELOG
 
+
+## 2026-10-27 - Public source and GitHub refresh (T1153)
+
+**Changes:** Published a clean product-source snapshot on public ancestry via GitHub PR #60, keeping private deployment plans/changelogs and the corpus sampler out of the public branch. Rewrote the README around recovery, source evidence and corrections; split reference docs; clarified stable/source/experimental capabilities; corrected security/runtime-wiring claims; added an isolated assertion-checked fictional demo and its CI step. Updated repository description/topics and opened roadmap issues #57 ownership, #58 usefulness and #59 historical origins.
+
+**Results:** Local checks passed 3,355 tests (three skips), typecheck, build, packed-plugin verification, the synthetic demo and relative-link checks. Independent Muse review returned zero findings; Gitleaks found zero secrets in the new public history. Final PR CI passed, including PostgreSQL and the demo. Public merge f7602e7c46fa7e97f6588a9a7b20a24abfa8b061; final public head a228115aeea8acee15e023e2a57c71750ce51fd3. GitHub main serves the new README. npm stable remains 0.21.20; the running daemon was not changed.
+
+**State:** Local reconciliation retains the five deliberately private operational files; all published product/runtime content matches GitHub. No private ancestry was pushed. Private receipt: ~/.nxtos/state/T1153-publication.json; independent review: ~/.nxtos/logs/landing-reviews/T1153-public.json. Public roadmap issue #57 is linked to internal T1142.
+
+
+## 2026-10-27 - Bounded property activation build (T1130)
+
+**Changes:** Separated repository/explicit associations from experimental subject/quote/entity inference. Real source evaluation rejected subject-only ownership, name-bearing quotes about dependencies, and entity references copied from evaluation transcripts. The experimental inference flag defaults off and inference backfill refuses to run unless explicitly enabled. Tightened its quote matching to reject path and identifier fragments.
+
+**State:** Live managed prerelease 0.21.21-property.1, schema 45. Imported 67 canonical properties, six reviewed fact corrections, five explicit session references and one captured-repository reference. Property-aware recall/isolation and repository-origin relevance are enabled; automatic fact ownership, entity-name associations and inference backfill stay disabled (T1142). All four independent review findings were fixed; 3,355 tests and 16 live transport checks pass. Provider configuration is unchanged, normal ingestion resumed, and the pre-attribution DB/config/binary rollback set is verified. Evidence and limits: `docs/plans/2026-10-27-property-activation.md`.
+
+## 2026-10-27 - Canonical memory properties and assertion-context isolation (T1128)
+
+**Changes:** Added a tenant-scoped property catalog, session relevance from exact entities/repository origin (including task worktrees), per-fact attribution before collapse, durable evidence-bound corrections, conservative backfill, and explicit property filters across MCP, HTTP and CLI recall. Fact history, corroboration, context deduplication, embeddings, the write-time judge and session-supersession cascades respect assertion context. Added a read-only coverage tool and shared SQLite/PostgreSQL contracts.
+
+**Results:** A read-only baseline against 67 registry properties found deterministic proposals for 680 of 40,398 active facts and entity references in 8,846 of 24,514 sessions. This measures coverage, not precision. Backend, transport and regression checks are recorded in the task plan.
+
+**State:** Implementation is source-only, with automatic attribution opt-in and broader inference/injection gated. Live memories and the installed runtime were not changed. Public usage and correction semantics are in `docs/properties.md`.
+
+**Next:** Independently label corpus cases and freeze acceptance thresholds before broader inference or automatic property selection. Review a backfill preview before applying it; repair previously incorrect supersession separately.
+
 ## 2026-10-21 - Retrieval release published and active as 0.21.20 (T939)
 
 **Changes:** Published the reviewed T803/T806 retrieval work and T937 compact recall through GitHub/npm, then installed the SHA-512-verified 0.21.20 artifact in the managed runtime and restarted the daemon. Fixed a clean-runner test assumption caught by CI (0.21.18 stopped before npm; 0.21.19 passed). A live transcript canary then reproduced a TOON encoder/decoder mismatch for bracketed chat markers; 0.21.20 validates decodability and falls back to JSON under the same response budget. Added full Unicode page-reconstruction coverage. Generated bundle diffs were version-only.
@@ -71,35 +97,5 @@ Session-level log per session protocol. Cap: 10 entries — archive older to `CH
 **State:** Released as 0.21.16 (log faults) and 0.21.17 (dataset stall). `tests/integration/mcp-recall-logging.test.ts` is flaky under full-suite load (passes alone); the Postgres integration tests need a local Postgres. The 64 codex fork files were queued for re-ingest by clearing their adapter_state rows (backup in `~/.nlm/adapter_state-codex-forks-20261013.json`).
 
 **Next:** the dataset build still holds the event loop about 2 s per UI load, enough to time out a concurrent session-start recall (2 s budget); moving it to a worker thread removes that. 4 real I7b-1 orphans have no `doctor --fix` branch.
-
-## 2026-10-13 - Clef ingest gate tuned on stored-output labels (T644)
-
-**Changes:** The gate asks four more Clef questions in the same call (`gateQuestions()`) and combines the answers with session length in a fitted logistic model (`src/core/classifier/gate-model.ts`, generated `gate-model-params.ts`) that predicts whether the classifier would store anything. `NLM_INGEST_GATE_THRESHOLD` is gone: the threshold is fitted with the model. Shadow lines now log P(stored). New `scripts/eval/clef-gate-collect.ts`, `clef-gate-fit.ts` and `lib/logreg.ts`; `clef-shadow.ts` backfills with the production gate.
-
-**Results:** On held-out sessions the fitted gate beats importance < 1.5 everywhere: historical AUC 0.919 vs 0.863 (facts lost 0.2% vs 1.4%), live 0.714 vs 0.683 (0.5% vs 2.2%), audited 0.966 vs 0.933 with no worthwhile session skipped. It skips fewer sessions (live 4.8%).
-
-**State:** Released in 0.21.15, then rejected on cost the same day: the gate takes 2 to 10 s on every session and only skips short ones the classifier handles in 6 to 15 s; break-even needs about 40% skipped against 4.8% live. `NLM_INGEST_GATE=off` on this install. Verdict in `docs/clef-decision-panel-findings.md`.
-
-**Next:** none for the ingest gate. Further Clef candidates are measured on cost against the call they replace before any tuning.
-
-## 2026-10-13 - Clef ingest gate and workstream-binding eval (T642, T640)
-
-**Changes:** The daemon can consult Clef before the classifier: `NLM_INGEST_GATE=off|shadow|live` (default off), `NLM_INGEST_GATE_THRESHOLD` (default 1.5). In live mode a session scoring under the threshold is stored and embedded with its adapter label but no extraction, stamped `clef-gate` provenance, and not bound to a workstream. Clef errors fail open to the classifier. The Clef client and the calibrated triage panel moved from `scripts/eval/lib` to `src/llm/clef-client.ts` and `src/core/classifier/triage-panel.ts`. New `scripts/eval/clef-workstream.ts`.
-
-**Results:** Workstream binding with Clef was not adopted: on the 50-row matcher gold it never beat the production namer (13 of 17 correct, 1 false bind) without adding false binds.
-
-**State:** Gate code landed, off by default. Shadow mode is the next step on this install.
-
-**Next:** a week of shadow data, then a live decision with Edward.
-
-## 2026-10-10 - Clef decision-model evaluation tooling and findings (T533)
-
-**Changes:** `scripts/eval/` gains a fail-open Clef client (`lib/clef-client.ts`), stats and panel helpers, `clef-triage.ts` (an importance gate scored against audited labels), `clef-yield.ts` (the gate's cost against stored decisions and facts) and `clef-shadow.ts` (logs what the gate would do on newly ingested sessions). `docs/clef-decision-panel-findings.md` records the results. No product code changed.
-
-**Results:** An importance score under 1.5 skips 28.5% of sessions on 799 random historical sessions and keeps 99.5% of stored decisions and 97.6% of stored facts; on 63 audited held-out sessions it skipped none of the 43 worthwhile ones.
-
-**State:** Landed on main. Nothing in the daemon calls Clef yet and the shadow logger is not scheduled.
-
-**Next:** a flag-gated, fail-open ingest gate (T615). The judge and session-close experiments in the plan were not run.
 
 _Older entries archived in CHANGELOG-2026.md_
