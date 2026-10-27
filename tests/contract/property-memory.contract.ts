@@ -20,8 +20,24 @@ export function runPropertyMemoryContract(h: { attributeSession(s: Storage, tena
       sourceSessionId: session, sourceQuote: null, createdAt: "2026-01-01T00:00:00Z", confidence: 1, supersededBy: null,
       ...(slug ? { property: { slug, source: "explicit", evidence: "test task" } } : {}) });
     const ingest = async (id: string, facts: readonly Fact[]) => h.ingest(storage, anchorRecord("mixed project conversation", id), facts);
-    beforeEach(async () => { vi.stubEnv("NLM_PROPERTY_ASSOCIATIONS", "1"); storage = await h.setup(); await storage.properties.import(tenant, catalog); });
+    beforeEach(async () => { vi.stubEnv("NLM_PROPERTY_ASSOCIATIONS", "1"); vi.stubEnv("NLM_PROPERTY_INFERENCE", "1"); storage = await h.setup(); await storage.properties.import(tenant, catalog); });
     afterEach(async () => { vi.unstubAllEnvs(); await h.close(storage); });
+    it("keeps unvalidated inference disabled while explicit associations remain usable", async () => {
+      vi.stubEnv("NLM_PROPERTY_INFERENCE", "0");
+      await storage.properties.import(tenant, [{ slug: "nxtads", label: "NxtAds", repositories: ["/nonexistent-property-test/nxtads"] }]);
+      const body = "A fresh desktop install must have NxtSEO or degrade gracefully.";
+      await h.ingest(storage, { ...anchorRecord(body, "s1"), entities: ["NxtSEO"], projectDir: "/nonexistent-property-test/nxtads/task" }, [
+        { ...fact("unproven", "s1"), subject: "NxtSEO", sourceQuote: body, sourceAnchor: locateSourceAnchor(body, body) },
+        fact("explicit", "s1", "nxtads"),
+      ]);
+      expect((await storage.facts.getById(tenant, "unproven"))?.property).toBeUndefined();
+      expect((await storage.facts.getById(tenant, "explicit"))?.property?.slug).toBe("nxtads");
+      expect(await storage.sessions.keywordSearch(tenant, "desktop", 5, { property: "nxtseo" })).toEqual([]);
+      expect(await storage.sessions.keywordSearch(tenant, "desktop", 5, { property: "nxtads" })).toHaveLength(1);
+      await expect(storage.properties.backfill(tenant, true)).rejects.toThrow("has not passed");
+      await storage.properties.associateSession(tenant, "s1", ["nxtseo"]);
+      expect(await storage.sessions.keywordSearch(tenant, "desktop", 5, { property: "nxtseo" })).toHaveLength(1);
+    });
     it("isolates same-key collapse within a batch and across properties", async () => {
       await ingest("s1", [fact("seo-old", "s1", "nxtseo"), fact("ads", "s1", "nxtads")]);
       await ingest("s2", [fact("seo-new", "s2", "nxtseo")]);
@@ -35,8 +51,12 @@ export function runPropertyMemoryContract(h: { attributeSession(s: Storage, tena
       expect((await storage.facts.getById(tenant, "known"))?.supersededBy).toBeNull();
       expect((await storage.facts.getById(tenant, "unknown"))?.supersededBy).toBeNull();
     });
-    it("attributes subjects independently in a mixed session", async () => {
-      await ingest("s1", [{ ...fact("seo", "s1"), subject: "SEO app" }, { ...fact("ads", "s1"), subject: "NxtAds" }, fact("unknown", "s1")]);
+    it("attributes grounded subjects independently in a mixed session", async () => {
+      const body = "SEO app uses port 3940. NxtAds uses port 8000.";
+      await h.ingest(storage, anchorRecord(body, "s1"), [
+        { ...fact("seo", "s1"), subject: "SEO app", value: "3940", sourceQuote: "SEO app uses port 3940", sourceAnchor: locateSourceAnchor(body, "SEO app uses port 3940") },
+        { ...fact("ads", "s1"), subject: "NxtAds", value: "8000", sourceQuote: "NxtAds uses port 8000", sourceAnchor: locateSourceAnchor(body, "NxtAds uses port 8000") }, fact("unknown", "s1"),
+      ]);
       expect((await storage.facts.getById(tenant, "seo"))?.property?.slug).toBe("nxtseo");
       expect((await storage.facts.getById(tenant, "ads"))?.property?.slug).toBe("nxtads");
       expect((await storage.facts.getById(tenant, "unknown"))?.property).toBeUndefined();
@@ -152,7 +172,8 @@ export function runPropertyMemoryContract(h: { attributeSession(s: Storage, tena
     });
     it("backfills attribution without changing lifecycle, defaults to dry-run and is idempotent", async () => {
       vi.stubEnv("NLM_PROPERTY_ASSOCIATIONS", "0");
-      await ingest("s1", [{ ...fact("legacy", "s1"), subject: "NxtSEO" }]);
+      const body = "NxtSEO uses port 3940.";
+      await h.ingest(storage, anchorRecord(body, "s1"), [{ ...fact("legacy", "s1"), subject: "NxtSEO", sourceQuote: body, sourceAnchor: locateSourceAnchor(body, body) }]);
       expect(await storage.properties.backfill(tenant, false)).toEqual([{ factId: "legacy", slug: "nxtseo", source: "subject" }]);
       expect((await storage.facts.getById(tenant, "legacy"))?.property).toBeUndefined();
       await storage.properties.backfill(tenant, true);

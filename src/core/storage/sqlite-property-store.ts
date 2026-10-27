@@ -3,7 +3,7 @@ import { validateSourceAnchor } from "@core/facts/source-anchor.js";
 import type Database from "better-sqlite3";
 import type { Fact } from "@shared/types.js";
 import type { PropertyBackfillRow, PropertyStore } from "@ports/property-store.js";
-import { assertionKey, attributeFacts, attributeFactGroups, sessionPropertyReferences, parseProperties, propertyAssociationsEnabled, type MemoryProperty, type PropertyOverride } from "@core/properties/model.js";
+import { assertionKey, attributeFacts, attributeFactGroups, sessionPropertyReferences, parseProperties, propertyAssociationsEnabled, propertyInferenceEnabled, type MemoryProperty, type PropertyOverride } from "@core/properties/model.js";
 import { tenantClause } from "@core/tenancy/tenant-clause.js";
 import { anchorFromRow } from "./fact-source-anchor.js";
 import { sourceIdentityExpression, propertyFromRow, type PropertyRow } from "./property-attribution.js";
@@ -52,7 +52,7 @@ export class SqlitePropertyStore implements PropertyStore {
     const overrides = this.overrides(tenantId, session.source_identity);
     const prior = new Map(this.rows(tenantId, sessionId).filter((r) => r.property_source !== "operator" && r.source_body_version === session.body_version).map((r) => [assertionKey(toFact(r), session.body_version), propertyFromRow(r)]));
     const restored = facts.map((f) => ({ ...f, sourceAnchor: validateSourceAnchor(f.sourceAnchor, session.body_version), property: f.property ?? prior.get(assertionKey(f, session.body_version)) }));
-    return attributeFacts(restored, this.listSync(tenantId), overrides, propertyAssociationsEnabled(), session.body_version);
+    return attributeFacts(restored, this.listSync(tenantId), overrides, propertyAssociationsEnabled() && propertyInferenceEnabled(), session.body_version);
   }
   attributeSession(tenantId: string, record: { id: string; entities: readonly string[]; projectDir?: string }): void {
     const tc = tenantClause(tenantId);
@@ -61,7 +61,7 @@ export class SqlitePropertyStore implements PropertyStore {
     if (!propertyAssociationsEnabled()) return;
     const origin = repositoryProperty(record.projectDir, this.listSync(tenantId));
     if (origin) this.db.prepare("INSERT INTO session_properties (tenant_id, session_id, property_slug, source, evidence) VALUES (?, ?, ?, 'repository', ?)").run(tenantId, record.id, origin, record.projectDir!);
-    for (const p of sessionPropertyReferences(record.entities, this.listSync(tenantId))) {
+    for (const p of sessionPropertyReferences(propertyInferenceEnabled() ? record.entities : [], this.listSync(tenantId))) {
       this.db.prepare("INSERT INTO session_properties (tenant_id, session_id, property_slug, source, evidence) VALUES (?, ?, ?, 'entity', ?)").run(tenantId, record.id, p.slug, p.evidence);
     }
   }
@@ -93,6 +93,7 @@ export class SqlitePropertyStore implements PropertyStore {
     })();
   }
   async backfill(tenantId: string, apply: boolean): Promise<PropertyBackfillRow[]> {
+    if (!propertyInferenceEnabled()) throw new Error("Automatic property inference has not passed activation evaluation; backfill requires NLM_PROPERTY_INFERENCE=1");
     return this.db.transaction(() => {
       const catalog = this.listSync(tenantId);
       const tc = tenantClause(tenantId);

@@ -15,6 +15,17 @@ describe("property evidence", () => {
     expect(attributeFacts([verified], catalog, [])[0]?.property?.slug).toBe("nxtseo");
     expect(attributeFacts([{ ...verified, sourceQuote: "NxtSEO and NxtAds use this API" }], catalog, [])[0]?.property).toBeUndefined();
   });
+  it("does not trust an unquoted subject label from a mixed component discussion", () => {
+    expect(attributeFacts([{ ...fact, subject: "nxtseo", sourceQuote: null, value: "8799" }], catalog, [])[0]?.property).toBeUndefined();
+  });
+  it("abstains when the verified quote names a different owner than the subject", () => {
+    const conflicting = { ...fact, subject: "nxtseo", sourceQuote: "NxtAds uses port 3940", sourceAnchor: { status: "verified" as const, start: 0, end: 20, bodyVersion: "version" } };
+    expect(attributeFacts([conflicting], catalog, [])[0]?.property).toBeUndefined();
+  });
+  it.each(["~/.nxtseo/cache", "NXTSEO_BRIDGE_META_ROBOTS", "io.nxtseo.worker", "bridge/nxtseo-file.php"])("does not infer ownership from namespace fragments: %s", (quote) => {
+    const embedded = { ...fact, sourceQuote: quote, sourceAnchor: { status: "verified" as const, start: 0, end: quote.length, bodyVersion: "version" } };
+    expect(attributeFacts([embedded], catalog, [])[0]?.property).toBeUndefined();
+  });
   it("does not apply an old correction to duplicated assertions", () => {
     const corrected = attributeFacts([fact, { ...fact, id: "f2" }], catalog, [{ sourceIdentity: "runtime:id", assertionKey: assertionKey(fact), slug: "nxtseo" }]);
     expect(corrected.every((f) => f.property === undefined)).toBe(true);
