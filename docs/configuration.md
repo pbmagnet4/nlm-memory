@@ -22,7 +22,7 @@
 | `NLM_OLLAMA_URL` | `http://localhost:11434` | Override Ollama endpoint |
 | `NLM_CODE_EXEMPLARS_ENABLED` | — | Set to `1` to enable the code-exemplar lane (capture from code-bearing signals + the `recall_code` tool/routes). Off by default. |
 | `NLM_CODE_EMBED_MODEL` | `hf.co/awhiteside/CodeRankEmbed-Q8_0-GGUF` | Ollama model for code-exemplar embeddings (768-dim). Only used when the exemplar lane is enabled. |
-| `NLM_PROPERTY_ASSOCIATIONS` | off | Opt into property-aware unresolved-fact isolation and repository-origin session associations; unreleased source. |
+| `NLM_PROPERTY_ASSOCIATIONS` | off | Opt into property-aware unresolved-fact isolation and repository-origin session associations; prerelease 0.21.21-rc.1. |
 | `NLM_PROPERTY_INFERENCE` | off | Experimental automatic fact/entity inference; keep off pending evaluation. |
 | `NLM_ADAPTERS` | all | Comma-separated allowlist of adapters to enable |
 | `DEEPSEEK_API_KEY` | — | Required only when classifier=deepseek |

@@ -7,7 +7,7 @@
 | `recall_sessions` | Compact session discovery: five hits and 8,000 characters per page by default. Relevant decisions/open questions, status, successor IDs, omission counts and source expansion pointers. Follow `nextCursor` for remaining candidates. The default ten-candidate search window preserves existing ranking; `candidateLimit` widens it explicitly. [Paging contract](context-retrieval.md#session-search-pages). |
 | `recall_context` | Preferred compact retrieval: tenant/workstream-scoped facts and source passages, complete exact-value conflict probes, and explicit partial/deadline coverage. See [context retrieval](context-retrieval.md) and [measured limitations](memory-retrieval-results.md). |
 | `get_session` | Compact context by default; add `query` for matching passages. Explicit `view="transcript"` returns bounded original-text pages with continuation arguments. Includes supersedence and outcome context. |
-| `recall_facts` | Search structured facts: decisions, open questions, project state. Filterable by subject, predicate, kind and canonical property (unreleased source). |
+| `recall_facts` | Search structured facts: decisions, open questions, project state. Filterable by subject, predicate, kind and canonical property (prerelease 0.21.21-rc.1). |
 | `get_fact_history` | Full version history of one fact — how a decision evolved over time. |
 | `cite_session` | Mark a session as explicitly referenced. Drives the `useful_hit_rate` metric and the future learned reranker. |
 | `mark_superseded` | Retroactively retire a stale session and point it at the newer one that replaces it. The editable-timeline write path — see [docs/supersedence.md](supersedence.md). |

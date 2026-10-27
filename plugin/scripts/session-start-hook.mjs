@@ -36,7 +36,7 @@ function tenantStatePath(tenantId, ...segments) {
 // package.json
 var package_default = {
   name: "nlm-memory",
-  version: "0.21.21-property.1",
+  version: "0.21.21-rc.1",
   description: "Local-first memory for AI agents across tools, sessions and projects.",
   type: "module",
   license: "Apache-2.0",

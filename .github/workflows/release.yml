@@ -20,6 +20,10 @@ jobs:
           cache: npm
           registry-url: "https://registry.npmjs.org"
 
+      - name: Select and validate release channel
+        id: channel
+        run: node scripts/release-channel.mjs
+
       - name: Update npm (trusted publishing requires >= 11.5)
         run: npm install -g npm@11.5.2
 
@@ -35,29 +39,32 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Synthetic memory demo
+        run: npm run demo:memory
+
       - name: Build distributable
         run: npm run build
 
       - name: Verify Codex release contract
         run: npm run verify:codex-release -- --check-packed
 
-      - name: Verify tag matches package.json version
-        run: |
-          PKG_VERSION="v$(node -p "require('./package.json').version")"
-          if [ "$PKG_VERSION" != "$GITHUB_REF_NAME" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match package.json $PKG_VERSION" >&2
-            exit 1
-          fi
-
       - name: Publish to npm with provenance
-        run: npm publish --provenance --access public
+        env:
+          NPM_DIST_TAG: ${{ steps.channel.outputs.npm_tag }}
+        run: npm publish --provenance --access public --tag "$NPM_DIST_TAG"
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ steps.channel.outputs.prerelease }}
         run: |
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             echo "release ${GITHUB_REF_NAME} already exists - skipping (idempotent re-run)"
           else
-            gh release create "${GITHUB_REF_NAME}" --generate-notes
+            if [ "$PRERELEASE" = "true" ]; then
+              release_flags=(--prerelease --latest=false)
+            else
+              release_flags=(--latest)
+            fi
+            gh release create "${GITHUB_REF_NAME}" --verify-tag --generate-notes "${release_flags[@]}"
           fi
