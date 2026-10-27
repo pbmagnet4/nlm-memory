@@ -5,7 +5,7 @@
 
 **Changes:** Separated repository/explicit associations from experimental subject/quote/entity inference. Real source evaluation rejected subject-only ownership, name-bearing quotes about dependencies, and entity references copied from evaluation transcripts. The experimental inference flag defaults off and inference backfill refuses to run unless explicitly enabled. Tightened its quote matching to reject path and identifier fragments.
 
-**State:** Managed activation build 0.21.21-property.1. Production scope is canonical catalog, explicit fact corrections/session associations, property-aware isolation/recall and repository-origin session relevance. No automatic fact ownership, entity-name associations, or corpus-wide inference backfill. Activation evidence and deployment results are recorded in `docs/plans/2026-10-27-property-activation.md`.
+**State:** Live managed prerelease 0.21.21-property.1, schema 45. Imported 67 canonical properties, six reviewed fact corrections, five explicit session references and one captured-repository reference. Property-aware recall/isolation and repository-origin relevance are enabled; automatic fact ownership, entity-name associations and inference backfill stay disabled (T1142). All four independent review findings were fixed; 3,355 tests and 16 live transport checks pass. Provider configuration is unchanged, normal ingestion resumed, and the pre-attribution DB/config/binary rollback set is verified. Evidence and limits: `docs/plans/2026-10-27-property-activation.md`.
 
 ## 2026-10-27 - Canonical memory properties and assertion-context isolation (T1128)
 
