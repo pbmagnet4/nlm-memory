@@ -38,6 +38,22 @@ export function runPropertyMemoryContract(h: { attributeSession(s: Storage, tena
       await storage.properties.associateSession(tenant, "s1", ["nxtseo"]);
       expect(await storage.sessions.keywordSearch(tenant, "desktop", 5, { property: "nxtseo" })).toHaveLength(1);
     });
+    it("removes rejected automatic attribution during backfill and disabled re-ingestion", async () => {
+      const body = "NxtSEO uses 3940.";
+      const automatic = { ...fact("old", "s1"), subject: "api", property: { slug: "nxtseo", source: "subject" as const, evidence: "api" } };
+      await h.ingest(storage, anchorRecord(body, "s1"), [automatic]);
+      await storage.facts.insert(tenant, { ...automatic, id: "legacy" });
+      expect(await storage.properties.backfill(tenant, false)).toContainEqual({ factId: "legacy", slug: null, source: null });
+      expect((await storage.facts.getById(tenant, "legacy"))?.property?.slug).toBe("nxtseo");
+      await storage.properties.backfill(tenant, true);
+      expect((await storage.facts.getById(tenant, "legacy"))?.property).toBeUndefined();
+      expect(await storage.properties.backfill(tenant, true)).toEqual([]);
+      const restorable = { ...automatic, sourceQuote: body, sourceAnchor: locateSourceAnchor(body, body) };
+      await storage.facts.insert(tenant, { ...restorable, id: "legacy-again" });
+      vi.stubEnv("NLM_PROPERTY_INFERENCE", "0");
+      await h.ingest(storage, anchorRecord(body, "s1"), [{ ...restorable, id: "reingested", property: undefined }]);
+      expect((await storage.facts.getById(tenant, "reingested"))?.property).toBeUndefined();
+    });
     it("isolates same-key collapse within a batch and across properties", async () => {
       await ingest("s1", [fact("seo-old", "s1", "nxtseo"), fact("ads", "s1", "nxtads")]);
       await ingest("s2", [fact("seo-new", "s2", "nxtseo")]);

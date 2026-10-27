@@ -56,7 +56,10 @@ new Command().argument("<snapshot>").argument("<catalog>").argument("<output-dir
       });
       const sessionCases = selectedSessions.map((s, i) => {
         const id = `s${String(i + 1).padStart(3, "0")}`; const body = source.get(s.id, tc.param)?.body ?? ""; predictions[id] = s.properties; groups[id] = s.properties.length > 1 ? "multi" : "single";
-        const evidence = catalog.flatMap((p) => { const at = body.toLowerCase().indexOf(p.slug.toLowerCase()); return at < 0 ? [] : [clean(body.slice(Math.max(0, at - 120), at + 240))]; }).slice(0, 8);
+        const evidence = sessionPropertyReferences(entities.get(s.id) ?? [], catalog).map(({ evidence: entity }) => {
+          const at = body.toLowerCase().indexOf(entity.toLowerCase());
+          return { entity, context: at < 0 ? null : clean(body.slice(Math.max(0, at - 120), at + entity.length + 240)) };
+        });
         return { id, type: "session", sourceId: s.id, sourceHash: hash(body), userPrompts: userEvidence(body), evidence };
       });
       const sample = { seed: "T1130-v1", cases: [...cases, ...sessionCases] };

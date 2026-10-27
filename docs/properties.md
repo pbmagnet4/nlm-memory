@@ -32,10 +32,10 @@ Both keyword and semantic retrieval apply property eligibility before their resu
 
 ## Backfill and evaluation
 
-With the experimental inference flag enabled, `nlm properties backfill` previews fact and session-reference associations; `--apply` writes them. It preserves operator corrections and leaves lifecycle/history untouched. Run `nlm properties pending` afterward. Previously incorrect supersession needs a separately reviewed repair; attribution does not revive historical facts.
+With the experimental inference flag enabled, `nlm properties backfill` previews fact and session-reference associations; `--apply` writes them. It previews removals as well as assignments, clears rejected automatic attribution on apply, preserves explicit/operator corrections and leaves lifecycle/history untouched. Run `nlm properties pending` afterward. Previously incorrect supersession needs a separately reviewed repair; attribution does not revive historical facts.
 
 The read-only SQLite coverage tool is `npx tsx scripts/eval/property-association-coverage.ts <database> <catalog> --tenant <id>`. It neither migrates nor modifies the database and reports coverage, not precision. PostgreSQL behavior is covered by the shared property-memory contract.
 
 Classifier inference and automatic property-based hook injection are not enabled by this change. Independently label real single-property, mixed, orchestrator, worktree and ambiguous cases, freeze thresholds before tuning, and evaluate against those labels before enabling a broader inference lane.
 
-The initial live activation uses repository origin and explicit associations only. Neither exact subjects nor verified name-bearing quotes establish reliable fact ownership. Existing memories remain unresolved until individually reviewed; corpus-wide inference backfill is blocked by default. See [activation evidence](plans/2026-10-27-property-activation.md).
+The initial live activation uses repository origin and explicit associations only. Neither exact subjects nor verified name-bearing quotes establish reliable fact ownership. Disabling inference strips automatic tags during re-ingestion while preserving explicit/operator assignments. Existing memories remain unresolved until individually reviewed; corpus-wide inference backfill is blocked by default. See [activation evidence](plans/2026-10-27-property-activation.md).
