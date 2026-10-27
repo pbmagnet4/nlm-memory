@@ -223,7 +223,7 @@ function tenantStatePath(tenantId, ...segments) {
 var package_default = {
   name: "nlm-memory",
   version: "0.21.21-property.1",
-  description: "Local-first non-linear memory operating system for AI operators.",
+  description: "Local-first memory for AI agents across tools, sessions and projects.",
   type: "module",
   license: "Apache-2.0",
   engines: {
@@ -298,7 +298,8 @@ var package_default = {
     "eval:rederiv-calibrate": "tsx scripts/eval/re-derivation-calibrate.ts",
     "eval:fact-judge-replay": "tsx scripts/eval/fact-judge-replay.ts",
     "eval:fact-judge-label": "tsx scripts/eval/fact-judge-label.ts",
-    "eval:fact-class-replay": "tsx scripts/eval/fact-class-replay.ts"
+    "eval:fact-class-replay": "tsx scripts/eval/fact-class-replay.ts",
+    "demo:memory": "tsx scripts/demo/project-memory.ts"
   },
   dependencies: {
     "@clack/prompts": "^1.4.0",

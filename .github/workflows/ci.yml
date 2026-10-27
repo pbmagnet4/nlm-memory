@@ -45,6 +45,9 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Synthetic memory demo
+        run: npm run demo:memory
+
       - name: Test (pg, serial)
         run: npm run test:pg
         env:

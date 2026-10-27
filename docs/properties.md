@@ -1,5 +1,7 @@
 # Canonical memory properties
 
+**Unreleased source:** these features are in the 0.21.21-property.1 source candidate, not the stable npm 0.21.20 package. See [release status](release-status.md).
+
 A property identifies the project a memory concerns. Properties are tenant-scoped and separate from workstreams and directory scopes. Directory scope is not an authorization boundary; tenant checks remain mandatory.
 
 ## Catalog
@@ -38,4 +40,4 @@ The read-only SQLite coverage tool is `npx tsx scripts/eval/property-association
 
 Classifier inference and automatic property-based hook injection are not enabled by this change. Independently label real single-property, mixed, orchestrator, worktree and ambiguous cases, freeze thresholds before tuning, and evaluate against those labels before enabling a broader inference lane.
 
-The initial live activation uses repository origin and explicit associations only. Neither exact subjects nor verified name-bearing quotes establish reliable fact ownership. Disabling inference strips automatic tags during re-ingestion while preserving explicit/operator assignments. Existing memories remain unresolved until individually reviewed; corpus-wide inference backfill is blocked by default. See [activation evidence](plans/2026-10-27-property-activation.md).
+The initial live activation uses repository origin and explicit associations only. Neither exact subjects nor verified name-bearing quotes establish reliable fact ownership. Disabling inference strips automatic tags during re-ingestion while preserving explicit/operator assignments. Existing memories remain unresolved until individually reviewed; corpus-wide inference backfill is blocked by default. See [evaluation status](evaluations.md).
