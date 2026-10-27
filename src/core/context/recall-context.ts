@@ -53,8 +53,11 @@ export interface ContextResult {
 }
 
 export async function recallContext(tenantId: string, input: ContextRequest, deps: ContextDeps): Promise<ContextResult> {
-  await requireProperty(tenantId, input.property, deps.properties);
   const budget = new RequestBudget(input.timeoutMs ?? 1_500, { ...input, ...(deps.now ? { now: deps.now } : {}) });
+  if (input.property !== undefined) {
+    try { await budget.run(() => requireProperty(tenantId, input.property, deps.properties)); }
+    catch (error) { budget.dispose(); throw error; }
+  }
   const intent = input.intent && input.intent !== "auto" ? input.intent
     : /\b(why|rationale|reason|decide|decided|choose|chose)\b/i.test(input.query) ? "decision"
       : /\b(left off|still open|status|blocked|next step)\b/i.test(input.query) ? "state" : "lookup";

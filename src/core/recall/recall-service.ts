@@ -110,8 +110,8 @@ export class RecallService {
   get embeddingTimeoutMs(): number { return EMBED_DEADLINE_MS; }
 
   async search(tenantId: string, input: RecallQuery, options: RecallExecutionOptions = {}): Promise<RecallResult> {
-    await requireProperty(tenantId, input.property, this.deps.properties);
     options.signal?.throwIfAborted();
+    await requireProperty(tenantId, input.property, this.deps.properties);
     const mode: RecallMode = input.mode ?? "keyword";
     const limit = clampLimit(input.limit);
     const entity = input.entity ?? null;

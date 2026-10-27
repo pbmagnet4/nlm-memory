@@ -1,3 +1,4 @@
+import { recallContext } from "../../src/core/context/recall-context.js";
 import { beforeEach, afterEach, describe, it, expect, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -44,6 +45,11 @@ describe("property recall surfaces", () => {
     expect(((await response.json()) as { results: { id: string }[] }).results.map((f: { id: string }) => f.id)).toEqual(["nxtseo"]);
     const unknown = await app.request("/api/recall/facts?subject=api&property=missing", { headers: { host: "localhost" } });
     expect(unknown.status).toBe(400);
+  });
+  it("bounds property validation by the context request deadline", async () => {
+    await expect(recallContext("team_local", { query: "api", property: "nxtseo", timeoutMs: 20 }, {
+      ...deps, properties: { list: () => new Promise(() => {}) },
+    })).rejects.toThrow("recall cancelled");
   });
   it("binds recall cursors to their property selector", () => {
     const args = sessionRecallInput.parse({ query: "api", property: "nxtseo" });

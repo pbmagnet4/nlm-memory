@@ -188,3 +188,15 @@ describe("formatPointerBlock — learning state section", () => {
     expect(out).not.toContain("Next:");
   });
 });
+
+
+describe("property provenance in known facts", () => {
+  it("shows the property context when generic subject names repeat", () => {
+    const block = formatPointerBlock([], [
+      { subject: "api", predicate: "port", value: "3940", corroborationCount: 2, property: "nxtseo" },
+      { subject: "api", predicate: "port", value: "8000", corroborationCount: 2, property: "nxtads" },
+    ]);
+    expect(block).toContain("[nxtseo] api port: 3940");
+    expect(block).toContain("[nxtads] api port: 8000");
+  });
+});

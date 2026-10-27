@@ -99,8 +99,8 @@ export class FactRecallService {
   get embeddingClient(): LLMClient { return this.deps.llm; }
 
   async search(tenantId: string, input: FactRecallQuery, options: RecallExecutionOptions = {}): Promise<FactRecallResult> {
-    await requireProperty(tenantId, input.property, this.deps.properties);
     options.signal?.throwIfAborted();
+    await requireProperty(tenantId, input.property, this.deps.properties);
     const mode: RecallMode = input.mode ?? "hybrid";
     const corroboration = new Map<string, number>();
     const limit = clampLimit(input.limit);

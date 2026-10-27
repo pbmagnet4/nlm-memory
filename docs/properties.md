@@ -28,7 +28,7 @@ Attribution precedes ingestion's collapse. Automatic supersession, batch winners
 
 `recall_sessions`, `recall_facts`, `recall_context`, and `get_fact_history` accept a canonical `property` slug. CLI session recall accepts `--property <slug>`. HTTP `/api/recall`, `/api/recall/facts`, and `/api/facts/history` accept `property` as a query parameter. Unknown properties return an error. Workstream and property constraints intersect.
 
-Both keyword and semantic retrieval apply property eligibility before their result limit. Property-specific exact context lookup counts only eligible assertions. Cross-property context responses keep facts from different assertion contexts separate. Session filtering establishes relevance; a mixed session's transcript can still discuss other properties within the same tenant. Optional unfiltered enrichments are omitted from property-filtered session recall.
+Both keyword and semantic retrieval apply property eligibility before their result limit. Property-specific exact context lookup counts only eligible assertions. Cross-property context responses keep facts from different assertion contexts separate. Session filtering establishes relevance; a mixed session's transcript can still discuss other properties within the same tenant. Existing known-fact enrichment preserves and displays property labels. This does not automatically select a property. Optional unfiltered enrichments are omitted from property-filtered session recall.
 
 ## Backfill and evaluation
 
