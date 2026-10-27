@@ -148,3 +148,13 @@ _Older entries archived in CHANGELOG-2026.md_
 
 
 _Older entries archived in CHANGELOG-2026.md_
+
+## 2026-10-13 - Daemon log faults: daemon stalls, false integrity alert, git noise, codex fork ids, orphaned classify requests (T674)
+
+**Changes:** I7b-1 joins the vec0 shadow table on rowid; its chunk_id column is the storage block, so every vector past block one read as a ghost. Exemplar extraction runs `git show` with piped stderr and `--end-of-options`. The codex adapter takes the session id from the first `session_meta`; forked rollouts replay the parent's after their own and overwrote it. `withTimeout` aborts the work's signal at the deadline and `classify` stops retrying once aborted. `LLMUnreachableError` messages name their cause. Migration 040 adds covering indexes for the dataset session projection and the status integrity checks, and the dataset's stale-alert pass is linear.
+
+**Results:** The embedder "unreachable" failures were the daemon, not the embedder: over 10 minutes every embed answered in under 0.3 s while the daemon's health endpoint stalled for up to 60+ s. Stack samples put the main thread in GET /api/dataset, which read every session body and filtered all sessions per stale entity: 37 to 125 s per UI page load. On a copy of the live database the build now takes 1.9 s plus 0.3 s to serialise 35MB, and the integrity sweep 1 s cold, 87 ms warm. I7b-1 on the live db: 105,352 reported, 4 real. A scheduler timeout used to leave the request running up to 180 s with two retries, matching the bursts of 48 to 157 timeouts.
+
+**State:** Released as 0.21.16 (log faults) and 0.21.17 (dataset stall). `tests/integration/mcp-recall-logging.test.ts` is flaky under full-suite load (passes alone); the Postgres integration tests need a local Postgres. The 64 codex fork files were queued for re-ingest by clearing their adapter_state rows (backup in `~/.nlm/adapter_state-codex-forks-20261013.json`).
+
+**Next:** the dataset build still holds the event loop about 2 s per UI load, enough to time out a concurrent session-start recall (2 s budget); moving it to a worker thread removes that. 4 real I7b-1 orphans have no `doctor --fix` branch.
