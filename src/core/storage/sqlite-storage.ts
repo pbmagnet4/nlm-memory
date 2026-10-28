@@ -23,6 +23,7 @@ import { SqliteSessionStore } from "./sqlite-session-store.js";
 import { SqliteSignalStore } from "./sqlite-signal-store.js";
 import { SqliteWorkstreamStore } from "./sqlite-workstream-store.js";
 import { SourceRegistry } from "@core/sources/source-registry.js";
+import { SqliteClassifierSettingsStore } from "./sqlite-classifier-settings.js";
 import { ProviderRegistry } from "@core/providers/provider-registry.js";
 import { TeamTokenStore } from "@core/tenancy/team-token-store.js";
 
@@ -43,6 +44,7 @@ export class SqliteStorage implements Storage {
   readonly embeddingConfig: SqliteEmbeddingConfigStore;
   readonly sources: SourceRegistry;
   readonly providers: ProviderRegistry;
+  readonly classifierSettings: SqliteClassifierSettingsStore;
   readonly teamTokens: TeamTokenStore;
 
   private constructor(
@@ -56,6 +58,7 @@ export class SqliteStorage implements Storage {
     embeddingConfig: SqliteEmbeddingConfigStore,
     sources: SourceRegistry,
     providers: ProviderRegistry,
+    classifierSettings: SqliteClassifierSettingsStore,
     teamTokens: TeamTokenStore,
   ) {
     this.sessions = sessions;
@@ -69,6 +72,7 @@ export class SqliteStorage implements Storage {
     this.embeddingConfig = embeddingConfig;
     this.sources = sources;
     this.providers = providers;
+    this.classifierSettings = classifierSettings;
     this.teamTokens = teamTokens;
   }
 
@@ -86,8 +90,9 @@ export class SqliteStorage implements Storage {
     const embeddingConfig = new SqliteEmbeddingConfigStore(db);
     const sources = new SourceRegistry(db);
     const providers = new ProviderRegistry(db);
+    const classifierSettings = new SqliteClassifierSettingsStore(db);
     const teamTokens = new TeamTokenStore(db);
-    return new SqliteStorage(sessions, facts, signals, exemplars, workstreams, entities, learners, embeddingConfig, sources, providers, teamTokens);
+    return new SqliteStorage(sessions, facts, signals, exemplars, workstreams, entities, learners, embeddingConfig, sources, providers, classifierSettings, teamTokens);
   }
 
   async init(): Promise<void> {

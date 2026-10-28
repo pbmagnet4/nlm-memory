@@ -22,6 +22,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { LLMClient } from "@ports/llm-client.js";
+import { DEFAULT_CLASSIFY_TIMEOUT_MS } from "@core/classifier/tuning.js";
 import type { SessionChunk, TranscriptAdapter } from "@ports/transcript-adapter.js";
 import { deriveSubagentMeta } from "@core/adapters/claude-code.js";
 import { scanTranscriptDerivables } from "@core/ingest/transcript-derivables.js";
@@ -68,7 +69,6 @@ function loadAliasToLabel(): Map<string, string> {
 }
 
 const DEFAULT_INTERVAL_MS = 30 * 60 * 1000; // 30 min, matches Python default
-const DEFAULT_CLASSIFY_TIMEOUT_MS = 120_000; // per classifier request (per chunk for oversized sessions)
 const DEFER_BASE_MS = 30_000;
 const DEFER_CAP_MS = 10 * 60 * 1000;
 
@@ -155,7 +155,8 @@ export interface SchedulerOptions {
    *  logs; in "live" a below-threshold session is stored without classification. */
   readonly ingestGate?: IngestGate | null;
   readonly intervalMs?: number;
-  readonly classifyTimeoutMs?: number;
+  /** Per classifier request (per chunk for oversized sessions), read on every call so a live retune applies. */
+  readonly classifyTimeoutMs?: () => number;
   readonly confidenceFloor?: number;
   readonly idleMinutes?: number;
   /** Defaults to console.error. Set to a noop in tests. */
@@ -217,7 +218,7 @@ export class ScanScheduler {
       classifierDescriptor: opts.classifierDescriptor,
       ingestGate: opts.ingestGate && opts.ingestGate.mode !== "off" ? opts.ingestGate : null,
       intervalMs: opts.intervalMs ?? DEFAULT_INTERVAL_MS,
-      classifyTimeoutMs: opts.classifyTimeoutMs ?? DEFAULT_CLASSIFY_TIMEOUT_MS,
+      classifyTimeoutMs: opts.classifyTimeoutMs ?? (() => DEFAULT_CLASSIFY_TIMEOUT_MS),
       confidenceFloor: opts.confidenceFloor ?? DEFAULT_CONFIDENCE_FLOOR,
       idleMinutes: opts.idleMinutes ?? DEFAULT_IDLE_MINUTES,
       logger: opts.logger ?? ((msg) => console.error(msg)),
@@ -337,7 +338,7 @@ export class ScanScheduler {
         } else {
           try {
             classification = await classifyAdaptive(chunk.text, this.opts.classifier, {
-              perCallTimeoutMs: this.opts.classifyTimeoutMs,
+              perCallTimeoutMs: this.opts.classifyTimeoutMs(),
             });
           } catch (e) {
             if (isTransientLLMError(e)) {

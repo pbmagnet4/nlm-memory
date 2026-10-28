@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ClassifierBox } from "../../../src/llm/classifier-box.js";
-import { classifierNeedsThinkDisabled } from "../../../src/llm/model-quirks.js";
+import { resolveClassifierTuning, NO_STORED_SETTINGS } from "../../../src/core/classifier/tuning.js";
 import { formatPointerBlock } from "../../../src/core/hook/pointer-block.js";
 import type { ClassifyResult, LLMClient } from "../../../src/ports/llm-client.js";
 
@@ -56,20 +56,74 @@ describe("ClassifierBox.nameWorkstream", () => {
   });
 });
 
-describe("classifierNeedsThinkDisabled", () => {
-  it("returns true for qwen3.5:4b", () => {
-    expect(classifierNeedsThinkDisabled("qwen3.5:4b")).toBe(true);
+function tuning(stored: Partial<typeof NO_STORED_SETTINGS> = {}) {
+  return resolveClassifierTuning({ ...NO_STORED_SETTINGS, ...stored }, {});
+}
+
+/** Fake fetch answering both gateway shapes; records each request body. */
+function recordingFetch() {
+  const bodies: Array<Record<string, unknown>> = [];
+  const content = JSON.stringify({ label: "l", summary: "s", entities: [], decisions: [], open: [], confidence: 0.9, facts: [] });
+  const fetchImpl = (async (_url: unknown, init?: RequestInit) => {
+    bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return new Response(JSON.stringify({ choices: [{ message: { content } }], message: { content } }), { status: 200 });
+  }) as typeof fetch;
+  return { bodies, fetchImpl };
+}
+
+describe("ClassifierBox thinking tuning", () => {
+  const base = { model: "gemma", baseUrl: "http://gw/v1", apiKey: "k" } as const;
+
+  it("openai + thinking off sends chat_template_kwargs.enable_thinking=false", async () => {
+    const { bodies, fetchImpl } = recordingFetch();
+    const box = new ClassifierBox({ provider: "openai", ...base, tuning: tuning({ thinking: "off" }), fetchImpl });
+    await box.classify("[user] hi");
+    expect(bodies[0]?.["chat_template_kwargs"]).toEqual({ enable_thinking: false });
   });
 
-  it("returns true for qwen3.5:9b", () => {
-    expect(classifierNeedsThinkDisabled("qwen3.5:9b")).toBe(true);
+  it("openai + thinking on sends no chat_template_kwargs", async () => {
+    const { bodies, fetchImpl } = recordingFetch();
+    const box = new ClassifierBox({ provider: "openai", ...base, tuning: tuning({ thinking: "on" }), fetchImpl });
+    await box.classify("[user] hi");
+    expect(bodies[0]).not.toHaveProperty("chat_template_kwargs");
   });
 
-  it("returns false for qwen3:4b-instruct-2507-q4_K_M", () => {
-    expect(classifierNeedsThinkDisabled("qwen3:4b-instruct-2507-q4_K_M")).toBe(false);
+  it("ollama + thinking off sets think:false; on omits it", async () => {
+    const off = recordingFetch();
+    await new ClassifierBox({ provider: "ollama", model: "m", tuning: tuning({ thinking: "off" }), fetchImpl: off.fetchImpl }).classify("[user] hi");
+    expect(off.bodies[0]?.["think"]).toBe(false);
+    const on = recordingFetch();
+    await new ClassifierBox({ provider: "ollama", model: "m", tuning: tuning({ thinking: "on" }), fetchImpl: on.fetchImpl }).classify("[user] hi");
+    expect(on.bodies[0]).not.toHaveProperty("think");
   });
 
-  it("returns false for deepseek-v4-flash", () => {
-    expect(classifierNeedsThinkDisabled("deepseek-v4-flash")).toBe(false);
+  it("deepseek sends neither thinking field in either mode", async () => {
+    vi.stubEnv("DEEPSEEK_API_KEY", "k");
+    for (const thinking of ["off", "on"] as const) {
+      const { bodies, fetchImpl } = recordingFetch();
+      const box = new ClassifierBox({ provider: "deepseek", model: "deepseek-v4-flash", tuning: tuning({ thinking }), fetchImpl });
+      await box.classify("[user] hi");
+      expect(bodies[0]).not.toHaveProperty("chat_template_kwargs");
+      expect(bodies[0]).not.toHaveProperty("think");
+    }
+    vi.unstubAllEnvs();
+  });
+
+  it("retune rebuilds the client: off -> on drops the field, and exposes the new timeout", async () => {
+    const { bodies, fetchImpl } = recordingFetch();
+    const box = new ClassifierBox({ provider: "openai", ...base, tuning: tuning({ thinking: "off" }), fetchImpl });
+    box.retune(tuning({ thinking: "on", timeoutMs: 300_000 }));
+    await box.classify("[user] hi");
+    expect(bodies[0]).not.toHaveProperty("chat_template_kwargs");
+    expect(box.timeoutMs).toBe(300_000);
+  });
+
+  it("sends max_tokens only from a setting; the client default otherwise", async () => {
+    const dflt = recordingFetch();
+    await new ClassifierBox({ provider: "openai", ...base, tuning: tuning(), fetchImpl: dflt.fetchImpl }).classify("[user] hi");
+    expect(dflt.bodies[0]?.["max_tokens"]).toBe(8192);
+    const set = recordingFetch();
+    await new ClassifierBox({ provider: "openai", ...base, tuning: tuning({ maxTokens: 2048 }), fetchImpl: set.fetchImpl }).classify("[user] hi");
+    expect(set.bodies[0]?.["max_tokens"]).toBe(2048);
   });
 });

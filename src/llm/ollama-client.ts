@@ -21,7 +21,6 @@ import type {
   WorkstreamCandidateHint,
 } from "@ports/llm-client.js";
 import { ClassifierSchemaError, LLMUnreachableError } from "@ports/llm-client.js";
-import { classifierNeedsThinkDisabled } from "./model-quirks.js";
 import { buildNamingSystemPrompt, parseLongestLabel } from "./naming.js";
 import { classifyWithRetry, parseClassifierContent, rewriteTimeoutMs } from "./client-shared.js";
 import {
@@ -82,7 +81,7 @@ export interface OllamaClientOptions {
    * /api/chat request body. When omitted, Ollama uses the model's default
    * (thinking ON for thinking-capable models, which causes 30–180s latency
    * even on trivial prompts and triggers timeouts on the 180s classify wall).
-   * Set to false for qwen3.5 variants; leave unset for the incumbent.
+   * Leave unset to keep the model default.
    */
   readonly think?: boolean;
   /** Inject a fake fetch for tests. Defaults to global fetch. */
@@ -253,7 +252,7 @@ export class OllamaClient implements LLMClient {
           ],
           stream: false,
           options: { temperature: 0 },
-          ...(classifierNeedsThinkDisabled(this.classifyModel) ? { think: false } : {}),
+          ...(this.think !== undefined ? { think: this.think } : {}),
         }),
         signal: controller.signal,
       });
@@ -276,7 +275,6 @@ export class OllamaClient implements LLMClient {
     const sys = buildNamingSystemPrompt(candidates);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.classifyTimeoutMs);
-    const needsThinkOff = classifierNeedsThinkDisabled(this.classifyModel);
     try {
       const res = await this.fetchImpl(`${this.baseUrl}/api/chat`, {
         method: "POST",
@@ -288,7 +286,7 @@ export class OllamaClient implements LLMClient {
             { role: "user", content },
           ],
           stream: false,
-          ...(needsThinkOff ? { think: false } : {}),
+          ...(this.think !== undefined ? { think: this.think } : {}),
         }),
         signal: controller.signal,
       });

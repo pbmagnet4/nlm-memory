@@ -420,7 +420,7 @@ async function buildStack() {
   // can point it at any OpenAI-compatible endpoint. Classifier is wired
   // separately for Phase D ingest.
   const embedder = buildEmbedder();
-  const classifier = buildClassifier();
+  const classifier = buildClassifier(await storage.classifierSettings.get());
   if (judgeModeFromEnv() !== "off" && store instanceof SqliteSessionStore) {
     store.setFactJudge(new FactJudge({ store: facts, llm: classifier, embedder }));
   }
@@ -576,6 +576,7 @@ program
       factStore: facts,
       dbPath: dbPath(),
       classifier,
+      classifierSettings: storage.classifierSettings,
       sources,
       jobSupervisor,
       providers,
@@ -923,6 +924,7 @@ program
           store,
           adapters,
           classifier,
+          classifyTimeoutMs: () => classifier.timeoutMs,
           embedder,
           factStore: facts ?? null,
           signalStore: signals,

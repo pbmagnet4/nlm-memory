@@ -60,6 +60,16 @@ import type { LearnerStore } from "@ports/learner-store.js";
 import type { RecallHit } from "@shared/types.js";
 import { pickRelatedConcepts } from "@core/recall/related-concepts.js";
 import { buildDataset } from "@core/dataset/build-dataset.js";
+import type { ClassifierSettingsStore, ClassifierSettingsUpdate } from "@ports/classifier-settings-store.js";
+import {
+  MAX_TOKENS_RANGE,
+  NO_STORED_SETTINGS,
+  TIMEOUT_MS_RANGE,
+  isIntInRange,
+  isThinking,
+  resolveClassifierTuning,
+  type ClassifierTuning,
+} from "@core/classifier/tuning.js";
 import { ClassifierBox, type ClassifierProvider } from "../llm/classifier-box.js";
 import {
   SourceRegistry,
@@ -147,6 +157,8 @@ export interface HttpDeps {
   readonly dbPath?: string;
   /** Mutable classifier — read by /api/classifier/info, swapped by POST /api/classifier. */
   readonly classifier?: ClassifierBox;
+  /** Persisted classifier tuning — written by PUT /api/classifier/settings. */
+  readonly classifierSettings?: ClassifierSettingsStore;
   /** Sources registry — exposes /api/sources CRUD for the desktop UI. */
   readonly sources?: SourceRegistry | PgSourceRegistry;
   /** Providers registry — exposes /api/providers CRUD for the desktop UI. */
@@ -597,6 +609,7 @@ const HOSTED_GATED_ROUTES: ReadonlyArray<{ method: string; path: string; disposi
   { method: "POST", path: "/api/data/restore", disposition: "LOCAL" },
   { method: "GET", path: "/api/data/stats", disposition: "LOCAL" },
   { method: "POST", path: "/api/classifier", disposition: "LOCAL" },
+  { method: "PUT", path: "/api/classifier/settings", disposition: "LOCAL" },
   // Single-operator process supervision — starting/stopping the daemon's
   // own reprocess child has no per-tenant meaning, same LOCAL class as the
   // classifier swap above.
@@ -1470,6 +1483,34 @@ function registerActionRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   });
 }
 
+function tuningJson(t: ClassifierTuning) {
+  return { thinking: t.thinking, timeout_ms: t.timeoutMs, max_tokens: t.maxTokens };
+}
+
+/** Validates a PUT /api/classifier/settings body; returns the update or an error message. */
+function parseSettingsBody(body: unknown): ClassifierSettingsUpdate | string {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return "body must be a JSON object";
+  const b = body as Record<string, unknown>;
+  const update: { thinking?: "off" | "on" | null; timeoutMs?: number | null; maxTokens?: number | null } = {};
+  if (b["thinking"] !== undefined) {
+    if (b["thinking"] !== null && !isThinking(b["thinking"])) return "thinking must be \"off\", \"on\" or null";
+    update.thinking = b["thinking"];
+  }
+  if (b["timeout_ms"] !== undefined) {
+    if (b["timeout_ms"] !== null && !isIntInRange(b["timeout_ms"], TIMEOUT_MS_RANGE)) {
+      return `timeout_ms must be an integer ${TIMEOUT_MS_RANGE.min}..${TIMEOUT_MS_RANGE.max} or null`;
+    }
+    update.timeoutMs = b["timeout_ms"];
+  }
+  if (b["max_tokens"] !== undefined) {
+    if (b["max_tokens"] !== null && !isIntInRange(b["max_tokens"], MAX_TOKENS_RANGE)) {
+      return `max_tokens must be an integer ${MAX_TOKENS_RANGE.min}..${MAX_TOKENS_RANGE.max} or null`;
+    }
+    update.maxTokens = b["max_tokens"];
+  }
+  return update;
+}
+
 function registerClassifierRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   app.get("/api/classifier/info", (c) => {
     const provider = deps.classifier?.provider ?? "ollama";
@@ -1478,7 +1519,7 @@ function registerClassifierRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     return c.json({
       provider,
       model,
-      available_providers: openAiSwapAvailable
+      available_providers: openAiSwapAvailable || provider === "openai"
         ? (["deepseek", "ollama", "openai"] as const)
         : (["deepseek", "ollama"] as const),
       openai_swap_available: openAiSwapAvailable,
@@ -1492,7 +1533,19 @@ function registerClassifierRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
         ollama: ["qwen3.5:4b", "qwen3:4b-instruct-2507-q4_K_M", "qwen2.5:3b-instruct", "llama3.2:3b", "mistral:7b"],
       },
       embedder: deps.embedderInfo ?? { provider: "ollama", model: "nomic-embed-text", dims: 768 },
+      tuning: tuningJson(deps.classifier?.tuning ?? resolveClassifierTuning(NO_STORED_SETTINGS, process.env)),
     });
+  });
+
+  app.put("/api/classifier/settings", async (c) => {
+    if (!deps.classifier || !deps.classifierSettings) {
+      return c.json({ error: "classifier settings require classifier box and settings store" }, 503);
+    }
+    const update = parseSettingsBody(await c.req.json().catch(() => null));
+    if (typeof update === "string") return c.json({ error: update }, 400);
+    const stored = await deps.classifierSettings.update(update);
+    deps.classifier.retune(resolveClassifierTuning(stored, process.env));
+    return c.json({ tuning: tuningJson(deps.classifier.tuning) });
   });
 
   app.post("/api/classifier", async (c) => {

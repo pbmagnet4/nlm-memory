@@ -28,6 +28,7 @@ import type {
   RewriteResult,
 } from "@ports/llm-client.js";
 import { ClassifierSchemaError, LLMUnreachableError } from "@ports/llm-client.js";
+import { DEFAULT_CLASSIFY_MAX_TOKENS } from "@core/classifier/tuning.js";
 import { buildNamingSystemPrompt, parseLongestLabel } from "./naming.js";
 import { classifyWithRetry, parseClassifierContent, rewriteTimeoutMs } from "./client-shared.js";
 import {
@@ -62,6 +63,9 @@ export interface DeepSeekClientOptions {
    * 1-2K+ reasoning tokens before any JSON, so this needs headroom.
    */
   readonly classifyMaxTokens?: number;
+  /** Extra top-level fields merged into every chat request body (e.g.
+   *  `chat_template_kwargs` to switch thinking off on an OpenAI-compatible gateway). */
+  readonly extraBody?: Readonly<Record<string, unknown>>;
 }
 
 interface ChatResponse {
@@ -78,6 +82,7 @@ export class DeepSeekClient implements LLMClient {
   private readonly classifyAttempts: number;
   private readonly responseFormat: "json_object" | "none";
   private readonly classifyMaxTokens: number;
+  private readonly extraBody: Readonly<Record<string, unknown>>;
 
   constructor(opts: DeepSeekClientOptions = {}) {
     const key = opts.apiKey ?? process.env["DEEPSEEK_API_KEY"];
@@ -94,7 +99,8 @@ export class DeepSeekClient implements LLMClient {
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.classifyAttempts = opts.classifyAttempts ?? 3;
     this.responseFormat = opts.responseFormat ?? "json_object";
-    this.classifyMaxTokens = opts.classifyMaxTokens ?? 8192;
+    this.classifyMaxTokens = opts.classifyMaxTokens ?? DEFAULT_CLASSIFY_MAX_TOKENS;
+    this.extraBody = opts.extraBody ?? {};
   }
 
   /** Spread into a chat request body: `{type:"json_object"}` or nothing. */
@@ -145,6 +151,7 @@ export class DeepSeekClient implements LLMClient {
             { role: "user", content: userPrompt },
           ],
           ...this.responseFormatField(),
+          ...this.extraBody,
           temperature: 0.1,
           // max_tokens covers reasoning + JSON output. Reasoning models (e.g.
           // deepseek-v4-flash, or qwen3.5 over an OpenAI-compatible endpoint
@@ -191,6 +198,7 @@ export class DeepSeekClient implements LLMClient {
             { role: "user", content: query },
           ],
           ...this.responseFormatField(),
+          ...this.extraBody,
           temperature: 0.1,
           max_tokens: 512,
           stream: false,
@@ -229,6 +237,7 @@ export class DeepSeekClient implements LLMClient {
             { role: "user", content: user },
           ],
           ...this.responseFormatField(),
+          ...this.extraBody,
           temperature: 0,
           max_tokens: opts.maxTokens ?? this.classifyMaxTokens,
           stream: false,
@@ -264,6 +273,7 @@ export class DeepSeekClient implements LLMClient {
           model: this.classifyModel,
           temperature: 0,
           max_tokens: this.classifyMaxTokens,
+          ...this.extraBody,
           messages: [
             { role: "system", content: sys },
             { role: "user", content },
