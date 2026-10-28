@@ -87,7 +87,8 @@ describe("parseLanePatch", () => {
     [{ lane: "prose", base_url: "ftp://h" }, /base_url/],
     [{ lane: "prose", base_url: "not a url" }, /base_url/],
     [{ lane: "prose", model: "  " }, /model/],
-    [{ lane: "prose", api_key: "" }, /api_key/],
+    [{ lane: "prose", api_key: "" }, /NLM_EMBED_API_KEY/],
+    [{ lane: "prose", api_key: "sk-secret" }, /NLM_EMBED_API_KEY/],
     [{ lane: "prose", confirm_reembed: "yes" }, /confirm_reembed/],
   ])("rejects %j", (body, msg) => {
     expect(parseLanePatch(body)).toMatch(msg);
@@ -130,10 +131,10 @@ describe("getEmbedderSettings", () => {
 describe("testEmbedder", () => {
   it("probes the candidate through its own config and persists nothing", async () => {
     const { deps, calls, storage } = await setup();
-    const out = await testEmbedder(deps, patch({ lane: "prose", model: "cand-model", base_url: "http://cand/v1", api_key: "cand-key" }));
+    const out = await testEmbedder(deps, patch({ lane: "prose", model: "cand-model", base_url: "http://cand/v1" }));
     expect(out).toMatchObject({ ok: true, dim: 768, model: "cand-model" });
     expect(typeof out["latency_ms"]).toBe("number");
-    expect(calls[0]).toEqual({ url: "http://cand/v1/embeddings", auth: "Bearer cand-key", model: "cand-model" });
+    expect(calls[0]).toEqual({ url: "http://cand/v1/embeddings", auth: "Bearer local", model: "cand-model" });
     expect((await storage.embedderSettings.get("prose")).model).toBeNull();
   });
 
@@ -143,14 +144,17 @@ describe("testEmbedder", () => {
     expect(calls[0]!.auth).toBe("Bearer sk-live-secret");
   });
 
-  it("does not forward the env key to a changed base_url or provider unless the request supplies a key", async () => {
+  it("does not forward the env key to a changed base_url or provider ", async () => {
     const { deps, calls } = await setup();
     await testEmbedder(deps, patch({ lane: "prose", base_url: "http://attacker.example/v1" }));
     expect(calls[0]).toMatchObject({ url: "http://attacker.example/v1/embeddings", auth: "Bearer local" });
-    await testEmbedder(deps, patch({ lane: "prose", base_url: "http://other/v1", api_key: "explicit" }));
-    expect(calls[1]!.auth).toBe("Bearer explicit");
     await testEmbedder(deps, patch({ lane: "prose", provider: "openai", base_url: "http://lan2/v1" }));
-    expect(calls[2]!.auth).toBe("Bearer local");
+    expect(calls[1]!.auth).toBe("Bearer local");
+  });
+
+  it("rejects a non-null api_key at the boundary, so no key is ever written", () => {
+    expect(parseLanePatch({ lane: "prose", api_key: "k" })).toMatch(/NLM_EMBED_API_KEY/);
+    expect(patch({ lane: "prose", api_key: null }).update).toEqual({ apiKey: null });
   });
 
   it("does not forward a stored key to a changed base_url either", async () => {
@@ -209,18 +213,18 @@ describe("probe timeouts", () => {
 });
 
 describe("saveEmbedderSettings, prose lane", () => {
-  it("applies a base_url/api_key change live when provider+model+dim still match the stored vectors", async () => {
+  it("applies a base_url change live when provider+model+dim still match the stored vectors", async () => {
     const { deps, storage, started, calls } = await setup({ stored: { lane: "prose", dim: 768 } });
-    const res = await saveEmbedderSettings(deps, patch({ lane: "prose", base_url: "http://new-host/v1", api_key: "new-key" }));
+    const res = await saveEmbedderSettings(deps, patch({ lane: "prose", base_url: "http://new-host/v1" }));
     expect(res.status).toBe(200);
     expect(started).toHaveLength(0);
-    expect(await storage.embedderSettings.get("prose")).toMatchObject({ baseUrl: "http://new-host/v1", apiKey: "new-key" });
+    expect(await storage.embedderSettings.get("prose")).toMatchObject({ baseUrl: "http://new-host/v1", apiKey: null });
     calls.length = 0;
     await deps.prose.embed("hello", "query");
-    expect(calls[0]).toMatchObject({ url: "http://new-host/v1/embeddings", auth: "Bearer new-key" });
+    expect(calls[0]).toMatchObject({ url: "http://new-host/v1/embeddings", auth: "Bearer local" });
     const lane = res.body["lane"] as Record<string, unknown>;
     expect(lane["base_url"]).toEqual({ value: "http://new-host/v1", source: "setting" });
-    expect(JSON.stringify(res.body)).not.toContain("new-key");
+    expect(JSON.stringify(res.body)).not.toContain("sk-live-secret");
   });
 
   it("a save that moves base_url without a key clears the stored key and sends none", async () => {
@@ -233,6 +237,22 @@ describe("saveEmbedderSettings, prose lane", () => {
     await deps.prose.embed("x", "query");
     expect(calls[0]).toMatchObject({ url: "http://moved/v1/embeddings", auth: "Bearer local" });
     expect((res.body["lane"] as Record<string, unknown>)["api_key_set"]).toBe(false);
+  });
+
+  it("api_key: null clears a legacy stored key; an unrelated save leaves it resolving", async () => {
+    const { deps, storage, calls } = await setup({ stored: { lane: "prose", dim: 768 } });
+    await storage.embedderSettings.update("prose", { apiKey: "stored-key" });
+    expect(((await getEmbedderSettings(deps))["lanes"] as Record<string, Record<string, unknown>>)["prose"]!["api_key_source"]).toBe("setting");
+    const kept = await saveEmbedderSettings(deps, patch({ lane: "prose" }));
+    expect(kept.status).toBe(200);
+    expect((await storage.embedderSettings.get("prose")).apiKey).toBe("stored-key");
+    calls.length = 0;
+    await deps.prose.embed("x", "query");
+    expect(calls[0]!.auth).toBe("Bearer stored-key");
+    const cleared = await saveEmbedderSettings(deps, patch({ lane: "prose", api_key: null }));
+    expect(cleared.status).toBe(200);
+    expect((await storage.embedderSettings.get("prose")).apiKey).toBeNull();
+    expect((cleared.body["lane"] as Record<string, unknown>)["api_key_source"]).toBe("env");
   });
 
   it("returns 409 without confirm_reembed on a model change, persisting and swapping nothing", async () => {
@@ -253,7 +273,7 @@ describe("saveEmbedderSettings, prose lane", () => {
 
   it("with confirm_reembed persists, swaps, and starts the rebuild job with the effective lane config in the child env", async () => {
     const { deps, storage, started, calls } = await setup({ dim: 1024, stored: { lane: "prose", dim: 768 } });
-    const res = await saveEmbedderSettings(deps, patch({ lane: "prose", model: "bigger-model", api_key: "rebuild-key", confirm_reembed: true }));
+    const res = await saveEmbedderSettings(deps, patch({ lane: "prose", model: "bigger-model", confirm_reembed: true }));
     expect(res.status).toBe(202);
     expect(started).toEqual([{
       args: [],
@@ -261,10 +281,10 @@ describe("saveEmbedderSettings, prose lane", () => {
         NLM_EMBED_PROVIDER: "openai",
         NLM_EMBED_MODEL: "bigger-model",
         NLM_EMBED_BASE_URL: "http://192.168.2.2:4000/v1",
-        NLM_EMBED_API_KEY: "rebuild-key",
+        NLM_EMBED_API_KEY: "sk-live-secret",
       },
     }]);
-    expect(await storage.embedderSettings.get("prose")).toMatchObject({ model: "bigger-model", apiKey: "rebuild-key" });
+    expect(await storage.embedderSettings.get("prose")).toMatchObject({ model: "bigger-model", apiKey: null });
     calls.length = 0;
     await deps.prose.embed("x", "document");
     expect(calls[0]!.model).toBe("bigger-model");
@@ -304,14 +324,14 @@ describe("saveEmbedderSettings, prose lane", () => {
 });
 
 describe("saveEmbedderSettings, code lane", () => {
-  it("applies base_url and api_key edits live", async () => {
+  it("applies base_url edits live", async () => {
     const { deps, storage, calls } = await setup({ stored: { lane: "code", dim: 768, model: DEFAULT_CODE_EMBED_MODEL } });
-    const res = await saveEmbedderSettings(deps, patch({ lane: "code", base_url: "http://code-host/v1", api_key: "code-key" }));
+    const res = await saveEmbedderSettings(deps, patch({ lane: "code", base_url: "http://code-host/v1" }));
     expect(res.status).toBe(200);
-    expect(await storage.embedderSettings.get("code")).toMatchObject({ baseUrl: "http://code-host/v1", apiKey: "code-key" });
+    expect(await storage.embedderSettings.get("code")).toMatchObject({ baseUrl: "http://code-host/v1", apiKey: null });
     calls.length = 0;
     await deps.code.embed("fn", "document");
-    expect(calls[0]).toMatchObject({ url: "http://code-host/v1/embeddings", auth: "Bearer code-key" });
+    expect(calls[0]).toMatchObject({ url: "http://code-host/v1/embeddings", auth: "Bearer local" });
   });
 
   it.each([

@@ -32,7 +32,7 @@ interface EmbedderSettings {
   rebuild_job: RebuildJob | null;
 }
 
-interface Draft { provider: string; base_url: string; model: string; api_key: string }
+interface Draft { provider: string; base_url: string; model: string }
 
 type Patch = Record<string, string | null>;
 
@@ -40,17 +40,16 @@ const LANE_LABEL: Record<LaneName, string> = { prose: "Prose (sessions, facts, r
 const JOB_POLL_MS = 3_000;
 
 function draftFromLane(l: Lane): Draft {
-  return { provider: l.provider.value, base_url: l.base_url.value ?? "", model: l.model.value, api_key: "" };
+  return { provider: l.provider.value, base_url: l.base_url.value ?? "", model: l.model.value };
 }
 
-/** Only changed fields are sent; a blank base URL clears the setting. A typed key replaces the stored one. */
+/** Only changed fields are sent; a blank base URL clears the setting. */
 function draftPatch(l: Lane, d: Draft): Patch {
   const current = draftFromLane(l);
   const patch: Patch = {};
   if (d.provider !== current.provider) patch["provider"] = d.provider;
   if (d.model !== current.model) patch["model"] = d.model;
   if (d.base_url !== current.base_url) patch["base_url"] = d.base_url.trim() === "" ? null : d.base_url.trim();
-  if (d.api_key !== "") patch["api_key"] = d.api_key;
   return patch;
 }
 
@@ -63,6 +62,11 @@ interface PutResponse {
 
 function lanePhrase(c: { provider: string; model: string; dim: number }): string {
   return `${c.provider} / ${c.model} @ ${c.dim}`;
+}
+
+function keyStatus(l: Lane): string {
+  if (l.api_key_source === "setting") return "stored (legacy): clear it and set NLM_EMBED_API_KEY";
+  return l.api_key_set ? "set via NLM_EMBED_API_KEY" : "not set (set NLM_EMBED_API_KEY)";
 }
 
 export function SettingsEmbedderPage() {
@@ -189,17 +193,10 @@ export function SettingsEmbedderPage() {
         </div>
         <div className="form-row">
           <label className="form-label">API key</label>
-          <span className="kv-value mono">{l.api_key_set ? "set" : "not set"}</span>
-          <SourceBadge source={l.api_key_source} onReset={reset("api_key")} disabled={disabled} />
-          <input
-            className="form-input form-input-inline"
-            type="password"
-            autoComplete="new-password"
-            value={d.api_key}
-            onChange={(e) => setDraft({ ...d, api_key: e.target.value })}
-            disabled={disabled}
-            placeholder={l.api_key_set ? "Replace key" : "Set key"}
-          />
+          <span className="kv-value mono">{keyStatus(l)}</span>
+          {l.api_key_source === "setting" && (
+            <button type="button" className="btn" onClick={reset("api_key")} disabled={disabled}>Clear stored key</button>
+          )}
         </div>
         <dl className="kv-list">
           <dt className="kv-label">Stored vectors</dt>
@@ -242,7 +239,7 @@ export function SettingsEmbedderPage() {
       )}
       {renderLane("prose")}
       {renderLane("code")}
-      <p className="muted small">Changes apply live. Clear a field with Reset to fall back to the env or default value. The API key is write-only and never shown.</p>
+      <p className="muted small">Changes apply live. Clear a field with Reset to fall back to the env or default value. The API key is read from the NLM_EMBED_API_KEY environment variable and is never stored.</p>
     </div>
   );
 }

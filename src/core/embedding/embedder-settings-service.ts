@@ -12,8 +12,10 @@
  *   for the prose lane, `--exemplars` for the code lane). One supervisor serves
  *   both lanes, so a rebuild already running refuses the second.
  *
- * The API key never leaves this module except into a client or the rebuild
- * child's env; responses carry `api_key_set` only.
+ * The API key is never written by this module: it comes from NLM_EMBED_API_KEY.
+ * A key stored by an older version is still read until cleared (`api_key: null`).
+ * It never leaves this module except into a client or the rebuild child's env;
+ * responses carry `api_key_set` only.
  */
 
 import type { EmbedderLaneUpdate, EmbedderSettingsStore } from "@ports/embedder-settings-store.js";
@@ -56,9 +58,12 @@ export interface ServiceResult {
   readonly body: Record<string, unknown>;
 }
 
+/** What the API may write: the key can only be cleared, never set. */
+type LaneUpdate = EmbedderLaneUpdate & { readonly apiKey?: null };
+
 export interface LanePatch {
   readonly lane: EmbeddingLane;
-  readonly update: EmbedderLaneUpdate;
+  readonly update: LaneUpdate;
   readonly confirmReembed: boolean;
 }
 
@@ -81,7 +86,7 @@ export function parseLanePatch(body: unknown): LanePatch | string {
   const b = body as Record<string, unknown>;
   const lane = b["lane"];
   if (!isLane(lane)) return 'lane must be "prose" or "code"';
-  const update: { provider?: string | null; baseUrl?: string | null; model?: string | null; apiKey?: string | null } = {};
+  const update: { provider?: string | null; baseUrl?: string | null; model?: string | null; apiKey?: null } = {};
   if (b["provider"] !== undefined) {
     const p = b["provider"];
     if (p !== null) {
@@ -104,8 +109,8 @@ export function parseLanePatch(body: unknown): LanePatch | string {
   }
   if (b["api_key"] !== undefined) {
     const k = b["api_key"];
-    if (k !== null && (typeof k !== "string" || k === "")) return "api_key must be a non-empty string or null";
-    update.apiKey = k;
+    if (k !== null) return "api_key cannot be set here: the key is read from the NLM_EMBED_API_KEY environment variable and is never stored (send null to clear a previously stored key)";
+    update.apiKey = null;
   }
   const confirm = b["confirm_reembed"];
   if (confirm !== undefined && typeof confirm !== "boolean") return "confirm_reembed must be a boolean";
@@ -206,20 +211,20 @@ export async function getEmbedderSettings(deps: EmbedderSettingsDeps): Promise<R
 
 /**
  * Resolves the candidate lane. A stored or env API key is a credential for the
- * endpoint it was set for: when the patch moves provider or base URL and does
- * not bring its own key, the stored key is cleared (in the returned update too,
+ * endpoint it was set for: when the patch moves provider or base URL, the
+ * stored key is cleared (in the returned update too,
  * so a save persists that) and the env key stops applying.
  */
 async function candidate(
   deps: EmbedderSettingsDeps,
   p: LanePatch,
-): Promise<{ current: EmbedderLaneSettings; next: EmbedderLaneSettings; update: EmbedderLaneUpdate }> {
+): Promise<{ current: EmbedderLaneSettings; next: EmbedderLaneSettings; update: LaneUpdate }> {
   const stored = await deps.settings.get(p.lane);
   const current = resolveEmbedderLane(p.lane, stored, deps.env);
   let next = resolveEmbedderLane(p.lane, applyEmbedderUpdate(stored, p.update), deps.env);
   let update = p.update;
   const moved = next.provider.value !== current.provider.value || next.baseUrl.value !== current.baseUrl.value;
-  if (moved && p.update.apiKey === undefined) {
+  if (moved) {
     update = { ...p.update, apiKey: null };
     next = resolveEmbedderLane(p.lane, applyEmbedderUpdate(stored, update), deps.env);
   }
@@ -287,7 +292,7 @@ export async function saveEmbedderSettings(deps: EmbedderSettingsDeps, p: LanePa
 async function persistAndSwap(
   deps: EmbedderSettingsDeps,
   lane: EmbeddingLane,
-  update: EmbedderLaneUpdate,
+  update: LaneUpdate,
   values: EmbedderLaneValues,
 ): Promise<void> {
   await deps.settings.update(lane, update);
