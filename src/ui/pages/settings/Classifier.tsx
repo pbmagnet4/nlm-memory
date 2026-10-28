@@ -404,7 +404,7 @@ export function SettingsClassifierPage() {
           )}
 
           <h3 className="section-title">Embedder</h3>
-          <p className="muted small">The embedder (provider, model, endpoint and key per lane) is configured on the <Link to="/settings/embedder">Embedder settings</Link> page.</p>
+          <p className="muted small">The embedder (provider, model, endpoint and key per lane) is configured on the <Link className="inline-link" to="/settings/embedder">Embedder settings</Link> page.</p>
         </>
       )}
     </div>
