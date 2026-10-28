@@ -851,13 +851,15 @@ program
       const EXEMPLAR_BACKFILL_INITIAL_DELAY_MS = 120 * 1000;
       const runExemplarBackfill = async () => {
         try {
+          // Re-resolved per tick: a Settings save swaps codeEmb live, so boot-time lanes.code goes stale.
+          const code = laneValues(resolveEmbedderLane("code", await storage.embedderSettings.get("code"), process.env));
           const report = await backfillExemplarEmbeddings({
             tenantId: DEFAULT_TEAM_ID,
             dbPath: dbPath(),
             embedder: codeEmb,
             store: storage.exemplars,
-            provider: lanes.code.provider,
-            model: lanes.code.model,
+            provider: code.provider,
+            model: code.model,
             onStale: "skip",
           });
           if (report.succeeded > 0 || report.failed > 0) {
