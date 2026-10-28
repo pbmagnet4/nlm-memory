@@ -3,7 +3,7 @@ import { validateSourceAnchor } from "@core/facts/source-anchor.js";
 import { Pool, type PoolClient } from "pg";
 import type { Fact } from "@shared/types.js";
 import type { PropertyBackfillRow, PropertyStore } from "@ports/property-store.js";
-import { assertionKey, attributeFacts, attributeFactGroups, sessionPropertyReferences, parseProperties, propertyAssociationsEnabled, propertyInferenceEnabled, type MemoryProperty, type PropertyOverride } from "@core/properties/model.js";
+import { assertionKey, attributeFacts, attributeFactGroups, sessionPropertyReferences, parseProperties, propertyAssociationsEnabled, propertyInferenceEnabled, sessionPropertyInferenceEnabled, type MemoryProperty, type PropertyOverride } from "@core/properties/model.js";
 import { tenantClausePg } from "@core/tenancy/tenant-clause.js";
 import { anchorFromRow } from "./fact-source-anchor.js";
 import { sourceIdentityExpression, propertyFromRow, type PropertyRow } from "./property-attribution.js";
@@ -72,7 +72,7 @@ export class PgPropertyStore implements PropertyStore {
     if (!propertyAssociationsEnabled()) return;
     const origin = repositoryProperty(record.projectDir, await this.list(tenantId));
     if (origin) await this.db.query("INSERT INTO session_properties (tenant_id, session_id, property_slug, source, evidence) VALUES ($1, $2, $3, 'repository', $4) ON CONFLICT DO NOTHING", [tenantId, record.id, origin, record.projectDir!]);
-    for (const p of sessionPropertyReferences(propertyInferenceEnabled() ? record.entities : [], await this.list(tenantId), session.body)) {
+    for (const p of sessionPropertyReferences(sessionPropertyInferenceEnabled() ? record.entities : [], await this.list(tenantId), session.body)) {
       await this.db.query("INSERT INTO session_properties (tenant_id, session_id, property_slug, source, evidence) VALUES ($1, $2, $3, 'entity', $4) ON CONFLICT DO NOTHING", [tenantId, record.id, p.slug, p.evidence]);
     }
   }
@@ -106,10 +106,11 @@ export class PgPropertyStore implements PropertyStore {
     });
   }
   async backfill(tenantId: string, apply: boolean): Promise<PropertyBackfillRow[]> {
-    if (!propertyInferenceEnabled()) throw new Error("Automatic property inference has not passed activation evaluation; backfill requires NLM_PROPERTY_INFERENCE=1");
+    const factLane = propertyInferenceEnabled(); const sessionLane = sessionPropertyInferenceEnabled();
+    if (!factLane && !sessionLane) throw new Error("Automatic property inference has not passed activation evaluation; backfill requires NLM_PROPERTY_INFERENCE=1 or NLM_SESSION_PROPERTY_INFERENCE=1");
     return this.atomic(async (store) => {
       const catalog = await store.list(tenantId); const tc = tenantClausePg(tenantId, 5); const results: PropertyBackfillRow[] = [];
-      const rows = await store.rows(tenantId);
+      const rows = factLane ? await store.rows(tenantId) : [];
       const sessionTenant = tenantClausePg(tenantId, 1);
       const bodies = new Map((await store.db.query<{ id: string; body: string | null }>(`SELECT id, body FROM sessions WHERE ${sessionTenant.sql}`, [sessionTenant.param])).rows.map((s) => [s.id, s.body]));
       const attributed = attributeFactGroups(rows.map((r) => ({ fact: toFact(r), sourceIdentity: r.source_identity, sourceVersion: r.current_source_body_version, body: bodies.get(r.source_session_id) ?? null })), catalog, await store.overrides(tenantId));
@@ -125,7 +126,7 @@ export class PgPropertyStore implements PropertyStore {
       const { rows: entities } = await store.db.query<{ session_id: string; entity_canonical: string }>(`SELECT session_id, entity_canonical FROM session_entities WHERE ${st.sql}`, [st.param]);
       const bySession = new Map<string, string[]>();
       for (const e of entities) bySession.set(e.session_id, [...(bySession.get(e.session_id) ?? []), e.entity_canonical]);
-      for (const [sessionId, names] of bySession) for (const p of sessionPropertyReferences(names, catalog, bodies.get(sessionId) ?? null)) {
+      for (const [sessionId, names] of sessionLane ? bySession : []) for (const p of sessionPropertyReferences(names, catalog, bodies.get(sessionId) ?? null)) {
         const check = tenantClausePg(tenantId, 3);
         const { rows } = await store.db.query(`SELECT 1 FROM session_properties WHERE session_id = $1 AND property_slug = $2 AND ${check.sql}`, [sessionId, p.slug, check.param]);
         if (rows.length) continue;

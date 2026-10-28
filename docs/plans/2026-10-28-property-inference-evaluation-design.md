@@ -138,3 +138,19 @@ Implementation estimate, about 4–5 engineering days plus a 2–4 week calendar
 1. **Q1 yield.** At the current proposal rate (about 4 per day) a 100-proposal census needs roughly a month of fresh sessions. Options: accept the 28-day window; or admit a supplementary pre-freeze draw from the ~24,000 sessions that are not T1130 sources (session- and assertion-disjoint, not time-disjoint), reported as a separate stratum. The design assumes the 28-day window with the supplementary draw as a pre-declared fallback only if N < 100 at close. Confirm, or choose the supplementary draw from the start.
 2. **Labelling budget.** About 130 minutes across three sittings is the floor for a human reference on every proposal. If that is too much, the only honest reduction is a smaller session sample (100 refs, about 35 minutes), which weakens the Q2 bound to allow at most one error; the fact census cannot shrink without weakening Q1.
 3. **Review lane.** Muse landing review as reviewer and spot-checker, as in T1130, or a second model family for the 20% re-score as well.
+
+## Amendment 2026-10-28
+
+The text above is unchanged. This amendment narrows the evaluation scope; Edward decided it on 2026-10-28.
+
+Reason. The conservative candidate proposes a fact owner for only 4 of 40,400 active facts corpus-wide, so the fact lane can never reach the Q1 census of N >= 100 proposals. The session-reference lane has the volume: 6,824 sessions carry catalog entity references.
+
+New scope.
+- Evaluate and activate the session-reference lane only. `NLM_SESSION_PROPERTY_INFERENCE` gates entity-name session references (ingestion and the session part of backfill). `NLM_PROPERTY_INFERENCE` now gates fact attribution only and stays off.
+- The manifest records `lanes: ["session"]`, written at freeze (`--lanes session`, the only supported value).
+- Window rule (replaces step 3's census rule). The window closes when at least 160 session references are available across the strata targets (C 30, D 100, E 30, each stratum capped at its target) or after 28 days, whichever comes first. `--count` prints that number.
+- Draw emits session cards plus the 20 abstention cards. No fact cards are drawn.
+- Scoring omits Q1 from the decision rule and reports it as "out of scope (fact lane off)". Q2 gates are unchanged: point estimate >= 0.95, Wilson lower bound >= 0.90, stratum floor 0.80, N >= 100 references.
+- Labelling effort is about 55 minutes (about 160 session cards plus 20 abstention cards).
+
+The fact lane is deferred until a candidate yields enough proposals to reach a Q1 census.

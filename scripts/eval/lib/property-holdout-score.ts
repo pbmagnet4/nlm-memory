@@ -3,16 +3,15 @@ import type { Card } from "./property-holdout-cards.js";
 import { fileHash, pathsIn, readJson, writePrivate, type Manifest } from "./property-holdout-io.js";
 import { readSeal, type CardLabel, type FactLabel, type LabelsFile, type SessionLabel } from "./property-holdout-labels.js";
 import type { Predictions, PredictionEntry } from "./property-holdout.js";
-import { cohenKappa, postStratified, ruleOfThree, wilson } from "./property-holdout-stats.js";
+import { cohenKappa, postStratified, wilson } from "./property-holdout-stats.js";
 
-const Q1_MIN_PROPOSALS = 100;
 const Q2_MIN_REFS = 100;
 const Q2_POINT = 0.95;
 const Q2_LOWER = 0.9;
 const STRATUM_FLOOR = 0.8;
 const KAPPA_FLAG = 0.6;
-const FACT_FLOORS: Record<string, number> = { A: 25, B: 20 };
 
+export const Q1_OUT_OF_SCOPE = "out of scope (fact lane off)";
 export const SCOPE_STATEMENT = "These are acceptance results for one frozen candidate on one frozen, source-disjoint holdout. They are not a population precision claim.";
 
 export class ScoringRefused extends Error {}
@@ -24,11 +23,10 @@ const finalConfidence = (l: SessionLabel) => l.adjudicated?.confidence ?? l.conf
 
 export interface Scores {
   scope: string; scoredAt: string;
-  q1: { proposals: number; wrongOwner: number; ruleOfThreeBound: number | null; underPowered: boolean; passed: boolean;
-    perStratum: Record<string, { proposals: number; wrongOwner: number; floor: number | null; belowFloor: boolean }>; wrongCards: string[] };
+  q1: typeof Q1_OUT_OF_SCOPE;
   q2: { references: number; pooledPrecision: number | null; postStratified: number | null; wilson: { low: number; high: number } | null; underPowered: boolean;
     unsampledStrata: string[]; perStratum: Record<string, { references: number; relevant: number; precision: number | null; belowFloor: boolean }>; passed: boolean };
-  coverage: { factProposalsPerEligibleFact: number | null; sessionRefsPerSessionWithEntities: number | null; abstentionCorrectRate: number | null; abstentionCards: number };
+  coverage: { sessionRefsPerSessionWithEntities: number | null; abstentionCorrectRate: number | null; abstentionCards: number };
   kappa: { fact: number | null; session: number | null; flagged: boolean; l2Present: boolean; disagreementsOnProposals: string[] };
   annotationLimits: { cards: number; cardsPerStratum: Record<string, number>; sessionCardsDropped: number; unsureFact: number; unsureSession: number;
     adjudicationChanged: number; l1Minutes: number; l1IsOperator: string };
@@ -57,21 +55,8 @@ export function scoreHoldout(dir: string, now: Date, write = true): Scores {
   const l2 = existsSync(p.l2) ? readJson<LabelsFile>(p.l2).labels : null;
 
   const entries = Object.entries(predictions.cards) as [string, PredictionEntry][];
-  const factProposals = entries.filter(([, e]) => e.lane === "fact");
   const abstentions = entries.filter(([, e]) => e.lane === "abstention");
   const sessionCards = entries.filter(([, e]) => e.lane === "session");
-
-  // Q1: a census. An unsure or ambiguous card counts against a proposal.
-  const q1Strata: Scores["q1"]["perStratum"] = {};
-  for (const stratum of new Set([...Object.keys(predictions.population.factProposals), ...factProposals.map(([, e]) => e.stratum)])) {
-    const rows = factProposals.filter(([, e]) => e.stratum === stratum);
-    const wrong = rows.filter(([id, e]) => !correctProposal(labels[id]!, e.proposed[0]!)).length;
-    const floor = FACT_FLOORS[stratum] ?? null;
-    q1Strata[stratum] = { proposals: rows.length, wrongOwner: wrong, floor, belowFloor: floor !== null && rows.length < floor };
-  }
-  const wrongCards = factProposals.filter(([id, e]) => !correctProposal(labels[id]!, e.proposed[0]!)).map(([id]) => id);
-  const q1 = { proposals: factProposals.length, wrongOwner: wrongCards.length, ruleOfThreeBound: wrongCards.length === 0 ? ruleOfThree(factProposals.length) : null,
-    underPowered: factProposals.length < Q1_MIN_PROPOSALS, passed: wrongCards.length === 0 && factProposals.length >= Q1_MIN_PROPOSALS, perStratum: q1Strata, wrongCards };
 
   // Q2: references on session cards that survived adjudication.
   const kept = sessionCards.filter(([id]) => { const l = labels[id]!; return isSession(l) && finalConfidence(l) === "sure"; });
@@ -98,7 +83,6 @@ export function scoreHoldout(dir: string, now: Date, write = true): Scores {
   // Coverage has no gate. An unsure abstention card is a correct abstention (§3).
   const abstentionCorrect = abstentions.filter(([id]) => { const l = labels[id]; return l !== undefined && isFact(l) && (l.confidence === "unsure" || l.owner === "none" || l.owner === "ambiguous"); }).length;
   const coverage = {
-    factProposalsPerEligibleFact: draw.population.eligibleFacts === 0 ? null : factProposals.length / draw.population.eligibleFacts,
     sessionRefsPerSessionWithEntities: draw.population.sessionsWithEntities === 0 ? null : Object.values(draw.population.sessionRefs).reduce((a, b) => a + b, 0) / draw.population.sessionsWithEntities,
     abstentionCorrectRate: abstentions.length === 0 ? null : abstentionCorrect / abstentions.length, abstentionCards: abstentions.length,
   };
@@ -111,7 +95,7 @@ export function scoreHoldout(dir: string, now: Date, write = true): Scores {
     return [...new Set([...a.relevant, ...b.relevant, ...(predictions.cards[c.id]?.proposed ?? [])])].map((slug): [string, string] => [a.relevant.includes(slug) ? "y" : "n", b.relevant.includes(slug) ? "y" : "n"]);
   }) : [];
   const sessionKappa = l2 ? cohenKappa(sessionUnits.map((u) => u[0]), sessionUnits.map((u) => u[1])) : null;
-  const disagreements = l2 ? [...factProposals, ...sessionCards].map(([id]) => id).filter((id) => id in l2 && disagree(labels[id]!, l2[id]!)) : [];
+  const disagreements = l2 ? sessionCards.map(([id]) => id).filter((id) => id in l2 && disagree(labels[id]!, l2[id]!)) : [];
   const kappa = { fact: factKappa, session: sessionKappa, flagged: [factKappa, sessionKappa].some((k) => k !== null && k < KAPPA_FLAG), l2Present: l2 !== null, disagreementsOnProposals: disagreements };
 
   const perStratum: Record<string, number> = {};
@@ -126,10 +110,10 @@ export function scoreHoldout(dir: string, now: Date, write = true): Scores {
     l1IsOperator: "L1 is the operator of the system under evaluation, not a disinterested annotator.",
   };
   const contamination = [...draw.flags];
-  const gatesPassed = q1.passed && q2.passed && contamination.length === 0 && (kappa.fact !== null || kappa.session !== null);
+  const gatesPassed = q2.passed && contamination.length === 0 && (kappa.fact !== null || kappa.session !== null);
   const scores: Scores = {
-    scope: SCOPE_STATEMENT, scoredAt: now.toISOString(), q1, q2, coverage, kappa, annotationLimits, contamination,
-    decision: { gatesPassed, stillRequired: ["section 6 regression and contract tests on the frozen SHA (SQLite and PostgreSQL)", "independent review findings fixed or rejected in writing", "Edward's decision on NLM_PROPERTY_INFERENCE"] },
+    scope: SCOPE_STATEMENT, scoredAt: now.toISOString(), q1: Q1_OUT_OF_SCOPE, q2, coverage, kappa, annotationLimits, contamination,
+    decision: { gatesPassed, stillRequired: ["section 6 regression and contract tests on the frozen SHA (SQLite and PostgreSQL)", "independent review findings fixed or rejected in writing", "Edward's decision on NLM_SESSION_PROPERTY_INFERENCE"] },
   };
   if (write) {
     writePrivate(p.scores, scores); writePrivate(p.abstention, { abstentionCards: abstentions.length, correct: abstentionCorrect, rate: coverage.abstentionCorrectRate }); writePrivate(p.limits, annotationLimits);
@@ -137,9 +121,6 @@ export function scoreHoldout(dir: string, now: Date, write = true): Scores {
   return scores;
 }
 
-function correctProposal(label: CardLabel, slug: string): boolean {
-  return isFact(label) && label.confidence === "sure" && label.owner === slug;
-}
 function disagree(a: CardLabel, b: CardLabel): boolean {
   if (isFact(a) && isFact(b)) return a.owner !== b.owner;
   if (isSession(a) && isSession(b)) return [...a.relevant].sort().join() !== [...b.relevant].sort().join();

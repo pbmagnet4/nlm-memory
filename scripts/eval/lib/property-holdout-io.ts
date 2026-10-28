@@ -5,7 +5,9 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 
 export const SEED = "T1142-v1";
-export const WINDOW_RULE = { minProposals: 100, maxDays: 28 } as const;
+/** The window closes when the session strata targets are reachable, or after maxDays. */
+export const WINDOW_RULE = { minSessionRefs: 160, maxDays: 28 } as const;
+export const LANES = ["session"] as const;
 export const LIVE_CANONICAL = join(homedir(), ".nlm", "canonical.sqlite");
 
 export const sha256 = (data: string | Buffer): string => createHash("sha256").update(data).digest("hex");
@@ -49,14 +51,14 @@ export function assertSnapshot(path: string, live: string = LIVE_CANONICAL): voi
 }
 
 export interface Manifest {
-  seed: string; freezeAt: string;
-  windowCloseRule: { minProposals: number; maxDays: number; closesNoLaterThan: string };
+  seed: string; freezeAt: string; lanes: typeof LANES;
+  windowCloseRule: { minSessionRefs: number; maxDays: number; closesNoLaterThan: string };
   candidate: { sha: string; treeHash: string };
   catalogHash: string; strataHash: string; cardGeneratorHash: string; l2PromptHash: string;
   exclusions: { hash: string; sessions: number; sourceIdentities: number; assertionKeys: number };
   draw?: {
     drawnAt: string; cardsHash: string; predictionsHash: string; snapshot: { path: string; bytes: number };
-    population: { eligibleFacts: number; factProposals: Record<string, number>; sessionsWithEntities: number; sessionRefs: Record<string, number> };
+    population: { eligibleFacts: number; sessionsWithEntities: number; sessionRefs: Record<string, number> };
     flags: string[];
   };
 }

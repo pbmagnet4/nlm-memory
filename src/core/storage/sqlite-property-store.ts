@@ -3,7 +3,7 @@ import { validateSourceAnchor } from "@core/facts/source-anchor.js";
 import type Database from "better-sqlite3";
 import type { Fact } from "@shared/types.js";
 import type { PropertyBackfillRow, PropertyStore } from "@ports/property-store.js";
-import { assertionKey, attributeFacts, attributeFactGroups, sessionPropertyReferences, parseProperties, propertyAssociationsEnabled, propertyInferenceEnabled, type MemoryProperty, type PropertyOverride } from "@core/properties/model.js";
+import { assertionKey, attributeFacts, attributeFactGroups, sessionPropertyReferences, parseProperties, propertyAssociationsEnabled, propertyInferenceEnabled, sessionPropertyInferenceEnabled, type MemoryProperty, type PropertyOverride } from "@core/properties/model.js";
 import { tenantClause } from "@core/tenancy/tenant-clause.js";
 import { anchorFromRow } from "./fact-source-anchor.js";
 import { sourceIdentityExpression, propertyFromRow, type PropertyRow } from "./property-attribution.js";
@@ -62,7 +62,7 @@ export class SqlitePropertyStore implements PropertyStore {
     if (!propertyAssociationsEnabled()) return;
     const origin = repositoryProperty(record.projectDir, this.listSync(tenantId));
     if (origin) this.db.prepare("INSERT INTO session_properties (tenant_id, session_id, property_slug, source, evidence) VALUES (?, ?, ?, 'repository', ?)").run(tenantId, record.id, origin, record.projectDir!);
-    for (const p of sessionPropertyReferences(propertyInferenceEnabled() ? record.entities : [], this.listSync(tenantId), session.body)) {
+    for (const p of sessionPropertyReferences(sessionPropertyInferenceEnabled() ? record.entities : [], this.listSync(tenantId), session.body)) {
       this.db.prepare("INSERT INTO session_properties (tenant_id, session_id, property_slug, source, evidence) VALUES (?, ?, ?, 'entity', ?)").run(tenantId, record.id, p.slug, p.evidence);
     }
   }
@@ -94,11 +94,12 @@ export class SqlitePropertyStore implements PropertyStore {
     })();
   }
   async backfill(tenantId: string, apply: boolean): Promise<PropertyBackfillRow[]> {
-    if (!propertyInferenceEnabled()) throw new Error("Automatic property inference has not passed activation evaluation; backfill requires NLM_PROPERTY_INFERENCE=1");
+    const factLane = propertyInferenceEnabled(); const sessionLane = sessionPropertyInferenceEnabled();
+    if (!factLane && !sessionLane) throw new Error("Automatic property inference has not passed activation evaluation; backfill requires NLM_PROPERTY_INFERENCE=1 or NLM_SESSION_PROPERTY_INFERENCE=1");
     return this.db.transaction(() => {
       const catalog = this.listSync(tenantId);
       const tc = tenantClause(tenantId);
-      const rows = this.rows(tenantId);
+      const rows = factLane ? this.rows(tenantId) : [];
       const bodies = new Map(this.db.prepare<[string], { id: string; body: string | null }>(`SELECT id, body FROM sessions WHERE ${tc.sql}`).all(tc.param).map((s) => [s.id, s.body]));
       const attributed = attributeFactGroups(rows.map((r) => ({ fact: toFact(r), sourceIdentity: r.source_identity, sourceVersion: r.current_source_body_version, body: bodies.get(r.source_session_id) ?? null })), catalog, this.overrides(tenantId));
       const changes: PropertyBackfillRow[] = rows.filter((r) => r.property_source !== "operator").flatMap((r) => {
@@ -111,7 +112,7 @@ export class SqlitePropertyStore implements PropertyStore {
       const entities = this.db.prepare<[string], { session_id: string; entity_canonical: string }>(`SELECT session_id, entity_canonical FROM session_entities WHERE ${tc.sql}`).all(tc.param);
       const bySession = new Map<string, string[]>();
       for (const e of entities) bySession.set(e.session_id, [...(bySession.get(e.session_id) ?? []), e.entity_canonical]);
-      for (const [sessionId, names] of bySession) for (const p of sessionPropertyReferences(names, catalog, bodies.get(sessionId) ?? null)) {
+      for (const [sessionId, names] of sessionLane ? bySession : []) for (const p of sessionPropertyReferences(names, catalog, bodies.get(sessionId) ?? null)) {
         const exists = this.db.prepare(`SELECT 1 FROM session_properties WHERE session_id = ? AND property_slug = ? AND ${tc.sql}`).get(sessionId, p.slug, tc.param);
         if (exists) continue;
         if (apply) this.db.prepare("INSERT INTO session_properties (tenant_id, session_id, property_slug, source, evidence) VALUES (?, ?, ?, 'entity', ?)").run(tenantId, sessionId, p.slug, p.evidence);
