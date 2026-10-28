@@ -77,6 +77,11 @@
     "eval:fact-judge-replay": "tsx scripts/eval/fact-judge-replay.ts",
     "eval:fact-judge-label": "tsx scripts/eval/fact-judge-label.ts",
     "eval:fact-class-replay": "tsx scripts/eval/fact-class-replay.ts",
+    "eval:property-holdout-freeze": "tsx scripts/eval/property-holdout-freeze.ts",
+    "eval:property-holdout-draw": "tsx scripts/eval/property-holdout-draw.ts",
+    "eval:property-holdout-label": "tsx scripts/eval/property-holdout-label.ts",
+    "eval:property-holdout-l2": "tsx scripts/eval/property-holdout-l2.ts",
+    "eval:property-holdout-score": "tsx scripts/eval/property-holdout-score.ts",
     "demo:memory": "tsx scripts/demo/project-memory.ts"
   },
   "dependencies": {
