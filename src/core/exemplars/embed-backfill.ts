@@ -6,6 +6,13 @@
  * the repair: discover rows with no entry in code_exemplars_vec, embed
  * taskContext + code via the CodeEmbedder, and upsert the vector.
  *
+ * Lane rebuild (T1179): the code embedder is probed once and compared with the
+ * `embedding_config` code row and the vec table's dim. On a mismatch, onStale
+ * "rebuild" drops and recreates `code_exemplars_vec` at the probed dim and
+ * writes the config row immediately (so an interrupted run resumes by
+ * absence-discovery instead of dropping again); "skip" (the daemon sweep)
+ * writes nothing. pg twin: pg-embed-backfill.ts.
+ *
  * Mirrors the session embed-backfill (reembedCorpus): same embed-text shape
  * as the live capture path (composeEmbedText, role "document"), the store's
  * existing upsertEmbedding, and a single retry on transient
@@ -33,7 +40,14 @@ import * as sqliteVec from "sqlite-vec";
 import type { CodeEmbedder } from "@ports/code-embedder.js";
 import type { CodeExemplarStore } from "@ports/code-exemplar-store.js";
 import { LLMUnreachableError } from "@ports/llm-client.js";
+import type { EmbeddingLaneConfig } from "@core/embedding/embedding-config.js";
+import { SqliteEmbeddingConfigStore } from "@core/storage/sqlite-embedding-config.js";
 import { composeEmbedText } from "./embed-text.js";
+
+/** What to do when the code lane's stored vectors come from a different provider/model/dim. */
+export type OnStale = "rebuild" | "skip";
+
+const PROBE_TEXT = "nlm dimension probe";
 
 export interface ExemplarBackfillOptions {
   readonly tenantId: string;
@@ -41,6 +55,17 @@ export interface ExemplarBackfillOptions {
   readonly embedder: CodeEmbedder;
   readonly store: CodeExemplarStore;
   readonly limit?: number;
+  /** Provider and model of `embedder`; recorded in embedding_config (the embedder port does not expose them). */
+  readonly provider: string;
+  readonly model: string;
+  /**
+   * "rebuild" (CLI, settings job) drops and recreates the vector table at the
+   * probed dim; "skip" (the daemon's repair sweep) never drops and writes
+   * nothing when the lane is stale.
+   */
+  readonly onStale: OnStale;
+  /** Report what a rebuild would drop without writing anything. */
+  readonly dryRun?: boolean;
   readonly onProgress?: (i: number, total: number, id: string, status: string) => void;
 }
 
@@ -49,12 +74,31 @@ export interface ExemplarBackfillReport {
   readonly succeeded: number;
   readonly failed: number;
   readonly dbMissing: boolean;
+  /** The vector table was dropped and recreated at a new dim/model. */
+  readonly rebuilt?: boolean;
+  /** The lane is stale and nothing was written (onStale "skip", or dryRun). */
+  readonly stale?: boolean;
+  readonly dryRun?: boolean;
 }
 
-interface MissingRow {
+export interface MissingRow {
   id: string;
   task_context: string;
   code: string;
+}
+
+/** Dimension of the vec0 table, parsed from its CREATE statement; null when the table is absent. */
+function vecTableDim(db: Database.Database): number | null {
+  const row = db
+    .prepare<[], { sql: string }>("SELECT sql FROM sqlite_master WHERE name = 'code_exemplars_vec'")
+    .get();
+  const m = row ? /float\[(\d+)\]/.exec(row.sql) : null;
+  return m ? Number(m[1]) : null;
+}
+
+function staleMessage(stored: EmbeddingLaneConfig | null, runtime: EmbeddingLaneConfig, tableDim: number | null): string {
+  const was = stored ? `${stored.provider}/${stored.model}@${stored.dim}` : `table@${tableDim}`;
+  return `stored ${was} vs runtime ${runtime.provider}/${runtime.model}@${runtime.dim}`;
 }
 
 export async function backfillExemplarEmbeddings(
@@ -64,11 +108,48 @@ export async function backfillExemplarEmbeddings(
     return { total: 0, succeeded: 0, failed: 0, dbMissing: true };
   }
 
-  const db = new Database(opts.dbPath, { readonly: true });
+  const probe = await opts.embedder.embed(PROBE_TEXT, "query");
+  const runtime: EmbeddingLaneConfig = { lane: "code", provider: opts.provider, model: opts.model, dim: probe.dim };
+
+  const db = new Database(opts.dbPath);
   sqliteVec.load(db);
 
   let rows: MissingRow[];
+  let rebuilt = false;
   try {
+    const config = new SqliteEmbeddingConfigStore(db);
+    const stored = config.getLane("code");
+    const tableDim = vecTableDim(db);
+    const identityMatch =
+      stored === null || (stored.provider === runtime.provider && stored.model === runtime.model && stored.dim === runtime.dim);
+    const stale = !identityMatch || tableDim !== runtime.dim;
+
+    if (stale && (opts.dryRun || opts.onStale === "skip")) {
+      const detail = staleMessage(stored, runtime, tableDim);
+      process.stderr.write(
+        opts.dryRun
+          ? `[exemplar-backfill] dry-run: ${detail}. Would DROP code_exemplars_vec and re-embed every exemplar.\n`
+          : `[exemplar-backfill] code lane stale (${detail}); skipping, run \`nlm embed-backfill --exemplars\` to rebuild\n`,
+      );
+      return { total: 0, succeeded: 0, failed: 0, dbMissing: false, stale: true, ...(opts.dryRun ? { dryRun: true } : {}) };
+    }
+    if (opts.dryRun) {
+      process.stderr.write(`[exemplar-backfill] dry-run: config matches (${runtime.provider}/${runtime.model}@${runtime.dim}), no rebuild needed.\n`);
+      return { total: 0, succeeded: 0, failed: 0, dbMissing: false, dryRun: true };
+    }
+
+    if (stale) {
+      process.stderr.write(`[exemplar-backfill] rebuilding code_exemplars_vec: ${staleMessage(stored, runtime, tableDim)}\n`);
+      db.exec("DROP TABLE IF EXISTS code_exemplars_vec");
+      db.exec(
+        `CREATE VIRTUAL TABLE code_exemplars_vec USING vec0(exemplar_id TEXT PRIMARY KEY, embedding float[${runtime.dim}])`,
+      );
+      rebuilt = true;
+    }
+    // Written straight after the drop: an interrupted run then resumes by
+    // absence-discovery instead of dropping the vectors it already rebuilt.
+    if (stale || stored === null) config.upsertLane(runtime, new Date().toISOString());
+
     const sql =
       "SELECT e.id, e.task_context, e.code FROM code_exemplars e " +
       "WHERE e.id NOT IN (SELECT exemplar_id FROM code_exemplars_vec) " +
@@ -79,6 +160,22 @@ export async function backfillExemplarEmbeddings(
     db.close();
   }
 
+  const loopReport = await embedMissingRows(rows, opts);
+  return { ...loopReport, dbMissing: false, ...(rebuilt ? { rebuilt } : {}) };
+}
+
+interface EmbedLoopOptions {
+  readonly tenantId: string;
+  readonly embedder: CodeEmbedder;
+  readonly store: CodeExemplarStore;
+  readonly onProgress?: (i: number, total: number, id: string, status: string) => void;
+}
+
+/** Embeds each row (one retry on a transient embedder failure) and upserts the vector; shared by the SQLite and pg backfills. */
+export async function embedMissingRows(
+  rows: ReadonlyArray<MissingRow>,
+  opts: EmbedLoopOptions,
+): Promise<{ total: number; succeeded: number; failed: number }> {
   const total = rows.length;
   let succeeded = 0;
   let failed = 0;
@@ -121,5 +218,5 @@ export async function backfillExemplarEmbeddings(
     opts.onProgress?.(idx, total, row.id, "OK");
   }
 
-  return { total, succeeded, failed, dbMissing: false };
+  return { total, succeeded, failed };
 }

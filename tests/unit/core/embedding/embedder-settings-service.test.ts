@@ -12,6 +12,7 @@ import {
 import { SqliteStorage } from "../../../../src/core/storage/sqlite-storage.js";
 import { EmbedderBox, CodeEmbedderBox } from "../../../../src/llm/embedder-box.js";
 import { OpenAIEmbedderClient } from "../../../../src/llm/openai-embedder-client.js";
+import { DEFAULT_CODE_EMBED_MODEL } from "../../../../src/llm/ollama-code-embedder.js";
 import { OpenAICodeEmbedderClient } from "../../../../src/llm/openai-code-embedder-client.js";
 import type { JobSnapshot } from "../../../../src/core/jobs/job-supervisor.js";
 
@@ -304,7 +305,7 @@ describe("saveEmbedderSettings, prose lane", () => {
 
 describe("saveEmbedderSettings, code lane", () => {
   it("applies base_url and api_key edits live", async () => {
-    const { deps, storage, calls } = await setup({ stored: { lane: "code", dim: 768 } });
+    const { deps, storage, calls } = await setup({ stored: { lane: "code", dim: 768, model: DEFAULT_CODE_EMBED_MODEL } });
     const res = await saveEmbedderSettings(deps, patch({ lane: "code", base_url: "http://code-host/v1", api_key: "code-key" }));
     expect(res.status).toBe(200);
     expect(await storage.embedderSettings.get("code")).toMatchObject({ baseUrl: "http://code-host/v1", apiKey: "code-key" });
@@ -315,13 +316,41 @@ describe("saveEmbedderSettings, code lane", () => {
 
   it.each([
     ["a model change", { model: "other-code-model" }, 768],
-    ["a provider change", { provider: "ollama" }, 768],
     ["a dim change from a base_url edit", { base_url: "http://other/v1" }, 1024],
-  ])("returns 409 for %s even with confirm_reembed, naming T1179", async (_n, change, dim) => {
-    const { deps, storage } = await setup({ dim, stored: { lane: "code", dim: 768 } });
-    const res = await saveEmbedderSettings(deps, patch({ lane: "code", ...change, confirm_reembed: true }));
+  ])("returns 409 with stored/candidate detail for %s until confirmed", async (_n, change, dim) => {
+    const { deps, storage, started } = await setup({ dim, stored: { lane: "code", dim: 768, model: DEFAULT_CODE_EMBED_MODEL } });
+    const res = await saveEmbedderSettings(deps, patch({ lane: "code", ...change }));
     expect(res.status).toBe(409);
-    expect(String(res.body["error"])).toContain("T1179");
+    expect(res.body["requires_reembed"]).toBe(true);
+    expect(res.body["stored"]).toMatchObject({ dim: 768 });
+    expect(res.body["candidate"]).toMatchObject({ dim });
+    expect(started).toHaveLength(0);
     expect(await storage.embedderSettings.get("code")).toEqual({ provider: null, baseUrl: null, model: null, apiKey: null });
+  });
+
+  it("confirmed: persists, swaps and starts the --exemplars rebuild with the code env", async () => {
+    const { deps, storage, started } = await setup({ dim: 1024, stored: { lane: "code", dim: 768, model: DEFAULT_CODE_EMBED_MODEL } });
+    const res = await saveEmbedderSettings(deps, patch({ lane: "code", model: "new-code-model", confirm_reembed: true }));
+    expect(res.status).toBe(202);
+    expect((await storage.embedderSettings.get("code")).model).toBe("new-code-model");
+    expect(started).toHaveLength(1);
+    expect(started[0]!.args).toEqual(["--exemplars"]);
+    expect(started[0]!.env).toMatchObject({ NLM_CODE_EMBED_MODEL: "new-code-model" });
+    expect(started[0]!.env).not.toHaveProperty("NLM_EMBED_MODEL");
+  });
+
+  it("refuses a confirmed change while a rebuild job is running", async () => {
+    const { deps, storage, started, setRunning } = await setup({ dim: 1024, stored: { lane: "code", dim: 768, model: DEFAULT_CODE_EMBED_MODEL } });
+    setRunning();
+    const res = await saveEmbedderSettings(deps, patch({ lane: "code", model: "new-code-model", confirm_reembed: true }));
+    expect(res.status).toBe(409);
+    expect(started).toHaveLength(0);
+    expect((await storage.embedderSettings.get("code")).model).toBeNull();
+  });
+
+  it("describes both lanes without a provider_model_editable flag", async () => {
+    const { deps } = await setup();
+    const lanes = (await getEmbedderSettings(deps))["lanes"] as Record<string, Record<string, unknown>>;
+    expect(lanes["code"]).not.toHaveProperty("provider_model_editable");
   });
 });

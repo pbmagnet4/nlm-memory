@@ -16,7 +16,6 @@ interface Lane {
   api_key_set: boolean;
   api_key_source: ValueSource;
   providers: string[];
-  provider_model_editable: boolean;
   stored: { provider: string; model: string; dim: number } | null;
   reconcile: "match" | "stale" | "recorded" | "unknown";
 }
@@ -39,7 +38,6 @@ type Patch = Record<string, string | null>;
 
 const LANE_LABEL: Record<LaneName, string> = { prose: "Prose (sessions, facts, recall)", code: "Code (exemplars)" };
 const JOB_POLL_MS = 3_000;
-const CODE_NOTE = "Code-lane re-embed isn't supported yet (T1179), so provider and model are read-only here. Endpoint and key can change.";
 
 function draftFromLane(l: Lane): Draft {
   return { provider: l.provider.value, base_url: l.base_url.value ?? "", model: l.model.value, api_key: "" };
@@ -49,10 +47,8 @@ function draftFromLane(l: Lane): Draft {
 function draftPatch(l: Lane, d: Draft): Patch {
   const current = draftFromLane(l);
   const patch: Patch = {};
-  if (l.provider_model_editable) {
-    if (d.provider !== current.provider) patch["provider"] = d.provider;
-    if (d.model !== current.model) patch["model"] = d.model;
-  }
+  if (d.provider !== current.provider) patch["provider"] = d.provider;
+  if (d.model !== current.model) patch["model"] = d.model;
   if (d.base_url !== current.base_url) patch["base_url"] = d.base_url.trim() === "" ? null : d.base_url.trim();
   if (d.api_key !== "") patch["api_key"] = d.api_key;
   return patch;
@@ -112,12 +108,14 @@ export function SettingsEmbedderPage() {
         });
       let res = await send(false);
       let data = (await res.json()) as PutResponse;
-      if (res.status === 409 && data.requires_reembed && lane === "prose" && data.stored && data.candidate) {
+      if (res.status === 409 && data.requires_reembed && data.stored && data.candidate) {
         const ok = await confirmAction({
-          title: "Re-embed the whole corpus?",
+          title: lane === "code" ? "Re-embed all code exemplars?" : "Re-embed the whole corpus?",
           message:
             `Stored vectors: ${lanePhrase(data.stored)}. New config: ${lanePhrase(data.candidate)}. ` +
-            "Every session and fact is re-embedded; recall is degraded until the rebuild finishes.",
+            (lane === "code"
+              ? "Every code exemplar is re-embedded; code recall is degraded until the rebuild finishes."
+              : "Every session and fact is re-embedded; recall is degraded until the rebuild finishes."),
           confirmLabel: "Save and re-embed",
           kind: "danger",
         });
@@ -174,14 +172,10 @@ export function SettingsEmbedderPage() {
         <h3 className="section-title">{LANE_LABEL[lane]}</h3>
         <div className="form-row">
           <label className="form-label">Provider</label>
-          {l.provider_model_editable ? (
-            <select className="form-input form-input-inline" value={d.provider} onChange={(e) => setDraft({ ...d, provider: e.target.value })} disabled={disabled}>
-              {l.providers.map((p) => <option key={p} value={p}>{p}</option>)}
-            </select>
-          ) : (
-            <span className="kv-value mono">{l.provider.value}</span>
-          )}
-          <SourceBadge source={l.provider.source} onReset={l.provider_model_editable ? reset("provider") : undefined} disabled={disabled} />
+          <select className="form-input form-input-inline" value={d.provider} onChange={(e) => setDraft({ ...d, provider: e.target.value })} disabled={disabled}>
+            {l.providers.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+          <SourceBadge source={l.provider.source} onReset={reset("provider")} disabled={disabled} />
         </div>
         <div className="form-row">
           <label className="form-label">Base URL</label>
@@ -190,14 +184,9 @@ export function SettingsEmbedderPage() {
         </div>
         <div className="form-row">
           <label className="form-label">Model</label>
-          {l.provider_model_editable ? (
-            <input className="form-input form-input-inline form-input-wide" value={d.model} onChange={(e) => setDraft({ ...d, model: e.target.value })} disabled={disabled} />
-          ) : (
-            <span className="kv-value mono">{l.model.value}</span>
-          )}
-          <SourceBadge source={l.model.source} onReset={l.provider_model_editable ? reset("model") : undefined} disabled={disabled} />
+          <input className="form-input form-input-inline form-input-wide" value={d.model} onChange={(e) => setDraft({ ...d, model: e.target.value })} disabled={disabled} />
+          <SourceBadge source={l.model.source} onReset={reset("model")} disabled={disabled} />
         </div>
-        {!l.provider_model_editable && <p className="muted small">{CODE_NOTE}</p>}
         <div className="form-row">
           <label className="form-label">API key</label>
           <span className="kv-value mono">{l.api_key_set ? "set" : "not set"}</span>
@@ -221,7 +210,7 @@ export function SettingsEmbedderPage() {
         {l.reconcile === "stale" && (
           <p className="form-error small">
             The stored vectors were built with a different provider, model or dimension than the live embedder. Recall quality is degraded until they are re-embedded.
-            {lane === "prose" ? " Saving this lane starts the re-embed." : ""}
+             Saving this lane starts the re-embed.
           </p>
         )}
         <div className="form-row">

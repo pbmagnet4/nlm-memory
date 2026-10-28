@@ -6,11 +6,11 @@
  * A candidate lane config is probed with one embed to learn its dimension.
  * - Same provider+model+dim as the vectors on disk (the `embedding_config`
  *   row): persist and swap the live embedder, no restart.
- * - Prose lane, anything else: the vectors are stale, so the change needs
- *   `confirm_reembed`; it then persists, swaps, and starts the existing
- *   `nlm embed-backfill` rebuild as a supervised daemon job.
- * - Code lane: only base_url / api_key may change (applied live). There is no
- *   code-lane re-embed yet (T1179), so a provider, model or dim change is refused.
+ * - Anything else: the vectors are stale, so the change needs
+ *   `confirm_reembed`; it then persists, swaps, and starts the matching
+ *   `nlm embed-backfill` rebuild as a supervised daemon job (sessions + facts
+ *   for the prose lane, `--exemplars` for the code lane). One supervisor serves
+ *   both lanes, so a rebuild already running refuses the second.
  *
  * The API key never leaves this module except into a client or the rebuild
  * child's env; responses carry `api_key_set` only.
@@ -50,9 +50,6 @@ export type LaneReconcile = "match" | "stale" | "recorded" | "unknown";
 
 const PROBE_TEXT = "nlm dimension probe";
 const DEFAULT_PROBE_TIMEOUT_MS = 10_000;
-const CODE_REEMBED_UNSUPPORTED =
-  "changing a code-lane provider or model is not supported yet: there is no code-lane re-embed " +
-  "(tracked as T1179). Only base_url and api_key can be edited.";
 
 export interface ServiceResult {
   readonly status: 200 | 202 | 400 | 409 | 422;
@@ -174,7 +171,6 @@ function describeLane(
     api_key_set: s.apiKey.value !== null,
     api_key_source: s.apiKey.source,
     providers: EMBEDDER_PROVIDERS[lane],
-    provider_model_editable: lane === "prose",
     stored: stored ? { provider: stored.provider, model: stored.model, dim: stored.dim } : null,
     reconcile,
   };
@@ -246,13 +242,6 @@ export async function saveEmbedderSettings(deps: EmbedderSettingsDeps, p: LanePa
   const { current, next, update } = await candidate(deps, p);
   const values = laneValues(next);
 
-  // Code-lane identity is checked before probing: no code-lane re-embed exists
-  // (T1179), and a different model at the same dim still invalidates the
-  // vectors, so provider and model are compared as well as dim.
-  if (p.lane === "code" && (next.provider.value !== current.provider.value || next.model.value !== current.model.value)) {
-    return { status: 409, body: { error: CODE_REEMBED_UNSUPPORTED, requires_reembed: true } };
-  }
-
   let probed: Probe;
   try {
     probed = await probe(p.lane, values, deps);
@@ -261,12 +250,7 @@ export async function saveEmbedderSettings(deps: EmbedderSettingsDeps, p: LanePa
   }
 
   const vectors = deps.config.getLane(p.lane);
-  if (p.lane === "code" && vectors !== null && vectors.dim !== probed.dim) {
-    return { status: 409, body: { error: CODE_REEMBED_UNSUPPORTED, requires_reembed: true } };
-  }
-
   const stale =
-    p.lane === "prose" &&
     vectors !== null &&
     (vectors.provider !== next.provider.value || vectors.model !== next.model.value || vectors.dim !== probed.dim);
 
@@ -280,7 +264,7 @@ export async function saveEmbedderSettings(deps: EmbedderSettingsDeps, p: LanePa
         status: 409,
         body: {
           error:
-            "this change makes the stored vectors stale: every session and fact must be re-embedded. " +
+            `this change makes the stored vectors stale: every ${p.lane === "code" ? "code exemplar" : "session and fact"} must be re-embedded. ` +
             "Resend with confirm_reembed: true to apply it and start the rebuild.",
           requires_reembed: true,
           ...detail,
@@ -292,7 +276,7 @@ export async function saveEmbedderSettings(deps: EmbedderSettingsDeps, p: LanePa
       return { status: 409, body: { error: "an embedding rebuild is already running", rebuild_job: running } };
     }
     await persistAndSwap(deps, p.lane, update, values);
-    deps.jobs.start([], laneEnv(values));
+    deps.jobs.start(p.lane === "code" ? ["--exemplars"] : [], laneEnv(p.lane, values));
     return { status: 202, body: { lane: describeLane(deps, p.lane, next, probed.dim), rebuild_job: rebuildJob(deps), ...detail } };
   }
 

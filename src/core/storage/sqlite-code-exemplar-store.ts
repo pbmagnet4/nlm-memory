@@ -25,7 +25,6 @@ import type { CodeExemplar, CodeExemplarHit, CodeExemplarInput, CodeExemplarOutc
 import { tenantClause } from "@core/tenancy/tenant-clause.js";
 import { guardSweep } from "@core/util/sweep-guard.js";
 
-const VEC_DIM = 768;
 
 type ExemplarRow = {
   id: string;
@@ -109,9 +108,6 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
    * another tenant's exemplar must never fall through to a write.
    */
   async upsertEmbedding(tenantId: string, exemplarId: string, vector: Float32Array): Promise<void> {
-    if (vector.length !== VEC_DIM) {
-      throw new Error(`code exemplar embeddings must be ${VEC_DIM}-dim (got ${vector.length})`);
-    }
     const tc = tenantClause(tenantId);
     const owned = this.db
       .prepare<[string, string], { id: string }>(`SELECT id FROM code_exemplars WHERE id = ? AND ${tc.sql}`)
