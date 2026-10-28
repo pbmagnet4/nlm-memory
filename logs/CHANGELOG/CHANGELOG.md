@@ -1,5 +1,15 @@
 # nlm-memory CHANGELOG
 
+## 2026-10-28 - Code-lane embedder switchable with rebuild; parked minors fixed (T1179, T1194)
+
+**Changes:** Settings > Embedder now edits the code lane's provider and model. A stale change needs `confirm_reembed`, then starts a supervised `nlm embed-backfill --exemplars` that drops and recreates the code vector table at the probed dim (SQLite vec0, pg `vector(n)` + index), records `embedding_config` right after the drop so an interrupted run resumes, and re-embeds every exemplar. The 24h exemplar sweep skips a stale lane instead of writing mixed-model vectors, and re-resolves the lane identity each tick. T1194: the chunk retry sweep's write is conditional on the pending row and chunk text (a re-ingest during the embed wins); `doctor --fix` prints applied I5b repairs and no longer claims "nothing to repair" after a guard refusal; aider/windsurf/cursor throw on unreadable sources so the next scan retries (ItemTable-less DBs skipped); pg gets the fact-embed retry sweep (pg migration 045) and pg I5a/I5b repair tests. #1142 evaluation design landed (docs/plans/2026-10-28-property-inference-evaluation-design.md).
+
+**Results:** Landing gates passed for 63b1f5a (T1179) and 25d0e16 (T1194); Muse reviews found 1 + 2 real issues, all fixed with tests. Deployed as 0.21.21-t1194.1 (schema 48, deps unchanged); backup ~/.nlm/backups/T1194-2026-10-28T15-54-59Z (quick_check ok). Both lanes reconcile "match"; exemplar `--dry-run` reports no rebuild needed; capture continues after restart.
+
+**State:** Live check of a real code-lane model switch (confirm dialog, job progress) not exercised. The embedder API key (shared with the classifier) is still a plain-text line in ~/.nlm/.env; the Infisical move awaits a design decision. #1142 has three open questions for Edward in the design doc.
+
+**Next:** Infisical move for the embedder/classifier key; #1142 build after the open questions are answered.
+
 ## 2026-10-28 - Supersession regression fixed, Codex 0.151 text recovered, chunk embeds atomic (T1187)
 
 **Changes:** NULL-slug facts supersede again (ingest collapse and write-judge); collapse is time-aware, so an older re-ingested fact lands already superseded, and re-ingest re-evaluates `superseded_by`. Doctor I5a groups by tenant + `property_slug`; `doctor --fix` gains I5a, I5b and I7b-1 repairs. Codex `extractTurn` reads the 0.151+ `item_completed` `UserMessage`/`AgentMessage` shapes. New `nlm reingest --adapter <name> [--dry-run] [--limit N]`. Vec + map chunk writes are atomic with a `chunk_embed_pending` queue (sqlite 048 / pg 044) and a 2-minute retry sweep. Also: scan-once stat guard (T1182), drift alert moved into the sequential alert runner (T1183), classifier dropdown fix (T1186), recall gate removed (#616), `usefulnessModel()` replaces the hardcoded qwen, bundles regenerated (#781).
@@ -81,17 +91,3 @@
 **State:** Required task reviews and final whole-branch/spec/security review pass; Low A1 is tracked in T810. Local landing is recorded in T806/git. Installed 0.21.17-t730 unchanged; deployment, consistent backup, migration and live MCP canary pending. No provider change, public publish or live database write.
 
 **Next:** Authorized deployment and live canaries after backup/binary preservation; T810 tracks duplicate legacy-body hydration. T527/T679 remain open with measured source evidence.
-
-## 2026-10-16 - Source-grounded SDD retrieval improvement plan (T805)
-
-**Changes:** Added the measurable retrieval specification, ten-task SDD implementation plan and editable architecture diagram. The plan prioritizes source-grounded evaluation, tenant/workstream eligibility, semantic candidate completeness, exact-value ambiguity, shared request budgets and source anchors; optional ranking, evidence deltas and decision-model reranking require measured promotion. Linked from `docs/context-retrieval.md`.
-
-**Results:** Independent critical review's holdout-selection and model-usage/capability findings were accepted, corrected and cleared in scoped re-review. Verified local links, ten ordered tasks/sixty unchecked steps, diagram XML/render and whitespace. No runtime tests or new performance gains are claimed for this documentation-only change.
-
-**State:** Planning only, based on local main `e391597`. Implementation and installed daemon unchanged. Numeric improvement gates are proposed acceptance targets; final holdout stays sealed until preregistered candidate selection is complete. Each implementation task includes spec/code review and the release includes final branch review.
-
-**Next:** Execute Task 1 in its own task worktree/SDD ledger to establish independent evidence-sufficiency and actual-token baselines before optimizing.
-
-Session-level log per session protocol. Cap: 10 entries — archive older to `CHANGELOG-YYYY.md` when exceeded.
-
-_Older entries archived in CHANGELOG-2026.md_
