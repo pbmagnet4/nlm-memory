@@ -36,7 +36,7 @@ import type {
   SessionChunk,
   TranscriptAdapter,
 } from "@ports/transcript-adapter.js";
-import { durationMinutes, normalizeTimestamp, safeSessionId, skipMalformedRecord } from "./common.js";
+import { durationMinutes, normalizeTimestamp, safeSessionId, skipMalformedRecord, hasItemTable } from "./common.js";
 
 export interface WindsurfAdapterOptions {
   readonly userDir?: string;
@@ -186,6 +186,7 @@ function parseTabsFromDb(dbPath: string): ChatTab[] {
   let db: Database.Database | undefined;
   try {
     db = new Database(dbPath, { readonly: true });
+    if (!hasItemTable(db)) return [];
     const row = db
       .prepare<[string], ItemTableRow>(`SELECT key, value FROM ItemTable WHERE key = ?`)
       .get(CHAT_KEY);

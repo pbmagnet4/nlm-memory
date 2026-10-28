@@ -34,6 +34,11 @@ describe("fixReportLines", () => {
     expect(lines.join("\n")).not.toContain("nothing to repair");
   });
 
+  it("does not claim nothing to repair when a sweep guard refused a repair", () => {
+    const lines = fixReportLines({ ...empty, ghostGuardRefusal: "too many", orphanChunkGuardRefusal: "too many" });
+    expect(lines.join("\n")).not.toContain("nothing to repair");
+  });
+
   it("reports nothing to repair for an empty report", () => {
     expect(fixReportLines(empty)).toEqual(["  --fix: nothing to repair"]);
   });
