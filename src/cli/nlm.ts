@@ -149,7 +149,8 @@ import { installScope } from "../core/signals/install-scope.js";
 import { buildWorkDigest } from "../core/work-digest/build-work-digest.js";
 import { composeWorkDigest } from "../core/work-digest/compose-work-digest.js";
 import { defaultTopicProvider, aliasTopicProvider, type TopicProvider } from "../core/work-digest/topics.js";
-import { runChecksOnSqlite, runChecksOnPg, applyFixOnSqlite, applyFixOnPg, planConflictRepairsOnSqlite, planConflictRepairsOnPg, planDanglingRepairsOnSqlite, planDanglingRepairsOnPg, type ConflictRepair, type DanglingRepair } from "../core/integrity/check-invariants.js";
+import { runChecksOnSqlite, runChecksOnPg, applyFixOnSqlite, applyFixOnPg, planConflictRepairsOnSqlite, planConflictRepairsOnPg, planDanglingRepairsOnSqlite, planDanglingRepairsOnPg } from "../core/integrity/check-invariants.js";
+import { conflictRepairLine, danglingRepairLine, fixReportLines } from "./doctor-fix-report.js";
 import { resolveRecallScope } from "../core/recall/resolve-scope.js";
 import { suggestMerges } from "../core/entities/dedup-suggest.js";
 import { DEFAULT_NLM_PORT } from "../shared/net.js";
@@ -3102,33 +3103,12 @@ program
         } else {
           fixReport = applyFixOnSqlite((storage as SqliteStorage).rawDb(), { overrideGuard: Boolean(opts.overrideGuard) });
         }
-        if (fixReport.deletedSelfLoops > 0) {
-          console.log(`  fixed I1: deleted ${fixReport.deletedSelfLoops} self-loop edge(s)`);
-        }
-        if (fixReport.restoredToClosed > 0) {
-          console.log(`  fixed I2: restored ${fixReport.restoredToClosed} session(s) to closed`);
-        }
-        if (fixReport.ghostGuardRefusal) {
-          console.log(`  skipped I7: refused by sweep guard: ${fixReport.ghostGuardRefusal}`);
-        }
-        if (fixReport.deletedGhostEmbeddings > 0) {
-          console.log(`  fixed I7: deleted ${fixReport.deletedGhostEmbeddings} ghost embedding(s)`);
-        }
-        if (fixReport.orphanChunkGuardRefusal) {
-          console.log(`  skipped I7b-1: refused by sweep guard: ${fixReport.orphanChunkGuardRefusal}`);
-        }
-        if (fixReport.deletedOrphanChunkIds.length > 0) {
-          console.log(`  fixed I7b-1: deleted ${fixReport.deletedOrphanChunkIds.length} map-less chunk vector(s): chunk_id ${fixReport.deletedOrphanChunkIds.join(", ")}`);
-        }
-        for (const r of fixReport.supersededConflicts) printConflictRepair("fixed I5a: superseded", r);
-        if (fixReport.deletedSelfLoops === 0 && fixReport.restoredToClosed === 0 && fixReport.deletedGhostEmbeddings === 0 && fixReport.deletedOrphanChunkIds.length === 0 && fixReport.supersededConflicts.length === 0) {
-          console.log("  --fix: nothing to repair");
-        }
+        for (const line of fixReportLines(fixReport)) console.log(line);
       } else {
         const plan = storage instanceof PgStorage ? await planConflictRepairsOnPg(storage.pgPool()) : planConflictRepairsOnSqlite((storage as SqliteStorage).rawDb());
-        for (const r of plan) printConflictRepair("would fix I5a (--fix): supersede", r);
+        for (const r of plan) console.log(conflictRepairLine("would fix I5a (--fix): supersede", r));
         const dangling = storage instanceof PgStorage ? await planDanglingRepairsOnPg(storage.pgPool()) : planDanglingRepairsOnSqlite((storage as SqliteStorage).rawDb());
-        for (const r of dangling) printDanglingRepair("would fix I5b (--fix):", r);
+        for (const r of dangling) console.log(danglingRepairLine("would fix I5b (--fix):", r));
       }
       if (storage instanceof PgStorage) {
         violations = await runChecksOnPg(storage.pgPool());
@@ -3175,15 +3155,6 @@ program
 
     if (anyFail) process.exit(1);
   });
-
-function printConflictRepair(prefix: string, r: ConflictRepair): void {
-  console.log(`  ${prefix} ${r.tenantId} ${r.subject} | ${r.predicate}: kept ${r.keptId}, superseded ${r.supersededIds.join(", ")}`);
-}
-
-function printDanglingRepair(prefix: string, r: DanglingRepair): void {
-  const outcome = r.supersededBy === null ? `returned to active${r.alsoSuperseded.length > 0 ? `, superseded ${r.alsoSuperseded.join(", ")}` : ""}` : `now superseded by ${r.supersededBy}`;
-  console.log(`  ${prefix} ${r.tenantId} ${r.subject} | ${r.predicate}: ${r.factId} ${outcome}`);
-}
 
 function printHealthChecks(checks: ReadonlyArray<HealthCheck>): boolean {
   let anyFail = false;
