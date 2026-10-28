@@ -10,7 +10,7 @@ export interface IngestHealth {
   summary: string;
 }
 
-/** Polls /api/health/ingest every `pollMs` while mounted. Null until the first success; failed polls keep the last value. */
+/** Polls /api/health/ingest every `pollMs` while mounted. Null until the first success and after any failed poll, so stale health is never shown. */
 export function useIngestHealth(pollMs: number): IngestHealth | null {
   const [health, setHealth] = useState<IngestHealth | null>(null);
   useEffect(() => {
@@ -18,11 +18,12 @@ export function useIngestHealth(pollMs: number): IngestHealth | null {
     async function check() {
       try {
         const r = await fetch("/api/health/ingest");
-        if (!r.ok) return;
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const next = (await r.json()) as IngestHealth;
         if (!cancelled) setHealth(next);
       } catch {
-        // The daemon may be restarting; the next poll recovers.
+        // Daemon restarting or health not wired: clear, the next poll recovers.
+        if (!cancelled) setHealth(null);
       }
     }
     void check();
