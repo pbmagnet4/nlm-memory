@@ -14,6 +14,7 @@ import {
   runCheapChecksOnSqlite,
   applyFixOnSqlite,
   planConflictRepairsOnSqlite,
+  planDanglingRepairsOnSqlite,
 } from "../../src/core/integrity/check-invariants.js";
 import { makeSession } from "../fixtures/sessions.js";
 import { makeFact } from "../fixtures/facts.js";
@@ -677,6 +678,43 @@ describe("check-invariants (SQLite)", () => {
       expect(store.rawDb().prepare("SELECT count(*) AS n FROM fact_embeddings_rowids").get()).toEqual({ n: 0 });
       expect(runChecksOnSqlite(store.rawDb()).find((v) => v.id === "I5a")).toBeUndefined();
       expect(applyFixOnSqlite(store.rawDb()).supersededConflicts).toEqual([]);
+    });
+
+    const dangle = (id: string) => {
+      const db = store.rawDb();
+      db.pragma("foreign_keys = OFF");
+      db.prepare("UPDATE facts SET superseded_by = 'deleted-fact' WHERE id = ?").run(id);
+      db.pragma("foreign_keys = ON");
+    };
+
+    it("I5b repair puts a dangling fact under a newer active fact", () => {
+      seedFact({ id: "stale", at: "2026-01-01T00:00:00Z" });
+      seedFact({ id: "newer", at: "2026-02-01T00:00:00Z" });
+      dangle("stale");
+      const plan = planDanglingRepairsOnSqlite(store.rawDb());
+      expect(plan).toEqual([{ factId: "stale", tenantId: "team_local", subject: "x", predicate: "color", supersededBy: "newer", alsoSuperseded: [] }]);
+      expect(active("stale")).toBe("deleted-fact");
+      expect(applyFixOnSqlite(store.rawDb()).repairedDangling).toEqual(plan);
+      expect([active("stale"), active("newer")]).toEqual(["newer", null]);
+      expect(runChecksOnSqlite(store.rawDb()).find((v) => v.id === "I5b")).toBeUndefined();
+      expect(applyFixOnSqlite(store.rawDb()).repairedDangling).toEqual([]);
+    });
+
+    it("I5b repair returns the newest dangling fact to active and supersedes older active facts under it", () => {
+      seedFact({ id: "older", at: "2026-01-01T00:00:00Z" });
+      seedFact({ id: "fresh", at: "2026-02-01T00:00:00Z" });
+      dangle("fresh");
+      const [repair] = applyFixOnSqlite(store.rawDb()).repairedDangling;
+      expect(repair).toMatchObject({ factId: "fresh", supersededBy: null, alsoSuperseded: ["older"] });
+      expect([active("fresh"), active("older")]).toEqual([null, "fresh"]);
+    });
+
+    it("I5b repair only reactivates a dangling parallel-predicate fact", () => {
+      seedFact({ id: "d1", predicate: "description", at: "2026-01-01T00:00:00Z" });
+      seedFact({ id: "d2", predicate: "description", at: "2026-02-01T00:00:00Z" });
+      dangle("d1");
+      applyFixOnSqlite(store.rawDb());
+      expect([active("d1"), active("d2")]).toEqual([null, null]);
     });
 
     it("repair leaves slugged, operator, parallel-predicate and cross-tenant facts alone", () => {

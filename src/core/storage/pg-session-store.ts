@@ -750,15 +750,20 @@ export class PgSessionStore implements SessionStore {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const ins = await client.query<{ chunk_id: number }>(
-        `INSERT INTO session_embedding_chunks (session_id, chunk_idx, embedding)
-         VALUES ($1, $2, $3::vector) RETURNING chunk_id`,
-        [sessionId, chunkIdx, vecStr],
-      );
-      await client.query(
-        "INSERT INTO session_chunk_map (chunk_id, session_id, chunk_idx) VALUES ($1, $2, $3)",
-        [ins.rows[0]!.chunk_id, sessionId, chunkIdx],
-      );
+      // A concurrent re-ingest may have mapped this chunk while the vector was
+      // being computed; a second vector would be a stale duplicate.
+      const mapped = await client.query("SELECT 1 FROM session_chunk_map WHERE session_id = $1 AND chunk_idx = $2", [sessionId, chunkIdx]);
+      if (mapped.rows.length === 0) {
+        const ins = await client.query<{ chunk_id: number }>(
+          `INSERT INTO session_embedding_chunks (session_id, chunk_idx, embedding)
+           VALUES ($1, $2, $3::vector) RETURNING chunk_id`,
+          [sessionId, chunkIdx, vecStr],
+        );
+        await client.query(
+          "INSERT INTO session_chunk_map (chunk_id, session_id, chunk_idx) VALUES ($1, $2, $3)",
+          [ins.rows[0]!.chunk_id, sessionId, chunkIdx],
+        );
+      }
       await client.query("DELETE FROM chunk_embed_pending WHERE session_id = $1 AND chunk_idx = $2", [sessionId, chunkIdx]);
       await client.query("COMMIT");
     } catch (err) {

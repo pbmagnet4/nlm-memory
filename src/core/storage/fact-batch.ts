@@ -45,3 +45,26 @@ export async function storedBatchWinners(
   const attributed = facts.flatMap((f) => stored.has(f.id) ? [stored.get(f.id)!] : []);
   return batchWinners(attributed).filter((f) => f.supersededBy === null && f.retiredAt == null);
 }
+
+export interface DatedFact { readonly id: string; readonly created_at: string | Date }
+
+/**
+ * The fact that stays active among same-key facts: newest `created_at` (session
+ * time), the incoming fact on a tie, then the larger id. Ingest and the I5b
+ * repair share this so a re-ingested old session can never displace newer facts.
+ */
+export function newestFact<T extends DatedFact>(facts: readonly T[], incomingId?: string): T {
+  const time = (f: T): number => new Date(f.created_at).getTime();
+  return facts.reduce((best, f) => {
+    const dt = time(f) - time(best);
+    if (dt !== 0) return dt > 0 ? f : best;
+    if (f.id === incomingId) return f;
+    if (best.id === incomingId) return best;
+    return f.id > best.id ? f : best;
+  });
+}
+
+/** Whether ingest collapses facts under this key (the winners rule, from stored columns). */
+export function collapses(predicate: string, slug: string | null, source: string | null): boolean {
+  return !(slug === null && source === "operator") && !(factClassesEnabled() && factClassOf(predicate) === "event");
+}

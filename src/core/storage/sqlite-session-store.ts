@@ -621,14 +621,21 @@ export class SqliteSessionStore implements SessionStore {
     // JS numbers as FLOAT, so cast chunk_idx via BigInt to bind as INTEGER.
     const idxInt = BigInt(chunkIdx);
     db.transaction(() => {
-      const info = db
-        .prepare(
-          "INSERT INTO session_embedding_chunks (embedding, session_id, chunk_idx) VALUES (?, ?, ?)",
-        )
-        .run(blob, sessionId, idxInt);
-      db.prepare(
-        "INSERT INTO session_chunk_map (chunk_id, session_id, chunk_idx) VALUES (?, ?, ?)",
-      ).run(Number(info.lastInsertRowid), sessionId, chunkIdx);
+      // A concurrent re-ingest may have mapped this chunk while the vector was
+      // being computed; a second vector would be a stale duplicate.
+      const mapped = db
+        .prepare("SELECT 1 FROM session_chunk_map WHERE session_id = ? AND chunk_idx = ?")
+        .get(sessionId, chunkIdx);
+      if (!mapped) {
+        const info = db
+          .prepare(
+            "INSERT INTO session_embedding_chunks (embedding, session_id, chunk_idx) VALUES (?, ?, ?)",
+          )
+          .run(blob, sessionId, idxInt);
+        db.prepare(
+          "INSERT INTO session_chunk_map (chunk_id, session_id, chunk_idx) VALUES (?, ?, ?)",
+        ).run(Number(info.lastInsertRowid), sessionId, chunkIdx);
+      }
       db.prepare("DELETE FROM chunk_embed_pending WHERE session_id = ? AND chunk_idx = ?").run(
         sessionId,
         chunkIdx,

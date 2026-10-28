@@ -44,7 +44,7 @@ import type {
   SubjectStat,
 } from "@ports/fact-store.js";
 import type { Fact, FactHistoryChain, FactKind } from "@shared/types.js";
-import { collapseWinners } from "./fact-batch.js";
+import { collapseWinners, collapses, newestFact } from "./fact-batch.js";
 import { tenantClause } from "@core/tenancy/tenant-clause.js";
 
 // Alias every source column so existing fact predicates/orderings remain unambiguous.
@@ -584,42 +584,52 @@ export class SqliteFactStore implements FactStore {
     const stale = this.db
       .prepare<unknown[], { id: string }>(`SELECT id FROM facts WHERE source_session_id = ? AND ${staleTc.sql}`)
       .all(sessionId, staleTc.param);
+    // Facts of other sessions that a stale fact superseded would dangle (I5b).
+    // Release them now; they are re-evaluated below against the new facts.
+    const orphanTc = tenantClause(tenantId);
+    const orphans = this.db
+      .prepare<unknown[], { id: string; subject: string; predicate: string; property_slug: string | null; property_source: string | null }>(
+        `SELECT id, subject, predicate, property_slug, property_source FROM facts
+         WHERE superseded_by IN (SELECT id FROM facts WHERE source_session_id = ?) AND source_session_id != ? AND ${orphanTc.sql}`,
+      )
+      .all(sessionId, sessionId, orphanTc.param);
+    const release = this.db.prepare("UPDATE facts SET superseded_by = NULL WHERE id = ?");
+    for (const o of orphans) release.run(o.id);
     const deleteStaleTc = tenantClause(tenantId);
     this.db.prepare(`DELETE FROM facts WHERE source_session_id = ? AND ${deleteStaleTc.sql}`).run(sessionId, deleteStaleTc.param);
     const delStaleEmb = this.db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ?");
     for (const row of stale) delStaleEmb.run(row.id);
-    if (facts.length === 0) return;
 
     const insertStmt = this.insertStmt();
     for (const f of facts) insertStmt.run(this.toRow(f, scope, tenantId));
 
-    // Collapse EVERY other active fact for this (subject, predicate) under the
-    // new fact, not just the single most-recent prior. A single-prior loop
-    // cannot restore the invariant once two priors are already active and
-    // leaves the duplicate live forever. See NLM #301.
+    // Per (slug, subject, predicate) the newest active fact stays; every other
+    // active one collapses under it (NLM #301: all priors, not just one). The
+    // newest is decided by created_at, so re-ingesting an old session cannot
+    // displace a newer fact: the new fact is then itself superseded. One winner
+    // per key also avoids the batch-duplicate supersedence cycle (NLM #351 bug 2).
+    // Superseded facts leave the ANN index (NLM #351).
     const findTc = tenantClause(tenantId);
-    const findSupersededStmt = this.db.prepare<unknown[], { id: string }>(
-      `SELECT id FROM facts WHERE subject = ? AND predicate = ? AND superseded_by IS NULL AND id != ? AND property_slug IS ? AND ${findTc.sql}`,
+    const activeStmt = this.db.prepare<unknown[], { id: string; created_at: string }>(
+      `SELECT id, created_at FROM facts WHERE subject = ? AND predicate = ? AND superseded_by IS NULL AND retired_at IS NULL AND property_slug IS ? AND ${findTc.sql}`,
     );
-    const markTc = tenantClause(tenantId);
-    const markSupersededStmt = this.db.prepare(
-      `UPDATE facts SET superseded_by = ?
-       WHERE subject = ? AND predicate = ? AND superseded_by IS NULL AND id != ? AND property_slug IS ? AND ${markTc.sql}`,
-    );
+    const markStmt = this.db.prepare("UPDATE facts SET superseded_by = ? WHERE id = ?");
     const delEmbeddingStmt = this.db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ?");
-    // Collapse ONCE per (subject, predicate), under a single winner. Running the
-    // collapse per-fact creates a supersedence CYCLE when a batch carries two
-    // facts for the same (subject, predicate): each supersedes the other, so
-    // both end recall-ineligible forever (NLM #351 bug 2). Last fact in the
-    // batch for a given (subject, predicate) wins; every other active fact —
-    // batch duplicates and prior facts alike — collapses under it.
-    for (const f of collapseWinners(facts)) {
-      // Capture which facts this collapse supersedes BEFORE the update, then
-      // drop their embeddings — a superseded fact must not linger in the ANN
-      // index (NLM #351). Same reason markSuperseded/retire delete embeddings.
-      const collapsed = findSupersededStmt.all(f.subject, f.predicate, f.id, f.property?.slug ?? null, tenantId);
-      markSupersededStmt.run(f.id, f.subject, f.predicate, f.id, f.property?.slug ?? null, tenantId);
-      for (const row of collapsed) delEmbeddingStmt.run(row.id);
+    const collapseKey = (subject: string, predicate: string, slug: string | null, incomingId?: string): void => {
+      const active = activeStmt.all(subject, predicate, slug, findTc.param);
+      if (active.length < 2) return;
+      const winner = newestFact(active, incomingId);
+      for (const row of active) {
+        if (row.id === winner.id) continue;
+        markStmt.run(winner.id, row.id);
+        delEmbeddingStmt.run(row.id);
+      }
+    };
+    for (const f of collapseWinners(facts)) collapseKey(f.subject, f.predicate, f.property?.slug ?? null, f.id);
+    for (const o of orphans) {
+      if (collapses(o.predicate, o.property_slug, o.property_source)) {
+        collapseKey(o.subject, o.predicate, o.property_slug);
+      }
     }
   }
 

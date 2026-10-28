@@ -90,4 +90,4 @@ Atomic-on-ingest supersedence remains the primary path — when a runtime adapte
 
 ## Fact assertion context
 
-Fact collapse and session-to-fact cascades match property context as well as subject and predicate. Property-aware history and corroboration keep contexts separate. Unresolved assertions (no slug) collapse as before; only operator-unassigned facts abstain. See [Memory properties](properties.md) for the rollout and correction contract.
+Fact collapse and session-to-fact cascades match property context as well as subject and predicate. Property-aware history and corroboration keep contexts separate. Unresolved assertions (no slug) collapse as before; only operator-unassigned facts abstain. Ingest keeps the newest fact by `created_at` per key: re-ingesting an old session never displaces a newer fact, and facts whose superseding fact was replaced by a re-ingest are re-evaluated the same way. `nlm doctor --fix` applies that re-evaluation to existing dangling `superseded_by` pointers (I5b). See [Memory properties](properties.md) for the rollout and correction contract.

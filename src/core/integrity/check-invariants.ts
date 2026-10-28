@@ -32,6 +32,7 @@ import {
   missingFactEmbeddingSamples,
 } from "@core/facts/embed-missing.js";
 import { EVENT_CLASS_PREDICATES } from "@core/facts/fact-classes.js";
+import { collapses, newestFact } from "@core/storage/fact-batch.js";
 
 export interface Violation {
   readonly id: string;
@@ -680,10 +681,87 @@ export async function planConflictRepairsOnPg(pool: Pool): Promise<ConflictRepai
   return planConflictRepairs((await pool.query<RepairCandidate>(SQL_I5A_REPAIR_CANDIDATES)).rows);
 }
 
+// I5b repair candidates: every dangling fact (superseded_by names no fact) plus
+// the active facts sharing its (tenant, slug, subject, predicate) key.
+const SQL_I5B_REPAIR_CANDIDATES = `
+  SELECT f.id, f.tenant_id, f.subject, f.predicate, f.property_slug, f.property_source, f.created_at,
+         CASE WHEN f.superseded_by IS NULL THEN 0 ELSE 1 END AS dangling
+  FROM facts f
+  WHERE f.retired_at IS NULL
+    AND (f.superseded_by IS NULL OR NOT EXISTS (SELECT 1 FROM facts p WHERE p.id = f.superseded_by))
+    AND EXISTS (
+      SELECT 1 FROM facts d
+      WHERE d.superseded_by IS NOT NULL AND d.retired_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM facts p WHERE p.id = d.superseded_by)
+        AND d.tenant_id = f.tenant_id AND d.subject = f.subject AND d.predicate = f.predicate
+        AND COALESCE(d.property_slug, '') = COALESCE(f.property_slug, ''))
+  ORDER BY f.tenant_id, f.subject, f.predicate, f.id
+`;
+
+interface DanglingCandidate extends RepairCandidate {
+  readonly property_slug: string | null;
+  readonly property_source: string | null;
+  readonly created_at: string | Date;
+  readonly dangling: number;
+}
+
+export interface DanglingRepair {
+  readonly factId: string;
+  readonly tenantId: string;
+  readonly subject: string;
+  readonly predicate: string;
+  /** The fact it is now superseded by, or null when it is the newest and returns to active. */
+  readonly supersededBy: string | null;
+  /** Older active facts of the same key superseded because this one returns to active. */
+  readonly alsoSuperseded: ReadonlyArray<string>;
+}
+
+/**
+ * A dangling pointer is re-evaluated like an ingest collapse: among the key's
+ * facts the newest stays active and the others sit under it. Parallel
+ * (multi-valued) and operator-unassigned facts only return to active.
+ */
+function planDanglingRepairs(rows: ReadonlyArray<DanglingCandidate>): DanglingRepair[] {
+  const groups = new Map<string, DanglingCandidate[]>();
+  for (const row of rows) {
+    const key = JSON.stringify([row.tenant_id, row.property_slug, row.subject, row.predicate]);
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+  const repairs: DanglingRepair[] = [];
+  for (const group of groups.values()) {
+    const head = group[0]!;
+    const base = { tenantId: head.tenant_id, subject: head.subject, predicate: head.predicate };
+    const unassigned = (r: DanglingCandidate): boolean => r.property_slug === null && r.property_source === "operator";
+    const members = group.filter((r) => !unassigned(r));
+    const collapsible = !MULTI_VALUED_PREDICATES.has(head.predicate) && collapses(head.predicate, head.property_slug, null);
+    const winner = collapsible && members.length > 0 ? newestFact(members) : undefined;
+    for (const d of group.filter((r) => r.dangling === 1)) {
+      const isWinner = winner === undefined || unassigned(d) || d.id === winner.id;
+      repairs.push({
+        ...base,
+        factId: d.id,
+        supersededBy: isWinner ? null : winner.id,
+        alsoSuperseded: winner !== undefined && d.id === winner.id ? members.filter((r) => r.dangling === 0).map((r) => r.id) : [],
+      });
+    }
+  }
+  return repairs;
+}
+
+export function planDanglingRepairsOnSqlite(db: Database.Database): DanglingRepair[] {
+  return planDanglingRepairs(db.prepare<[], DanglingCandidate>(SQL_I5B_REPAIR_CANDIDATES).all());
+}
+
+export async function planDanglingRepairsOnPg(pool: Pool): Promise<DanglingRepair[]> {
+  return planDanglingRepairs((await pool.query<DanglingCandidate>(SQL_I5B_REPAIR_CANDIDATES)).rows);
+}
+
 export interface FixReport {
   readonly deletedSelfLoops: number;
   readonly restoredToClosed: number;
   readonly deletedGhostEmbeddings: number;
+  /** Dangling superseded_by pointers re-evaluated (I5b). */
+  readonly repairedDangling: ReadonlyArray<DanglingRepair>;
   /** I5a groups collapsed under their newest fact. */
   readonly supersededConflicts: ReadonlyArray<ConflictRepair>;
   /** Set when the sweep guard refused the ghost-embedding deletion (I7). */
@@ -789,12 +867,26 @@ export function applyFixOnSqlite(db: Database.Database, guard: FixGuardOptions =
     }
   })();
 
+  const repairedDangling = planDanglingRepairsOnSqlite(db);
+  const setSupersededBy = db.prepare("UPDATE facts SET superseded_by = ? WHERE id = ?");
+  db.transaction(() => {
+    for (const repair of repairedDangling) {
+      setSupersededBy.run(repair.supersededBy, repair.factId);
+      if (repair.supersededBy !== null) dropEmbedding.run(repair.factId);
+      for (const id of repair.alsoSuperseded) {
+        setSupersededBy.run(repair.factId, id);
+        dropEmbedding.run(id);
+      }
+    }
+  })();
+
   return {
     deletedSelfLoops: deleteResult.changes,
     restoredToClosed: updateSuperseded.changes + updateReplaced.changes,
     deletedGhostEmbeddings,
     deletedOrphanChunkIds,
     supersededConflicts,
+    repairedDangling,
     ...(ghostDecision.mode === "refused" ? { ghostGuardRefusal: ghostDecision.reason } : {}),
     ...(orphanDecision.mode === "refused" ? { orphanChunkGuardRefusal: orphanDecision.reason } : {}),
   };
@@ -841,11 +933,20 @@ export async function applyFixOnPg(pool: Pool): Promise<FixReport> {
     await pool.query("DELETE FROM fact_embeddings WHERE fact_id = ANY($1)", [repair.supersededIds]);
   }
 
+  const repairedDangling = await planDanglingRepairsOnPg(pool);
+  for (const repair of repairedDangling) {
+    await pool.query("UPDATE facts SET superseded_by = $1 WHERE id = $2", [repair.supersededBy, repair.factId]);
+    const dropped = repair.supersededBy === null ? [...repair.alsoSuperseded] : [repair.factId];
+    if (repair.alsoSuperseded.length > 0) await pool.query("UPDATE facts SET superseded_by = $1 WHERE id = ANY($2)", [repair.factId, repair.alsoSuperseded]);
+    await pool.query("DELETE FROM fact_embeddings WHERE fact_id = ANY($1)", [dropped]);
+  }
+
   return {
     deletedSelfLoops: deleteResult.rowCount ?? 0,
     restoredToClosed: (updateSuperseded.rowCount ?? 0) + (updateReplaced.rowCount ?? 0),
     deletedGhostEmbeddings: ghostEmbResult.rowCount ?? 0,
     deletedOrphanChunkIds: orphanChunks.rows.map((r) => r.chunk_id),
     supersededConflicts,
+    repairedDangling,
   };
 }

@@ -135,6 +135,35 @@ export function runPropertyMemoryContract(h: { attributeSession(s: Storage, tena
       expect((await storage.facts.getById(tenant, "older"))?.supersededBy).toBe("newer");
       expect((await storage.facts.getById(tenant, "newer"))?.supersededBy).toBeNull();
     });
+    const at = (month: string, f: Fact): Fact => ({ ...f, createdAt: `2026-${month}-01T00:00:00Z` });
+    it("re-ingesting an old session does not displace a newer fact, a newer one still supersedes", async () => {
+      await ingest("s1", [at("03", fact("newest", "s1"))]);
+      await ingest("s2", [at("01", fact("old", "s2"))]);
+      expect((await storage.facts.getById(tenant, "old"))?.supersededBy).toBe("newest");
+      expect((await storage.facts.getById(tenant, "newest"))?.supersededBy).toBeNull();
+      await ingest("s2", [at("01", { ...fact("old", "s2"), id: "old-again" })]);
+      expect((await storage.facts.getById(tenant, "old-again"))?.supersededBy).toBe("newest");
+      expect((await storage.facts.getById(tenant, "newest"))?.supersededBy).toBeNull();
+      await ingest("s3", [at("04", fact("latest", "s3"))]);
+      expect((await storage.facts.getById(tenant, "newest"))?.supersededBy).toBe("latest");
+    });
+    it("re-ingest re-points facts the replaced facts had superseded", async () => {
+      await ingest("s1", [at("01", fact("x", "s1"))]);
+      await ingest("s2", [at("02", fact("y", "s2"))]);
+      expect((await storage.facts.getById(tenant, "x"))?.supersededBy).toBe("y");
+      await ingest("s2", [at("02", { ...fact("y", "s2"), id: "y2" })]);
+      expect((await storage.facts.getById(tenant, "x"))?.supersededBy).toBe("y2");
+    });
+    it("re-ingest that drops the superseding fact re-evaluates against the remaining active facts", async () => {
+      await ingest("s1", [at("01", fact("x", "s1"))]);
+      await ingest("s2", [at("02", fact("y", "s2"))]);
+      await ingest("s3", [at("03", fact("z", "s3"))]);
+      await ingest("s3", []);
+      expect((await storage.facts.getById(tenant, "y"))?.supersededBy).toBeNull();
+      await ingest("s4", [at("04", fact("w", "s4"))]);
+      await ingest("s2", []);
+      expect((await storage.facts.getById(tenant, "x"))?.supersededBy).toBe("w");
+    });
     it("keeps an operator-unassigned fact independent of its neighbours", async () => {
       await ingest("s1", [fact("original", "s1")]);
       await storage.properties.correctFact(tenant, "original", null);

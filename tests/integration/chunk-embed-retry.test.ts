@@ -92,6 +92,15 @@ describe("chunk embed atomicity, retry and I7b-1 repair", () => {
     expect(runChecksOnSqlite(storage.rawDb()).find((v) => v.id === "I7b-1")).toBeUndefined();
   });
 
+  it("a sweep insert for a chunk that was mapped meanwhile adds no duplicate vector and clears the retry record", async () => {
+    await ingest("s1");
+    storage.sessions.markChunkEmbedPending("s1", 0, "raced");
+    storage.sessions.insertChunkEmbedding("s1", 0, vec(5));
+    expect(count("session_embedding_chunks_rowids")).toBe(1);
+    expect(count("session_chunk_map")).toBe(1);
+    expect(count("chunk_embed_pending")).toBe(0);
+  });
+
   it("embedder down at ingest: no vec row, chunk enqueued; sweep embeds it on recovery", async () => {
     embedder.failing = true;
     await ingest("s1");
