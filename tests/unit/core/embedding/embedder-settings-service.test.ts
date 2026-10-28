@@ -136,16 +136,74 @@ describe("testEmbedder", () => {
     expect((await storage.embedderSettings.get("prose")).model).toBeNull();
   });
 
-  it("falls back to the effective key for a field left out, and redacts it from errors", async () => {
+  it("uses the effective key when the endpoint is unchanged", async () => {
+    const { deps, calls } = await setup();
+    await testEmbedder(deps, patch({ lane: "prose", model: "other" }));
+    expect(calls[0]!.auth).toBe("Bearer sk-live-secret");
+  });
+
+  it("does not forward the env key to a changed base_url or provider unless the request supplies a key", async () => {
+    const { deps, calls } = await setup();
+    await testEmbedder(deps, patch({ lane: "prose", base_url: "http://attacker.example/v1" }));
+    expect(calls[0]).toMatchObject({ url: "http://attacker.example/v1/embeddings", auth: "Bearer local" });
+    await testEmbedder(deps, patch({ lane: "prose", base_url: "http://other/v1", api_key: "explicit" }));
+    expect(calls[1]!.auth).toBe("Bearer explicit");
+    await testEmbedder(deps, patch({ lane: "prose", provider: "openai", base_url: "http://lan2/v1" }));
+    expect(calls[2]!.auth).toBe("Bearer local");
+  });
+
+  it("does not forward a stored key to a changed base_url either", async () => {
+    const { deps, calls, storage } = await setup();
+    await storage.embedderSettings.update("prose", { apiKey: "stored-key" });
+    await testEmbedder(deps, patch({ lane: "prose", base_url: "http://elsewhere/v1" }));
+    expect(calls[0]!.auth).toBe("Bearer local");
+    await testEmbedder(deps, patch({ lane: "prose", base_url: "http://192.168.2.2:4000/v1" }));
+    expect(calls[1]!.auth).toBe("Bearer stored-key");
+  });
+
+  it("returns a generic error (status or class), never upstream text", async () => {
     const { deps } = await setup();
-    const failing: EmbedderSettingsDeps = {
+    const leaky: EmbedderSettingsDeps = {
       ...deps,
-      fetchImpl: (async () => { throw new Error("connect failed with key sk-live-secret"); }) as unknown as typeof fetch,
+      fetchImpl: (async () => { throw new Error("connect failed with key sk-live-secret at http://internal"); }) as unknown as typeof fetch,
     };
-    const out = await testEmbedder(failing, patch({ lane: "prose" }));
-    expect(out["ok"]).toBe(false);
-    expect(String(out["error"])).not.toContain("sk-live-secret");
-    expect(String(out["error"])).toContain("[redacted]");
+    const thrown = await testEmbedder(leaky, patch({ lane: "prose" }));
+    expect(thrown["ok"]).toBe(false);
+    expect(String(thrown["error"])).toMatch(/^probe failed: /);
+    expect(String(thrown["error"])).not.toContain("sk-live-secret");
+    expect(String(thrown["error"])).not.toContain("internal");
+    const http500: EmbedderSettingsDeps = { ...deps, fetchImpl: (async () => new Response("secret body", { status: 500 })) as unknown as typeof fetch };
+    expect((await testEmbedder(http500, patch({ lane: "prose" })))["error"]).toBe("probe failed: HTTP 500");
+  });
+});
+
+describe("probe timeouts", () => {
+  const hanging = ((_url: string, init: RequestInit) =>
+    new Promise((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+    })) as unknown as typeof fetch;
+
+  it("GET reports reconcile unknown for a hung lane, probing both lanes concurrently", async () => {
+    const { deps } = await setup();
+    const hung: EmbedderSettingsDeps = {
+      ...deps,
+      probeTimeoutMs: 150,
+      prose: new EmbedderBox(new OpenAIEmbedderClient({ baseUrl: "http://x/v1", fetchImpl: hanging })),
+      code: new CodeEmbedderBox(new OpenAICodeEmbedderClient({ baseUrl: "http://x/v1", fetchImpl: hanging })),
+    };
+    const started = Date.now();
+    const lanes = (await getEmbedderSettings(hung))["lanes"] as Record<string, Record<string, unknown>>;
+    expect(Date.now() - started).toBeLessThan(290);
+    expect(lanes["prose"]!["reconcile"]).toBe("unknown");
+    expect(lanes["code"]!["reconcile"]).toBe("unknown");
+  });
+
+  it("the test endpoint and PUT time out instead of hanging", async () => {
+    const { deps } = await setup({ stored: { lane: "prose", dim: 768 } });
+    const hung: EmbedderSettingsDeps = { ...deps, probeTimeoutMs: 50, fetchImpl: hanging };
+    expect(await testEmbedder(hung, patch({ lane: "prose" }))).toMatchObject({ ok: false });
+    const res = await saveEmbedderSettings(hung, patch({ lane: "prose", base_url: "http://slow/v1" }));
+    expect(res.status).toBe(422);
   });
 });
 
@@ -162,6 +220,18 @@ describe("saveEmbedderSettings, prose lane", () => {
     const lane = res.body["lane"] as Record<string, unknown>;
     expect(lane["base_url"]).toEqual({ value: "http://new-host/v1", source: "setting" });
     expect(JSON.stringify(res.body)).not.toContain("new-key");
+  });
+
+  it("a save that moves base_url without a key clears the stored key and sends none", async () => {
+    const { deps, storage, calls } = await setup({ stored: { lane: "prose", dim: 768 } });
+    await storage.embedderSettings.update("prose", { apiKey: "stored-key" });
+    const res = await saveEmbedderSettings(deps, patch({ lane: "prose", base_url: "http://moved/v1" }));
+    expect(res.status).toBe(200);
+    expect((await storage.embedderSettings.get("prose")).apiKey).toBeNull();
+    calls.length = 0;
+    await deps.prose.embed("x", "query");
+    expect(calls[0]).toMatchObject({ url: "http://moved/v1/embeddings", auth: "Bearer local" });
+    expect((res.body["lane"] as Record<string, unknown>)["api_key_set"]).toBe(false);
   });
 
   it("returns 409 without confirm_reembed on a model change, persisting and swapping nothing", async () => {

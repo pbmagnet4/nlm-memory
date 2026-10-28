@@ -619,8 +619,10 @@ const HOSTED_GATED_ROUTES: ReadonlyArray<{ method: string; path: string; disposi
   { method: "GET", path: "/api/data/backup", disposition: "LOCAL" },
   { method: "POST", path: "/api/data/restore", disposition: "LOCAL" },
   { method: "GET", path: "/api/data/stats", disposition: "LOCAL" },
+  { method: "GET", path: "/api/health/ingest", disposition: "LOCAL" },
   { method: "POST", path: "/api/classifier", disposition: "LOCAL" },
   { method: "PUT", path: "/api/classifier/settings", disposition: "LOCAL" },
+  { method: "GET", path: "/api/embedder/settings", disposition: "LOCAL" },
   { method: "PUT", path: "/api/embedder/settings", disposition: "LOCAL" },
   { method: "POST", path: "/api/embedder/test", disposition: "LOCAL" },
   // Single-operator process supervision — starting/stopping the daemon's

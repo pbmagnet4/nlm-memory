@@ -57,10 +57,9 @@ import { createApp } from "../http/app.js";
 import { createMcpServer, listMergeSuggestionsHandler, mergeWorkstreamsHandler, rebindSessionHandler, recallWorkstreamHandler, renameWorkstreamHandler, retireWorkstreamHandler } from "../mcp/server.js";
 import { classifierEgressNotice } from "../llm/classifier-egress.js";
 import { buildClassifier } from "../llm/build-classifier.js";
-import { resolveEmbedderInfo } from "../llm/embedder-info.js";
 import type { CodeEmbedder } from "../ports/code-embedder.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
-import { buildEmbedder as _buildEmbedder, buildEmbedderFrom, buildCodeEmbedderFrom } from "../llm/build-embedder.js";
+import { buildEmbedderFrom, buildCodeEmbedderFrom } from "../llm/build-embedder.js";
 import { EmbedderBox, CodeEmbedderBox } from "../llm/embedder-box.js";
 import { laneValues, resolveEmbedderLane, type EmbedderLaneValues } from "../core/embedding/embedder-config.js";
 import { NO_STORED_EMBEDDER } from "../ports/embedder-settings-store.js";
@@ -273,12 +272,6 @@ function loadTopicProvider(): TopicProvider {
   } catch {
     return defaultTopicProvider;
   }
-}
-
-/** Build the recall/document embedder. Delegates to the shared factory in
- *  src/llm/build-embedder.ts — see that file for provider routing details. */
-function buildEmbedder(): LLMClient {
-  return _buildEmbedder();
 }
 
 async function reconcileEmbeddingLanes(
@@ -1559,11 +1552,14 @@ program
       }
       return;
     }
-    const embedder = buildEmbedder();
+    // Settings > env, like the daemon and the --facts/--exemplars paths: a model
+    // saved in the UI must not be rebuilt back to the env model by a manual run.
+    const { storage: settingsStorage, embedder, lanes } = await buildStack();
+    await settingsStorage.close();
     const pgUrl = process.env["NLM_PG_URL"];
     const sharedOpts = {
       embedder,
-      embedderProvider: resolveEmbedderInfo(process.env).provider,
+      embedderProvider: lanes.prose.provider,
       ...(opts.dryRun ? { dryRun: true } : {}),
       ...(opts.state ? { statePath: opts.state } : {}),
       ...(opts.limit ? { limit: opts.limit } : {}),

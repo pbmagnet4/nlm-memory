@@ -48,7 +48,28 @@ describe("resolveEmbedderLane", () => {
   });
 });
 
+describe("env API key scope", () => {
+  it("applies only while provider and base_url still resolve to the env endpoint", () => {
+    const same = resolveEmbedderLane("prose", { ...NO_STORED_EMBEDDER, baseUrl: "http://192.168.2.2:4000/v1", model: "x" }, PROD_ENV);
+    expect(same.apiKey).toEqual({ value: "sk-live-secret", source: "env" });
+    const moved = resolveEmbedderLane("prose", { ...NO_STORED_EMBEDDER, baseUrl: "http://elsewhere/v1" }, PROD_ENV);
+    expect(moved.apiKey).toEqual({ value: null, source: "default" });
+    const switched = resolveEmbedderLane("prose", { ...NO_STORED_EMBEDDER, provider: "ollama" }, PROD_ENV);
+    expect(switched.apiKey.value).toBeNull();
+  });
+
+  it("a stored key is explicit and always applies", () => {
+    const s = resolveEmbedderLane("prose", { ...NO_STORED_EMBEDDER, baseUrl: "http://elsewhere/v1", apiKey: "k" }, PROD_ENV);
+    expect(s.apiKey).toEqual({ value: "k", source: "setting" });
+  });
+});
+
 describe("laneEnv", () => {
+  it("blanks the key for a lane with none so the child never inherits the daemon's", () => {
+    const v = laneValues(resolveEmbedderLane("prose", { ...NO_STORED_EMBEDDER, baseUrl: "http://elsewhere/v1" }, PROD_ENV));
+    expect(laneEnv(v)["NLM_EMBED_API_KEY"]).toBe("");
+  });
+
   it("round-trips the effective config into the env buildEmbedder reads, key included", () => {
     const values = laneValues(resolveEmbedderLane("prose", NO_STORED_EMBEDDER, PROD_ENV));
     const env = laneEnv(values);

@@ -9,7 +9,7 @@
  * NLM_CODE_EMBED_MODEL.
  */
 
-import type { StoredEmbedderLane } from "@ports/embedder-settings-store.js";
+import { NO_STORED_EMBEDDER, type StoredEmbedderLane } from "@ports/embedder-settings-store.js";
 import type { EmbeddingLane } from "./embedding-config.js";
 import type { Tuned } from "@core/classifier/tuning.js";
 import { DEFAULT_OPENAI_EMBED_MODEL } from "../../llm/openai-embedder-client.js";
@@ -58,7 +58,25 @@ function defaultModel(lane: EmbeddingLane, provider: string): string {
   return DEFAULT_OLLAMA_EMBED_MODEL;
 }
 
+/**
+ * The env API key is a credential for the env-configured endpoint: it applies
+ * only while provider and base URL still equal what env alone resolves to, so
+ * pointing a lane at another host never forwards it.
+ */
 export function resolveEmbedderLane(
+  lane: EmbeddingLane,
+  stored: StoredEmbedderLane,
+  env: Record<string, string | undefined>,
+): EmbedderLaneSettings {
+  const settings = resolveWithEnvKey(lane, stored, env);
+  if (stored.apiKey !== null || settings.apiKey.value === null) return settings;
+  const fromEnv = resolveWithEnvKey(lane, NO_STORED_EMBEDDER, env);
+  const sameEndpoint =
+    settings.provider.value === fromEnv.provider.value && settings.baseUrl.value === fromEnv.baseUrl.value;
+  return sameEndpoint ? settings : { ...settings, apiKey: { value: null, source: "default" } };
+}
+
+function resolveWithEnvKey(
   lane: EmbeddingLane,
   stored: StoredEmbedderLane,
   env: Record<string, string | undefined>,
@@ -88,8 +106,8 @@ export function laneValues(s: EmbedderLaneSettings): EmbedderLaneValues {
 
 /** Env a child process needs to build this lane's embedder (read by buildEmbedder). Contains the API key: never log it. */
 export function laneEnv(v: EmbedderLaneValues): Record<string, string> {
-  const env: Record<string, string> = { NLM_EMBED_PROVIDER: v.provider, NLM_EMBED_MODEL: v.model };
+  // An empty key overrides any NLM_EMBED_API_KEY the child would inherit from the daemon env.
+  const env: Record<string, string> = { NLM_EMBED_PROVIDER: v.provider, NLM_EMBED_MODEL: v.model, NLM_EMBED_API_KEY: v.apiKey ?? "" };
   if (v.baseUrl) env[v.provider === "ollama" ? "NLM_OLLAMA_URL" : "NLM_EMBED_BASE_URL"] = v.baseUrl;
-  if (v.apiKey) env["NLM_EMBED_API_KEY"] = v.apiKey;
   return env;
 }

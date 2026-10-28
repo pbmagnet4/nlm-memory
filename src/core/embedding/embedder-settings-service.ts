@@ -42,11 +42,14 @@ export interface EmbedderSettingsDeps {
   readonly env: Record<string, string | undefined>;
   /** Test seam: fetch used by candidate clients (openai providers). */
   readonly fetchImpl?: FetchImpl;
+  /** Bound on every settings/test probe. Default 10s. */
+  readonly probeTimeoutMs?: number;
 }
 
 export type LaneReconcile = "match" | "stale" | "recorded" | "unknown";
 
 const PROBE_TEXT = "nlm dimension probe";
+const DEFAULT_PROBE_TIMEOUT_MS = 10_000;
 const CODE_REEMBED_UNSUPPORTED =
   "changing a code-lane provider or model is not supported yet: there is no code-lane re-embed " +
   "(tracked as T1179). Only base_url and api_key can be edited.";
@@ -112,8 +115,15 @@ export function parseLanePatch(body: unknown): LanePatch | string {
   return { lane, update, confirmReembed: confirm === true };
 }
 
-function redact(message: string, secret: string | null): string {
-  return secret ? message.split(secret).join("[redacted]") : message;
+/** A generic probe failure: status or error class only, never upstream text (it may echo request details). */
+function describeProbeError(e: unknown): string {
+  if (e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError")) return "probe failed: timed out";
+  const text = e instanceof Error ? `${e.message} ${String((e.cause as { message?: unknown } | undefined)?.message ?? "")}` : "";
+  const status = /(?:status|HTTP) (\d{3})/.exec(text);
+  if (status) return `probe failed: HTTP ${status[1]}`;
+  const code = /\b(ECONN[A-Z]+|ENOTFOUND|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH)\b/.exec(text);
+  if (code) return `probe failed: ${code[1]}`;
+  return `probe failed: ${e instanceof Error ? e.name : "error"}`;
 }
 
 interface Probe {
@@ -122,14 +132,19 @@ interface Probe {
   readonly latencyMs: number;
 }
 
-async function probe(lane: EmbeddingLane, v: EmbedderLaneValues, fetchImpl?: FetchImpl): Promise<Probe> {
+async function probe(lane: EmbeddingLane, v: EmbedderLaneValues, deps: EmbedderSettingsDeps): Promise<Probe> {
   const started = Date.now();
+  const signal = probeSignal(deps);
   if (lane === "code") {
-    const r = await buildCodeEmbedderFrom(v, fetchImpl).embed(PROBE_TEXT, "query");
+    const r = await buildCodeEmbedderFrom(v, deps.fetchImpl).embed(PROBE_TEXT, "query", signal);
     return { dim: r.dim, model: v.model, latencyMs: Date.now() - started };
   }
-  const r = await buildEmbedderFrom(v, fetchImpl).embed(PROBE_TEXT, "query");
+  const r = await buildEmbedderFrom(v, deps.fetchImpl).embed(PROBE_TEXT, "query", { signal });
   return { dim: r.vector.length, model: r.model, latencyMs: Date.now() - started };
+}
+
+function probeSignal(deps: EmbedderSettingsDeps): AbortSignal {
+  return AbortSignal.timeout(deps.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS);
 }
 
 function tunedJson<T>(t: { value: T; source: string }): { value: T; source: string } {
@@ -174,49 +189,61 @@ async function effective(deps: EmbedderSettingsDeps, lane: EmbeddingLane): Promi
   return resolveEmbedderLane(lane, await deps.settings.get(lane), deps.env);
 }
 
-/** GET payload. Probes each live embedder once for its dimension; a probe failure reports reconcile "unknown". */
+/** GET payload. Probes both live embedders concurrently, each bounded by the probe timeout; a failed or timed-out probe reports reconcile "unknown". */
 export async function getEmbedderSettings(deps: EmbedderSettingsDeps): Promise<Record<string, unknown>> {
-  const lanes: Record<string, unknown> = {};
-  for (const lane of ["prose", "code"] as const) {
-    const s = await effective(deps, lane);
-    let dim: number | null = null;
+  const liveDim = async (lane: EmbeddingLane): Promise<number | null> => {
     try {
-      dim = lane === "prose"
-        ? (await deps.prose.embed(PROBE_TEXT, "query")).vector.length
-        : (await deps.code.embed(PROBE_TEXT, "query")).dim;
+      const signal = probeSignal(deps);
+      return lane === "prose"
+        ? (await deps.prose.embed(PROBE_TEXT, "query", { signal })).vector.length
+        : (await deps.code.embed(PROBE_TEXT, "query", signal)).dim;
     } catch {
-      dim = null;
+      return null;
     }
-    lanes[lane] = describeLane(deps, lane, s, dim);
-  }
-  return { lanes, rebuild_job: rebuildJob(deps) };
+  };
+  const [prose, code] = await Promise.all([
+    effective(deps, "prose").then(async (s) => describeLane(deps, "prose", s, await liveDim("prose"))),
+    effective(deps, "code").then(async (s) => describeLane(deps, "code", s, await liveDim("code"))),
+  ]);
+  return { lanes: { prose, code }, rebuild_job: rebuildJob(deps) };
 }
 
+/**
+ * Resolves the candidate lane. A stored or env API key is a credential for the
+ * endpoint it was set for: when the patch moves provider or base URL and does
+ * not bring its own key, the stored key is cleared (in the returned update too,
+ * so a save persists that) and the env key stops applying.
+ */
 async function candidate(
   deps: EmbedderSettingsDeps,
   p: LanePatch,
-): Promise<{ current: EmbedderLaneSettings; next: EmbedderLaneSettings }> {
+): Promise<{ current: EmbedderLaneSettings; next: EmbedderLaneSettings; update: EmbedderLaneUpdate }> {
   const stored = await deps.settings.get(p.lane);
-  return {
-    current: resolveEmbedderLane(p.lane, stored, deps.env),
-    next: resolveEmbedderLane(p.lane, applyEmbedderUpdate(stored, p.update), deps.env),
-  };
+  const current = resolveEmbedderLane(p.lane, stored, deps.env);
+  let next = resolveEmbedderLane(p.lane, applyEmbedderUpdate(stored, p.update), deps.env);
+  let update = p.update;
+  const moved = next.provider.value !== current.provider.value || next.baseUrl.value !== current.baseUrl.value;
+  if (moved && p.update.apiKey === undefined) {
+    update = { ...p.update, apiKey: null };
+    next = resolveEmbedderLane(p.lane, applyEmbedderUpdate(stored, update), deps.env);
+  }
+  return { current, next, update };
 }
 
 /** POST /api/embedder/test: probe a candidate config; nothing is persisted. */
 export async function testEmbedder(deps: EmbedderSettingsDeps, p: LanePatch): Promise<Record<string, unknown>> {
   const { next } = await candidate(deps, p);
   try {
-    const r = await probe(p.lane, laneValues(next), deps.fetchImpl);
+    const r = await probe(p.lane, laneValues(next), deps);
     return { ok: true, dim: r.dim, model: r.model, latency_ms: r.latencyMs };
   } catch (e) {
-    return { ok: false, error: redact(e instanceof Error ? e.message : String(e), next.apiKey.value) };
+    return { ok: false, error: describeProbeError(e) };
   }
 }
 
 /** PUT /api/embedder/settings. */
 export async function saveEmbedderSettings(deps: EmbedderSettingsDeps, p: LanePatch): Promise<ServiceResult> {
-  const { current, next } = await candidate(deps, p);
+  const { current, next, update } = await candidate(deps, p);
   const values = laneValues(next);
 
   // Code-lane identity is checked before probing: no code-lane re-embed exists
@@ -228,12 +255,9 @@ export async function saveEmbedderSettings(deps: EmbedderSettingsDeps, p: LanePa
 
   let probed: Probe;
   try {
-    probed = await probe(p.lane, values, deps.fetchImpl);
+    probed = await probe(p.lane, values, deps);
   } catch (e) {
-    return {
-      status: 422,
-      body: { error: `candidate embedder failed its probe: ${redact(e instanceof Error ? e.message : String(e), values.apiKey)}` },
-    };
+    return { status: 422, body: { error: describeProbeError(e) } };
   }
 
   const vectors = deps.config.getLane(p.lane);
@@ -267,21 +291,22 @@ export async function saveEmbedderSettings(deps: EmbedderSettingsDeps, p: LanePa
     if (running && (running.state === "running" || running.state === "stalled")) {
       return { status: 409, body: { error: "an embedding rebuild is already running", rebuild_job: running } };
     }
-    await persistAndSwap(deps, p, values);
+    await persistAndSwap(deps, p.lane, update, values);
     deps.jobs.start([], laneEnv(values));
     return { status: 202, body: { lane: describeLane(deps, p.lane, next, probed.dim), rebuild_job: rebuildJob(deps), ...detail } };
   }
 
-  await persistAndSwap(deps, p, values);
+  await persistAndSwap(deps, p.lane, update, values);
   return { status: 200, body: { lane: describeLane(deps, p.lane, next, probed.dim) } };
 }
 
 async function persistAndSwap(
   deps: EmbedderSettingsDeps,
-  p: LanePatch,
+  lane: EmbeddingLane,
+  update: EmbedderLaneUpdate,
   values: EmbedderLaneValues,
 ): Promise<void> {
-  await deps.settings.update(p.lane, p.update);
-  if (p.lane === "prose") deps.prose.swap(buildEmbedderFrom(values, deps.fetchImpl));
+  await deps.settings.update(lane, update);
+  if (lane === "prose") deps.prose.swap(buildEmbedderFrom(values, deps.fetchImpl));
   else deps.code.swap(buildCodeEmbedderFrom(values, deps.fetchImpl));
 }
