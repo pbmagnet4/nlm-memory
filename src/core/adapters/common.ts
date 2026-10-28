@@ -52,3 +52,13 @@ export function durationMinutes(startedAt: string, endedAt: string): number {
     return 0;
   }
 }
+
+/**
+ * For a catch that turns a bad record into "nothing to ingest": malformed JSON
+ * is a property of the source and stays a null session, but any other error
+ * (EACCES, EBUSY, SQLITE_BUSY, a half-written file) is transient and is
+ * rethrown so scanOnce leaves the source unrecorded and retries it next pass.
+ */
+export function skipMalformedRecord(err: unknown): void {
+  if (!(err instanceof SyntaxError)) throw err;
+}

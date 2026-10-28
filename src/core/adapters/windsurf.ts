@@ -36,7 +36,7 @@ import type {
   SessionChunk,
   TranscriptAdapter,
 } from "@ports/transcript-adapter.js";
-import { durationMinutes, normalizeTimestamp, safeSessionId } from "./common.js";
+import { durationMinutes, normalizeTimestamp, safeSessionId, skipMalformedRecord } from "./common.js";
 
 export interface WindsurfAdapterOptions {
   readonly userDir?: string;
@@ -192,7 +192,8 @@ function parseTabsFromDb(dbPath: string): ChatTab[] {
     if (!row?.value) return [];
     const data = JSON.parse(row.value) as { tabs?: ChatTab[] };
     return Array.isArray(data.tabs) ? data.tabs : [];
-  } catch {
+  } catch (err) {
+    skipMalformedRecord(err);
     return [];
   } finally {
     db?.close();
@@ -255,7 +256,7 @@ function parseGlobalSessions(globalPath: string): GlobalSession[] {
         } catch { /* skip */ }
       }
     }
-  } catch { /* inaccessible */ } finally {
+  } finally {
     db?.close();
   }
   return results;
@@ -294,7 +295,7 @@ export class WindsurfAdapter implements TranscriptAdapter {
 
     // ── Workspace chat tabs ───────────────────────────────────────────────
     for (const dbPath of listWorkspaceDbs(this.userDir)) {
-      for (const tab of parseTabsFromDb(dbPath)) {
+      for (const tab of this.discoverTabs(dbPath)) {
         if (!tab.tabId) continue;
         if (!(tab.bubbles && tab.bubbles.length > 0)) continue;
         if (cutoff !== undefined) {
@@ -308,7 +309,7 @@ export class WindsurfAdapter implements TranscriptAdapter {
     }
 
     // ── Global agent/flow sessions ────────────────────────────────────────
-    for (const gs of parseGlobalSessions(globalDbPath(this.userDir))) {
+    for (const gs of this.discoverGlobalSessions()) {
       if (cutoff !== undefined) {
         const ts = gs.meta.lastUpdatedAt ?? gs.meta.createdAt;
         if (ts !== undefined && ts !== null) {
@@ -320,6 +321,23 @@ export class WindsurfAdapter implements TranscriptAdapter {
     }
 
     return ids;
+  }
+
+  /** A DB that cannot be read now contributes nothing to this pass; the next scan retries it. */
+  private discoverTabs(dbPath: string): ChatTab[] {
+    try {
+      return parseTabsFromDb(dbPath);
+    } catch {
+      return [];
+    }
+  }
+
+  private discoverGlobalSessions(): GlobalSession[] {
+    try {
+      return parseGlobalSessions(globalDbPath(this.userDir));
+    } catch {
+      return [];
+    }
   }
 
   async parseSession(id: string): Promise<SessionChunk | null> {
