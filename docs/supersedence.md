@@ -90,4 +90,4 @@ Atomic-on-ingest supersedence remains the primary path — when a runtime adapte
 
 ## Fact assertion context
 
-Fact collapse and session-to-fact cascades match property context as well as subject and predicate. Property-aware history and corroboration keep contexts separate. Unresolved assertions abstain from automatic collapse when property attribution is enabled. See [Memory properties](properties.md) for the rollout and correction contract.
+Fact collapse and session-to-fact cascades match property context as well as subject and predicate. Property-aware history and corroboration keep contexts separate. Unresolved assertions (no slug) collapse as before; only operator-unassigned facts abstain. See [Memory properties](properties.md) for the rollout and correction contract.

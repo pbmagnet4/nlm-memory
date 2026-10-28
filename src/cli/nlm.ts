@@ -148,7 +148,7 @@ import { installScope } from "../core/signals/install-scope.js";
 import { buildWorkDigest } from "../core/work-digest/build-work-digest.js";
 import { composeWorkDigest } from "../core/work-digest/compose-work-digest.js";
 import { defaultTopicProvider, aliasTopicProvider, type TopicProvider } from "../core/work-digest/topics.js";
-import { runChecksOnSqlite, runChecksOnPg, applyFixOnSqlite, applyFixOnPg } from "../core/integrity/check-invariants.js";
+import { runChecksOnSqlite, runChecksOnPg, applyFixOnSqlite, applyFixOnPg, planConflictRepairsOnSqlite, planConflictRepairsOnPg, type ConflictRepair } from "../core/integrity/check-invariants.js";
 import { resolveRecallScope } from "../core/recall/resolve-scope.js";
 import { suggestMerges } from "../core/entities/dedup-suggest.js";
 import { DEFAULT_NLM_PORT } from "../shared/net.js";
@@ -3019,7 +3019,7 @@ async function gatherInstallProbe(): Promise<InstallProbe> {
 program
   .command("doctor")
   .description("Check database integrity invariants and install/runtime health, optionally repair safe violations")
-  .option("--fix", "repair mechanically safe violations: delete self-loop edges (I1), restore orphaned superseded/replaced sessions to closed (I2), delete ghost fact embeddings (I7)")
+  .option("--fix", "repair mechanically safe violations: delete self-loop edges (I1), restore orphaned superseded/replaced sessions to closed (I2), delete ghost fact embeddings (I7), collapse unattributed conflicting facts under the newest (I5a); without --fix the I5a collapses are listed, not applied")
   .option("--override-guard", "allow the ghost-embedding repair past the sweep guard")
   .action(async (opts) => {
     const storage = await buildStorage(dbPath());
@@ -3044,9 +3044,13 @@ program
         if (fixReport.deletedGhostEmbeddings > 0) {
           console.log(`  fixed I7: deleted ${fixReport.deletedGhostEmbeddings} ghost embedding(s)`);
         }
-        if (fixReport.deletedSelfLoops === 0 && fixReport.restoredToClosed === 0 && fixReport.deletedGhostEmbeddings === 0) {
+        for (const r of fixReport.supersededConflicts) printConflictRepair("fixed I5a: superseded", r);
+        if (fixReport.deletedSelfLoops === 0 && fixReport.restoredToClosed === 0 && fixReport.deletedGhostEmbeddings === 0 && fixReport.supersededConflicts.length === 0) {
           console.log("  --fix: nothing to repair");
         }
+      } else {
+        const plan = storage instanceof PgStorage ? await planConflictRepairsOnPg(storage.pgPool()) : planConflictRepairsOnSqlite((storage as SqliteStorage).rawDb());
+        for (const r of plan) printConflictRepair("would fix I5a (--fix): supersede", r);
       }
       if (storage instanceof PgStorage) {
         violations = await runChecksOnPg(storage.pgPool());
@@ -3083,6 +3087,10 @@ program
 
     if (anyFail) process.exit(1);
   });
+
+function printConflictRepair(prefix: string, r: ConflictRepair): void {
+  console.log(`  ${prefix} ${r.tenantId} ${r.subject} | ${r.predicate}: kept ${r.keptId}, superseded ${r.supersededIds.join(", ")}`);
+}
 
 function printHealthChecks(checks: ReadonlyArray<HealthCheck>): boolean {
   let anyFail = false;

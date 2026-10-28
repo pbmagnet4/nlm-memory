@@ -61,11 +61,11 @@ export function runPropertyMemoryContract(h: { attributeSession(s: Storage, tena
       expect((await storage.facts.getById(tenant, "seo-old"))?.supersededBy).toBe("seo-new");
       expect((await storage.facts.listForRecall(tenant, { property: "nxtads" })).map((f) => f.id)).toEqual(["ads"]);
     });
-    it("unresolved assertions cannot overwrite known or unresolved assertions", async () => {
+    it("unresolved assertions cannot overwrite known assertions", async () => {
       await ingest("s1", [fact("known", "s1", "nxtseo")]);
       await ingest("s2", [fact("unknown", "s2"), fact("unknown2", "s2")]);
       expect((await storage.facts.getById(tenant, "known"))?.supersededBy).toBeNull();
-      expect((await storage.facts.getById(tenant, "unknown"))?.supersededBy).toBeNull();
+      expect((await storage.facts.getById(tenant, "unknown2"))?.supersededBy).toBeNull();
     });
     it("attributes grounded subjects independently in a mixed session", async () => {
       const body = "SEO app uses port 3940. NxtAds uses port 8000.";
@@ -128,6 +128,21 @@ export function runPropertyMemoryContract(h: { attributeSession(s: Storage, tena
       await ingest("s1", [original]); await storage.properties.correctFact(tenant, "original", null);
       await ingest("s1", [{ ...original, id: "replacement" }]);
       expect((await storage.facts.getById(tenant, "replacement"))?.property).toMatchObject({ slug: null, source: "operator" });
+    });
+    it("supersedes an earlier unattributed fact with a newer one", async () => {
+      await ingest("s1", [fact("older", "s1")]);
+      await ingest("s2", [fact("newer", "s2")]);
+      expect((await storage.facts.getById(tenant, "older"))?.supersededBy).toBe("newer");
+      expect((await storage.facts.getById(tenant, "newer"))?.supersededBy).toBeNull();
+    });
+    it("keeps an operator-unassigned fact independent of its neighbours", async () => {
+      await ingest("s1", [fact("original", "s1")]);
+      await storage.properties.correctFact(tenant, "original", null);
+      await ingest("s2", [fact("prior", "s2")]);
+      await ingest("s1", [{ ...fact("original", "s1"), id: "unassigned" }]);
+      expect((await storage.facts.getById(tenant, "unassigned"))?.property).toMatchObject({ slug: null, source: "operator" });
+      expect((await storage.facts.getById(tenant, "prior"))?.supersededBy).toBeNull();
+      expect((await storage.facts.getById(tenant, "unassigned"))?.supersededBy).toBeNull();
     });
     it("rejects alias collisions, foreign fact corrections and duplicate assertion corrections", async () => {
       await expect(storage.properties.import(tenant, [{ slug: "other", label: "NxtSEO" }])).rejects.toThrow("Ambiguous");
