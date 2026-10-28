@@ -92,6 +92,7 @@ describe("JobSupervisor", () => {
     const children: FakeChild[] = [];
     const events: JobSupervisorEvent[] = [];
     const sup = new JobSupervisor({
+      job: "reprocess",
       spawnChild: fakeSpawner(children),
       clock,
       onEvent: (e) => events.push(e),
@@ -117,6 +118,7 @@ describe("JobSupervisor", () => {
     const clock = new FakeClock();
     const children: FakeChild[] = [];
     const sup = new JobSupervisor({
+      job: "reprocess",
       spawnChild: fakeSpawner(children),
       clock,
       log: noopLog,
@@ -141,6 +143,7 @@ describe("JobSupervisor", () => {
     const children: FakeChild[] = [];
     const events: JobSupervisorEvent[] = [];
     const sup = new JobSupervisor({
+      job: "reprocess",
       spawnChild: fakeSpawner(children),
       clock,
       onEvent: (e) => events.push(e),
@@ -179,6 +182,7 @@ describe("JobSupervisor", () => {
     const children: FakeChild[] = [];
     const events: JobSupervisorEvent[] = [];
     const sup = new JobSupervisor({
+      job: "reprocess",
       spawnChild: fakeSpawner(children),
       clock,
       onEvent: (e) => events.push(e),
@@ -214,6 +218,7 @@ describe("JobSupervisor", () => {
     const children: FakeChild[] = [];
     const events: JobSupervisorEvent[] = [];
     const sup = new JobSupervisor({
+      job: "reprocess",
       spawnChild: fakeSpawner(children),
       clock,
       onEvent: (e) => events.push(e),
@@ -251,6 +256,7 @@ describe("JobSupervisor", () => {
     const children: FakeChild[] = [];
     const events: JobSupervisorEvent[] = [];
     const sup = new JobSupervisor({
+      job: "reprocess",
       spawnChild: fakeSpawner(children),
       clock,
       onEvent: (e) => events.push(e),
@@ -280,6 +286,7 @@ describe("JobSupervisor", () => {
     const children: FakeChild[] = [];
     const events: JobSupervisorEvent[] = [];
     const sup = new JobSupervisor({
+      job: "reprocess",
       spawnChild: fakeSpawner(children),
       clock,
       onEvent: (e) => events.push(e),
@@ -317,6 +324,7 @@ describe("JobSupervisor", () => {
     const children: FakeChild[] = [];
     const events: JobSupervisorEvent[] = [];
     const sup = new JobSupervisor({
+      job: "reprocess",
       spawnChild: fakeSpawner(children),
       clock,
       onEvent: (e) => events.push(e),
@@ -363,6 +371,7 @@ describe("JobSupervisor", () => {
     const children: FakeChild[] = [];
     const events: JobSupervisorEvent[] = [];
     const sup = new JobSupervisor({
+      job: "reprocess",
       spawnChild: fakeSpawner(children),
       clock,
       onEvent: (e) => events.push(e),
@@ -388,7 +397,7 @@ describe("JobSupervisor", () => {
     assertShape("stopped", sup.snapshot());
 
     // completed (fresh run)
-    const sup2 = new JobSupervisor({ spawnChild: fakeSpawner(children), clock: new FakeClock(), log: noopLog });
+    const sup2 = new JobSupervisor({ job: "reprocess", spawnChild: fakeSpawner(children), clock: new FakeClock(), log: noopLog });
     sup2.start(["--verbose"]);
     const lastChild = children[children.length - 1]!;
     lastChild.emitLine("  [1/1] sess_a  ok");
@@ -396,7 +405,7 @@ describe("JobSupervisor", () => {
     assertShape("completed", sup2.snapshot());
 
     // exhausted
-    const sup3 = new JobSupervisor({ spawnChild: fakeSpawner(children), clock: new FakeClock(), log: noopLog });
+    const sup3 = new JobSupervisor({ job: "reprocess", spawnChild: fakeSpawner(children), clock: new FakeClock(), log: noopLog });
     sup3.start(["--verbose"]);
     for (let i = 0; i < 4; i++) {
       children[children.length - 1]!.emitExit(1);
@@ -407,7 +416,7 @@ describe("JobSupervisor", () => {
   it("start() refuses to launch a second concurrent run", () => {
     const clock = new FakeClock();
     const children: FakeChild[] = [];
-    const sup = new JobSupervisor({ spawnChild: fakeSpawner(children), clock, log: noopLog });
+    const sup = new JobSupervisor({ job: "reprocess", spawnChild: fakeSpawner(children), clock, log: noopLog });
 
     sup.start(["--verbose"]);
     expect(() => sup.start(["--verbose"])).toThrow();
@@ -426,6 +435,7 @@ describe("JobSupervisor", () => {
       return child;
     };
     const sup = new JobSupervisor({
+      job: "reprocess",
       spawnChild,
       clock,
       onEvent: (e) => events.push(e),
@@ -468,6 +478,7 @@ describe("JobSupervisor", () => {
       return child;
     };
     const sup = new JobSupervisor({
+      job: "reprocess",
       spawnChild,
       clock,
       onEvent: (e) => events.push(e),

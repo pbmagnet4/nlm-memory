@@ -24,6 +24,7 @@ import { SqliteSignalStore } from "./sqlite-signal-store.js";
 import { SqliteWorkstreamStore } from "./sqlite-workstream-store.js";
 import { SourceRegistry } from "@core/sources/source-registry.js";
 import { SqliteClassifierSettingsStore } from "./sqlite-classifier-settings.js";
+import { SqliteEmbedderSettingsStore } from "./sqlite-embedder-settings.js";
 import { ProviderRegistry } from "@core/providers/provider-registry.js";
 import { TeamTokenStore } from "@core/tenancy/team-token-store.js";
 
@@ -45,6 +46,7 @@ export class SqliteStorage implements Storage {
   readonly sources: SourceRegistry;
   readonly providers: ProviderRegistry;
   readonly classifierSettings: SqliteClassifierSettingsStore;
+  readonly embedderSettings: SqliteEmbedderSettingsStore;
   readonly teamTokens: TeamTokenStore;
 
   private constructor(
@@ -59,6 +61,7 @@ export class SqliteStorage implements Storage {
     sources: SourceRegistry,
     providers: ProviderRegistry,
     classifierSettings: SqliteClassifierSettingsStore,
+    embedderSettings: SqliteEmbedderSettingsStore,
     teamTokens: TeamTokenStore,
   ) {
     this.sessions = sessions;
@@ -73,6 +76,7 @@ export class SqliteStorage implements Storage {
     this.sources = sources;
     this.providers = providers;
     this.classifierSettings = classifierSettings;
+    this.embedderSettings = embedderSettings;
     this.teamTokens = teamTokens;
   }
 
@@ -91,8 +95,9 @@ export class SqliteStorage implements Storage {
     const sources = new SourceRegistry(db);
     const providers = new ProviderRegistry(db);
     const classifierSettings = new SqliteClassifierSettingsStore(db);
+    const embedderSettings = new SqliteEmbedderSettingsStore(db);
     const teamTokens = new TeamTokenStore(db);
-    return new SqliteStorage(sessions, facts, signals, exemplars, workstreams, entities, learners, embeddingConfig, sources, providers, classifierSettings, teamTokens);
+    return new SqliteStorage(sessions, facts, signals, exemplars, workstreams, entities, learners, embeddingConfig, sources, providers, classifierSettings, embedderSettings, teamTokens);
   }
 
   async init(): Promise<void> {

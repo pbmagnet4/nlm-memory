@@ -56,7 +56,7 @@ export interface AlertEventData {
  * produced a single progress line.
  */
 export interface JobAlertEventData {
-  readonly job: "reprocess";
+  readonly job: string;
   readonly reason: "stalled" | "exhausted" | "spawn_failed";
   readonly processed: number;
   readonly total: number;

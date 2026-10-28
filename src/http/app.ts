@@ -136,6 +136,13 @@ import { isHostedMode } from "@core/tenancy/hosted-mode.js";
 import { resolveTeamByToken } from "@core/tenancy/team-auth.js";
 import type { TeamTokenStorePort } from "@core/tenancy/team-token-store.js";
 import type { JobSupervisor, JobSnapshot } from "@core/jobs/job-supervisor.js";
+import {
+  getEmbedderSettings,
+  parseLanePatch,
+  saveEmbedderSettings,
+  testEmbedder,
+  type EmbedderSettingsDeps,
+} from "@core/embedding/embedder-settings-service.js";
 
 const HERMES_RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 
@@ -171,8 +178,8 @@ export interface HttpDeps {
   };
   /** Wire to enable POST /api/ingest. When omitted, push ingest is disabled. */
   readonly ingest?: IngestDeps;
-  /** Static embedder info — embeddings are always Ollama in this build (DeepSeek has no /embed). */
-  readonly embedderInfo?: { provider: string; model: string; dims: number };
+  /** Embedder settings, live boxes and rebuild job: enables /api/embedder/*. */
+  readonly embedder?: EmbedderSettingsDeps;
   /** Directory containing the built UI (dist/ui). When set, /ui/* serves the SPA. */
   readonly uiDist?: string;
   /**
@@ -437,6 +444,7 @@ export function createApp(deps: HttpDeps): Hono<AppEnv> {
   registerDataManagementRoutes(app, deps);
   registerActionRoutes(app, deps);
   registerClassifierRoutes(app, deps);
+  registerEmbedderRoutes(app, deps);
   registerSourceRoutes(app, deps);
   registerIngestRoute(app, deps);
   registerProviderRoutes(app, deps);
@@ -613,6 +621,8 @@ const HOSTED_GATED_ROUTES: ReadonlyArray<{ method: string; path: string; disposi
   { method: "GET", path: "/api/data/stats", disposition: "LOCAL" },
   { method: "POST", path: "/api/classifier", disposition: "LOCAL" },
   { method: "PUT", path: "/api/classifier/settings", disposition: "LOCAL" },
+  { method: "PUT", path: "/api/embedder/settings", disposition: "LOCAL" },
+  { method: "POST", path: "/api/embedder/test", disposition: "LOCAL" },
   // Single-operator process supervision — starting/stopping the daemon's
   // own reprocess child has no per-tenant meaning, same LOCAL class as the
   // classifier swap above.
@@ -740,7 +750,9 @@ function registerHealthRoute(app: Hono<AppEnv>, deps: HttpDeps): void {
     // not to distinguish "never run" from a five-field block of zeros.
     const jobSnap: JobSnapshot | null = deps.jobSupervisor ? deps.jobSupervisor.snapshot() : null;
     const job = jobSnap && jobSnap.state !== "idle" ? jobSnap : null;
-    return c.json({ status: "ok", service: "nlm-memory", version: pkg.version, warmup: warmupSnapshot(), embedding: laneHealthSnapshot(), embedInflight: inflightSnapshot(), factEmbeddings: factEmbedSnapshot(), corpus, update, job });
+    const embedJobSnap: JobSnapshot | null = deps.embedder ? deps.embedder.jobs.snapshot() : null;
+    const embedJob = embedJobSnap && embedJobSnap.state !== "idle" ? embedJobSnap : null;
+    return c.json({ status: "ok", service: "nlm-memory", version: pkg.version, warmup: warmupSnapshot(), embedding: laneHealthSnapshot(), embedInflight: inflightSnapshot(), factEmbeddings: factEmbedSnapshot(), corpus, update, job, embedJob });
   });
 
   app.get("/api/health/ingest", async (c) => {
@@ -1519,6 +1531,35 @@ function parseSettingsBody(body: unknown): ClassifierSettingsUpdate | string {
   return update;
 }
 
+function registerEmbedderRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
+  const embedder = deps.embedder;
+  app.get("/api/embedder/settings", async (c) => {
+    if (!embedder) return c.json({ error: "embedder settings not wired in this deployment" }, 503);
+    return c.json(await getEmbedderSettings(embedder));
+  });
+
+  app.post("/api/embedder/test", async (c) => {
+    if (!embedder) return c.json({ error: "embedder settings not wired in this deployment" }, 503);
+    const patch = parseLanePatch(await c.req.json().catch(() => null));
+    if (typeof patch === "string") return c.json({ error: patch }, 400);
+    return c.json(await testEmbedder(embedder, patch));
+  });
+
+  app.put("/api/embedder/settings", async (c) => {
+    if (!embedder) return c.json({ error: "embedder settings not wired in this deployment" }, 503);
+    const patch = parseLanePatch(await c.req.json().catch(() => null));
+    if (typeof patch === "string") return c.json({ error: patch }, 400);
+    try {
+      const result = await saveEmbedderSettings(embedder, patch);
+      return c.json(result.body, result.status);
+    } catch (e) {
+      // Settings are persisted and applied before the rebuild job starts, so
+      // the only throw left is the job's own spawn failure.
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    }
+  });
+}
+
 function registerClassifierRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   app.get("/api/classifier/info", (c) => {
     const provider = deps.classifier?.provider ?? "ollama";
@@ -1540,7 +1581,6 @@ function registerClassifierRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
         deepseek: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat"],
         ollama: ["qwen3.5:4b", "qwen3:4b-instruct-2507-q4_K_M", "qwen2.5:3b-instruct", "llama3.2:3b", "mistral:7b"],
       },
-      embedder: deps.embedderInfo ?? { provider: "ollama", model: "nomic-embed-text", dims: 768 },
       tuning: tuningJson(deps.classifier?.tuning ?? resolveClassifierTuning(NO_STORED_SETTINGS, process.env)),
     });
   });

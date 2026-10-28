@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { SettingsSubnav } from "./SettingsSubnav.js";
+import { SourceBadge, type ValueSource } from "../../components/SourceBadge.js";
 import { fmt } from "../../lib/format.js";
 import { useIngestHealth } from "../../lib/ingest-health.js";
 import {
@@ -11,9 +13,7 @@ import {
   type TestResult,
 } from "../../lib/registries.js";
 
-type TuningSource = "setting" | "env" | "default";
-
-interface Tuned<T> { value: T; source: TuningSource }
+interface Tuned<T> { value: T; source: ValueSource }
 
 interface Tuning {
   thinking: Tuned<"off" | "on">;
@@ -49,7 +49,6 @@ interface ClassifierInfo {
   provider: string;
   model: string;
   tuning: Tuning;
-  embedder: { provider: string; model: string; dims: number };
 }
 
 /**
@@ -212,23 +211,14 @@ export function SettingsClassifierPage() {
   const tuningDirty = Object.keys(tuningPatchNow).length > 0;
   const maxTokensIgnored = info?.provider === "ollama";
 
-  const sourceBadge = (field: TuningField) => {
-    if (!info) return null;
-    const source = info.tuning[field].source;
-    return (
-      <>
-        <span className="source-badge" data-source={source}>{source}</span>
-        {source === "setting" && (
-          <button
-            type="button"
-            className="btn small"
-            onClick={() => void putTuning({ [field]: null })}
-            disabled={tuningBusy}
-          >Reset</button>
-        )}
-      </>
+  const sourceBadge = (field: TuningField) =>
+    info && (
+      <SourceBadge
+        source={info.tuning[field].source}
+        onReset={() => void putTuning({ [field]: null })}
+        disabled={tuningBusy}
+      />
     );
-  };
 
   return (
     <div className="page-pad">
@@ -412,15 +402,7 @@ export function SettingsClassifierPage() {
           )}
 
           <h3 className="section-title">Embedder</h3>
-          <dl className="kv-list">
-            <dt className="kv-label">Provider</dt>
-            <dd className="kv-value mono">{info.embedder.provider}</dd>
-            <dt className="kv-label">Model</dt>
-            <dd className="kv-value mono">{info.embedder.model}</dd>
-            <dt className="kv-label">Dimensions</dt>
-            <dd className="kv-value mono">{info.embedder.dims}</dd>
-          </dl>
-          <p className="muted small">Embedder is fixed at build time. Recall vectors must match the index dims, so it isn't hot-swappable. DeepSeek has no embeddings endpoint; Ollama serves both classification (optional) and embedding (always).</p>
+          <p className="muted small">The embedder (provider, model, endpoint and key per lane) is configured on the <Link to="/settings/embedder">Embedder settings</Link> page.</p>
         </>
       )}
     </div>

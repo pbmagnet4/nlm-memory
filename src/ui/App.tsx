@@ -11,6 +11,7 @@ import { SettingsDataPage } from "./pages/settings/Data.js";
 import { SettingsViewsPage } from "./pages/settings/Views.js";
 import { SettingsLabelsPage } from "./pages/settings/Labels.js";
 import { SettingsClassifierPage } from "./pages/settings/Classifier.js";
+import { SettingsEmbedderPage } from "./pages/settings/Embedder.js";
 import { SettingsSourcesPage } from "./pages/settings/Sources.js";
 import { SettingsProvidersPage } from "./pages/settings/Providers.js";
 import { StubPage } from "./pages/Stub.js";
@@ -42,6 +43,7 @@ export function App() {
           <Route path="/settings/providers"  element={<SettingsProvidersPage />} />
           <Route path="/settings/labels"     element={<SettingsLabelsPage />} />
           <Route path="/settings/classifier" element={<SettingsClassifierPage />} />
+          <Route path="/settings/embedder"   element={<SettingsEmbedderPage />} />
           <Route path="/settings/data"       element={<SettingsDataPage />} />
           <Route path="/settings/views"      element={<SettingsViewsPage />} />
           <Route path="*"                    element={<StubPage page="not found" />} />

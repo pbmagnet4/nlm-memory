@@ -82,6 +82,7 @@ describe("JobSupervisor onEvent -> fireAlert(buildJobAlertEvent(...)) wiring", (
       const events: JobSupervisorEvent[] = [];
 
       const supervisor = new JobSupervisor({
+        job: "reprocess",
         spawnChild: fakeSpawner(children),
         clock,
         stallMinutes: 20,
@@ -122,6 +123,7 @@ describe("JobSupervisor onEvent -> fireAlert(buildJobAlertEvent(...)) wiring", (
       const clock = new FakeClock();
 
       const supervisor = new JobSupervisor({
+        job: "reprocess",
         spawnChild: fakeSpawner(children),
         clock,
         maxRestartsWithoutProgress: 3,
