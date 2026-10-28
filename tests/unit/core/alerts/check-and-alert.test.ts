@@ -151,6 +151,7 @@ describe("checkIngestLagAndAlert", () => {
   const report = (lagging: boolean): IngestLagReport => ({
     adapters: {},
     last_success_at: null,
+    last_progress_at: null,
     timeouts_1h: 0,
     errors_1h: 0,
     lagging,

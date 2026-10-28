@@ -21,7 +21,7 @@
  *     the file is permanently skipped until new content arrives.
  */
 
-import { statSync } from "node:fs";
+import { accessSync, constants, statSync } from "node:fs";
 import type Database from "better-sqlite3";
 import type { Pool } from "pg";
 import type {
@@ -29,6 +29,7 @@ import type {
   SourceStat,
   TranscriptAdapter,
 } from "@ports/transcript-adapter.js";
+import { recordIngestProgress } from "@core/health/classify-outcomes.js";
 
 export interface ScanResult {
   readonly chunk: SessionChunk;
@@ -47,6 +48,21 @@ function statSource(adapter: TranscriptAdapter, source: string): SourceStat | nu
     return statSync(source);
   } catch {
     return null;
+  }
+}
+
+/**
+ * Adapters return null both for a transcript with nothing to classify and for
+ * one they could not read. Only the first is recorded as seen; an unreadable
+ * source is retried on the next tick.
+ */
+function isReadable(adapter: TranscriptAdapter, source: string): boolean {
+  if (adapter.stat) return adapter.stat(source) !== null;
+  try {
+    accessSync(source, constants.R_OK);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -97,7 +113,13 @@ export async function scanOnce(
     }
 
     const chunk = await adapter.parseSession(path);
-    if (!chunk) continue;
+    if (!chunk) {
+      if (isReadable(adapter, path)) {
+        recordSkippedLowConfidence(db, adapter.name, path, st.size);
+        recordIngestProgress();
+      }
+      continue;
+    }
     const supersedes =
       prior?.session_id && prior.session_id !== chunk.id ? prior.session_id : null;
     out.push({ chunk, supersedes, fileSize: st.size, resumed: prior !== undefined });
@@ -197,7 +219,13 @@ export async function scanOncePg(
     }
 
     const chunk = await adapter.parseSession(sourcePath);
-    if (!chunk) continue;
+    if (!chunk) {
+      if (isReadable(adapter, sourcePath)) {
+        await recordSkippedLowConfidencePg(pool, adapter.name, sourcePath, st.size);
+        recordIngestProgress();
+      }
+      continue;
+    }
 
     const supersedes =
       state?.sessionId && state.sessionId !== chunk.id ? state.sessionId : null;

@@ -33,6 +33,7 @@ export interface AdapterLag {
 export interface IngestLagReport {
   readonly adapters: Readonly<Record<string, AdapterLag>>;
   readonly last_success_at: string | null;
+  readonly last_progress_at: string | null;
   readonly timeouts_1h: number;
   readonly errors_1h: number;
   readonly lagging: boolean;
@@ -151,7 +152,7 @@ export async function computeIngestLag(deps: IngestLagDeps, now: number = Date.n
 
   const outcomes = classifyOutcomesSnapshot(now);
   const oldestAgeMs = oldestMs === null ? null : now - oldestMs;
-  const stalled = now - (outcomes.lastSuccessAt ?? outcomes.startedAt) > OUTCOME_WINDOW_MS;
+  const stalled = now - (outcomes.lastProgressAt ?? outcomes.startedAt) > OUTCOME_WINDOW_MS;
   const lagging =
     (oldestAgeMs !== null && oldestAgeMs > deps.thresholdHours * 3_600_000) || (totalPending > 0 && stalled);
   const summary =
@@ -162,6 +163,7 @@ export async function computeIngestLag(deps: IngestLagDeps, now: number = Date.n
   return {
     adapters,
     last_success_at: outcomes.lastSuccessAt === null ? null : new Date(outcomes.lastSuccessAt).toISOString(),
+    last_progress_at: outcomes.lastProgressAt === null ? null : new Date(outcomes.lastProgressAt).toISOString(),
     timeouts_1h: outcomes.timeouts1h,
     errors_1h: outcomes.errors1h,
     lagging,

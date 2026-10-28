@@ -6,6 +6,7 @@ import type { TranscriptAdapter } from "../../../../src/ports/transcript-adapter
 import {
   recordClassifyFailure,
   recordClassifySuccess,
+  recordIngestProgress,
   resetClassifyOutcomes,
 } from "../../../../src/core/health/classify-outcomes.js";
 import {
@@ -62,6 +63,7 @@ describe("computeIngestLag", () => {
     const parkedGrown = file("parked-grown", 50, 4 * HOUR);
     const active = file("active", 5, 60_000);
     recordClassifySuccess(NOW - 1000);
+    recordIngestProgress(NOW - 1000);
     const report = await computeIngestLag(
       deps(
         [adapter("claude-code", [unseen, grown, done, parked, parkedGrown, active])],
@@ -116,33 +118,43 @@ describe("computeIngestLag", () => {
 
   describe("lagging thresholds", () => {
     it("is not lagging when the oldest pending file is exactly at the threshold", async () => {
-      recordClassifySuccess(NOW - 1000);
+      recordIngestProgress(NOW - 1000);
       const f = file("f", 1, 6 * HOUR);
       expect((await computeIngestLag(deps([adapter("pi", [f])]), NOW)).lagging).toBe(false);
     });
 
     it("is lagging when the oldest pending file is past the threshold", async () => {
-      recordClassifySuccess(NOW - 1000);
+      recordIngestProgress(NOW - 1000);
       const f = file("f", 1, 6 * HOUR + 1000);
       expect((await computeIngestLag(deps([adapter("pi", [f])]), NOW)).lagging).toBe(true);
     });
 
     it("honors a custom threshold", async () => {
-      recordClassifySuccess(NOW - 1000);
+      recordIngestProgress(NOW - 1000);
       const f = file("f", 1, 2 * HOUR);
       expect((await computeIngestLag(deps([adapter("pi", [f])], {}, 1), NOW)).lagging).toBe(true);
     });
 
-    it("is lagging with pending files and no success for over an hour", async () => {
-      recordClassifySuccess(NOW - HOUR - 1000);
+    it("is lagging with pending files and no progress for over an hour", async () => {
+      recordIngestProgress(NOW - HOUR - 1000);
       const f = file("f", 1, 1 * HOUR);
       expect((await computeIngestLag(deps([adapter("pi", [f])]), NOW)).lagging).toBe(true);
     });
 
-    it("is not lagging when the last success is within the hour", async () => {
-      recordClassifySuccess(NOW - HOUR + 1000);
+    it("is not lagging when the last progress is within the hour", async () => {
+      recordIngestProgress(NOW - HOUR + 1000);
       const f = file("f", 1, 1 * HOUR);
       expect((await computeIngestLag(deps([adapter("pi", [f])]), NOW)).lagging).toBe(false);
+    });
+
+    it("does not read gate-skip-only activity as stalled", async () => {
+      recordClassifySuccess(NOW - 3 * HOUR);
+      recordIngestProgress(NOW - 60_000);
+      const f = file("f", 1, 1 * HOUR);
+      const report = await computeIngestLag(deps([adapter("pi", [f])]), NOW);
+      expect(report.lagging).toBe(false);
+      expect(report.last_progress_at).toBe(new Date(NOW - 60_000).toISOString());
+      expect(report.last_success_at).toBe(new Date(NOW - 3 * HOUR).toISOString());
     });
 
     it("gives a freshly started daemon an hour before 'no success' counts", async () => {

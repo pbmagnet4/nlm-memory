@@ -5,6 +5,7 @@ import type { IngestLagReport } from "../../../src/core/health/ingest-lag.js";
 const REPORT: IngestLagReport = {
   adapters: { pi: { pending: 2, parked: 1, oldest_pending_at: "2026-10-24T00:00:00.000Z" } },
   last_success_at: null,
+  last_progress_at: null,
   timeouts_1h: 3,
   errors_1h: 0,
   lagging: true,

@@ -46,7 +46,7 @@ import { runCheapChecksOnSqlite } from "@core/integrity/check-invariants.js";
 import { classifyAdaptive } from "@core/classifier/hierarchical-classify.js";
 import { isTransientLLMError } from "@core/classifier/transient-error.js";
 import { appendShadowLine, gatedClassification, type GateVerdict, type IngestGateMode } from "@core/classifier/ingest-gate.js";
-import { recordClassifyFailure, recordClassifySuccess } from "@core/health/classify-outcomes.js";
+import { recordClassifyFailure, recordClassifySuccess, recordIngestProgress } from "@core/health/classify-outcomes.js";
 import { TimeoutError } from "@core/util/with-timeout.js";
 import { bindSessionToWorkstream } from "@core/workstream/bind.js";
 import { parseWorkTopics, aliasToLabelMap } from "@core/workstream/work-topics.js";
@@ -322,6 +322,7 @@ export class ScanScheduler {
           } else {
             recordClassified(sqliteDb!, adapter.name, chunk.sourcePath, chunk.id, fileSize);
           }
+          recordIngestProgress();
           deferred += 1;
           continue;
         }
@@ -381,6 +382,7 @@ export class ScanScheduler {
           } else {
             recordSkippedLowConfidence(sqliteDb!, adapter.name, chunk.sourcePath, fileSize);
           }
+          recordIngestProgress();
           this.opts.logger(
             `[scheduler] low-confidence (${classification.confidence} < ${this.opts.confidenceFloor}) for ${chunk.id} - skipping until file grows`,
           );
@@ -455,6 +457,7 @@ export class ScanScheduler {
           } else {
             recordClassified(sqliteDb!, adapter.name, chunk.sourcePath, chunk.id, fileSize);
           }
+          recordIngestProgress();
           inserted += 1;
           this.deferrals.delete(stateKey);
           if (!gated) this.classifiedHash.set(stateKey, hash);
