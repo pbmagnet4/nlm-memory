@@ -3,7 +3,7 @@
  * a real SqliteSessionStore + RecallService. No network, no port binding.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -1034,10 +1034,13 @@ describe("HTTP UI gate", () => {
   let savedNodeEnv: string | undefined;
   let savedToken: string | undefined;
   let savedUiAuth: string | undefined;
-  const uiDist = resolve(__dirname, "../../dist/ui");
 
   beforeEach(async () => {
     tmp = mkdtempSync(join(tmpdir(), "nlm-ui-gate-"));
+    // A built SPA stand-in: the gate runs on a clean tree, before any `npm run build`.
+    const uiDist = join(tmp, "ui");
+    mkdirSync(uiDist);
+    writeFileSync(join(uiDist, "index.html"), "<!doctype html><title>nlm</title>");
     storage = SqliteStorage.create({
       dbPath: join(tmp, "canonical.sqlite"),
       migrationsDir: MIGRATIONS_DIR,
@@ -1199,10 +1202,13 @@ describe("HTTP gate — default off (NLM_UI_AUTH unset)", () => {
   let savedNodeEnv: string | undefined;
   let savedToken: string | undefined;
   let savedUiAuth: string | undefined;
-  const uiDist = resolve(__dirname, "../../dist/ui");
 
   beforeEach(async () => {
     tmp = mkdtempSync(join(tmpdir(), "nlm-default-"));
+    // A built SPA stand-in: the gate runs on a clean tree, before any `npm run build`.
+    const uiDist = join(tmp, "ui");
+    mkdirSync(uiDist);
+    writeFileSync(join(uiDist, "index.html"), "<!doctype html><title>nlm</title>");
     storage = SqliteStorage.create({
       dbPath: join(tmp, "canonical.sqlite"),
       migrationsDir: MIGRATIONS_DIR,
