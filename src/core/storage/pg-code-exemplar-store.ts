@@ -22,7 +22,6 @@ import type { CodeExemplar, CodeExemplarHit, CodeExemplarInput, CodeExemplarOutc
 import { exemplarId } from "./sqlite-code-exemplar-store.js";
 import { tenantClausePg } from "@core/tenancy/tenant-clause.js";
 
-const VEC_DIM = 768;
 
 // Read column list stays scope-free while stamping is write-only (#348
 // Stage A); reads gain scope in the enforcement task.
@@ -121,9 +120,6 @@ export class PgCodeExemplarStore implements CodeExemplarStore {
    * another tenant's exemplar must never fall through to a write.
    */
   async upsertEmbedding(tenantId: string, exemplarId: string, vector: Float32Array): Promise<void> {
-    if (vector.length !== VEC_DIM) {
-      throw new Error(`code exemplar embeddings must be ${VEC_DIM}-dim (got ${vector.length})`);
-    }
     const tc = tenantClausePg(tenantId, 2);
     const owned = await this.pool.query<{ id: string }>(
       `SELECT id FROM code_exemplars WHERE id = $1 AND ${tc.sql}`, [exemplarId, tc.param],

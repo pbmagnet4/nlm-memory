@@ -117,6 +117,7 @@ import { runSetup } from "../install/setup.js";
 import { runParity } from "./classify-parity.js";
 import { reembedCorpus } from "../core/embedding/embed-backfill.js";
 import { reembedCorpusPg } from "../core/embedding/pg-embed-backfill.js";
+import { backfillExemplarEmbeddingsPg } from "../core/exemplars/pg-embed-backfill.js";
 import { backfillExemplarEmbeddings } from "../core/exemplars/embed-backfill.js";
 import { backfillFactEmbeddings } from "../core/facts/embed-backfill.js";
 import { MAX_CHUNK_EMBED_ATTEMPTS, stuckChunksOnPg, stuckChunksOnSqlite, sweepChunkEmbeddings, type StuckChunk } from "../core/embedding/chunk-retry.js";
@@ -855,6 +856,9 @@ program
             dbPath: dbPath(),
             embedder: codeEmb,
             store: storage.exemplars,
+            provider: lanes.code.provider,
+            model: lanes.code.model,
+            onStale: "skip",
           });
           if (report.succeeded > 0 || report.failed > 0) {
             console.error(
@@ -1518,9 +1522,9 @@ program
   .description("Re-embed every session into session_embedding_chunks (chunk + max-pool)")
   .option("-l, --limit <n>", "session cap (default: all)", (v) => Number.parseInt(v, 10))
   .option("--state <path>", "resume state file (default ~/.nlm/embed_reembed.state)")
-  .option("--exemplars", "instead: embed code_exemplars rows missing a vector (repairs dropped capture embeds)")
+  .option("--exemplars", "instead: embed code_exemplars rows missing a vector; rebuilds the code vectors when the code embedder changed")
   .option("--facts", "instead: embed active facts missing a vector (repairs dropped ingest embeds)")
-  .option("--dry-run", "report dim mismatch and what would be dropped without writing")
+  .option("--dry-run", "report dim mismatch and what would be dropped without writing (also with --exemplars)")
   .option("-v, --verbose", "per-session progress on stderr")
   .action(async (opts) => {
     if (opts.facts) {
@@ -1547,13 +1551,16 @@ program
       return;
     }
     if (opts.exemplars) {
-      const { storage, codeEmbedder } = await buildStack();
+      const { storage, codeEmbedder, lanes } = await buildStack();
       try {
-        const report = await backfillExemplarEmbeddings({
+        const laneOpts = {
           tenantId: DEFAULT_TEAM_ID,
-          dbPath: dbPath(),
           embedder: codeEmbedder,
           store: storage.exemplars,
+          provider: lanes.code.provider,
+          model: lanes.code.model,
+          onStale: "rebuild" as const,
+          ...(opts.dryRun ? { dryRun: true } : {}),
           ...(opts.limit ? { limit: opts.limit } : {}),
           ...(opts.verbose
             ? {
@@ -1562,7 +1569,10 @@ program
                 },
               }
             : {}),
-        });
+        };
+        const report = storage instanceof PgStorage
+          ? await backfillExemplarEmbeddingsPg({ ...laneOpts, pool: storage.pgPool() })
+          : await backfillExemplarEmbeddings({ ...laneOpts, dbPath: dbPath() });
         process.stdout.write(JSON.stringify(report, null, 2) + "\n");
       } finally {
         await storage.close();

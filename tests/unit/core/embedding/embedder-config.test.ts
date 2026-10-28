@@ -67,13 +67,21 @@ describe("env API key scope", () => {
 describe("laneEnv", () => {
   it("blanks the key for a lane with none so the child never inherits the daemon's", () => {
     const v = laneValues(resolveEmbedderLane("prose", { ...NO_STORED_EMBEDDER, baseUrl: "http://elsewhere/v1" }, PROD_ENV));
-    expect(laneEnv(v)["NLM_EMBED_API_KEY"]).toBe("");
+    expect(laneEnv("prose", v)["NLM_EMBED_API_KEY"]).toBe("");
   });
 
   it("round-trips the effective config into the env buildEmbedder reads, key included", () => {
     const values = laneValues(resolveEmbedderLane("prose", NO_STORED_EMBEDDER, PROD_ENV));
-    const env = laneEnv(values);
+    const env = laneEnv("prose", values);
     expect(env).toEqual(PROD_ENV);
     expect(laneValues(resolveEmbedderLane("prose", NO_STORED_EMBEDDER, env))).toEqual(values);
+  });
+
+  it("the code lane carries its model in NLM_CODE_EMBED_MODEL and never NLM_EMBED_MODEL", () => {
+    const values = laneValues(resolveEmbedderLane("code", { ...NO_STORED_EMBEDDER, model: "my-code-model" }, PROD_ENV));
+    const env = laneEnv("code", values);
+    expect(env["NLM_CODE_EMBED_MODEL"]).toBe("my-code-model");
+    expect(env).not.toHaveProperty("NLM_EMBED_MODEL");
+    expect(laneValues(resolveEmbedderLane("code", NO_STORED_EMBEDDER, env)).model).toBe("my-code-model");
   });
 });

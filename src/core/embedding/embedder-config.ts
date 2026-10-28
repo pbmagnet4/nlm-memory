@@ -105,9 +105,10 @@ export function laneValues(s: EmbedderLaneSettings): EmbedderLaneValues {
 }
 
 /** Env a child process needs to build this lane's embedder (read by buildEmbedder). Contains the API key: never log it. */
-export function laneEnv(v: EmbedderLaneValues): Record<string, string> {
+export function laneEnv(lane: EmbeddingLane, v: EmbedderLaneValues): Record<string, string> {
   // An empty key overrides any NLM_EMBED_API_KEY the child would inherit from the daemon env.
-  const env: Record<string, string> = { NLM_EMBED_PROVIDER: v.provider, NLM_EMBED_MODEL: v.model, NLM_EMBED_API_KEY: v.apiKey ?? "" };
+  const env: Record<string, string> = { NLM_EMBED_PROVIDER: v.provider, NLM_EMBED_API_KEY: v.apiKey ?? "" };
+  env[lane === "code" ? "NLM_CODE_EMBED_MODEL" : "NLM_EMBED_MODEL"] = v.model;
   if (v.baseUrl) env[v.provider === "ollama" ? "NLM_OLLAMA_URL" : "NLM_EMBED_BASE_URL"] = v.baseUrl;
   return env;
 }
