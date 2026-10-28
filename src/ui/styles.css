@@ -2669,6 +2669,8 @@ a.session-label:hover { color: var(--accent); }
 
 /* Settings - Providers */
 .card-wide-input input { min-width: 28rem; }
+.form-input-wide { min-width: 28rem; }
+.inline-link { color: var(--accent); text-decoration: underline; }
 
 /* Data */
 .card-data-validated { border-color: var(--accent); padding: 0.75rem 1rem; margin-top: 0.75rem; }

@@ -179,28 +179,28 @@ export function SettingsEmbedderPage() {
               {l.providers.map((p) => <option key={p} value={p}>{p}</option>)}
             </select>
           ) : (
-            <span className="mono">{l.provider.value}</span>
+            <span className="kv-value mono">{l.provider.value}</span>
           )}
           <SourceBadge source={l.provider.source} onReset={l.provider_model_editable ? reset("provider") : undefined} disabled={disabled} />
         </div>
         <div className="form-row">
           <label className="form-label">Base URL</label>
-          <input className="form-input form-input-inline" value={d.base_url} onChange={(e) => setDraft({ ...d, base_url: e.target.value })} disabled={disabled} placeholder="http://host:port/v1" />
+          <input className="form-input form-input-inline form-input-wide" value={d.base_url} onChange={(e) => setDraft({ ...d, base_url: e.target.value })} disabled={disabled} placeholder="http://host:port/v1" />
           <SourceBadge source={l.base_url.source} onReset={reset("base_url")} disabled={disabled} />
         </div>
         <div className="form-row">
           <label className="form-label">Model</label>
           {l.provider_model_editable ? (
-            <input className="form-input form-input-inline" value={d.model} onChange={(e) => setDraft({ ...d, model: e.target.value })} disabled={disabled} />
+            <input className="form-input form-input-inline form-input-wide" value={d.model} onChange={(e) => setDraft({ ...d, model: e.target.value })} disabled={disabled} />
           ) : (
-            <span className="mono">{l.model.value}</span>
+            <span className="kv-value mono">{l.model.value}</span>
           )}
           <SourceBadge source={l.model.source} onReset={l.provider_model_editable ? reset("model") : undefined} disabled={disabled} />
         </div>
         {!l.provider_model_editable && <p className="muted small">{CODE_NOTE}</p>}
         <div className="form-row">
           <label className="form-label">API key</label>
-          <span className="mono">{l.api_key_set ? "set" : "not set"}</span>
+          <span className="kv-value mono">{l.api_key_set ? "set" : "not set"}</span>
           <SourceBadge source={l.api_key_source} onReset={reset("api_key")} disabled={disabled} />
           <input
             className="form-input form-input-inline"
