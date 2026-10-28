@@ -40,7 +40,7 @@ describe("property recall surfaces", () => {
     expect((await recallFactsHandler(deps, "team_local", { subject: "api", property: "missing" })).isError).toBe(true);
   });
   it("labels inferred associations with their source in MCP and HTTP output", async () => {
-    vi.stubEnv("NLM_PROPERTY_INFERENCE", "1");
+    vi.stubEnv("NLM_PROPERTY_INFERENCE", "1"); vi.stubEnv("NLM_SESSION_PROPERTY_INFERENCE", "1");
     const body = "[user] NxtSEO keeps a draft queue.";
     const quote = "NxtSEO keeps a draft queue";
     await storage.sessions.insertSession("team_local", { ...anchorRecord(body, "s2"), entities: ["NxtSEO"] }, null, null, { factStore: storage.facts, facts: [

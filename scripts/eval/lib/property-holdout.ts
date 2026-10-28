@@ -10,9 +10,9 @@ import type { Fact } from "../../../src/shared/types.js";
 import { clean } from "./property-evidence.js";
 import { factCard, sessionCard, type Card } from "./property-holdout-cards.js";
 import {
-  assertSnapshot, fileHash, pathsIn, privateDirectory, readJson, sha256, writePrivate, SEED, WINDOW_RULE, type Manifest,
+  assertSnapshot, fileHash, LANES, pathsIn, privateDirectory, readJson, sha256, writePrivate, SEED, WINDOW_RULE, type Manifest,
 } from "./property-holdout-io.js";
-import { factMatches, sessionMatches, type FactStratum, type SessionStratum } from "./property-holdout-strata.js";
+import { sessionMatches, type SessionStratum } from "./property-holdout-strata.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = join(here, "..", "..", "..");
@@ -21,7 +21,7 @@ const STRATA_PATH = join(here, "property-holdout-strata.ts");
 const CARDS_PATH = join(here, "property-holdout-cards.ts");
 const MINORITY_RUNTIMES = new Set(["codex", "pi", "opencode"]);
 const SESSION_TARGETS: Record<SessionStratum, number> = { C: 30, D: 100, E: 30 };
-const QUOTA = { factMinorityRuntime: 15, sessionMinorityRuntime: 30, factRepoScopes: 10 } as const;
+const SESSION_MINORITY_QUOTA = 30;
 const ABSTENTION_CARDS = 20;
 
 export const orderKey = (purpose: string, id: string): string => sha256(`${SEED}:${purpose}${id}`);
@@ -152,10 +152,11 @@ export function runCandidate(db: Database.Database, catalog: readonly MemoryProp
 
 // ---- Freeze (§4 steps 1-3) --------------------------------------------------
 
-export interface FreezeOptions { snapshot: string; catalogPath: string; dir: string; tenant: string; sampleFiles: readonly string[]; now: Date; candidate: Candidate; live?: string }
+export interface FreezeOptions { snapshot: string; catalogPath: string; dir: string; tenant: string; sampleFiles: readonly string[]; now: Date; candidate: Candidate; lanes?: readonly string[]; live?: string }
 
 export function freezeHoldout(o: FreezeOptions): Manifest {
   const p = pathsIn(o.dir);
+  if ((o.lanes ?? LANES).join() !== LANES.join()) throw new Error(`unsupported lanes: only ${LANES.join(", ")} is supported`);
   if (existsSync(p.manifest)) throw new Error("manifest.json already exists: a frozen run is never refrozen");
   assertSnapshot(o.snapshot, o.live);
   const catalog = loadCatalog(o.catalogPath);
@@ -167,7 +168,7 @@ export function freezeHoldout(o: FreezeOptions): Manifest {
   writePrivate(p.catalog, catalog);
   const freezeAt = o.now.toISOString();
   const manifest: Manifest = {
-    seed: SEED, freezeAt,
+    seed: SEED, freezeAt, lanes: LANES,
     windowCloseRule: { ...WINDOW_RULE, closesNoLaterThan: new Date(o.now.getTime() + WINDOW_RULE.maxDays * 86_400_000).toISOString() },
     candidate: o.candidate, catalogHash: catalogHash(catalog), strataHash: fileHash(STRATA_PATH), cardGeneratorHash: fileHash(CARDS_PATH), l2PromptHash: fileHash(L2_PROMPT_PATH),
     exclusions: { hash: exclusionsHash, sessions: exclusions.sessions.length, sourceIdentities: exclusions.sourceIdentities.length, assertionKeys: exclusions.assertionKeys.length },
@@ -191,13 +192,13 @@ export function verifyFrozen(dir: string, catalog: readonly MemoryProperty[], ca
   return { manifest, exclusions: readJson<Exclusions>(p.exclusions) };
 }
 
-/** The only window-census path: returns the admissible proposal count and nothing else. */
-export function countProposals(snapshot: string, catalogPath: string, dir: string, tenant: string, candidate: Candidate, live?: string): number {
+/** The only window-census path: returns the labellable session references available across the strata targets and nothing else. */
+export function countSessionRefs(snapshot: string, catalogPath: string, dir: string, tenant: string, candidate: Candidate, live?: string): number {
   assertSnapshot(snapshot, live);
   const catalog = loadCatalog(catalogPath);
   const { manifest, exclusions } = verifyFrozen(dir, catalog, candidate);
   const db = new Database(snapshot, { readonly: true, fileMustExist: true });
-  try { return runCandidate(db, catalog, tenant, manifest.freezeAt, exclusions).proposals.length; } finally { db.close(); }
+  try { return availableSessionRefs(sessionPoolOf(runCandidate(db, catalog, tenant, manifest.freezeAt, exclusions))); } finally { db.close(); }
 }
 
 // ---- Draw (§2, §3, §4 step 4) -----------------------------------------------
@@ -220,6 +221,20 @@ function takeRefs<T extends { refs: number }>(pool: readonly T[], target: number
   return taken;
 }
 
+interface PoolEntry { id: string; slugs: string[]; refs: number; stratum: SessionStratum; overlapping: boolean }
+
+function sessionPoolOf(run: CandidateRun): PoolEntry[] {
+  return [...run.refsBySession].map(([id, slugs]) => {
+    const s = run.sessions.get(id)!;
+    const matches = sessionMatches({ session: { skill: s.skill, label: s.label, body: s.body ?? "" }, hasRepositoryOrExplicit: run.hasRepositoryOrExplicit.has(id) });
+    return { id, slugs, refs: slugs.length, stratum: matches[0]!, overlapping: matches.length > 2 };
+  });
+}
+/** References a labeller can reach: each stratum contributes at most its target. */
+function availableSessionRefs(pool: readonly PoolEntry[]): number {
+  return (Object.keys(SESSION_TARGETS) as SessionStratum[]).reduce((n, stratum) => n + Math.min(SESSION_TARGETS[stratum], pool.filter((e) => e.stratum === stratum).reduce((m, e) => m + e.refs, 0)), 0);
+}
+
 export function drawHoldout(o: DrawOptions): Manifest {
   const p = pathsIn(o.dir);
   assertSnapshot(o.snapshot, o.live);
@@ -229,8 +244,10 @@ export function drawHoldout(o: DrawOptions): Manifest {
   const db = new Database(o.snapshot, { readonly: true, fileMustExist: true });
   let run: CandidateRun;
   try { run = runCandidate(db, catalog, o.tenant, manifest.freezeAt, exclusions); } finally { db.close(); }
-  const closed = run.proposals.length >= manifest.windowCloseRule.minProposals || o.now.getTime() >= Date.parse(manifest.windowCloseRule.closesNoLaterThan);
-  if (!closed) throw new Error(`window still open: ${run.proposals.length} of ${manifest.windowCloseRule.minProposals} proposals, closes no later than ${manifest.windowCloseRule.closesNoLaterThan}`);
+  const sessionPool = sessionPoolOf(run);
+  const available = availableSessionRefs(sessionPool);
+  const closed = available >= manifest.windowCloseRule.minSessionRefs || o.now.getTime() >= Date.parse(manifest.windowCloseRule.closesNoLaterThan);
+  if (!closed) throw new Error(`window still open: ${available} of ${manifest.windowCloseRule.minSessionRefs} session references, closes no later than ${manifest.windowCloseRule.closesNoLaterThan}`);
 
   const bodyOf = (id: string): string => run.sessions.get(id)?.body ?? "";
   const sessionOf = (id: string) => { const s = run.sessions.get(id)!; return { skill: s.skill, label: s.label, body: s.body ?? "" }; };
@@ -238,28 +255,12 @@ export function drawHoldout(o: DrawOptions): Manifest {
   const drafts: Draft[] = [];
   const repoOf = (id: string) => run.repoScope.get(id) ?? "unknown";
 
-  const overlap: Record<string, number> = {};
-  const factStrata: Record<string, number> = { A: 0, B: 0, C: 0, E: 0 };
-  for (const f of run.proposals) {
-    const matches = factMatches({ quote: f.quote, value: f.value, session: sessionOf(f.sessionId) }, catalog);
-    const stratum: FactStratum = matches[0]!;
-    factStrata[stratum]!++;
-    if (matches.length > 2) overlap["fact"] = (overlap["fact"] ?? 0) + 1;
-    const s = run.sessions.get(f.sessionId)!;
-    drafts.push({ key: `fact:${f.id}`, entry: { type: "fact", lane: "fact", stratum, sourceId: f.sessionId, sourceHash: sha256(bodyOf(f.sessionId)), runtime: s.runtime, repoScope: repoOf(f.sessionId), proposed: [f.slug] },
-      card: (id) => factCard(id, { ...f, body: bodyOf(f.sessionId), runtime: s.runtime }, catalog) });
-  }
-
-  const sessionPool = [...run.refsBySession].map(([id, slugs]) => {
-    const matches = sessionMatches({ session: sessionOf(id), hasRepositoryOrExplicit: run.hasRepositoryOrExplicit.has(id) });
-    if (matches.length > 2) overlap["session"] = (overlap["session"] ?? 0) + 1;
-    return { id, slugs, refs: slugs.length, stratum: matches[0]! };
-  });
+  const overlap: Record<string, number> = { session: sessionPool.filter((x) => x.overlapping).length };
   const sessionPopulation: Record<string, number> = { C: 0, D: 0, E: 0 };
   for (const s of sessionPool) sessionPopulation[s.stratum]! += s.refs;
   const shortfalls: Predictions["shortfalls"] = [];
   const minority = (id: string) => MINORITY_RUNTIMES.has(runtimeFamily(run.sessions.get(id)!.runtime));
-  const picks: Record<string, typeof sessionPool> = {};
+  const picks: Record<string, PoolEntry[]> = {};
   for (const stratum of ["C", "D", "E"] as const) {
     const pool = ordered(sessionPool.filter((s) => s.stratum === stratum), (s) => s.id, "session:");
     picks[stratum] = stratum === "D"
@@ -272,7 +273,7 @@ export function drawHoldout(o: DrawOptions): Manifest {
   for (const stratum of ["D", "E", "C"] as const) {
     const chosen = new Set(picks[stratum]!.map((s) => s.id));
     const spare = ordered(sessionPool.filter((s) => s.stratum === stratum && !chosen.has(s.id) && minority(s.id)), (s) => s.id, "session:");
-    for (let i = picks[stratum]!.length - 1; i >= 0 && selectedMinority < QUOTA.sessionMinorityRuntime && spare.length > 0; i--) {
+    for (let i = picks[stratum]!.length - 1; i >= 0 && selectedMinority < SESSION_MINORITY_QUOTA && spare.length > 0; i--) {
       if (minority(picks[stratum]![i]!.id)) continue;
       picks[stratum]![i] = spare.shift()!; selectedMinority++;
     }
@@ -299,23 +300,15 @@ export function drawHoldout(o: DrawOptions): Manifest {
   });
   const cardsHash = writePrivate(p.cards, { seed: SEED, cards });
 
-  const factEntries = Object.values(entries).filter((e) => e.lane === "fact");
-  const sessionEntries = Object.values(entries).filter((e) => e.type === "session");
-  const flags: string[] = [];
-  if (new Set(factEntries.map((e) => runtimeFamily(e.runtime))).size < 2) flags.push("fewer than two runtimes in the fact census (voids the run)");
-  const quota = (required: number, actual: number) => ({ required, actual, met: actual >= required });
-  const population = { eligibleFacts: run.eligibleFacts, factProposals: factStrata, sessionsWithEntities: run.sessionsWithEntities, sessionRefs: sessionPopulation };
+  const minorityCards = Object.values(entries).filter((e) => e.type === "session" && MINORITY_RUNTIMES.has(runtimeFamily(e.runtime))).length;
+  const population = { eligibleFacts: run.eligibleFacts, sessionsWithEntities: run.sessionsWithEntities, sessionRefs: sessionPopulation };
   const predictions: Predictions = {
     seed: SEED, cards: entries, population,
-    quotas: {
-      factMinorityRuntime: quota(QUOTA.factMinorityRuntime, factEntries.filter((e) => MINORITY_RUNTIMES.has(runtimeFamily(e.runtime))).length),
-      sessionMinorityRuntime: quota(QUOTA.sessionMinorityRuntime, sessionEntries.filter((e) => MINORITY_RUNTIMES.has(runtimeFamily(e.runtime))).length),
-      factRepoScopes: quota(QUOTA.factRepoScopes, new Set(factEntries.map((e) => e.repoScope).filter((r) => r !== "unknown")).size),
-    },
+    quotas: { sessionMinorityRuntime: { required: SESSION_MINORITY_QUOTA, actual: minorityCards, met: minorityCards >= SESSION_MINORITY_QUOTA } },
     overlap, shortfalls,
   };
   const predictionsHash = writePrivate(p.predictions, predictions);
-  const drawn: Manifest = { ...manifest, draw: { drawnAt: o.now.toISOString(), cardsHash, predictionsHash, snapshot: { path: o.snapshot, bytes: statSync(o.snapshot).size }, population, flags } };
+  const drawn: Manifest = { ...manifest, draw: { drawnAt: o.now.toISOString(), cardsHash, predictionsHash, snapshot: { path: o.snapshot, bytes: statSync(o.snapshot).size }, population, flags: [] } };
   writePrivate(p.manifest, drawn);
   return drawn;
 }

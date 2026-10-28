@@ -20,10 +20,11 @@ export function runPropertyMemoryContract(h: { sql(s: Storage, sql: string, para
       sourceSessionId: session, sourceQuote: null, createdAt: "2026-01-01T00:00:00Z", confidence: 1, supersededBy: null,
       ...(slug ? { property: { slug, source: "explicit", evidence: "test task" } } : {}) });
     const ingest = async (id: string, facts: readonly Fact[]) => h.ingest(storage, anchorRecord("mixed project conversation", id), facts);
-    beforeEach(async () => { vi.stubEnv("NLM_PROPERTY_ASSOCIATIONS", "1"); vi.stubEnv("NLM_PROPERTY_INFERENCE", "1"); storage = await h.setup(); await storage.properties.import(tenant, catalog); });
+    beforeEach(async () => { vi.stubEnv("NLM_PROPERTY_ASSOCIATIONS", "1"); vi.stubEnv("NLM_PROPERTY_INFERENCE", "1"); vi.stubEnv("NLM_SESSION_PROPERTY_INFERENCE", "1"); storage = await h.setup(); await storage.properties.import(tenant, catalog); });
     afterEach(async () => { vi.unstubAllEnvs(); await h.close(storage); });
     it("keeps unvalidated inference disabled while explicit associations remain usable", async () => {
       vi.stubEnv("NLM_PROPERTY_INFERENCE", "0");
+      vi.stubEnv("NLM_SESSION_PROPERTY_INFERENCE", "0");
       await storage.properties.import(tenant, [{ slug: "nxtads", label: "NxtAds", repositories: ["/nonexistent-property-test/nxtads"] }]);
       const body = "A fresh desktop install must have NxtSEO or degrade gracefully.";
       await h.ingest(storage, { ...anchorRecord(body, "s1"), entities: ["NxtSEO"], projectDir: "/nonexistent-property-test/nxtads/task" }, [
@@ -51,6 +52,7 @@ export function runPropertyMemoryContract(h: { sql(s: Storage, sql: string, para
       const restorable = { ...automatic, sourceQuote: body, sourceAnchor: locateSourceAnchor(body, body) };
       await storage.facts.insert(tenant, { ...restorable, id: "legacy-again" });
       vi.stubEnv("NLM_PROPERTY_INFERENCE", "0");
+      vi.stubEnv("NLM_SESSION_PROPERTY_INFERENCE", "0");
       await h.ingest(storage, anchorRecord(body, "s1"), [{ ...restorable, id: "reingested", property: undefined }]);
       expect((await storage.facts.getById(tenant, "reingested"))?.property).toBeUndefined();
     });
@@ -245,6 +247,7 @@ export function runPropertyMemoryContract(h: { sql(s: Storage, sql: string, para
       .map((r) => `${String(r["property_slug"])}:${String(r["source"])}`);
     it("backfill proposes only source-quote and entity rows and never touches operator, explicit or repository rows", async () => {
       vi.stubEnv("NLM_PROPERTY_INFERENCE", "0");
+      vi.stubEnv("NLM_SESSION_PROPERTY_INFERENCE", "0");
       await storage.properties.import(tenant, [{ slug: "nxtads", label: "NxtAds", repositories: ["/nonexistent-property-test/nxtads"] }]);
       const body = "[user] NxtSEO stores drafts in SQLite. The API keeps a cache.";
       await h.ingest(storage, { ...anchorRecord(body, "s1"), entities: ["NxtSEO"], projectDir: "/nonexistent-property-test/nxtads/task" }, [
@@ -253,6 +256,7 @@ export function runPropertyMemoryContract(h: { sql(s: Storage, sql: string, para
       await storage.properties.correctFact(tenant, "corrected", "nxtads");
       await storage.properties.associateSession(tenant, "s1", ["nxtads"]);
       vi.stubEnv("NLM_PROPERTY_INFERENCE", "1");
+      vi.stubEnv("NLM_SESSION_PROPERTY_INFERENCE", "1");
       const preview = await storage.properties.backfill(tenant, false);
       expect(preview).toEqual([{ factId: "inferable", slug: "nxtseo", source: "source-quote" }, { sessionId: "s1", slug: "nxtseo", source: "entity" }]);
       expect(await sessionSources("s1")).toEqual(["nxtads:operator", "nxtads:repository"]);
@@ -262,6 +266,47 @@ export function runPropertyMemoryContract(h: { sql(s: Storage, sql: string, para
       expect((await storage.facts.getById(tenant, "corrected"))?.property).toMatchObject({ slug: "nxtads", source: "operator" });
       expect(await sessionSources("s1")).toEqual(["nxtads:operator", "nxtads:repository", "nxtseo:entity"]);
       expect(await storage.properties.backfill(tenant, true)).toEqual([]);
+    });
+    describe("inference lanes", () => {
+      const body = "[user] NxtSEO stores drafts in SQLite.";
+      const record = () => ({ ...anchorRecord(body, "s1"), entities: ["NxtSEO"] });
+      const facts = () => [quoted("inferable", "s1", body, "NxtSEO stores drafts in SQLite")];
+      const factOwner = async () => (await storage.facts.getById(tenant, "inferable"))?.property?.slug;
+      it("session flag alone yields entity rows and no source-quote attribution", async () => {
+        vi.stubEnv("NLM_PROPERTY_INFERENCE", "0");
+        await h.ingest(storage, record(), facts());
+        expect(await sessionSources("s1")).toEqual(["nxtseo:entity"]);
+        expect(await factOwner()).toBeUndefined();
+      });
+      it("fact flag alone yields source-quote attribution and no entity rows", async () => {
+        vi.stubEnv("NLM_SESSION_PROPERTY_INFERENCE", "0");
+        await h.ingest(storage, record(), facts());
+        expect(await sessionSources("s1")).toEqual([]);
+        expect(await factOwner()).toBe("nxtseo");
+      });
+      it("backfill runs only the lane whose flag is on and refuses when both are off", async () => {
+        vi.stubEnv("NLM_PROPERTY_INFERENCE", "0"); vi.stubEnv("NLM_SESSION_PROPERTY_INFERENCE", "0");
+        await h.ingest(storage, record(), facts());
+        await expect(storage.properties.backfill(tenant, true)).rejects.toThrow(/NLM_PROPERTY_INFERENCE.*NLM_SESSION_PROPERTY_INFERENCE/);
+        vi.stubEnv("NLM_SESSION_PROPERTY_INFERENCE", "1");
+        expect(await storage.properties.backfill(tenant, true)).toEqual([{ sessionId: "s1", slug: "nxtseo", source: "entity" }]);
+        expect(await factOwner()).toBeUndefined();
+        vi.stubEnv("NLM_SESSION_PROPERTY_INFERENCE", "0"); vi.stubEnv("NLM_PROPERTY_INFERENCE", "1");
+        expect(await storage.properties.backfill(tenant, true)).toEqual([{ factId: "inferable", slug: "nxtseo", source: "source-quote" }]);
+        expect(await sessionSources("s1")).toEqual(["nxtseo:entity"]);
+      });
+      it("round-trips each lane from enabled to disabled", async () => {
+        await h.ingest(storage, record(), facts());
+        expect(await sessionSources("s1")).toEqual(["nxtseo:entity"]);
+        expect(await factOwner()).toBe("nxtseo");
+        vi.stubEnv("NLM_SESSION_PROPERTY_INFERENCE", "0");
+        await h.ingest(storage, record(), facts());
+        expect(await sessionSources("s1")).toEqual([]);
+        expect(await factOwner()).toBe("nxtseo");
+        vi.stubEnv("NLM_PROPERTY_INFERENCE", "0");
+        await h.ingest(storage, record(), facts());
+        expect(await factOwner()).toBeUndefined();
+      });
     });
     it("removes exactly the inferred rows when inference is enabled and then disabled", async () => {
       await storage.properties.import(tenant, [{ slug: "nxtads", label: "NxtAds", repositories: ["/nonexistent-property-test/nxtads"] }]);
@@ -275,6 +320,7 @@ export function runPropertyMemoryContract(h: { sql(s: Storage, sql: string, para
       expect((await storage.facts.getById(tenant, "inferable"))?.property).toMatchObject({ slug: "nxtseo", source: "source-quote" });
       expect(await sessionSources("s1")).toEqual(["nxtads:repository", "nxtseo:entity", "nxtseo:operator"]);
       vi.stubEnv("NLM_PROPERTY_INFERENCE", "0");
+      vi.stubEnv("NLM_SESSION_PROPERTY_INFERENCE", "0");
       await h.ingest(storage, record, facts);
       expect((await storage.facts.getById(tenant, "inferable"))?.property).toBeUndefined();
       expect({ explicit: (await storage.facts.getById(tenant, "explicit"))?.property, corrected: (await storage.facts.getById(tenant, "corrected"))?.property }).toEqual(before);

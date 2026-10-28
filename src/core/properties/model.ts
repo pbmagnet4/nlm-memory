@@ -34,6 +34,7 @@ export function assertionKey(fact: Pick<Fact, "kind" | "subject" | "predicate" |
 }
 export function propertyAssociationsEnabled(): boolean { return process.env["NLM_PROPERTY_ASSOCIATIONS"] === "1"; }
 export function propertyInferenceEnabled(): boolean { return process.env["NLM_PROPERTY_INFERENCE"] === "1"; }
+export function sessionPropertyInferenceEnabled(): boolean { return process.env["NLM_SESSION_PROPERTY_INFERENCE"] === "1"; }
 interface TextSpan { readonly start: number; readonly end: number }
 const QUOTED_BLOCK_TAGS = "environment_context|environment_details|INSTRUCTIONS|user_instructions|system-reminder";
 const PREAMBLE_TURN = new RegExp(`^\\s*(?:#\\s*)?(?:AGENTS|CLAUDE)\\.md|^\\s*Contents of [^\\n]*(?:AGENTS|CLAUDE)\\.md|^\\s*<(?:${QUOTED_BLOCK_TAGS})>`, "i");

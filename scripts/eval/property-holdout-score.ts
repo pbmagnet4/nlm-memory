@@ -8,6 +8,6 @@ import { scoreHoldout } from "./lib/property-holdout-score.js";
 new Command().argument("<run-dir>").action((dir: string) => {
   try {
     const s = scoreHoldout(dir, new Date());
-    console.log(JSON.stringify({ q1: { proposals: s.q1.proposals, wrongOwner: s.q1.wrongOwner, passed: s.q1.passed }, q2: { references: s.q2.references, postStratified: s.q2.postStratified, passed: s.q2.passed }, gatesPassed: s.decision.gatesPassed }));
+    console.log(JSON.stringify({ q1: s.q1, q2: { references: s.q2.references, postStratified: s.q2.postStratified, passed: s.q2.passed }, gatesPassed: s.decision.gatesPassed }));
   } catch (e) { console.error(e instanceof Error ? e.message : e); process.exit(1); }
 }).parse();

@@ -15,7 +15,7 @@ Status recorded 2026-10-27. The npm version badge and GitHub Releases show the c
 - Experimental quote/entity matchers behind a separate flag, off by default. Evaluation rejected their ownership/relevance accuracy. Inference backfill refuses to run unless explicitly enabled; do not enable it for production use.
 - Fact-recall BM25 and reciprocal-rank-fusion changes, recency indexes, code-exemplar revert detection and usefulness telemetry. These changes do not establish a new answer-quality score.
 
-`NLM_PROPERTY_ASSOCIATIONS=1` opts into repository association and unresolved-fact isolation. Keep `NLM_PROPERTY_INFERENCE` unset or `0`. Explicit corrections are available independently of those flags. A session's repository indicates relevance; it does not establish ownership of every fact in its transcript.
+`NLM_PROPERTY_ASSOCIATIONS=1` opts into repository association and unresolved-fact isolation. Keep `NLM_PROPERTY_INFERENCE` (fact owners) and `NLM_SESSION_PROPERTY_INFERENCE` (entity-name session references) unset or `0`; only the session lane is under evaluation. Explicit corrections are available independently of those flags. A session's repository indicates relevance; it does not establish ownership of every fact in its transcript.
 
 ## Upgrades and downgrades
 

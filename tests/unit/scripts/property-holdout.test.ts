@@ -10,11 +10,11 @@ import { DEFAULT_TEAM_ID } from "../../../src/core/tenancy/default-team.js";
 import { bodyVersion } from "../../../src/core/context/source-version.js";
 import { assertionKey } from "../../../src/core/properties/model.js";
 import { assertSnapshot, fileHash, pathsIn, readJson, sha256, writePrivate, type Manifest } from "../../../scripts/eval/lib/property-holdout-io.js";
-import { buildExclusions, countProposals, drawHoldout, freezeHoldout, orderKey, type Candidate, type Predictions } from "../../../scripts/eval/lib/property-holdout.js";
+import { buildExclusions, countSessionRefs, drawHoldout, freezeHoldout, orderKey, type Candidate, type Predictions } from "../../../scripts/eval/lib/property-holdout.js";
 import { classifyFact, classifySession, factMatches, mentions } from "../../../scripts/eval/lib/property-holdout-strata.js";
 import { parseProperties } from "../../../src/core/properties/model.js";
 import { saveLabels, sealLabels, validateLabel, type LabelsFile } from "../../../scripts/eval/lib/property-holdout-labels.js";
-import { ScoringRefused, scoreHoldout } from "../../../scripts/eval/lib/property-holdout-score.js";
+import { Q1_OUT_OF_SCOPE, ScoringRefused, scoreHoldout } from "../../../scripts/eval/lib/property-holdout-score.js";
 import { adjudicate, labelSitting } from "../../../scripts/eval/lib/property-holdout-label-session.js";
 import { l2Message, parseAnswer, runL2, shuffledCatalog } from "../../../scripts/eval/lib/property-holdout-l2.js";
 import type { Card } from "../../../scripts/eval/lib/property-holdout-cards.js";
@@ -149,7 +149,8 @@ describe("freeze", () => {
     const p = pathsIn(dir);
     expect(m.seed).toBe("T1142-v1");
     expect(m.freezeAt).toBe(FREEZE.toISOString());
-    expect(m.windowCloseRule).toMatchObject({ minProposals: 100, maxDays: 28, closesNoLaterThan: "2026-11-29T00:00:00.000Z" });
+    expect(m.lanes).toEqual(["session"]);
+    expect(m.windowCloseRule).toMatchObject({ minSessionRefs: 160, maxDays: 28, closesNoLaterThan: "2026-11-29T00:00:00.000Z" });
     for (const h of [m.catalogHash, m.strataHash, m.cardGeneratorHash, m.l2PromptHash, m.exclusions.hash]) expect(h).toMatch(/^[0-9a-f]{64}$/);
     expect(m.candidate).toEqual(candidate);
     for (const f of [p.manifest, p.exclusions, p.catalog]) expect(modeOf(f)).toBe(0o600);
@@ -159,12 +160,17 @@ describe("freeze", () => {
   it("refuses a non-snapshot path", () => {
     expect(() => freezeHoldout({ ...freezeOpts(join(root, "freeze-b")), snapshot: live })).toThrow(/live canonical/);
   });
-  it("counts admissible proposals only and refuses when frozen code changed", () => {
+  it("supports only the session lane", () => {
+    expect(() => freezeHoldout({ ...freezeOpts(join(root, "freeze-lanes")), lanes: ["session", "fact"] })).toThrow(/unsupported lanes/);
+    expect(() => freezeHoldout({ ...freezeOpts(join(root, "freeze-lanes")), lanes: ["fact"] })).toThrow(/unsupported lanes/);
+  });
+  it("counts session references across the strata targets and refuses when frozen code changed", () => {
     const dir = join(root, "freeze-c");
     freezeHoldout(freezeOpts(dir));
-    const n = countProposals(snapshot, catalogPath, dir, DEFAULT_TEAM_ID, candidate, live);
+    const n = countSessionRefs(snapshot, catalogPath, dir, DEFAULT_TEAM_ID, candidate, live);
     expect(n).toBeGreaterThan(0);
-    expect(() => countProposals(snapshot, catalogPath, dir, DEFAULT_TEAM_ID, { ...candidate, sha: "c".repeat(40) }, live)).toThrow(/candidate code changed/);
+    expect(n).toBeLessThanOrEqual(160);
+    expect(() => countSessionRefs(snapshot, catalogPath, dir, DEFAULT_TEAM_ID, { ...candidate, sha: "c".repeat(40) }, live)).toThrow(/candidate code changed/);
   });
 });
 
@@ -249,20 +255,16 @@ describe("draw", () => {
     expect(lanes).not.toMatch(/^(fact)+(session)+(abstention)+$/);
   });
 
-  it("builds the strata census, population counts, abstention cards and quotas", () => {
-    const { predictions, manifest } = drawn("draw-6");
+  it("draws session and abstention cards only, with population counts and quotas", () => {
+    const { predictions, manifest, cards } = drawn("draw-6");
     const entries = Object.values(predictions.cards);
-    const factLane = entries.filter((e) => e.lane === "fact");
-    expect(factLane.length).toBe(Object.values(manifest.draw!.population.factProposals).reduce((a, b) => a + b, 0));
-    // The candidate abstains on stratum A's own predicate (several names or a dependency verb), so A holds no proposals.
-    expect(factLane.some((e) => e.stratum === "A")).toBe(false);
+    expect(entries.some((e) => e.lane === "fact")).toBe(false);
     expect(entries.filter((e) => e.lane === "abstention").length).toBe(20);
     expect(entries.filter((e) => e.lane === "abstention").every((e) => e.proposed.length === 0)).toBe(true);
+    expect(cards.filter((c) => c.type === "fact").length).toBe(20);
     expect(manifest.draw!.population.sessionRefs["D"]).toBeGreaterThan(0);
     expect(manifest.draw!.population.sessionRefs["C"]).toBe(1);
-    expect(predictions.quotas["factMinorityRuntime"]).toMatchObject({ required: 15 });
-    expect(predictions.quotas["sessionMinorityRuntime"]).toMatchObject({ required: 30 });
-    expect(predictions.quotas["factRepoScopes"]).toMatchObject({ required: 10, actual: 0, met: false });
+    expect(predictions.quotas).toEqual({ sessionMinorityRuntime: expect.objectContaining({ required: 30 }) });
     expect(predictions.shortfalls.length).toBeGreaterThan(0);
   });
 
@@ -280,12 +282,12 @@ function drawFresh(name: string) {
   const p = pathsIn(dir);
   return { dir, p, cards: readJson<{ cards: Card[] }>(p.cards).cards, predictions: readJson<Predictions>(p.predictions) };
 }
-function perfectLabels(cards: Card[], predictions: Predictions, wrongFact?: string): LabelsFile {
+function perfectLabels(cards: Card[], predictions: Predictions): LabelsFile {
   const labels: LabelsFile["labels"] = {};
   for (const c of cards) {
     const e = predictions.cards[c.id]!;
     labels[c.id] = c.type === "fact"
-      ? { owner: e.lane === "abstention" ? "none" : (c.id === wrongFact ? "ambiguous" : e.proposed[0]!), roles: {}, confidence: "sure" }
+      ? { owner: e.lane === "abstention" ? "none" : e.proposed[0]!, roles: {}, confidence: "sure" }
       : { relevant: e.proposed, quotedInputOnly: [], boilerplateOnly: [], confidence: "sure" };
   }
   return { labeller: "L1", seed: "T1142-v1", sittings: [{ startedAt: "2026-12-31T01:00:00Z", endedAt: "2026-12-31T01:30:00Z", cards: cards.length }], labels };
@@ -355,12 +357,11 @@ describe("labels", () => {
 
 describe("score", () => {
   const now = new Date("2027-01-01T00:00:00Z");
-  function sealed(name: string, wrongFact?: string) {
+  function sealed(name: string) {
     const d = drawFresh(name);
-    const wrong = wrongFact === "first" ? d.cards.find((c) => d.predictions.cards[c.id]!.lane === "fact")!.id : undefined;
-    saveLabels(d.dir, perfectLabels(d.cards, d.predictions, wrong));
+    saveLabels(d.dir, perfectLabels(d.cards, d.predictions));
     sealLabels(d.dir, d.cards, new Date("2026-12-31T05:00:00Z"));
-    return { ...d, wrong };
+    return d;
   }
 
   it("refuses while labels are unsealed, without opening predictions", () => {
@@ -384,41 +385,42 @@ describe("score", () => {
     sealLabels(d.dir, d.cards, new Date("2026-01-01T00:00:00Z"));
     expect(() => scoreHoldout(d.dir, now)).toThrow(/before the draw/);
   });
-  it("scores a clean run: Q1 zero with the rule-of-three bound, under-powered below 100, Q2 post-stratified", () => {
+  it("scores a clean run: Q1 out of scope, Q2 post-stratified and under-powered below 100 references", () => {
     const d = sealed("score-clean");
     const s = scoreHoldout(d.dir, now);
-    expect(s.q1.wrongOwner).toBe(0);
-    expect(s.q1.proposals).toBeGreaterThan(0);
-    expect(s.q1.ruleOfThreeBound).toBeCloseTo(3 / s.q1.proposals);
-    expect(s.q1.underPowered).toBe(true);
-    expect(s.q1.passed).toBe(false);
+    expect(s.q1).toBe(Q1_OUT_OF_SCOPE);
+    expect(s.q1).toBe("out of scope (fact lane off)");
     expect(s.q2.postStratified).toBe(1);
     expect(s.q2.wilson!.low).toBeGreaterThan(0.8);
+    expect(s.q2.underPowered).toBe(s.q2.references < 100);
     expect(s.coverage.abstentionCorrectRate).toBe(1);
     expect(s.kappa.l2Present).toBe(false);
     expect(s.scope).toMatch(/not a population precision claim/);
     expect(s.decision.gatesPassed).toBe(false);
     for (const f of [d.p.scores, d.p.abstention, d.p.limits]) expect(modeOf(f)).toBe(0o600);
   });
-  it("counts a wrong owner and an ambiguous card against Q1", () => {
-    const d = sealed("score-wrong", "first");
+  it("gates follow Q2 alone", () => {
+    const d = sealed("score-q2-only");
+    const l2 = JSON.parse(readFileSync(d.p.labels, "utf8")) as LabelsFile; l2.labeller = "L2";
+    writeFileSync(d.p.l2, JSON.stringify(l2));
     const s = scoreHoldout(d.dir, now, false);
-    expect(s.q1.wrongOwner).toBe(1);
-    expect(s.q1.wrongCards).toEqual([d.wrong]);
-    expect(s.q1.ruleOfThreeBound).toBeNull();
+    expect(s.q2.passed).toBe(s.q2.references >= 100);
+    expect(s.decision.gatesPassed).toBe(s.q2.passed);
   });
   it("computes kappa against L2 and lists disagreements on proposals", () => {
     const d = sealed("score-kappa");
     const l1 = readJson<LabelsFile>(d.p.labels);
     const l2: LabelsFile = JSON.parse(JSON.stringify(l1));
-    const flip = d.cards.find((c) => d.predictions.cards[c.id]!.lane === "fact")!.id;
+    const flip = d.cards.find((c) => d.predictions.cards[c.id]!.lane === "abstention")!.id;
     (l2.labels[flip] as { owner: string }).owner = "gamma";
+    const flipSession = d.cards.find((c) => d.predictions.cards[c.id]!.lane === "session")!.id;
+    (l2.labels[flipSession] as { relevant: string[] }).relevant = [];
     l2.labeller = "L2";
     writeFileSync(d.p.l2, JSON.stringify(l2));
     const s = scoreHoldout(d.dir, now, false);
     expect(s.kappa.l2Present).toBe(true);
     expect(s.kappa.fact).toBeLessThan(1);
-    expect(s.kappa.disagreementsOnProposals).toContain(flip);
+    expect(s.kappa.disagreementsOnProposals).toEqual([flipSession]);
   });
 });
 
