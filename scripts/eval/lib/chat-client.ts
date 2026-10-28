@@ -21,6 +21,8 @@ export interface ChatOptions {
   readonly temperature: number;
   readonly maxTokens: number;
   readonly reasoningEffort?: string;
+  /** Provider-specific request fields, e.g. chat_template_kwargs to switch thinking off for this caller only. */
+  readonly extraBody?: Readonly<Record<string, unknown>>;
   readonly timeoutMs?: number;
 }
 
@@ -48,6 +50,7 @@ async function chatOnceAttempt(
         max_tokens: opts.maxTokens,
         stream: false,
         ...(opts.reasoningEffort ? { reasoning_effort: opts.reasoningEffort } : {}),
+        ...opts.extraBody,
       }),
       signal: controller.signal,
     });

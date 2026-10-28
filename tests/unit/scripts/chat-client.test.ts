@@ -37,6 +37,13 @@ describe("chatOnce", () => {
     expect(cap.body.stream).toBe(false);
   });
 
+  it("passes extraBody fields through for per-request provider options", async () => {
+    const cap: { body?: any } = {};
+    stubFetch(cap);
+    await chatOnce({ baseUrl: "http://x/v1", model: "m", temperature: 0, maxTokens: 10, extraBody: { chat_template_kwargs: { enable_thinking: false } } }, "s", "u");
+    expect(cap.body.chat_template_kwargs).toEqual({ enable_thinking: false });
+  });
+
   it("omits reasoning_effort when unset and includes it when set", async () => {
     const cap: { body?: any } = {};
     stubFetch(cap);
