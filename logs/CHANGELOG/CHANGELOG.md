@@ -1,5 +1,15 @@
 # nlm-memory CHANGELOG
 
+## 2026-10-28 - Supersession regression fixed, Codex 0.151 text recovered, chunk embeds atomic (T1187)
+
+**Changes:** NULL-slug facts supersede again (ingest collapse and write-judge); collapse is time-aware, so an older re-ingested fact lands already superseded, and re-ingest re-evaluates `superseded_by`. Doctor I5a groups by tenant + `property_slug`; `doctor --fix` gains I5a, I5b and I7b-1 repairs. Codex `extractTurn` reads the 0.151+ `item_completed` `UserMessage`/`AgentMessage` shapes. New `nlm reingest --adapter <name> [--dry-run] [--limit N]`. Vec + map chunk writes are atomic with a `chunk_embed_pending` queue (sqlite 048 / pg 044) and a 2-minute retry sweep. Also: scan-once stat guard (T1182), drift alert moved into the sequential alert runner (T1183), classifier dropdown fix (T1186), recall gate removed (#616), `usefulnessModel()` replaces the hardcoded qwen, bundles regenerated (#781).
+
+**Results:** Deployed as 0.21.21-t1187.1 (schema 48). `doctor --fix` superseded 98 stale facts in 76 single-valued groups; doctor clean. Codex canary `--limit 20`: 20/20 ingested, +163 facts. Full Codex re-ingest (~993 sessions) running.
+
+**State:** Parked: chunk guard can keep a stale sweep vector over a fresh one; `doctor --fix` doesn't print I5b repairs; PG repair paths untested and PG lacks a fact-embed sweep; aider/windsurf/cursor still record transient read errors as empty; embedder API key stored in plain text.
+
+**Next:** Close #943 when the full re-ingest finishes clean; T1179 code-lane re-embed; #1142 property-inference evaluation.
+
 ## 2026-10-27 - Approved session-close captures and agent guide (T1172)
 
 **Changes:** Added the short AGENTS.md router for development, property attribution, release channels and reviewed public ancestry (guide commit 1af338a; local landing 245aeec). Updated existing Backlog task T943 with verified Codex response_item.message coverage evidence rather than creating a duplicate. No normalization fix was made.
@@ -18,7 +28,6 @@
 
 **State:** Public release: https://github.com/pbmagnet4/nlm-memory/releases/tag/v0.21.21-rc.1. Public documentation merge: 25a39459c4f616694830432c7400b5a5002d8082. Private verification receipt: ~/.nxtos/state/T1156-prerelease.json; artifact/metadata/smoke evidence: ~/.nxtos/state/releases/nlm-memory/0.21.21-rc.1/. Local operational history remains private and product content matches GitHub.
 
-
 ## 2026-10-27 - Public source and GitHub refresh (T1153)
 
 **Changes:** Published a clean product-source snapshot on public ancestry via GitHub PR #60, keeping private deployment plans/changelogs and the corpus sampler out of the public branch. Rewrote the README around recovery, source evidence and corrections; split reference docs; clarified stable/source/experimental capabilities; corrected security/runtime-wiring claims; added an isolated assertion-checked fictional demo and its CI step. Updated repository description/topics and opened roadmap issues #57 ownership, #58 usefulness and #59 historical origins.
@@ -26,7 +35,6 @@
 **Results:** Local checks passed 3,355 tests (three skips), typecheck, build, packed-plugin verification, the synthetic demo and relative-link checks. Independent Muse review returned zero findings; Gitleaks found zero secrets in the new public history. Final PR CI passed, including PostgreSQL and the demo. Public merge f7602e7c46fa7e97f6588a9a7b20a24abfa8b061; final public head a228115aeea8acee15e023e2a57c71750ce51fd3. GitHub main serves the new README. npm stable remains 0.21.20; the running daemon was not changed.
 
 **State:** Local reconciliation retains the five deliberately private operational files; all published product/runtime content matches GitHub. No private ancestry was pushed. Private receipt: ~/.nxtos/state/T1153-publication.json; independent review: ~/.nxtos/logs/landing-reviews/T1153-public.json. Public roadmap issue #57 is linked to internal T1142.
-
 
 ## 2026-10-27 - Bounded property activation build (T1130)
 
@@ -83,16 +91,6 @@
 **State:** Planning only, based on local main `e391597`. Implementation and installed daemon unchanged. Numeric improvement gates are proposed acceptance targets; final holdout stays sealed until preregistered candidate selection is complete. Each implementation task includes spec/code review and the release includes final branch review.
 
 **Next:** Execute Task 1 in its own task worktree/SDD ledger to establish independent evidence-sufficiency and actual-token baselines before optimizing.
-
-## 2026-10-16 - Compact structured memory context and source expansion (T803)
-
-**Changes:** Added `recall_context` with current fact triples, source provenance, decisions/open questions, exact original passages, a bounded response, and targeted expansion references. Exact structured lookups skip session search and embeddings; default lanes preserve hybrid facts and keyword sessions without query-time generative calls. `get_session` now defaults to compact context and offers explicit versioned transcript pages. Retained semantic chunk positions, fixed lexical fact retrieval beyond the newest 500 rows (SQLite FTS5 / PG GIN), added a covering corroboration index, minified JSON, and regenerated hook guidance/bundles. No stored facts were rewritten or retired.
-
-**Results:** On the frozen corpus, 122 held-out synthetic fact-topic queries improved keyword R@1 from 0 to 36.9%; hybrid R@1 stayed 73.0% and R@5 stayed 100%. No fact R@1 regression across tested splits/modes. Across 26 held-out source sessions compact context used 96.4% fewer response characters, with no errors or budget overruns; this is not a token-count or answer-correctness measurement. Corroboration counts matched across 10 alternating 12-triple batches; median lookup 93.38 ms to 0.044 ms. Independent review's single low-severity phantom-session-query finding was accepted and fixed.
-
-**State:** Implementation is local; the installed daemon is unchanged. Tests cover source offsets, Unicode and changed-source paging, semantic-only passages, short identifiers, tenant isolation, old facts, conflicts, budgets, and telemetry. API contract and measurement limits: `docs/context-retrieval.md`.
-
-**Next:** Release/deploy through the normal NLM installer to activate the new MCP tool and migrations; independently labelled answer-quality evaluation remains separate from the existing synthetic/citation ranking checks.
 
 Session-level log per session protocol. Cap: 10 entries — archive older to `CHANGELOG-YYYY.md` when exceeded.
 
