@@ -101,7 +101,7 @@ import { runScopeBackfill, formatBackfillResult } from "./scope-backfill.js";
 import { runScopeCoverage, formatCoverageResult } from "./scope-coverage.js";
 import { loadAliasMap } from "../core/scope/alias-map.js";
 import { getUpdateStatus } from "../core/update-check/check.js";
-import { checkDriftAndAlert, checkEmbedderAndAlert, checkIngestLagAndAlert } from "../core/alerts/check-and-alert.js";
+import { checkDriftAndAlert, checkEmbedderAndAlert, checkIngestLagAndAlert, runAlertChecks } from "../core/alerts/check-and-alert.js";
 import { fireAlert } from "../core/alerts/fire-alert.js";
 import { buildJobAlertEvent } from "../core/alerts/job-alert.js";
 import { buildWikiDriftEvent, buildWikiFailureEvent } from "../core/alerts/wiki-alert.js";
@@ -119,6 +119,7 @@ import { reembedCorpus } from "../core/embedding/embed-backfill.js";
 import { reembedCorpusPg } from "../core/embedding/pg-embed-backfill.js";
 import { backfillExemplarEmbeddings } from "../core/exemplars/embed-backfill.js";
 import { backfillFactEmbeddings } from "../core/facts/embed-backfill.js";
+import { MAX_CHUNK_EMBED_ATTEMPTS, stuckChunksOnPg, stuckChunksOnSqlite, sweepChunkEmbeddings, type StuckChunk } from "../core/embedding/chunk-retry.js";
 import { runFactEmbedTick } from "../core/facts/embed-sweep-tick.js";
 import { warmCodeEmbedder } from "../core/exemplars/warm-embedder.js";
 import { markWarm, markWarmFailure } from "../core/health/warmup-state.js";
@@ -148,7 +149,7 @@ import { installScope } from "../core/signals/install-scope.js";
 import { buildWorkDigest } from "../core/work-digest/build-work-digest.js";
 import { composeWorkDigest } from "../core/work-digest/compose-work-digest.js";
 import { defaultTopicProvider, aliasTopicProvider, type TopicProvider } from "../core/work-digest/topics.js";
-import { runChecksOnSqlite, runChecksOnPg, applyFixOnSqlite, applyFixOnPg } from "../core/integrity/check-invariants.js";
+import { runChecksOnSqlite, runChecksOnPg, applyFixOnSqlite, applyFixOnPg, planConflictRepairsOnSqlite, planConflictRepairsOnPg, planDanglingRepairsOnSqlite, planDanglingRepairsOnPg, type ConflictRepair, type DanglingRepair } from "../core/integrity/check-invariants.js";
 import { resolveRecallScope } from "../core/recall/resolve-scope.js";
 import { suggestMerges } from "../core/entities/dedup-suggest.js";
 import { DEFAULT_NLM_PORT } from "../shared/net.js";
@@ -708,24 +709,20 @@ program
     // NLM_ALERT_WEBHOOK self-reporting: version-drift + embedder-cold
     // transitions POST to an operator-owned webhook. No-op (zero network
     // calls) when the env var is unset — see core/alerts/fire-alert.ts.
-    const ALERT_DRIFT_CHECK_INTERVAL_MS = 60 * 60_000;
-    const alertDriftTimer = setInterval(() => {
-      void checkDriftAndAlert({ currentVersion: pkg.version }).catch(() => {
-        // Best-effort self-reporting — a failed check never blocks the daemon.
-      });
-    }, ALERT_DRIFT_CHECK_INTERVAL_MS);
-    alertDriftTimer.unref();
-
-    const ALERT_EMBEDDER_CHECK_INTERVAL_MS = 5 * 60_000;
-    // Sequential on purpose: each check read-modify-writes alert-state.json, so
-    // overlapping checks would overwrite each other's state.
+    const ALERT_CHECK_INTERVAL_MS = 5 * 60_000;
+    // Drift stays hourly: every 12th round (the update check itself is cached 24h).
+    const ALERT_DRIFT_EVERY_N_ROUNDS = 12;
+    let alertRound = 0;
     const alertHealthTimer = setInterval(() => {
-      // Best-effort self-reporting — a failed check never blocks the daemon or the next check.
-      void (async () => {
-        await checkEmbedderAndAlert().catch(() => {});
-        await checkIngestLagAndAlert(() => ingestLag.get()).catch(() => {});
-      })();
-    }, ALERT_EMBEDDER_CHECK_INTERVAL_MS);
+      alertRound += 1;
+      void runAlertChecks([
+        () => checkEmbedderAndAlert(),
+        () => checkIngestLagAndAlert(() => ingestLag.get()),
+        ...(alertRound % ALERT_DRIFT_EVERY_N_ROUNDS === 0
+          ? [() => checkDriftAndAlert({ currentVersion: pkg.version })]
+          : []),
+      ]);
+    }, ALERT_CHECK_INTERVAL_MS);
     alertHealthTimer.unref();
 
     // Corpus monitor: 24h stats job + pairs-cache refresh + weekly trend log.
@@ -899,6 +896,27 @@ program
       setInterval(() => { void runFactEmbedSweep(); }, FACT_EMBED_SWEEP_INTERVAL_MS).unref();
       setTimeout(() => { void runFactEmbedSweep(); }, FACT_EMBED_SWEEP_INITIAL_DELAY_MS).unref();
       console.error("  fact-embed-sweep: enabled, retry sweep every 2m");
+    }
+
+    // Chunk-embedding retry sweep: re-embeds session chunks whose vector failed
+    // at ingest (chunk_embed_pending), a few every 2 min under the shared embed
+    // in-flight cap. Chunks failing 5 times are left for `nlm doctor` to report.
+    {
+      const CHUNK_EMBED_SWEEP_INTERVAL_MS = 2 * 60 * 1000;
+      const CHUNK_EMBED_SWEEP_INITIAL_DELAY_MS = 105 * 1000;
+      const runChunkEmbedSweep = async () => {
+        try {
+          const report = await sweepChunkEmbeddings({ store: storage instanceof PgStorage ? storage.sessions : (storage as SqliteStorage).sessions, embedder });
+          if (report.repaired > 0 || report.failed > 0) {
+            console.error(`[chunk-embed-sweep] ${report.repaired}/${report.attempted} repaired (${report.failed} failed${report.shed ? ", shed at cap" : ""})`);
+          }
+        } catch (e) {
+          console.error(`[chunk-embed-sweep] error: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      };
+      setInterval(() => { void runChunkEmbedSweep(); }, CHUNK_EMBED_SWEEP_INTERVAL_MS).unref();
+      setTimeout(() => { void runChunkEmbedSweep(); }, CHUNK_EMBED_SWEEP_INITIAL_DELAY_MS).unref();
+      console.error("  chunk-embed-sweep: enabled, retry sweep every 2m");
     }
 
     // Memo sweep runs independently of the transcript scheduler — it's the
@@ -1675,6 +1693,57 @@ program
         `reclassify-oversized: attempted=${r.attempted} ingested=${r.ingested} ` +
         `lowConfidence=${r.skippedLowConfidence} missingFile=${r.missingFile} failed=${r.failed} ` +
         `| gained entities=${r.entities} decisions=${r.decisions} facts=${r.facts}`,
+      );
+    } finally {
+      await stack.storage.close();
+    }
+  });
+
+program
+  .command("reingest")
+  .description("One-shot: re-parse every source of an adapter from disk and re-ingest sessions whose body changed (including sources recorded as empty); safe to re-run")
+  .requiredOption("--adapter <name>", "adapter whose sources to re-parse (e.g. codex)")
+  .option("-l, --limit <n>", "max sources to visit", (v) => Number.parseInt(v, 10))
+  .option("--dry-run", "count sources scanned / would change / unchanged / unreadable without writing", false)
+  .action(async (opts: { adapter: string; limit?: number; dryRun?: boolean }) => {
+    const { reclassifyOversized, selectAdapterSources } = await import("../core/ingest/reclassify-oversized.js");
+    const stack = await buildStack();
+    try {
+      if (!(stack.storage instanceof SqliteStorage)) {
+        console.error("reingest: only supported with SQLite storage (NLM_PG_URL must not be set)");
+        await stack.storage.close();
+        process.exit(1);
+      }
+      const adapters = await buildAdapters(stack.sources, DEFAULT_TEAM_ID);
+      if (!adapters.some((a) => a.name === opts.adapter)) {
+        console.error(`reingest: no enabled adapter "${opts.adapter}" (have: ${adapters.map((a) => a.name).join(", ")})`);
+        await stack.storage.close();
+        process.exit(1);
+      }
+      const r = await reclassifyOversized(
+        {
+          db: stack.storage.rawDb(),
+          store: stack.storage.sessions,
+          factStore: stack.storage.facts,
+          embedder: stack.embedder,
+          classifier: stack.classifier,
+          classifierDescriptor: { provider: stack.classifier.provider, model: stack.classifier.model },
+          adapters,
+        },
+        DEFAULT_TEAM_ID,
+        {
+          select: selectAdapterSources(opts.adapter),
+          onlyChanged: true,
+          classifyTimeoutMs: stack.classifier.timeoutMs,
+          ...(opts.limit ? { limit: opts.limit } : {}),
+          dryRun: Boolean(opts.dryRun),
+        },
+      );
+      console.log(
+        `reingest ${opts.adapter}${opts.dryRun ? " (dry run)" : ""}: scanned=${r.attempted} ` +
+        (opts.dryRun ? `wouldChange=${r.wouldChange} ` : `ingested=${r.ingested} lowConfidence=${r.skippedLowConfidence} failed=${r.failed} `) +
+        `unchanged=${r.unchanged} unreadable=${r.missingFile}` +
+        (opts.dryRun ? "" : ` | gained entities=${r.entities} decisions=${r.decisions} facts=${r.facts}`),
       );
     } finally {
       await stack.storage.close();
@@ -3019,12 +3088,13 @@ async function gatherInstallProbe(): Promise<InstallProbe> {
 program
   .command("doctor")
   .description("Check database integrity invariants and install/runtime health, optionally repair safe violations")
-  .option("--fix", "repair mechanically safe violations: delete self-loop edges (I1), restore orphaned superseded/replaced sessions to closed (I2), delete ghost fact embeddings (I7)")
+  .option("--fix", "repair mechanically safe violations: delete self-loop edges (I1), restore orphaned superseded/replaced sessions to closed (I2), delete ghost fact embeddings (I7), delete map-less chunk vectors (I7b-1), collapse unattributed conflicting facts under the newest (I5a), re-evaluate facts whose superseding fact no longer exists (I5b); without --fix the I5a collapses are listed, not applied")
   .option("--override-guard", "allow the ghost-embedding repair past the sweep guard")
   .action(async (opts) => {
     const storage = await buildStorage(dbPath());
     let violations;
     let fixReport;
+    let stuckChunks: StuckChunk[];
     try {
       if (opts.fix) {
         if (storage instanceof PgStorage) {
@@ -3044,15 +3114,30 @@ program
         if (fixReport.deletedGhostEmbeddings > 0) {
           console.log(`  fixed I7: deleted ${fixReport.deletedGhostEmbeddings} ghost embedding(s)`);
         }
-        if (fixReport.deletedSelfLoops === 0 && fixReport.restoredToClosed === 0 && fixReport.deletedGhostEmbeddings === 0) {
+        if (fixReport.orphanChunkGuardRefusal) {
+          console.log(`  skipped I7b-1: refused by sweep guard: ${fixReport.orphanChunkGuardRefusal}`);
+        }
+        if (fixReport.deletedOrphanChunkIds.length > 0) {
+          console.log(`  fixed I7b-1: deleted ${fixReport.deletedOrphanChunkIds.length} map-less chunk vector(s): chunk_id ${fixReport.deletedOrphanChunkIds.join(", ")}`);
+        }
+        for (const r of fixReport.supersededConflicts) printConflictRepair("fixed I5a: superseded", r);
+        if (fixReport.deletedSelfLoops === 0 && fixReport.restoredToClosed === 0 && fixReport.deletedGhostEmbeddings === 0 && fixReport.deletedOrphanChunkIds.length === 0 && fixReport.supersededConflicts.length === 0) {
           console.log("  --fix: nothing to repair");
         }
+      } else {
+        const plan = storage instanceof PgStorage ? await planConflictRepairsOnPg(storage.pgPool()) : planConflictRepairsOnSqlite((storage as SqliteStorage).rawDb());
+        for (const r of plan) printConflictRepair("would fix I5a (--fix): supersede", r);
+        const dangling = storage instanceof PgStorage ? await planDanglingRepairsOnPg(storage.pgPool()) : planDanglingRepairsOnSqlite((storage as SqliteStorage).rawDb());
+        for (const r of dangling) printDanglingRepair("would fix I5b (--fix):", r);
       }
       if (storage instanceof PgStorage) {
         violations = await runChecksOnPg(storage.pgPool());
       } else {
         violations = runChecksOnSqlite((storage as SqliteStorage).rawDb());
       }
+      stuckChunks = storage instanceof PgStorage
+        ? await stuckChunksOnPg(storage.pgPool())
+        : stuckChunksOnSqlite((storage as SqliteStorage).rawDb());
     } finally {
       await storage.close();
     }
@@ -3071,6 +3156,13 @@ program
         console.log(`PASS ${id}`);
       }
     }
+    if (stuckChunks.length > 0) {
+      anyFail = true;
+      console.log(`FAIL chunk-embed  ${stuckChunks.length} chunk(s) failed ${MAX_CHUNK_EMBED_ATTEMPTS} embed attempts and are no longer retried`);
+      for (const c of stuckChunks.slice(0, 10)) {
+        console.log(`  ${c.sessionId} chunk ${c.chunkIdx}: ${c.lastError ?? "unknown error"}`);
+      }
+    }
     // I5a-mv is informational: multi-valued predicate groups legitimately exempt
     // from I5a. Not a violation; printed separately so the count is visible.
     const i5aMv = byId.get("I5a-mv");
@@ -3083,6 +3175,15 @@ program
 
     if (anyFail) process.exit(1);
   });
+
+function printConflictRepair(prefix: string, r: ConflictRepair): void {
+  console.log(`  ${prefix} ${r.tenantId} ${r.subject} | ${r.predicate}: kept ${r.keptId}, superseded ${r.supersededIds.join(", ")}`);
+}
+
+function printDanglingRepair(prefix: string, r: DanglingRepair): void {
+  const outcome = r.supersededBy === null ? `returned to active${r.alsoSuperseded.length > 0 ? `, superseded ${r.alsoSuperseded.join(", ")}` : ""}` : `now superseded by ${r.supersededBy}`;
+  console.log(`  ${prefix} ${r.tenantId} ${r.subject} | ${r.predicate}: ${r.factId} ${outcome}`);
+}
 
 function printHealthChecks(checks: ReadonlyArray<HealthCheck>): boolean {
   let anyFail = false;

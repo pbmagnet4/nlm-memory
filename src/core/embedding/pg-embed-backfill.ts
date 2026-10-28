@@ -259,24 +259,29 @@ export async function reembedCorpusPg(opts: PgBackfillOptions): Promise<Backfill
         continue;
       }
 
+      const client = await pool.connect();
       try {
+        await client.query("BEGIN");
         for (const { idx: cidx, vec } of vectors) {
           const vecStr = `[${Array.from(vec).join(",")}]`;
-          const ins = await pool.query<{ chunk_id: number }>(
+          const ins = await client.query<{ chunk_id: number }>(
             `INSERT INTO session_embedding_chunks (session_id, chunk_idx, embedding)
              VALUES ($1, $2, $3::vector) RETURNING chunk_id`,
             [row.id, cidx, vecStr],
           );
-          const chunkId = ins.rows[0]!.chunk_id;
-          await pool.query(
+          await client.query(
             "INSERT INTO session_chunk_map (chunk_id, session_id, chunk_idx) VALUES ($1, $2, $3)",
-            [chunkId, row.id, cidx],
+            [ins.rows[0]!.chunk_id, row.id, cidx],
           );
         }
+        await client.query("COMMIT");
       } catch (e) {
+        await client.query("ROLLBACK");
         failed += 1;
         opts.onProgress?.(idx, total, row.id, `FAIL (db): ${(e as Error).message}`);
         continue;
+      } finally {
+        client.release();
       }
 
       done.add(row.id);

@@ -1,6 +1,14 @@
-import { propertyAssociationsEnabled } from "@core/properties/model.js";
 import { factClassOf, factClassesEnabled } from "@core/facts/fact-classes.js";
 import type { Fact } from "@shared/types.js";
+
+/**
+ * An operator-unassigned fact (no property, set by the operator) is an explicit
+ * decision and stays independent. Every other NULL-slug fact collapses by
+ * (subject, predicate) like it did before property associations.
+ */
+function isOperatorUnassigned(f: Fact): boolean {
+  return f.property?.slug == null && f.property?.source === "operator";
+}
 
 /**
  * Returns the per-(property, subject, predicate) batch winners in insertion order.
@@ -12,10 +20,9 @@ import type { Fact } from "@shared/types.js";
  */
 export function batchWinners(facts: ReadonlyArray<Fact>): ReadonlyArray<Fact> {
   const classes = factClassesEnabled();
-  const preserveUnresolved = propertyAssociationsEnabled();
   const seen = new Map<string, Fact>();
   for (const f of facts) {
-    const independent = (classes && factClassOf(f.predicate) === "event") || (f.property?.slug == null && (preserveUnresolved || f.property?.source === "operator"));
+    const independent = (classes && factClassOf(f.predicate) === "event") || isOperatorUnassigned(f);
     const key = independent ? f.id : `${f.property?.slug ?? ""}\u0000${f.subject}\u0000${f.predicate}`;
     seen.set(key, f);
   }
@@ -28,7 +35,7 @@ export function batchWinners(facts: ReadonlyArray<Fact>): ReadonlyArray<Fact> {
  */
 export function collapseWinners(facts: ReadonlyArray<Fact>): ReadonlyArray<Fact> {
   const classes = factClassesEnabled();
-  return batchWinners(facts).filter((f) => !(f.property?.slug == null && (propertyAssociationsEnabled() || f.property?.source === "operator"))).filter((f) => !(classes && factClassOf(f.predicate) === "event"));
+  return batchWinners(facts).filter((f) => !isOperatorUnassigned(f)).filter((f) => !(classes && factClassOf(f.predicate) === "event"));
 }
 
 export async function storedBatchWinners(
@@ -37,4 +44,27 @@ export async function storedBatchWinners(
   const stored = new Map((await store.getByIds(tenantId, facts.map((f) => f.id))).map((f) => [f.id, f]));
   const attributed = facts.flatMap((f) => stored.has(f.id) ? [stored.get(f.id)!] : []);
   return batchWinners(attributed).filter((f) => f.supersededBy === null && f.retiredAt == null);
+}
+
+export interface DatedFact { readonly id: string; readonly created_at: string | Date }
+
+/**
+ * The fact that stays active among same-key facts: newest `created_at` (session
+ * time), the incoming fact on a tie, then the larger id. Ingest and the I5b
+ * repair share this so a re-ingested old session can never displace newer facts.
+ */
+export function newestFact<T extends DatedFact>(facts: readonly T[], incomingId?: string): T {
+  const time = (f: T): number => new Date(f.created_at).getTime();
+  return facts.reduce((best, f) => {
+    const dt = time(f) - time(best);
+    if (dt !== 0) return dt > 0 ? f : best;
+    if (f.id === incomingId) return f;
+    if (best.id === incomingId) return best;
+    return f.id > best.id ? f : best;
+  });
+}
+
+/** Whether ingest collapses facts under this key (the winners rule, from stored columns). */
+export function collapses(predicate: string, slug: string | null, source: string | null): boolean {
+  return !(slug === null && source === "operator") && !(factClassesEnabled() && factClassOf(predicate) === "event");
 }

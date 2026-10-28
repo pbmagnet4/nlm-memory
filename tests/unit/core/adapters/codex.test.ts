@@ -152,6 +152,39 @@ describe("CodexAdapter.parseSession", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
+  it("item_completed: captures the user turn and the final_answer, drops commentary and the synthetic preamble", async () => {
+    const chunk = await adapter.parseSession(join(FIXTURES, "item_completed_session.jsonl"));
+    expect(chunk).not.toBeNull();
+    if (!chunk) return;
+    const lines = chunk.text.split("\n");
+    expect(lines.filter((l) => l.startsWith("[user]"))).toEqual(["[user] Help me refactor the auth module"]);
+    expect(lines.filter((l) => l.startsWith("[assistant] Done."))).toEqual(["[assistant] Done. Split into two files."]);
+    expect(chunk.text).not.toContain("Checking the module");
+    expect(chunk.text).not.toContain("AGENTS.md");
+    expect(chunk.text).toContain("[tool_use: apply_patch]");
+    expect(chunk.text).toContain("[tool_result: Patch applied");
+    expect(chunk.label).toBe("Help me refactor the auth module");
+  });
+
+  it("item_completed: a rollout with only non-message items still parses to null", async () => {
+    expect(await adapter.parseSession(join(FIXTURES, "item_completed_no_messages.jsonl"))).toBeNull();
+  });
+
+  it("mixed shapes in one rollout: both the legacy and item_completed messages are kept", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "codex-mixed-"));
+    const f = join(tmp, "mixed.jsonl");
+    writeFileSync(
+      f,
+      `{"timestamp":"2026-10-02T19:06:02Z","type":"session_meta","payload":{"id":"mixed-id","cwd":"/x"}}\n` +
+        `{"timestamp":"2026-10-02T19:06:03Z","type":"event_msg","payload":{"type":"user_message","message":"legacy question"}}\n` +
+        `{"timestamp":"2026-10-02T19:06:04Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","content":[{"type":"Text","text":"new answer"},{"type":"Text","text":"second part"}]}}}\n`,
+    );
+    const chunk = await adapter.parseSession(f);
+    expect(chunk?.text).toContain("[user] legacy question");
+    expect(chunk?.text).toContain("[assistant] new answer\nsecond part");
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
   it("returns null when no extractable turns exist", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "codex-meta-only-"));
     const f = join(tmp, "meta-only.jsonl");

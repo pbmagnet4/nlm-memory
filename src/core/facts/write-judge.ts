@@ -1,4 +1,3 @@
-import { propertyAssociationsEnabled } from "@core/properties/model.js";
 /**
  * Write-time fact judge (T734 / E3).
  *
@@ -175,7 +174,6 @@ export async function findCandidates(
   fresh: Fact,
   opts: CandidateOptions = {},
 ): Promise<Fact[]> {
-  if (propertyAssociationsEnabled() && fresh.property?.slug == null) return [];
   const limit = opts.limit ?? MAX_CANDIDATES;
   const ok = (f: Fact): boolean => f.id !== fresh.id && (f.property?.slug ?? null) === (fresh.property?.slug ?? null) && isActive(f) && (opts.accept?.(f) ?? true);
   const picked = new Map<string, Fact>();

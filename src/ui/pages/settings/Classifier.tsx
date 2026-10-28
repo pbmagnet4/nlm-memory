@@ -4,6 +4,7 @@ import { SettingsSubnav } from "./SettingsSubnav.js";
 import { SourceBadge, type ValueSource } from "../../components/SourceBadge.js";
 import { fmt } from "../../lib/format.js";
 import { useIngestHealth } from "../../lib/ingest-health.js";
+import { activeProviderRow, providerKindMatchesClassifier } from "../../lib/classifier-provider.js";
 import {
   fetchProviders,
   fetchProviderModels,
@@ -51,21 +52,6 @@ interface ClassifierInfo {
   tuning: Tuning;
 }
 
-/**
- * The daemon's active classifier only ever reports "openai" (ClassifierBox
- * has one generic OpenAI-compatible provider), but a Providers-registry row
- * for the same endpoint may be kind "openai" (real OpenAI) or
- * "openai-compatible" (local/self-hosted, e.g. LM Studio) — both ride the
- * same swap path server-side. Treat both as a match for an active "openai"
- * classifier so the right row pre-selects and the dirty-check doesn't fire
- * on page load for a provider that hasn't actually changed.
- */
-function providerKindMatchesClassifier(kind: string, classifierProvider: string): boolean {
-  if (kind === classifierProvider) return true;
-  if (classifierProvider === "openai") return kind === "openai-compatible";
-  return false;
-}
-
 export function SettingsClassifierPage() {
   const [info, setInfo] = useState<ClassifierInfo | null>(null);
   const [providers, setProviders] = useState<ProviderRow[]>([]);
@@ -92,10 +78,7 @@ export function SettingsClassifierPage() {
       setInfo(infoRes);
       setTuningDraft(draftFromTuning(infoRes.tuning));
       setProviders(list);
-      const active = list.find((p) => providerKindMatchesClassifier(p.kind, infoRes.provider) && p.enabled);
-      const fallback = list.find((p) => p.enabled) ?? list[0] ?? null;
-      const selected = active ?? fallback;
-      setDraftProviderId(selected ? selected.id : null);
+      setDraftProviderId(activeProviderRow(list, infoRes.provider)?.id ?? null);
       setDraftModel(infoRes.model);
       setError(null);
     } catch (e) {
@@ -254,6 +237,7 @@ export function SettingsClassifierPage() {
                   }}
                   disabled={busy}
                 >
+                  {draftProviderId === null && <option value="" disabled>Select a provider…</option>}
                   {providers.map((p) => (
                     <option key={p.id} value={p.id} disabled={!p.enabled}>
                       {p.name} ({PROVIDER_KIND_LABEL[p.kind]}){p.enabled ? "" : " — disabled"}
@@ -291,6 +275,11 @@ export function SettingsClassifierPage() {
                 >{busy && test?.ok ? "Saving…" : "Save"}</button>
               </div>
 
+              {draftProviderId === null && (
+                <p className="muted small">
+                  The active provider ({info.provider}) has no enabled row in the Providers registry, so no provider is preselected.
+                </p>
+              )}
               {modelsErr && <p className="muted error small">Model list failed: {modelsErr}</p>}
               {test && (
                 <p className={`small ${test.ok ? "muted" : "muted error"}`}>

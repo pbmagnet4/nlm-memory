@@ -11,17 +11,17 @@
  * Gold lives OUTSIDE the repo (~/.nlm/eval/gold-usefulness.jsonl) because it
  * holds real prompts/responses. This harness is generic.
  *
- * Run: npx tsx scripts/eval/tune-usefulness-judge.ts [--model=qwen3.5:4b]
+ * Run: npx tsx scripts/eval/tune-usefulness-judge.ts [--model=<tag>]
  *        [--style=naive|grounded|reason] [--url=http://localhost:11434]
  *        [--gold=~/.nlm/eval/gold-usefulness.jsonl]
  */
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { USEFULNESS_DEFS as DEFS, USEFULNESS_SYSTEM, USEFULNESS_MODEL } from "./lib/usefulness-judge.js";
+import { USEFULNESS_DEFS as DEFS, USEFULNESS_SYSTEM, usefulnessModel } from "./lib/usefulness-judge.js";
 
 const get = (k: string) => { const h = process.argv.find((a) => a.startsWith(`--${k}=`)); return h ? h.slice(k.length + 3) : undefined; };
-const MODEL = get("model") ?? USEFULNESS_MODEL;
+const MODEL = usefulnessModel(get("model"));
 const STYLE = (get("style") ?? "naive") as "naive" | "grounded" | "reason";
 const URL = get("url") ?? "http://localhost:11434";
 const GOLD = (get("gold") ?? join(homedir(), ".nlm", "eval", "gold-usefulness.jsonl")).replace(/^~/, homedir());

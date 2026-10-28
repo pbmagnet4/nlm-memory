@@ -1,0 +1,8 @@
+{"timestamp":"2026-10-20T09:00:00.000Z","type":"session_meta","payload":{"id":"01a00000-0000-7000-8000-000000000001","timestamp":"2026-10-20T09:00:00.000Z","cwd":"/Users/test/project","originator":"codex_exec","cli_version":"0.164.0"}}
+{"timestamp":"2026-10-20T09:00:00.100Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}
+{"timestamp":"2026-10-20T09:00:00.200Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /Users/test/project\n\nsynthetic preamble that must not leak"}]}}
+{"timestamp":"2026-10-20T09:00:01.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"UserMessage","content":[{"type":"text","text":"Help me refactor the auth module","text_elements":[]}]}}}
+{"timestamp":"2026-10-20T09:00:02.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","phase":"commentary","content":[{"type":"Text","text":"Checking the module."}]}}}
+{"timestamp":"2026-10-20T09:00:03.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","input":"*** Begin Patch"}}
+{"timestamp":"2026-10-20T09:00:04.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","output":"Patch applied"}}
+{"timestamp":"2026-10-20T09:00:05.000Z","type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","phase":"final_answer","content":[{"type":"Text","text":"Done. Split into two files."}]}}}

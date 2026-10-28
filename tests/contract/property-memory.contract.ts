@@ -61,11 +61,11 @@ export function runPropertyMemoryContract(h: { attributeSession(s: Storage, tena
       expect((await storage.facts.getById(tenant, "seo-old"))?.supersededBy).toBe("seo-new");
       expect((await storage.facts.listForRecall(tenant, { property: "nxtads" })).map((f) => f.id)).toEqual(["ads"]);
     });
-    it("unresolved assertions cannot overwrite known or unresolved assertions", async () => {
+    it("unresolved assertions cannot overwrite known assertions", async () => {
       await ingest("s1", [fact("known", "s1", "nxtseo")]);
       await ingest("s2", [fact("unknown", "s2"), fact("unknown2", "s2")]);
       expect((await storage.facts.getById(tenant, "known"))?.supersededBy).toBeNull();
-      expect((await storage.facts.getById(tenant, "unknown"))?.supersededBy).toBeNull();
+      expect((await storage.facts.getById(tenant, "unknown2"))?.supersededBy).toBeNull();
     });
     it("attributes grounded subjects independently in a mixed session", async () => {
       const body = "SEO app uses port 3940. NxtAds uses port 8000.";
@@ -128,6 +128,50 @@ export function runPropertyMemoryContract(h: { attributeSession(s: Storage, tena
       await ingest("s1", [original]); await storage.properties.correctFact(tenant, "original", null);
       await ingest("s1", [{ ...original, id: "replacement" }]);
       expect((await storage.facts.getById(tenant, "replacement"))?.property).toMatchObject({ slug: null, source: "operator" });
+    });
+    it("supersedes an earlier unattributed fact with a newer one", async () => {
+      await ingest("s1", [fact("older", "s1")]);
+      await ingest("s2", [fact("newer", "s2")]);
+      expect((await storage.facts.getById(tenant, "older"))?.supersededBy).toBe("newer");
+      expect((await storage.facts.getById(tenant, "newer"))?.supersededBy).toBeNull();
+    });
+    const at = (month: string, f: Fact): Fact => ({ ...f, createdAt: `2026-${month}-01T00:00:00Z` });
+    it("re-ingesting an old session does not displace a newer fact, a newer one still supersedes", async () => {
+      await ingest("s1", [at("03", fact("newest", "s1"))]);
+      await ingest("s2", [at("01", fact("old", "s2"))]);
+      expect((await storage.facts.getById(tenant, "old"))?.supersededBy).toBe("newest");
+      expect((await storage.facts.getById(tenant, "newest"))?.supersededBy).toBeNull();
+      await ingest("s2", [at("01", { ...fact("old", "s2"), id: "old-again" })]);
+      expect((await storage.facts.getById(tenant, "old-again"))?.supersededBy).toBe("newest");
+      expect((await storage.facts.getById(tenant, "newest"))?.supersededBy).toBeNull();
+      await ingest("s3", [at("04", fact("latest", "s3"))]);
+      expect((await storage.facts.getById(tenant, "newest"))?.supersededBy).toBe("latest");
+    });
+    it("re-ingest re-points facts the replaced facts had superseded", async () => {
+      await ingest("s1", [at("01", fact("x", "s1"))]);
+      await ingest("s2", [at("02", fact("y", "s2"))]);
+      expect((await storage.facts.getById(tenant, "x"))?.supersededBy).toBe("y");
+      await ingest("s2", [at("02", { ...fact("y", "s2"), id: "y2" })]);
+      expect((await storage.facts.getById(tenant, "x"))?.supersededBy).toBe("y2");
+    });
+    it("re-ingest that drops the superseding fact re-evaluates against the remaining active facts", async () => {
+      await ingest("s1", [at("01", fact("x", "s1"))]);
+      await ingest("s2", [at("02", fact("y", "s2"))]);
+      await ingest("s3", [at("03", fact("z", "s3"))]);
+      await ingest("s3", []);
+      expect((await storage.facts.getById(tenant, "y"))?.supersededBy).toBeNull();
+      await ingest("s4", [at("04", fact("w", "s4"))]);
+      await ingest("s2", []);
+      expect((await storage.facts.getById(tenant, "x"))?.supersededBy).toBe("w");
+    });
+    it("keeps an operator-unassigned fact independent of its neighbours", async () => {
+      await ingest("s1", [fact("original", "s1")]);
+      await storage.properties.correctFact(tenant, "original", null);
+      await ingest("s2", [fact("prior", "s2")]);
+      await ingest("s1", [{ ...fact("original", "s1"), id: "unassigned" }]);
+      expect((await storage.facts.getById(tenant, "unassigned"))?.property).toMatchObject({ slug: null, source: "operator" });
+      expect((await storage.facts.getById(tenant, "prior"))?.supersededBy).toBeNull();
+      expect((await storage.facts.getById(tenant, "unassigned"))?.supersededBy).toBeNull();
     });
     it("rejects alias collisions, foreign fact corrections and duplicate assertion corrections", async () => {
       await expect(storage.properties.import(tenant, [{ slug: "other", label: "NxtSEO" }])).rejects.toThrow("Ambiguous");

@@ -13,6 +13,8 @@ import {
   runChecksOnSqlite,
   runCheapChecksOnSqlite,
   applyFixOnSqlite,
+  planConflictRepairsOnSqlite,
+  planDanglingRepairsOnSqlite,
 } from "../../src/core/integrity/check-invariants.js";
 import { makeSession } from "../fixtures/sessions.js";
 import { makeFact } from "../fixtures/facts.js";
@@ -629,6 +631,103 @@ describe("check-invariants (SQLite)", () => {
       seedEmbedding(db, "f_clean_cheap");
       const violations = runCheapChecksOnSqlite(db);
       expect(violations.find((v) => v.id === "I7")).toBeUndefined();
+    });
+  });
+
+  describe("I5a tenant scoping, event classes and conflict repair", () => {
+    let seq = 0;
+    function seedFact(over: { id: string; tenant?: string; subject?: string; predicate?: string; at: string; slug?: string | null; source?: string | null }): void {
+      store.rawDb().prepare(
+        `INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence, tenant_id, created_at, property_slug, property_source)
+         VALUES (?, 'attribute', ?, ?, ?, 's1', 1.0, ?, ?, ?, ?)`,
+      ).run(over.id, over.subject ?? "x", over.predicate ?? "color", `v${seq++}`, over.tenant ?? "team_local", over.at, over.slug ?? null, over.source ?? null);
+    }
+    const active = (id: string) => store.rawDb().prepare<[string], { superseded_by: string | null }>("SELECT superseded_by FROM facts WHERE id = ?").get(id)?.superseded_by;
+
+    beforeEach(() => store.insertSessionForTest(makeSession({ id: "s1" })));
+
+    it("does not count the same subject and predicate across tenants as a conflict", () => {
+      seedFact({ id: "a", tenant: "team_local", at: "2026-01-01T00:00:00Z" });
+      seedFact({ id: "b", tenant: "team_other", at: "2026-01-02T00:00:00Z" });
+      expect(runChecksOnSqlite(store.rawDb()).find((v) => v.id === "I5a")).toBeUndefined();
+    });
+
+    it("does not count the same subject and predicate under different properties as a conflict", () => {
+      seedFact({ id: "a", slug: "nxtseo", source: "explicit", at: "2026-01-01T00:00:00Z" });
+      seedFact({ id: "b", slug: "nxtads", source: "explicit", at: "2026-01-02T00:00:00Z" });
+      expect(runChecksOnSqlite(store.rawDb()).find((v) => v.id === "I5a")).toBeUndefined();
+    });
+
+    it("does not count event-class predicate pairs as a conflict", () => {
+      seedFact({ id: "a", predicate: "repo", at: "2026-01-01T00:00:00Z" });
+      seedFact({ id: "b", predicate: "repo", at: "2026-01-02T00:00:00Z" });
+      expect(runChecksOnSqlite(store.rawDb()).find((v) => v.id === "I5a")).toBeUndefined();
+    });
+
+    it("repair supersedes older unattributed facts under the newest and drops their embeddings", () => {
+      seedFact({ id: "old1", at: "2026-01-01T00:00:00Z" });
+      seedFact({ id: "old2", at: "2026-01-02T00:00:00Z" });
+      seedFact({ id: "new", at: "2026-01-03T00:00:00Z" });
+      store.rawDb().prepare("INSERT INTO fact_embeddings (fact_id, embedding) VALUES (?, ?)").run("old1", Buffer.alloc(768 * 4));
+      const dryRun = planConflictRepairsOnSqlite(store.rawDb());
+      expect(dryRun).toEqual([{ tenantId: "team_local", subject: "x", predicate: "color", keptId: "new", supersededIds: ["old1", "old2"] }]);
+      expect(active("old1")).toBeNull();
+      const report = applyFixOnSqlite(store.rawDb());
+      expect(report.supersededConflicts).toEqual(dryRun);
+      expect([active("old1"), active("old2"), active("new")]).toEqual(["new", "new", null]);
+      expect(store.rawDb().prepare("SELECT count(*) AS n FROM fact_embeddings_rowids").get()).toEqual({ n: 0 });
+      expect(runChecksOnSqlite(store.rawDb()).find((v) => v.id === "I5a")).toBeUndefined();
+      expect(applyFixOnSqlite(store.rawDb()).supersededConflicts).toEqual([]);
+    });
+
+    const dangle = (id: string) => {
+      const db = store.rawDb();
+      db.pragma("foreign_keys = OFF");
+      db.prepare("UPDATE facts SET superseded_by = 'deleted-fact' WHERE id = ?").run(id);
+      db.pragma("foreign_keys = ON");
+    };
+
+    it("I5b repair puts a dangling fact under a newer active fact", () => {
+      seedFact({ id: "stale", at: "2026-01-01T00:00:00Z" });
+      seedFact({ id: "newer", at: "2026-02-01T00:00:00Z" });
+      dangle("stale");
+      const plan = planDanglingRepairsOnSqlite(store.rawDb());
+      expect(plan).toEqual([{ factId: "stale", tenantId: "team_local", subject: "x", predicate: "color", supersededBy: "newer", alsoSuperseded: [] }]);
+      expect(active("stale")).toBe("deleted-fact");
+      expect(applyFixOnSqlite(store.rawDb()).repairedDangling).toEqual(plan);
+      expect([active("stale"), active("newer")]).toEqual(["newer", null]);
+      expect(runChecksOnSqlite(store.rawDb()).find((v) => v.id === "I5b")).toBeUndefined();
+      expect(applyFixOnSqlite(store.rawDb()).repairedDangling).toEqual([]);
+    });
+
+    it("I5b repair returns the newest dangling fact to active and supersedes older active facts under it", () => {
+      seedFact({ id: "older", at: "2026-01-01T00:00:00Z" });
+      seedFact({ id: "fresh", at: "2026-02-01T00:00:00Z" });
+      dangle("fresh");
+      const [repair] = applyFixOnSqlite(store.rawDb()).repairedDangling;
+      expect(repair).toMatchObject({ factId: "fresh", supersededBy: null, alsoSuperseded: ["older"] });
+      expect([active("fresh"), active("older")]).toEqual([null, "fresh"]);
+    });
+
+    it("I5b repair only reactivates a dangling parallel-predicate fact", () => {
+      seedFact({ id: "d1", predicate: "description", at: "2026-01-01T00:00:00Z" });
+      seedFact({ id: "d2", predicate: "description", at: "2026-02-01T00:00:00Z" });
+      dangle("d1");
+      applyFixOnSqlite(store.rawDb());
+      expect([active("d1"), active("d2")]).toEqual([null, null]);
+    });
+
+    it("repair leaves slugged, operator, parallel-predicate and cross-tenant facts alone", () => {
+      seedFact({ id: "slug1", predicate: "port", slug: "nxtseo", source: "explicit", at: "2026-01-01T00:00:00Z" });
+      seedFact({ id: "slug2", predicate: "port", slug: "nxtseo", source: "explicit", at: "2026-01-02T00:00:00Z" });
+      seedFact({ id: "op1", predicate: "model", source: "operator", at: "2026-01-01T00:00:00Z" });
+      seedFact({ id: "op2", predicate: "model", source: "operator", at: "2026-01-02T00:00:00Z" });
+      seedFact({ id: "d1", predicate: "description", at: "2026-01-01T00:00:00Z" });
+      seedFact({ id: "d2", predicate: "description", at: "2026-01-02T00:00:00Z" });
+      seedFact({ id: "t1", predicate: "status", tenant: "team_local", at: "2026-01-01T00:00:00Z" });
+      seedFact({ id: "t2", predicate: "status", tenant: "team_other", at: "2026-01-02T00:00:00Z" });
+      expect(applyFixOnSqlite(store.rawDb()).supersededConflicts).toEqual([]);
+      for (const id of ["slug1", "slug2", "op1", "op2", "d1", "d2", "t1", "t2"]) expect(active(id)).toBeNull();
     });
   });
 });

@@ -21,7 +21,7 @@
  *      (unused) rate, against the cited rate over the same sample.
  *
  * Run: npx tsx scripts/eval/hook-usefulness.ts [--limit=30] [--days=30]
- *        [--model=qwen3.5:4b] [--verbose] [--json=<out>]
+ *        [--model=<tag>] [--verbose] [--json=<out>]
  */
 import { readFileSync, existsSync, writeFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -29,7 +29,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { classifyPrompt } from "../../src/core/hook/gate.js";
 import { topicalWordCount } from "../../src/hook/recent-context.js";
-import { judgeUsefulness, USEFULNESS_MODEL, type Verdict } from "./lib/usefulness-judge.js";
+import { judgeUsefulness, usefulnessModel, type Verdict } from "./lib/usefulness-judge.js";
 
 type Band = "all" | "thin" | "specific";
 
@@ -51,7 +51,7 @@ function parseArgs(argv: string[]): Args {
   return {
     limit: Number.parseInt(get("limit") ?? "30", 10),
     days: Number.parseInt(get("days") ?? "30", 10),
-    model: get("model") ?? USEFULNESS_MODEL,
+    model: usefulnessModel(get("model")),
     ollamaUrl: get("ollama") ?? process.env["OLLAMA_URL"] ?? "http://localhost:11434",
     verbose: argv.includes("--verbose"),
     json: get("json") ?? null,
