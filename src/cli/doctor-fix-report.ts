@@ -25,7 +25,8 @@ export function fixReportLines(report: FixReport): string[] {
   for (const r of report.repairedDangling) lines.push(danglingRepairLine("fixed I5b:", r));
   if (
     report.deletedSelfLoops === 0 && report.restoredToClosed === 0 && report.deletedGhostEmbeddings === 0 &&
-    report.deletedOrphanChunkIds.length === 0 && report.supersededConflicts.length === 0 && report.repairedDangling.length === 0
+    report.deletedOrphanChunkIds.length === 0 && report.supersededConflicts.length === 0 && report.repairedDangling.length === 0 &&
+    !report.ghostGuardRefusal && !report.orphanChunkGuardRefusal
   ) {
     lines.push("  --fix: nothing to repair");
   }

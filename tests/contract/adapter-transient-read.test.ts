@@ -95,6 +95,15 @@ describe("windsurf", () => {
     chmodSync(dbPath, 0o644);
   });
 
+  it("skips a workspace DB without ItemTable and still reads the tab from a later DB", async () => {
+    const dir0 = join(tmp, "User", "workspaceStorage", "ws0");
+    mkdirSync(dir0, { recursive: true });
+    makeDb(join(dir0, "state.vscdb"), "CREATE TABLE other (x TEXT)", []);
+    workspaceDb([[CHAT_KEY, JSON.stringify({ tabs: [tab] })]]);
+    const adapter = new WindsurfAdapter({ userDir: join(tmp, "User") });
+    expect((await adapter.parseSession("ws_t1"))?.turnCount).toBe(2);
+  });
+
   it("malformed chat JSON is still a null session", async () => {
     workspaceDb([[CHAT_KEY, "{not json"]]);
     const adapter = new WindsurfAdapter({ userDir: join(tmp, "User") });

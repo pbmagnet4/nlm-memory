@@ -36,7 +36,7 @@ import type {
   SessionChunk,
   TranscriptAdapter,
 } from "@ports/transcript-adapter.js";
-import { durationMinutes, normalizeTimestamp, safeSessionId, skipMalformedRecord } from "./common.js";
+import { durationMinutes, normalizeTimestamp, safeSessionId, skipMalformedRecord, hasItemTable } from "./common.js";
 
 export interface CursorAdapterOptions {
   readonly dbPath?: string;
@@ -189,10 +189,6 @@ function buildChunk(
     text,
     label,
   };
-}
-
-function hasItemTable(db: Database.Database): boolean {
-  return db.prepare<[], { name: string }>(`SELECT name FROM sqlite_master WHERE type='table' AND name='ItemTable'`).get() !== undefined;
 }
 
 // ── Workspace parsers ─────────────────────────────────────────────────────────
