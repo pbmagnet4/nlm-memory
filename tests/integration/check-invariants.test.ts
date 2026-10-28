@@ -651,6 +651,12 @@ describe("check-invariants (SQLite)", () => {
       expect(runChecksOnSqlite(store.rawDb()).find((v) => v.id === "I5a")).toBeUndefined();
     });
 
+    it("does not count the same subject and predicate under different properties as a conflict", () => {
+      seedFact({ id: "a", slug: "nxtseo", source: "explicit", at: "2026-01-01T00:00:00Z" });
+      seedFact({ id: "b", slug: "nxtads", source: "explicit", at: "2026-01-02T00:00:00Z" });
+      expect(runChecksOnSqlite(store.rawDb()).find((v) => v.id === "I5a")).toBeUndefined();
+    });
+
     it("does not count event-class predicate pairs as a conflict", () => {
       seedFact({ id: "a", predicate: "repo", at: "2026-01-01T00:00:00Z" });
       seedFact({ id: "b", predicate: "repo", at: "2026-01-02T00:00:00Z" });

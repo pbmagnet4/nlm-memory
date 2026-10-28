@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   FactJudge,
   buildJudgePrompt,
@@ -219,5 +219,17 @@ describe("FactJudge against a real store", () => {
     );
     const c = await findCandidates(storage.facts, T, fact("n", { value: "bob" }));
     expect(c.map((f) => f.id)).toEqual(["a"]);
+  });
+
+  it("with property associations on, candidates are unattributed for an unattributed fact and never cross slugs", async () => {
+    vi.stubEnv("NLM_PROPERTY_ASSOCIATIONS", "1");
+    try {
+      const slugged = (slug: string) => ({ property: { slug, source: "explicit" as const, evidence: "test" } });
+      await seed(fact("plain"), fact("seo", slugged("nxtseo")), fact("ads", slugged("nxtads")));
+      expect((await findCandidates(storage.facts, T, fact("n", { value: "bob" }))).map((f) => f.id)).toEqual(["plain"]);
+      expect((await findCandidates(storage.facts, T, fact("n", { value: "bob", ...slugged("nxtseo") }))).map((f) => f.id)).toEqual(["seo"]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

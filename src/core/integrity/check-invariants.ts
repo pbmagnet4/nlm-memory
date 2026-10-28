@@ -119,7 +119,7 @@ const SQL_I5_DUPLICATE_FACTS = `
   FROM facts
   WHERE superseded_by IS NULL AND retired_at IS NULL
     AND predicate NOT IN (${MV_IN})
-  GROUP BY tenant_id, subject, predicate
+  GROUP BY tenant_id, property_slug, subject, predicate
   HAVING COUNT(*) > 1
   LIMIT 6
 `;
@@ -302,7 +302,7 @@ export function listActiveFactConflictGroups(db: Database.Database): Array<{ sub
     .prepare<[], { subject: string; predicate: string }>(
       `SELECT subject, predicate FROM facts
        WHERE superseded_by IS NULL AND retired_at IS NULL AND predicate NOT IN (${MV_IN})
-       GROUP BY tenant_id, subject, predicate HAVING COUNT(*) > 1`,
+       GROUP BY tenant_id, property_slug, subject, predicate HAVING COUNT(*) > 1`,
     )
     .all();
 }
