@@ -71,9 +71,9 @@ export class PgPropertyStore implements PropertyStore {
     await this.db.query(`DELETE FROM session_properties WHERE session_id = $1 AND source IN ('entity', 'repository') AND ${tc.sql}`, [record.id, tc.param]);
     if (!propertyAssociationsEnabled()) return;
     const origin = repositoryProperty(record.projectDir, await this.list(tenantId));
-    if (origin) await this.db.query("INSERT INTO session_properties (tenant_id, session_id, property_slug, source, evidence) VALUES ($1, $2, $3, 'repository', $4)", [tenantId, record.id, origin, record.projectDir!]);
+    if (origin) await this.db.query("INSERT INTO session_properties (tenant_id, session_id, property_slug, source, evidence) VALUES ($1, $2, $3, 'repository', $4) ON CONFLICT DO NOTHING", [tenantId, record.id, origin, record.projectDir!]);
     for (const p of sessionPropertyReferences(propertyInferenceEnabled() ? record.entities : [], await this.list(tenantId), session.body)) {
-      await this.db.query("INSERT INTO session_properties (tenant_id, session_id, property_slug, source, evidence) VALUES ($1, $2, $3, 'entity', $4)", [tenantId, record.id, p.slug, p.evidence]);
+      await this.db.query("INSERT INTO session_properties (tenant_id, session_id, property_slug, source, evidence) VALUES ($1, $2, $3, 'entity', $4) ON CONFLICT DO NOTHING", [tenantId, record.id, p.slug, p.evidence]);
     }
   }
   async associateSession(tenantId: string, sessionId: string, slugs: readonly string[]): Promise<void> {
