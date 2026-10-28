@@ -11,7 +11,7 @@ import { bodyVersion } from "../../../src/core/context/source-version.js";
 import { assertionKey } from "../../../src/core/properties/model.js";
 import { assertSnapshot, fileHash, pathsIn, readJson, sha256, writePrivate, type Manifest } from "../../../scripts/eval/lib/property-holdout-io.js";
 import { buildExclusions, countProposals, drawHoldout, freezeHoldout, orderKey, type Candidate, type Predictions } from "../../../scripts/eval/lib/property-holdout.js";
-import { classifyFact, classifySession, factMatches } from "../../../scripts/eval/lib/property-holdout-strata.js";
+import { classifyFact, classifySession, factMatches, mentions } from "../../../scripts/eval/lib/property-holdout-strata.js";
 import { parseProperties } from "../../../src/core/properties/model.js";
 import { saveLabels, sealLabels, validateLabel, type LabelsFile } from "../../../scripts/eval/lib/property-holdout-labels.js";
 import { ScoringRefused, scoreHoldout } from "../../../scripts/eval/lib/property-holdout-score.js";
@@ -178,6 +178,10 @@ describe("strata", () => {
     // matches A and B and C: first row wins, overlap is visible
     const multi = factMatches({ quote: "Alpha and Beta use ALPHA_PORT", value: "v", session: { ...session, skill: "eval" } }, catalog);
     expect(multi).toEqual(["A", "B", "C", "E"]);
+  });
+  it("matches catalog names only on word boundaries", () => {
+    expect(mentions("Alphabet soup and BetaMax", catalog)).toEqual([]);
+    expect([...new Set(mentions("Alpha, then beta.", catalog).map((m) => m.slug))].sort()).toEqual(["alpha", "beta"]);
   });
   it("classifies sessions C then D then E", () => {
     expect(classifySession({ session: { skill: "label", label: "x", body: "" }, hasRepositoryOrExplicit: false })).toBe("C");

@@ -18,7 +18,7 @@ function names(property: MemoryProperty): string[] {
 }
 function literal(name: string): RegExp {
   const parts = name.trim().split(/[\s_-]+/).map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  return new RegExp(parts.join("[\\s_-]+"), "giu");
+  return new RegExp(`(?<![\\p{L}\\p{N}_])${parts.join("[\\s_-]+")}(?![\\p{L}\\p{N}_])`, "giu");
 }
 export function mentions(text: string, catalog: readonly MemoryProperty[]): { slug: string; at: number; length: number }[] {
   const found: { slug: string; at: number; length: number }[] = [];
