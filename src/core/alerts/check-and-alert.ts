@@ -92,3 +92,12 @@ export async function checkIngestLagAndAlert(
   }
   await writeAlertState(statePath, { ...state, ingestLag: result.next });
 }
+
+/** Runs the checks one after another: each read-modify-writes alert-state.json,
+ *  so overlapping checks would overwrite each other's state. A failed check
+ *  never blocks the daemon or the checks after it. */
+export async function runAlertChecks(checks: ReadonlyArray<() => Promise<void>>): Promise<void> {
+  for (const check of checks) {
+    await check().catch(() => {});
+  }
+}

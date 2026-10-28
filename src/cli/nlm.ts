@@ -101,7 +101,7 @@ import { runScopeBackfill, formatBackfillResult } from "./scope-backfill.js";
 import { runScopeCoverage, formatCoverageResult } from "./scope-coverage.js";
 import { loadAliasMap } from "../core/scope/alias-map.js";
 import { getUpdateStatus } from "../core/update-check/check.js";
-import { checkDriftAndAlert, checkEmbedderAndAlert, checkIngestLagAndAlert } from "../core/alerts/check-and-alert.js";
+import { checkDriftAndAlert, checkEmbedderAndAlert, checkIngestLagAndAlert, runAlertChecks } from "../core/alerts/check-and-alert.js";
 import { fireAlert } from "../core/alerts/fire-alert.js";
 import { buildJobAlertEvent } from "../core/alerts/job-alert.js";
 import { buildWikiDriftEvent, buildWikiFailureEvent } from "../core/alerts/wiki-alert.js";
@@ -709,24 +709,20 @@ program
     // NLM_ALERT_WEBHOOK self-reporting: version-drift + embedder-cold
     // transitions POST to an operator-owned webhook. No-op (zero network
     // calls) when the env var is unset — see core/alerts/fire-alert.ts.
-    const ALERT_DRIFT_CHECK_INTERVAL_MS = 60 * 60_000;
-    const alertDriftTimer = setInterval(() => {
-      void checkDriftAndAlert({ currentVersion: pkg.version }).catch(() => {
-        // Best-effort self-reporting — a failed check never blocks the daemon.
-      });
-    }, ALERT_DRIFT_CHECK_INTERVAL_MS);
-    alertDriftTimer.unref();
-
-    const ALERT_EMBEDDER_CHECK_INTERVAL_MS = 5 * 60_000;
-    // Sequential on purpose: each check read-modify-writes alert-state.json, so
-    // overlapping checks would overwrite each other's state.
+    const ALERT_CHECK_INTERVAL_MS = 5 * 60_000;
+    // Drift stays hourly: every 12th round (the update check itself is cached 24h).
+    const ALERT_DRIFT_EVERY_N_ROUNDS = 12;
+    let alertRound = 0;
     const alertHealthTimer = setInterval(() => {
-      // Best-effort self-reporting — a failed check never blocks the daemon or the next check.
-      void (async () => {
-        await checkEmbedderAndAlert().catch(() => {});
-        await checkIngestLagAndAlert(() => ingestLag.get()).catch(() => {});
-      })();
-    }, ALERT_EMBEDDER_CHECK_INTERVAL_MS);
+      alertRound += 1;
+      void runAlertChecks([
+        () => checkEmbedderAndAlert(),
+        () => checkIngestLagAndAlert(() => ingestLag.get()),
+        ...(alertRound % ALERT_DRIFT_EVERY_N_ROUNDS === 0
+          ? [() => checkDriftAndAlert({ currentVersion: pkg.version })]
+          : []),
+      ]);
+    }, ALERT_CHECK_INTERVAL_MS);
     alertHealthTimer.unref();
 
     // Corpus monitor: 24h stats job + pairs-cache refresh + weekly trend log.
