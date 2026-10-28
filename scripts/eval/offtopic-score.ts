@@ -11,7 +11,7 @@
  *
  * Run: npx tsx scripts/eval/offtopic-score.ts [--n=60] [--days=60]
  */
-import { judgeUsefulness, USEFULNESS_MODEL, type Verdict } from "./lib/usefulness-judge.js";
+import { judgeUsefulness, usefulnessModel, type Verdict } from "./lib/usefulness-judge.js";
 import { readInjectFires, responseFor, evenStride, openSessionContext } from "./lib/transcript.js";
 
 const get = (k: string) => { const h = process.argv.find((a) => a.startsWith(`--${k}=`)); return h ? h.slice(k.length + 3) : undefined; };
@@ -28,7 +28,7 @@ for (const f of evenStride(fires, N * 3)) {
   if (rows.length >= N) break;
   const response = responseFor(f.cid, f.prompt); if (!response) continue;
   const context = ctx.get(f.injId); if (!context) continue;
-  const verdict = await judgeUsefulness(URL, USEFULNESS_MODEL, { prompt: f.prompt, context, response });
+  const verdict = await judgeUsefulness(URL, usefulnessModel(), { prompt: f.prompt, context, response });
   rows.push({ score: f.topScore, verdict });
 }
 ctx.close();

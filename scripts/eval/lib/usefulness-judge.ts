@@ -3,7 +3,7 @@
  * agent's RESPONSE used the recall context that was injected into it.
  *
  * Config is the one validated against the frontier gold set (~/.nlm/eval/
- * gold-usefulness.jsonl, n=77) on 2026-06-23: model qwen3.5:4b, the "naive"
+ * gold-usefulness.jsonl, n=77) on 2026-06-23 with qwen3.5:4b (re-validate on a different model), the "naive"
  * prompt (verdict-only — forcing the 4B model to write evidence/reasoning first
  * collapses every verdict to "unused"), and clean greedy sampling. Sampling was
  * proven a non-lever for this task (presence_penalty/top_p/top_k give identical
@@ -19,6 +19,8 @@
  * shipped path can never drift on the prompt.
  */
 
+import { autoloadEnv } from "../../../src/llm/env-autoload.js";
+
 export type Verdict = "used" | "partial" | "unused";
 
 export const USEFULNESS_DEFS =
@@ -27,7 +29,13 @@ export const USEFULNESS_DEFS =
 export const USEFULNESS_SYSTEM =
   `Judge whether the assistant RESPONSE used information from the INJECTED context. ${USEFULNESS_DEFS} Output {"verdict":"..."}.`;
 
-export const USEFULNESS_MODEL = "qwen3.5:4b";
+/** The judge runs on the configured classifier model (NLM_CLASSIFIER_MODEL, via ~/.nlm/.env) unless overridden. */
+export function usefulnessModel(override?: string): string {
+  autoloadEnv();
+  const model = override ?? process.env["NLM_CLASSIFIER_MODEL"];
+  if (!model) throw new Error("usefulness judge needs a model: pass --model or set NLM_CLASSIFIER_MODEL");
+  return model;
+}
 
 const FORMAT = {
   type: "object",

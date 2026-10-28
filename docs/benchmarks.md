@@ -128,8 +128,9 @@ For the upgrade path and how to switch classifier lanes, see
 
 All numbers from
 [`reports/usefulness/2026-07-03-consumption-measurements.md`](../reports/usefulness/2026-07-03-consumption-measurements.md).
-The usefulness judge is `qwen3.5:4b` locked at the version in
-`scripts/eval/lib/usefulness-judge.ts`.
+These numbers were measured with `qwen3.5:4b` as the usefulness judge. The judge
+in `scripts/eval/lib/usefulness-judge.ts` now runs on the configured classifier
+model (`NLM_CLASSIFIER_MODEL`) unless `--model` is passed.
 
 **Ambient injection (per-prompt hook).** 18.2% of automatically injected
 context turns out useful in the response that immediately follows. The

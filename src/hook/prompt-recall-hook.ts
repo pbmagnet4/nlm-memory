@@ -20,7 +20,6 @@ import { selectHits, type RecallHitInput } from "@core/hook/select.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
 import { recallOverHttp, type RecallOutcome } from "./recall-over-http.js";
 import { parseScoreFloor, parseRelativeFloor } from "./score-floor.js";
-import { makeOllamaGate, parseRecallGateMode } from "./recall-gate.js";
 import { readStdin, hookModeFromEnv, isMainModule } from "./hook-helpers.js";
 
 // Keyword recall returns raw BM25 scores (unbounded, not the 0..1 hybrid
@@ -50,7 +49,7 @@ export function parseHookDeadline(raw: string | undefined, defaultMs = 4000): nu
   return Number.isFinite(n) && n > 0 ? n : defaultMs;
 }
 
-// #396: the outer deadline wraps recall + gate + formatting and must exceed
+// #396: the outer deadline wraps recall + formatting and must exceed
 // RECALL_TIMEOUT_MS (default 4000ms in recall-over-http.ts) with headroom.
 // Invariant: HOOK_DEADLINE_MS > RECALL_TIMEOUT_MS at defaults. If the outer
 // equals the inner, the deadline fires before post-recall work can complete.
@@ -127,17 +126,6 @@ export interface RecallFetchResult {
   readonly outcome?: RecallOutcome;
 }
 
-export type GateMode = "shadow" | "live";
-
-export interface RecallGate {
-  /** shadow = log decisions, inject as usual; live = drop irrelevant candidates. */
-  readonly mode: GateMode;
-  /** Predict, from the prompt and a candidate's context, whether to inject it. */
-  readonly judge: (prompt: string, candidate: string) => Promise<"relevant" | "irrelevant">;
-  /** Judge only the top N candidates (bounds hot-path latency). Unset = all. */
-  readonly maxCandidates?: number;
-}
-
 export interface RunHookDeps {
   readonly mode: HookMode;
   /**
@@ -147,9 +135,7 @@ export interface RunHookDeps {
   readonly recall: (
     prompt: string,
   ) => Promise<ReadonlyArray<RecallHitInput> | RecallFetchResult>;
-  /** Optional pre-injection relevance gate. Absent => no gating (today's behavior). */
-  readonly recallGate?: RecallGate;
-  /** Wall-clock deadline for the combined recall + gate stages. Defaults to NLM_HOOK_DEADLINE_MS (6000ms; must exceed the recall HTTP timeout, see #396). */
+  /** Wall-clock deadline for the recall stage. Defaults to NLM_HOOK_DEADLINE_MS (6000ms; must exceed the recall HTTP timeout, see #396). */
   readonly deadlineMs?: number;
 }
 
@@ -210,33 +196,7 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
     perConversationCap: PER_CONVERSATION_CAP,
   });
 
-  // Relevance gate: judge each selected candidate before injecting. In shadow
-  // it only records decisions; in live it drops the irrelevant ones. Gate the
-  // already-capped `selected` set (<=PER_FIRE_CAP), not the full hit list, to
-  // bound hot-path latency.
-  let gateDecisions: ReadonlyArray<{ id: string; gate: "relevant" | "irrelevant" }> | undefined;
-  let injected = selected;
-  if (deps.recallGate && selected.length > 0) {
-    const g = deps.recallGate;
-    const toGate = g.maxCandidates ? selected.slice(0, g.maxCandidates) : selected;
-    const remaining = deadline - Date.now();
-    const gateFallback = toGate.map((h) => ({ id: h.id, gate: "relevant" as const }));
-    if (remaining <= 0) {
-      gateDecisions = gateFallback;
-    } else {
-      gateDecisions = await withDeadline(
-        Promise.all(toGate.map(async (h) => ({ id: h.id, gate: await g.judge(input.prompt, `${h.label}\n${h.summary ?? ""}`) }))),
-        remaining,
-        gateFallback,
-      );
-    }
-    if (g.mode === "live") {
-      const drop = new Set(gateDecisions.filter((d) => d.gate === "irrelevant").map((d) => d.id));
-      injected = selected.filter((h) => !drop.has(h.id));
-    }
-  }
-
-  const block = formatPointerBlock(injected, fetched.facts, fetched.exemplars, fetched.concepts ?? []);
+  const block = formatPointerBlock(selected, fetched.facts, fetched.exemplars, fetched.concepts ?? []);
   const estTokens = Math.ceil(block.length / 4);
 
   appendHookLog(DEFAULT_TEAM_ID, {
@@ -245,15 +205,14 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
     promptPreview: preview,
     gate,
     hits: hits.map((h) => ({ id: h.id, score: h.matchScore })),
-    wouldInject: injected.map((h) => h.id),
+    wouldInject: selected.map((h) => h.id),
     estTokens,
     mode: deps.mode,
     ...(fetched.outcome ? { recallOutcome: fetched.outcome } : {}),
-    ...(gateDecisions ? { gateDecisions } : {}),
   });
 
-  if (deps.mode === "live" && injected.length > 0) {
-    recordSurfaced(DEFAULT_TEAM_ID, input.conversationId, injected.map((h) => h.id));
+  if (deps.mode === "live" && selected.length > 0) {
+    recordSurfaced(DEFAULT_TEAM_ID, input.conversationId, selected.map((h) => h.id));
     return block;
   }
   return "";
@@ -279,24 +238,18 @@ async function main(): Promise<void> {
     if (!prompt) return;
 
     // Option B (push -> pull): when per-prompt ambient recall is disabled, do
-    // zero hot-path work — no recall call, no gate, no injection. Memory is
+    // zero hot-path work — no recall call, no injection. Memory is
     // pulled on demand instead. The once-per-session passive layer
     // (session-start hook) is unaffected.
     if (!promptRecallEnabled()) return;
 
     const mode: HookMode = hookModeFromEnv();
     const runtime = hookRuntimeFromEnv();
-    const gateMode = parseRecallGateMode();
-    const gateUrl = process.env["OLLAMA_URL"] ?? "http://127.0.0.1:11434";
-    // Cap how many candidates the gate judges to bound hot-path latency
-    // (~1 judge call/fire by default). Override with NLM_HOOK_RECALL_GATE_TOPN.
-    const gateTopN = Math.max(1, Number.parseInt(process.env["NLM_HOOK_RECALL_GATE_TOPN"] ?? "1", 10) || 1);
     const out = await runHook(
       { prompt, conversationId, ...(transcriptPath ? { transcriptPath } : {}) },
       {
         mode,
         recall: (q) => recallOverHttp(q, runtime, conversationId === "unknown" ? undefined : conversationId),
-        ...(gateMode ? { recallGate: { mode: gateMode, judge: makeOllamaGate(gateUrl), maxCandidates: gateTopN } } : {}),
       },
     );
     if (out) process.stdout.write(out);
