@@ -17,15 +17,21 @@ import {
   DEFAULT_EMBEDDER_ALERT_STATE,
   type EmbedderAlertState,
 } from "./embedder-transition.js";
+import {
+  DEFAULT_INGEST_LAG_ALERT_STATE,
+  type IngestLagAlertState,
+} from "./ingest-lag-transition.js";
 
 export interface AlertState {
   readonly drift: DriftAlertState;
   readonly embedderCold: EmbedderAlertState;
+  readonly ingestLag: IngestLagAlertState;
 }
 
 export const DEFAULT_ALERT_STATE: AlertState = {
   drift: DEFAULT_DRIFT_ALERT_STATE,
   embedderCold: DEFAULT_EMBEDDER_ALERT_STATE,
+  ingestLag: DEFAULT_INGEST_LAG_ALERT_STATE,
 };
 
 export function defaultAlertStatePath(): string {
@@ -39,6 +45,7 @@ export async function readAlertState(path: string): Promise<AlertState> {
     return {
       drift: { ...DEFAULT_DRIFT_ALERT_STATE, ...parsed.drift },
       embedderCold: { ...DEFAULT_EMBEDDER_ALERT_STATE, ...parsed.embedderCold },
+      ingestLag: { ...DEFAULT_INGEST_LAG_ALERT_STATE, ...parsed.ingestLag },
     };
   } catch {
     // First run, corrupt file, or unreadable — start from a clean slate;

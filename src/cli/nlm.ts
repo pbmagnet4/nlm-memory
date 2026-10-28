@@ -101,7 +101,7 @@ import { runScopeBackfill, formatBackfillResult } from "./scope-backfill.js";
 import { runScopeCoverage, formatCoverageResult } from "./scope-coverage.js";
 import { loadAliasMap } from "../core/scope/alias-map.js";
 import { getUpdateStatus } from "../core/update-check/check.js";
-import { checkDriftAndAlert, checkEmbedderAndAlert } from "../core/alerts/check-and-alert.js";
+import { checkDriftAndAlert, checkEmbedderAndAlert, checkIngestLagAndAlert } from "../core/alerts/check-and-alert.js";
 import { fireAlert } from "../core/alerts/fire-alert.js";
 import { buildJobAlertEvent } from "../core/alerts/job-alert.js";
 import { buildWikiDriftEvent, buildWikiFailureEvent } from "../core/alerts/wiki-alert.js";
@@ -130,7 +130,8 @@ import { computeReDerivationRate, sqliteReDerivationDeps } from "../core/metrics
 import { reconcileLane } from "../core/embedding/embedding-config.js";
 import type { EmbeddingConfigStore, EmbeddingLaneConfig } from "../core/embedding/embedding-config.js";
 import { backfillFacts } from "../core/facts/backfill-facts.js";
-import { ScanScheduler, type IngestGate } from "../core/scheduler/scheduler.js";
+import { adapterStateReader, createIngestLagMonitor, ingestLagThresholdHours } from "../core/health/ingest-lag.js";
+import { DEFAULT_IDLE_MINUTES, ScanScheduler, type IngestGate } from "../core/scheduler/scheduler.js";
 import { makeClefIngestGate, parseIngestGateMode } from "../core/classifier/ingest-gate.js";
 import { GATE_MODEL } from "../core/classifier/gate-model-params.js";
 import { MemoSweepScheduler } from "../core/hook/memo-sweep.js";
@@ -567,7 +568,14 @@ program
         void fireAlert(buildJobAlertEvent(event));
       },
     });
+    const ingestLag = createIngestLagMonitor({
+      listAdapters: () => buildAdapters(sources, DEFAULT_TEAM_ID),
+      readState: adapterStateReader(store),
+      idleMinutes: DEFAULT_IDLE_MINUTES,
+      thresholdHours: ingestLagThresholdHours(),
+    });
     const app = createApp({
+      ingestLag,
       properties: storage.properties,
       recall,
       store,
@@ -733,6 +741,12 @@ program
       });
     }, ALERT_EMBEDDER_CHECK_INTERVAL_MS);
     alertEmbedderTimer.unref();
+    const alertIngestLagTimer = setInterval(() => {
+      void checkIngestLagAndAlert(() => ingestLag.get()).catch(() => {
+        // Best-effort self-reporting — a failed check never blocks the daemon.
+      });
+    }, ALERT_EMBEDDER_CHECK_INTERVAL_MS);
+    alertIngestLagTimer.unref();
 
     // Corpus monitor: 24h stats job + pairs-cache refresh + weekly trend log.
     // SQLite only. First run is delayed ~60s so warmup finishes first; then

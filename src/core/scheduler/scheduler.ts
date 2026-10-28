@@ -46,6 +46,7 @@ import { runCheapChecksOnSqlite } from "@core/integrity/check-invariants.js";
 import { classifyAdaptive } from "@core/classifier/hierarchical-classify.js";
 import { isTransientLLMError } from "@core/classifier/transient-error.js";
 import { appendShadowLine, gatedClassification, type GateVerdict, type IngestGateMode } from "@core/classifier/ingest-gate.js";
+import { recordClassifyFailure, recordClassifySuccess } from "@core/health/classify-outcomes.js";
 import { TimeoutError } from "@core/util/with-timeout.js";
 import { bindSessionToWorkstream } from "@core/workstream/bind.js";
 import { parseWorkTopics, aliasToLabelMap } from "@core/workstream/work-topics.js";
@@ -76,7 +77,7 @@ function contentHash(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 const DEFAULT_CONFIDENCE_FLOOR = 0.3;
-const DEFAULT_IDLE_MINUTES = 15;
+export const DEFAULT_IDLE_MINUTES = 15;
 const SUBAGENT_RUNTIMES: ReadonlySet<string> = new Set(["claude-code", "muse"]);
 const DEFAULT_EXEMPLAR_MAX_PER_BUCKET = 50;
 const BODY_CAP = 200_000;
@@ -340,7 +341,9 @@ export class ScanScheduler {
             classification = await classifyAdaptive(chunk.text, this.opts.classifier, {
               perCallTimeoutMs: this.opts.classifyTimeoutMs(),
             });
+            recordClassifySuccess();
           } catch (e) {
+            recordClassifyFailure(e instanceof TimeoutError ? "timeout" : "error");
             if (isTransientLLMError(e)) {
               // Infrastructure error, not the transcript's fault: no strike, retry with exponential backoff.
               const delayMs = Math.min((backoff?.delayMs ?? DEFER_BASE_MS / 2) * 2, DEFER_CAP_MS);

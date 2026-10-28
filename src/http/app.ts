@@ -127,6 +127,7 @@ import { warmupSnapshot } from "@core/health/warmup-state.js";
 import { laneHealthSnapshot } from "@core/health/embedding-lane-state.js";
 import { inflightSnapshot } from "@core/health/embed-inflight.js";
 import { factEmbedSnapshot } from "@core/health/fact-embed-state.js";
+import type { IngestLagMonitor } from "@core/health/ingest-lag.js";
 import { corpusSnapshot } from "@core/health/corpus-state.js";
 import { DEFAULT_NLM_PORT } from "../shared/net.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
@@ -208,6 +209,8 @@ export interface HttpDeps {
    * would otherwise require real spawnChild/clock ports).
    */
   readonly jobSupervisor?: Pick<JobSupervisor, "start" | "stop" | "snapshot">;
+  /** Wire to enable GET /api/health/ingest. */
+  readonly ingestLag?: IngestLagMonitor;
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -738,6 +741,11 @@ function registerHealthRoute(app: Hono<AppEnv>, deps: HttpDeps): void {
     const jobSnap: JobSnapshot | null = deps.jobSupervisor ? deps.jobSupervisor.snapshot() : null;
     const job = jobSnap && jobSnap.state !== "idle" ? jobSnap : null;
     return c.json({ status: "ok", service: "nlm-memory", version: pkg.version, warmup: warmupSnapshot(), embedding: laneHealthSnapshot(), embedInflight: inflightSnapshot(), factEmbeddings: factEmbedSnapshot(), corpus, update, job });
+  });
+
+  app.get("/api/health/ingest", async (c) => {
+    if (!deps.ingestLag) return c.json({ error: "ingest lag monitor not wired" }, 503);
+    return c.json(await deps.ingestLag.get());
   });
 
   // Passive update poll for the UI. Same daily-cached check the CLI

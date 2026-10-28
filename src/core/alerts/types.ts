@@ -11,6 +11,7 @@
 export type AlertEventType =
   | "nlm.drift.version_behind"
   | "nlm.health.embedder_cold"
+  | "nlm.health.ingest_lagging"
   | "nlm.job.stalled"
   | "nlm.wiki.projection_failed"
   | "nlm.wiki.coverage_drift"
@@ -92,6 +93,7 @@ export interface FactEmbedAlertEventData {
 export type AlertEvent =
   | { readonly type: "nlm.drift.version_behind"; readonly data: AlertEventData }
   | { readonly type: "nlm.health.embedder_cold"; readonly data: AlertEventData }
+  | { readonly type: "nlm.health.ingest_lagging"; readonly data: AlertEventData }
   | { readonly type: "nlm.job.stalled"; readonly data: JobAlertEventData }
   | { readonly type: "nlm.wiki.projection_failed"; readonly data: WikiAlertEventData }
   | { readonly type: "nlm.wiki.coverage_drift"; readonly data: WikiAlertEventData }
@@ -108,4 +110,5 @@ export type AlertEvent =
  */
 export type DriftAlertEvent = Extract<AlertEvent, { type: "nlm.drift.version_behind" }>;
 export type EmbedderAlertEvent = Extract<AlertEvent, { type: "nlm.health.embedder_cold" }>;
+export type IngestLagAlertEvent = Extract<AlertEvent, { type: "nlm.health.ingest_lagging" }>;
 export type JobAlertEvent = Extract<AlertEvent, { type: "nlm.job.stalled" }>;
