@@ -13,7 +13,7 @@ describe("property evidence", () => {
   it("requires a verified literal and abstains on comparative evidence", () => {
     expect(attributeFacts([fact], catalog, [])[0]?.property).toBeUndefined();
     const verified = { ...fact, sourceAnchor: { status: "verified" as const, start: 0, end: 22, bodyVersion: "version" } };
-    expect(attributeFacts([verified], catalog, [])[0]?.property?.slug).toBe("nxtseo");
+    expect(attributeFacts([verified], catalog, [], true, null, fact.sourceQuote)[0]?.property?.slug).toBe("nxtseo");
     expect(attributeFacts([{ ...verified, sourceQuote: "NxtSEO and NxtAds use this API" }], catalog, [])[0]?.property).toBeUndefined();
   });
   it("does not trust an unquoted subject label from a mixed component discussion", () => {
@@ -85,6 +85,8 @@ describe("property inference regressions", () => {
     ["blockquoted transcript", "[user] Label this excerpt for ownership:\n> Pillar stores drafts in SQLite.\n\n[assistant] Labelled."],
     ["agents preamble", "[user] # AGENTS.md\nPillar stores drafts in SQLite.\n\n[user] Fix the login button."],
     ["environment listing", "[user] <environment_context>\nPillar stores drafts in SQLite.\n</environment_context>\n\n[user] Fix the login button."],
+    ["tool result", "[assistant] [tool_use: Read]\n\n[user] [tool_result: transcript excerpt:\nPillar stores drafts in SQLite.\n]\n\n[assistant] Labelled."],
+    ["tool action", "[assistant] [tool_action: grep Pillar stores drafts in SQLite.]\n\n[assistant] Done."],
   ])("never takes ownership from a quoted evaluation input: %s", (_, body) => {
     expect(owner(body, "Pillar stores drafts in SQLite")).toBeUndefined();
   });
@@ -104,7 +106,8 @@ describe("property inference regressions", () => {
   });
   it("never attributes from the subject alone while inference is on", () => {
     const body = "[user] Drafts are stored in SQLite.";
-    expect(attributeFacts([{ ...grounded(body, "Drafts are stored in SQLite"), subject: "Pillar", sourceQuote: null, sourceAnchor: undefined }], fictional, [], true, null, body)[0]?.property).toBeUndefined();
+    const { sourceAnchor: _, ...unquoted } = grounded(body, "Drafts are stored in SQLite");
+    expect(attributeFacts([{ ...unquoted, subject: "Pillar", sourceQuote: null }], fictional, [], true, null, body)[0]?.property).toBeUndefined();
     expect(owner(body, "Drafts are stored in SQLite", { subject: "Pillar" })).toBeUndefined();
     expect(owner("[user] Pillar stores drafts in SQLite.", "Pillar stores drafts in SQLite", { subject: "Pillar" })?.source).toBe("source-quote");
   });
@@ -113,6 +116,7 @@ describe("property inference regressions", () => {
       "[user] # AGENTS.md\nWorkspace projects: Orbit Notes.",
       "[user] <environment_context>\nKestrel\n</environment_context>",
       "[user] Compare these two transcripts.\n```\n[assistant] Kestrel syncs every five minutes.\n```\n> Orbit Notes stores drafts.",
+      "[user] [tool_result: label card: Kestrel session about Kestrel sync]",
       "[assistant] Pillar now stores drafts in SQLite.",
     ].join("\n\n");
     expect(sessionPropertyReferences(["Orbit Notes", "Pillar", "Kestrel"], fictional, body)).toEqual([{ slug: "pillar", evidence: "Pillar" }]);

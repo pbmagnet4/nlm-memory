@@ -213,7 +213,7 @@ export function runPropertyMemoryContract(h: { attributeSession(s: Storage, tena
       await expect(h.attributeSession(storage, "other-tenant", { id: "s1", entities: ["NxtSEO"] })).rejects.toThrow("Source session not found");
     });
     it("associates sessions without assigning ownership to their facts", async () => {
-      await h.ingest(storage, { ...anchorRecord("mixed project conversation", "s1"), entities: ["NxtSEO", "NxtAds"] }, [fact("unknown", "s1")]);
+      await h.ingest(storage, { ...anchorRecord("[user] mixed project conversation about NxtSEO and NxtAds", "s1"), entities: ["NxtSEO", "NxtAds"] }, [fact("unknown", "s1")]);
       expect((await storage.sessions.keywordSearch(tenant, "mixed", 5, { property: "nxtseo" })).map((s) => s.sessionId)).toEqual(["s1"]);
       expect((await storage.sessions.keywordSearch(tenant, "mixed", 5, { property: "nxtads" })).map((s) => s.sessionId)).toEqual(["s1"]);
       expect((await storage.facts.getById(tenant, "unknown"))?.property).toBeUndefined();
@@ -234,7 +234,7 @@ export function runPropertyMemoryContract(h: { attributeSession(s: Storage, tena
       vi.stubEnv("NLM_PROPERTY_ASSOCIATIONS", "0");
       const body = "NxtSEO uses port 3940.";
       await h.ingest(storage, anchorRecord(body, "s1"), [{ ...fact("legacy", "s1"), subject: "NxtSEO", sourceQuote: body, sourceAnchor: locateSourceAnchor(body, body) }]);
-      expect(await storage.properties.backfill(tenant, false)).toEqual([{ factId: "legacy", slug: "nxtseo", source: "subject" }]);
+      expect(await storage.properties.backfill(tenant, false)).toEqual([{ factId: "legacy", slug: "nxtseo", source: "source-quote" }]);
       expect((await storage.facts.getById(tenant, "legacy"))?.property).toBeUndefined();
       await storage.properties.backfill(tenant, true);
       expect((await storage.facts.getById(tenant, "legacy"))?.supersededBy).toBeNull();

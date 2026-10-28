@@ -30,21 +30,24 @@ new Command().argument("<snapshot>").argument("<catalog>").argument("<output-dir
       type Row = SourceAnchorRow & { id: string; kind: Fact["kind"]; subject: string; predicate: string; value: string; source_session_id: string; source_quote: string | null; confidence: number; created_at: string };
       const rows = db.prepare<unknown[], Row>(`SELECT f.*, s.body_version AS current_source_body_version FROM facts f JOIN sessions s ON s.id = f.source_session_id
         WHERE ${ft.sql} AND ${st.sql} AND f.superseded_by IS NULL AND f.retired_at IS NULL AND f.confidence >= 0.6`).all(ft.param, st.param);
-      const facts = attributeFacts(rows.map((r) => ({ id: r.id, kind: r.kind, subject: r.subject, predicate: r.predicate, value: r.value,
-        sourceSessionId: r.source_session_id, sourceQuote: r.source_quote, sourceAnchor: anchorFromRow(r, r.source_quote), confidence: r.confidence, createdAt: r.created_at, supersededBy: null })), catalog, []);
-      const order = <T extends { id: string }>(xs: T[]) => xs.sort((a, b) => hash("T1130-v1:" + a.id).localeCompare(hash("T1130-v1:" + b.id)));
       const tc = tenantClause(options.tenant);
+      const source = db.prepare<[string, string], { id: string; body: string | null; status: string }>(`SELECT id, body, status FROM sessions WHERE id = ? AND ${tc.sql}`);
+      const body = (id: string) => source.get(id, tc.param)?.body ?? null;
+      const bySession = new Map<string, Fact[]>();
+      for (const r of rows) bySession.set(r.source_session_id, [...(bySession.get(r.source_session_id) ?? []), { id: r.id, kind: r.kind, subject: r.subject, predicate: r.predicate, value: r.value,
+        sourceSessionId: r.source_session_id, sourceQuote: r.source_quote, sourceAnchor: anchorFromRow(r, r.source_quote), confidence: r.confidence, createdAt: r.created_at, supersededBy: null }]);
+      const facts = [...bySession].flatMap(([sessionId, group]) => attributeFacts(group, catalog, [], true, null, body(sessionId)));
+      const order = <T extends { id: string }>(xs: T[]) => xs.sort((a, b) => hash("T1130-v1:" + a.id).localeCompare(hash("T1130-v1:" + b.id)));
       const entityRows = db.prepare<[string], { session_id: string; entity_canonical: string }>(`SELECT session_id, entity_canonical FROM session_entities WHERE ${tc.sql}`).all(tc.param);
       const entities = new Map<string, string[]>();
       for (const e of entityRows) entities.set(e.session_id, [...(entities.get(e.session_id) ?? []), e.entity_canonical]);
-      const refs = new Map([...entities].map(([id, names]) => [id, sessionPropertyReferences(names, catalog).map((r) => r.slug)]));
+      const refs = new Map([...entities].map(([id, names]) => [id, sessionPropertyReferences(names, catalog, body(id)).map((r) => r.slug)]));
       const counts = new Map<string, number>();
       const subjectCases = order(facts.filter((f) => f.property?.source === "subject")).filter((f) => {
         const n = counts.get(f.property!.slug!) ?? 0; counts.set(f.property!.slug!, n + 1); return n < 2;
       }).slice(0, 60);
       const quoteCases = order(facts.filter((f) => f.property?.source === "source-quote"));
       const unresolved = order(facts.filter((f) => !f.property && (refs.get(f.sourceSessionId)?.length ?? 0) > 1)).slice(0, 20);
-      const source = db.prepare<[string, string], { id: string; body: string | null; status: string }>(`SELECT id, body, status FROM sessions WHERE id = ? AND ${tc.sql}`);
       const sessions = order([...refs].map(([id, properties]) => ({ id, properties }))).filter((s) => source.get(s.id, tc.param)?.status !== "replaced");
       const selectedSessions = [...sessions.filter((s) => s.properties.length === 1).slice(0, 20), ...sessions.filter((s) => s.properties.length > 1).slice(0, 20)];
       const predictions: Record<string, string[]> = {}; const groups: Record<string, string> = {};
@@ -56,7 +59,7 @@ new Command().argument("<snapshot>").argument("<catalog>").argument("<output-dir
       });
       const sessionCases = selectedSessions.map((s, i) => {
         const id = `s${String(i + 1).padStart(3, "0")}`; const body = source.get(s.id, tc.param)?.body ?? ""; predictions[id] = s.properties; groups[id] = s.properties.length > 1 ? "multi" : "single";
-        const evidence = sessionPropertyReferences(entities.get(s.id) ?? [], catalog).map(({ evidence: entity }) => {
+        const evidence = sessionPropertyReferences(entities.get(s.id) ?? [], catalog, body).map(({ evidence: entity }) => {
           const at = body.toLowerCase().indexOf(entity.toLowerCase());
           return { entity, context: at < 0 ? null : clean(body.slice(Math.max(0, at - 120), at + entity.length + 240)) };
         });
