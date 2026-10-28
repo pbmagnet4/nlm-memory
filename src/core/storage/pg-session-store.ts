@@ -744,12 +744,28 @@ export class PgSessionStore implements SessionStore {
    * Write a chunk's vector and its map row as one unit: a failure between the
    * two rolls the vector back instead of leaving a map-less orphan (I7b-1).
    * Clears the chunk's retry record.
+   *
+   * With `ifTextIs` (the retry sweep) the write applies only while the chunk is
+   * still pending and still has that text, so a re-ingest during the embed
+   * cannot be overwritten by a vector of the old text. Returns false when the
+   * write was dropped.
    */
-  async insertChunkEmbedding(sessionId: string, chunkIdx: number, vector: Float32Array): Promise<void> {
+  async insertChunkEmbedding(sessionId: string, chunkIdx: number, vector: Float32Array, ifTextIs?: string): Promise<boolean> {
     const vecStr = `[${Array.from(vector).join(",")}]`;
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      if (ifTextIs !== undefined) {
+        // Row lock: a concurrent re-ingest's pending delete waits for this txn.
+        const pending = await client.query(
+          "SELECT 1 FROM chunk_embed_pending WHERE session_id = $1 AND chunk_idx = $2 FOR UPDATE",
+          [sessionId, chunkIdx],
+        );
+        if (pending.rows.length === 0 || (await this.chunkText(sessionId, chunkIdx)) !== ifTextIs) {
+          await client.query("ROLLBACK");
+          return false;
+        }
+      }
       // A concurrent re-ingest may have mapped this chunk while the vector was
       // being computed; a second vector would be a stale duplicate.
       const mapped = await client.query("SELECT 1 FROM session_chunk_map WHERE session_id = $1 AND chunk_idx = $2", [sessionId, chunkIdx]);
@@ -766,6 +782,7 @@ export class PgSessionStore implements SessionStore {
       }
       await client.query("DELETE FROM chunk_embed_pending WHERE session_id = $1 AND chunk_idx = $2", [sessionId, chunkIdx]);
       await client.query("COMMIT");
+      return true;
     } catch (err) {
       await client.query("ROLLBACK");
       throw err;
