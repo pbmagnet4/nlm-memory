@@ -157,7 +157,7 @@ describe("fact embedding drop -> pending -> sweep", () => {
     it("publishes the share and alerts once on the rising edge, re-arming after recovery", async () => {
       await storage.facts.insertMany(DEFAULT_TEAM_ID, [makeFact({ id: "f1" })]);
       const fired: AlertEvent[] = [];
-      const deps = { tenantId: DEFAULT_TEAM_ID, storage, embedder: embedder as never, fire: async (e: AlertEvent) => void fired.push(e) };
+      const deps = { tenantId: DEFAULT_TEAM_ID, store: storage.facts, stats: () => computeFactEmbedStats(storage.rawDb()), embedder: embedder as never, fire: async (e: AlertEvent) => void fired.push(e) };
 
       embedder.failing = true;
       await runFactEmbedTick(deps);

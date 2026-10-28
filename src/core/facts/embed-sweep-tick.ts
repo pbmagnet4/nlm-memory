@@ -4,16 +4,17 @@
  * above the E1 threshold (and re-arm once it falls back under).
  */
 
-import type { SqliteStorage } from "@core/storage/sqlite-storage.js";
 import type { LLMClient } from "@ports/llm-client.js";
 import type { AlertEvent } from "@core/alerts/types.js";
 import { setFactEmbedSnapshot } from "@core/health/fact-embed-state.js";
-import { MISSING_SHARE_ALARM, computeFactEmbedStats } from "./embed-missing.js";
-import { sweepFactEmbeddings, type FactSweepReport } from "./embed-sweep.js";
+import { MISSING_SHARE_ALARM, type FactEmbedStats } from "./embed-missing.js";
+import { sweepFactEmbeddings, type FactSweepReport, type FactSweepStore } from "./embed-sweep.js";
 
 export interface FactEmbedTickDeps {
   readonly tenantId: string;
-  readonly storage: Pick<SqliteStorage, "rawDb" | "facts">;
+  readonly store: FactSweepStore;
+  /** Re-measures the missing share after the sweep (SQLite or Postgres). */
+  readonly stats: () => FactEmbedStats | Promise<FactEmbedStats>;
   readonly embedder: LLMClient;
   readonly fire: (event: AlertEvent) => Promise<void>;
   readonly batchSize?: number;
@@ -29,12 +30,12 @@ export function resetFactEmbedTickForTests(): void {
 export async function runFactEmbedTick(deps: FactEmbedTickDeps): Promise<FactSweepReport> {
   const report = await sweepFactEmbeddings({
     tenantId: deps.tenantId,
-    store: deps.storage.facts,
+    store: deps.store,
     embedder: deps.embedder,
     ...(deps.batchSize !== undefined ? { batchSize: deps.batchSize } : {}),
     ...(deps.now ? { now: deps.now } : {}),
   });
-  const stats = computeFactEmbedStats(deps.storage.rawDb());
+  const stats = await deps.stats();
   const alarm = stats.missingShare > MISSING_SHARE_ALARM;
   setFactEmbedSnapshot({
     ...stats,

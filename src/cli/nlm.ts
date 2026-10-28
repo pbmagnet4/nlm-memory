@@ -121,6 +121,7 @@ import { backfillExemplarEmbeddings } from "../core/exemplars/embed-backfill.js"
 import { backfillFactEmbeddings } from "../core/facts/embed-backfill.js";
 import { MAX_CHUNK_EMBED_ATTEMPTS, stuckChunksOnPg, stuckChunksOnSqlite, sweepChunkEmbeddings, type StuckChunk } from "../core/embedding/chunk-retry.js";
 import { runFactEmbedTick } from "../core/facts/embed-sweep-tick.js";
+import { computeFactEmbedStats, computeFactEmbedStatsOnPg } from "../core/facts/embed-missing.js";
 import { warmCodeEmbedder } from "../core/exemplars/warm-embedder.js";
 import { markWarm, markWarmFailure } from "../core/health/warmup-state.js";
 import { setLaneHealth } from "../core/health/embedding-lane-state.js";
@@ -875,15 +876,18 @@ program
     // Fact-embedding sweep (T732 / E1): re-embeds facts whose vector failed or
     // was shed (fact_embed_pending) plus unrecorded drops, a small batch every
     // 2 min under the shared embed in-flight cap, then publishes the
-    // missing-share for /api/health and alerts when it exceeds 0.5%. SQLite only.
-    if (!(storage instanceof PgStorage)) {
+    // missing-share for /api/health and alerts when it exceeds 0.5%.
+    {
       const FACT_EMBED_SWEEP_INTERVAL_MS = 2 * 60 * 1000;
       const FACT_EMBED_SWEEP_INITIAL_DELAY_MS = 90 * 1000;
       const runFactEmbedSweep = async () => {
         try {
           const report = await runFactEmbedTick({
             tenantId: DEFAULT_TEAM_ID,
-            storage: storage as SqliteStorage,
+            store: storage instanceof PgStorage ? storage.facts : (storage as SqliteStorage).facts,
+            stats: storage instanceof PgStorage
+              ? () => computeFactEmbedStatsOnPg(storage.pgPool())
+              : () => computeFactEmbedStats((storage as SqliteStorage).rawDb()),
             embedder,
             fire: fireAlert,
           });

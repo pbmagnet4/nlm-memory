@@ -693,9 +693,10 @@ export class PgSessionStore implements SessionStore {
             const { vector } = await embedder.embed(factText, "document");
             await factSink.factStore.upsertEmbedding(tenantId, fact.id, vector);
           } catch (err) {
-            // Tolerated; the fact row stays current, semantic recall misses
-            // it until a future re-ingest.
+            // Tolerated; the fact row stays current and is queued for the daemon
+            // sweep (bookkeeping is best-effort: the sweep also finds drops by absence).
             recordEmbedFailure("fact");
+            await factSink.factStore.markEmbedPending(fact.id, String(err)).catch(() => {});
             process.stderr.write(`[nlm] embedding fact failed fact=${fact.id}: ${String(err)}\n`);
           }
         }
@@ -894,9 +895,10 @@ export class PgSessionStore implements SessionStore {
         try {
           const { vector } = await embedder.embed(factText, "document");
           await factStore.upsertEmbedding(tenantId, fact.id, vector);
-        } catch {
-          // Best-effort; a per-fact embed failure leaves the fact current but
-          // semantically unreachable until a future re-ingest.
+        } catch (err) {
+          // Best-effort; a per-fact embed failure leaves the fact current and
+          // queued for the daemon sweep (bookkeeping is best-effort too).
+          await factStore.markEmbedPending(fact.id, String(err)).catch(() => {});
         }
       }
     }
