@@ -1682,6 +1682,57 @@ program
   });
 
 program
+  .command("reingest")
+  .description("One-shot: re-parse every source of an adapter from disk and re-ingest sessions whose body changed (including sources recorded as empty); safe to re-run")
+  .requiredOption("--adapter <name>", "adapter whose sources to re-parse (e.g. codex)")
+  .option("-l, --limit <n>", "max sources to visit", (v) => Number.parseInt(v, 10))
+  .option("--dry-run", "count sources scanned / would change / unchanged / unreadable without writing", false)
+  .action(async (opts: { adapter: string; limit?: number; dryRun?: boolean }) => {
+    const { reclassifyOversized, selectAdapterSources } = await import("../core/ingest/reclassify-oversized.js");
+    const stack = await buildStack();
+    try {
+      if (!(stack.storage instanceof SqliteStorage)) {
+        console.error("reingest: only supported with SQLite storage (NLM_PG_URL must not be set)");
+        await stack.storage.close();
+        process.exit(1);
+      }
+      const adapters = await buildAdapters(stack.sources, DEFAULT_TEAM_ID);
+      if (!adapters.some((a) => a.name === opts.adapter)) {
+        console.error(`reingest: no enabled adapter "${opts.adapter}" (have: ${adapters.map((a) => a.name).join(", ")})`);
+        await stack.storage.close();
+        process.exit(1);
+      }
+      const r = await reclassifyOversized(
+        {
+          db: stack.storage.rawDb(),
+          store: stack.storage.sessions,
+          factStore: stack.storage.facts,
+          embedder: stack.embedder,
+          classifier: stack.classifier,
+          classifierDescriptor: { provider: stack.classifier.provider, model: stack.classifier.model },
+          adapters,
+        },
+        DEFAULT_TEAM_ID,
+        {
+          select: selectAdapterSources(opts.adapter),
+          onlyChanged: true,
+          classifyTimeoutMs: stack.classifier.timeoutMs,
+          ...(opts.limit ? { limit: opts.limit } : {}),
+          dryRun: Boolean(opts.dryRun),
+        },
+      );
+      console.log(
+        `reingest ${opts.adapter}${opts.dryRun ? " (dry run)" : ""}: scanned=${r.attempted} ` +
+        (opts.dryRun ? `wouldChange=${r.wouldChange} ` : `ingested=${r.ingested} lowConfidence=${r.skippedLowConfidence} failed=${r.failed} `) +
+        `unchanged=${r.unchanged} unreadable=${r.missingFile}` +
+        (opts.dryRun ? "" : ` | gained entities=${r.entities} decisions=${r.decisions} facts=${r.facts}`),
+      );
+    } finally {
+      await stack.storage.close();
+    }
+  });
+
+program
   .command("reprocess")
   .description(
     "Retroactive: re-classify sessions that lack classification or were classified by a weaker lane.\n" +
