@@ -130,6 +130,49 @@ or app shell for a banner, UI tests if the repo has a UI test pattern (follow it
    linking to Settings → Classifier, with the one-line summary.
 4. Build the UI (`npm run build:ui`) clean; no new dependencies.
 
+## Task 4: Embedder settings persisted and editable from API + UI
+
+Added 2026-10-27 at the operator's request. The embedder (both lanes) must be the
+`embeddinggemma-2-oQ8e` model served by oMLX through the LiteLLM proxy — today that holds via
+`~/.nlm/.env` (`NLM_EMBED_PROVIDER=openai`, `NLM_EMBED_BASE_URL=<litellm>/v1`,
+`NLM_EMBED_MODEL=text-embedding-embeddinggemma-2-oq8e`, `NLM_EMBED_API_KEY`, optional
+`NLM_CODE_EMBED_MODEL`) and is invisible/uneditable in the UI. Make it a first-class setting.
+
+Files: `src/llm/build-embedder.ts`, embedder wiring in `src/cli/nlm.ts`, new settings store +
+sqlite/pg adapters + migrations (next numbers after Task 1's 046 / pg 042), `src/http/app.ts`,
+`src/ui/pages/settings/` (a new "Embedder" settings page added to `SettingsSubnav`, or a section
+on an existing page if that's the established pattern), tests.
+
+1. Persisted per-lane embedder settings (`prose`, `code`): `provider`, `base_url`, `model`,
+   `api_key` (all nullable). Precedence: setting > env > default, same `{value, source}`
+   reporting as Task 1. The API key is write-only: GET returns only `api_key_set: boolean`
+   and its source; it is never logged or returned.
+2. `GET /api/embedder/settings` → per lane: effective provider/base_url/model with sources,
+   `api_key_set`, the stored `embedding_config` row (model + dim the vectors were built with),
+   and `reconcile: "match" | "stale" | "recorded"` (reuse `reconcileLane`).
+3. `POST /api/embedder/test` with a candidate lane config → embeds a probe string through
+   that config and returns `{ ok, dim, model, latency_ms }` or `{ ok:false, error }`.
+   Nothing is persisted.
+4. `PUT /api/embedder/settings` per lane. Validation at the boundary (provider one of the
+   embedder providers `build-embedder.ts` supports; base_url a valid http(s) URL; model
+   non-empty). If the change keeps the lane's provider+model+dim equal to the stored
+   `embedding_config`, apply it live (no restart) — e.g. a mutable embedder box like
+   `ClassifierBox`. If it would change model/provider/dim (vectors become stale), the request
+   must carry `confirm_reembed: true`, else 409 with an explanation; with confirmation it
+   persists, applies, and starts the existing embed-backfill rebuild for that lane through
+   the daemon's job machinery (`src/core/jobs/`), reporting the job in the response. Reuse
+   the existing rebuild code (`src/core/embedding/embed-backfill.ts` and its pg twin); do not
+   write a second rebuild path.
+5. UI: an Embedder settings view showing each lane's effective config with source badges,
+   API key as a write-only field ("set"/"not set" + replace/clear), the stored vectors'
+   model/dim and reconcile state (a visible warning when `stale`), a Test button (shows dim
+   and latency), Save, and a confirm dialog when the save requires a re-embed, then the
+   rebuild job's progress if the job machinery exposes it. Move the read-only embedder line
+   currently on the Classifier page to link here.
+6. Tests: precedence + api-key redaction; test endpoint (fake fetch); PUT live apply for a
+   same-model change; 409 without confirmation on a model change; confirmed change starts
+   the rebuild job (fake job runner); HTTP validation 400s.
+
 ## Verification (after landing)
 
 - Gate: `npm run typecheck && npm test` green in the worktree; `nxtgit land`.
