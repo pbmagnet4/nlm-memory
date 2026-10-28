@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { SideNav } from "./components/SideNav.js";
 import { LivePage } from "./pages/Live.js";
 import { PulsePage } from "./pages/Pulse.js";
@@ -16,6 +16,7 @@ import { SettingsProvidersPage } from "./pages/settings/Providers.js";
 import { StubPage } from "./pages/Stub.js";
 import { ToastHost } from "./components/Toast.js";
 import { ConfirmDialog } from "./components/ConfirmDialog.js";
+import { useIngestHealth } from "./lib/ingest-health.js";
 import { readViewSettings } from "./lib/view-settings.js";
 import { DEFAULT_NLM_PORT } from "@shared/net.js";
 
@@ -27,6 +28,7 @@ export function App() {
       <SideNav />
       <div className="page-main">
         <AppHeader />
+        <IngestLagBanner />
         <Routes>
           <Route path="/" element={<Navigate to={`/${readViewSettings().landing}`} replace />} />
           <Route path="/live"                element={<LivePage />} />
@@ -59,5 +61,18 @@ function AppHeader() {
       <span className="status-dot" aria-hidden="true" />
       <span className="header-info">nlm-memory · :{DEFAULT_NLM_PORT}</span>
     </header>
+  );
+}
+
+const INGEST_BANNER_POLL_MS = 60_000;
+
+function IngestLagBanner() {
+  const health = useIngestHealth(INGEST_BANNER_POLL_MS);
+  if (!health?.lagging) return null;
+  return (
+    <div className="ingest-banner" role="alert">
+      <span>{health.summary}</span>
+      <Link to="/settings/classifier">Classifier settings</Link>
+    </div>
   );
 }

@@ -35,6 +35,18 @@ export const fmt = {
     return `${Math.round(v)}%`;
   },
 
+  /** Elapsed time since an ISO timestamp as "3d 4h", "5h 12m" or "12m". "—" when absent. */
+  age(iso: string | null | undefined, now: number = Date.now()): string {
+    if (!iso) return "—";
+    const mins = Math.max(0, Math.floor((now - new Date(iso).getTime()) / 60_000));
+    if (Number.isNaN(mins)) return "—";
+    const d = Math.floor(mins / 1440);
+    const h = Math.floor((mins % 1440) / 60);
+    if (d > 0) return `${d}d ${h}h`;
+    if (h > 0) return `${h}h ${mins % 60}m`;
+    return `${mins}m`;
+  },
+
   /** "Apr 12, 2026" — short month + day + year. Locale-aware. Returns "—" for invalid input. */
   shortDate(iso: string | null | undefined): string {
     if (!iso) return "—";
