@@ -797,54 +797,6 @@ function parseRelativeFloor(raw, fallback) {
   return parsed;
 }
 
-// src/hook/recall-gate.ts
-var RECALL_GATE_MODEL = "qwen3.5:4b";
-var RECALL_GATE_SYSTEM = `You are a recall GATE protecting against off-topic memory injection. Given a USER PROMPT and a CANDIDATE prior-session context, answer irrelevant ONLY when the candidate is CLEARLY about a completely different topic, project, or task than the prompt (e.g. the prompt is about debugging a website and the candidate is about a trading pipeline). If there is ANY plausible topical connection, or you are at all unsure, answer relevant. Dropping a useful memory is worse than keeping a marginal one. You do NOT see the assistant's answer. Output {"gate":"relevant"|"irrelevant"}.`;
-var GATE_FORMAT = { type: "object", properties: { gate: { type: "string", enum: ["relevant", "irrelevant"] } }, required: ["gate"] };
-var GATE_OPTS = { temperature: 0, top_p: 1, top_k: 0, presence_penalty: 0, frequency_penalty: 0 };
-function parseRecallGateMode(env = process.env) {
-  const v = env["NLM_HOOK_RECALL_GATE"]?.trim();
-  return v === "shadow" || v === "live" ? v : void 0;
-}
-var GATE_TIMEOUT_MS = 4e3;
-function makeOllamaGate(url, model = RECALL_GATE_MODEL, timeoutMs = GATE_TIMEOUT_MS) {
-  return async (prompt, candidate) => {
-    try {
-      const r = await fetchWithTimeout(
-        `${url}/api/chat`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model,
-            stream: false,
-            think: false,
-            // Keep the gate model resident between fires so only the first fire
-            // pays the cold-load; subsequent gates are ~1 judge call.
-            keep_alive: "15m",
-            format: GATE_FORMAT,
-            options: GATE_OPTS,
-            messages: [
-              { role: "system", content: RECALL_GATE_SYSTEM },
-              { role: "user", content: `USER PROMPT:
-${prompt}
-
-CANDIDATE CONTEXT:
-${candidate}` }
-            ]
-          })
-        },
-        timeoutMs
-      );
-      const d = await r.json();
-      const v = JSON.parse(d.message?.content ?? "{}").gate;
-      return v === "irrelevant" ? "irrelevant" : "relevant";
-    } catch {
-      return "relevant";
-    }
-  };
-}
-
 // src/hook/prompt-recall-hook.ts
 var scoreThreshold = () => parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR"]);
 var relativeFloor = () => parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
@@ -931,29 +883,7 @@ async function runHook(input, deps) {
     perFireCap: PER_FIRE_CAP,
     perConversationCap: PER_CONVERSATION_CAP
   });
-  let gateDecisions;
-  let injected = selected;
-  if (deps.recallGate && selected.length > 0) {
-    const g = deps.recallGate;
-    const toGate = g.maxCandidates ? selected.slice(0, g.maxCandidates) : selected;
-    const remaining = deadline - Date.now();
-    const gateFallback = toGate.map((h) => ({ id: h.id, gate: "relevant" }));
-    if (remaining <= 0) {
-      gateDecisions = gateFallback;
-    } else {
-      gateDecisions = await withDeadline(
-        Promise.all(toGate.map(async (h) => ({ id: h.id, gate: await g.judge(input.prompt, `${h.label}
-${h.summary ?? ""}`) }))),
-        remaining,
-        gateFallback
-      );
-    }
-    if (g.mode === "live") {
-      const drop = new Set(gateDecisions.filter((d) => d.gate === "irrelevant").map((d) => d.id));
-      injected = selected.filter((h) => !drop.has(h.id));
-    }
-  }
-  const block = formatPointerBlock(injected, fetched.facts, fetched.exemplars, fetched.concepts ?? []);
+  const block = formatPointerBlock(selected, fetched.facts, fetched.exemplars, fetched.concepts ?? []);
   const estTokens = Math.ceil(block.length / 4);
   appendHookLog(DEFAULT_TEAM_ID, {
     ts: (/* @__PURE__ */ new Date()).toISOString(),
@@ -961,14 +891,13 @@ ${h.summary ?? ""}`) }))),
     promptPreview: preview,
     gate,
     hits: hits.map((h) => ({ id: h.id, score: h.matchScore })),
-    wouldInject: injected.map((h) => h.id),
+    wouldInject: selected.map((h) => h.id),
     estTokens,
     mode: deps.mode,
-    ...fetched.outcome ? { recallOutcome: fetched.outcome } : {},
-    ...gateDecisions ? { gateDecisions } : {}
+    ...fetched.outcome ? { recallOutcome: fetched.outcome } : {}
   });
-  if (deps.mode === "live" && injected.length > 0) {
-    recordSurfaced(DEFAULT_TEAM_ID, input.conversationId, injected.map((h) => h.id));
+  if (deps.mode === "live" && selected.length > 0) {
+    recordSurfaced(DEFAULT_TEAM_ID, input.conversationId, selected.map((h) => h.id));
     return block;
   }
   return "";
@@ -985,15 +914,11 @@ async function main() {
     if (!promptRecallEnabled()) return;
     const mode = hookModeFromEnv();
     const runtime = hookRuntimeFromEnv();
-    const gateMode = parseRecallGateMode();
-    const gateUrl = process.env["OLLAMA_URL"] ?? "http://127.0.0.1:11434";
-    const gateTopN = Math.max(1, Number.parseInt(process.env["NLM_HOOK_RECALL_GATE_TOPN"] ?? "1", 10) || 1);
     const out = await runHook(
       { prompt, conversationId, ...transcriptPath ? { transcriptPath } : {} },
       {
         mode,
-        recall: (q) => recallOverHttp(q, runtime, conversationId === "unknown" ? void 0 : conversationId),
-        ...gateMode ? { recallGate: { mode: gateMode, judge: makeOllamaGate(gateUrl), maxCandidates: gateTopN } } : {}
+        recall: (q) => recallOverHttp(q, runtime, conversationId === "unknown" ? void 0 : conversationId)
       }
     );
     if (out) process.stdout.write(out);
