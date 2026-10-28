@@ -17,6 +17,7 @@ import type { SqliteSessionStore } from "../../src/core/storage/sqlite-session-s
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { createApp } from "../../src/http/app.js";
 import { ClassifierBox } from "../../src/llm/classifier-box.js";
+import { resolveClassifierTuning } from "../../src/core/classifier/tuning.js";
 type AppInstance = ReturnType<typeof createApp>;
 import type { Session } from "../../src/shared/types.js";
 import type { JobSnapshot } from "../../src/core/jobs/job-supervisor.js";
@@ -1626,5 +1627,98 @@ describe("HTTP adapter: POST /api/classifier openai/openai-compatible swap", () 
     const body = (await res.json()) as { openai_swap_available: boolean; available_providers: string[] };
     expect(body.openai_swap_available).toBe(false);
     expect(body.available_providers).not.toContain("openai");
+  });
+});
+
+describe("HTTP adapter: classifier tuning settings", () => {
+  async function setup() {
+    const storage = SqliteStorage.create({
+      dbPath: join(mkdtempSync(join(tmpdir(), "nlm-http-cs-")), "c.sqlite"),
+      migrationsDir: resolve(__dirname, "../../migrations"),
+    });
+    await storage.init();
+    const classifier = new ClassifierBox({
+      provider: "openai",
+      model: "gemma",
+      baseUrl: "http://gw.example/v1",
+      tuning: resolveClassifierTuning(await storage.classifierSettings.get(), {}),
+    });
+    const app = createApp({
+      recall: { search: async () => ({ query: "", mode: "keyword", limit: 0, total: 0, results: [] }) },
+      store: {},
+      classifier,
+      classifierSettings: storage.classifierSettings,
+    } as never);
+    const put = (body: unknown) =>
+      app.request("/api/classifier/settings", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    return { app, classifier, storage, put };
+  }
+
+  it("GET info reports tuning with a source per value, defaulting to off/120000", async () => {
+    const { app } = await setup();
+    const body = (await (await app.request("/api/classifier/info")).json()) as { tuning: unknown; available_providers: string[] };
+    expect(body.tuning).toEqual({
+      thinking: { value: "off", source: "default" },
+      timeout_ms: { value: 120_000, source: "default" },
+      max_tokens: { value: 8192, source: "default" },
+    });
+    expect(body.available_providers).toContain("openai");
+  });
+
+  it("PUT persists, applies live to the box, and is reflected by GET info", async () => {
+    const { app, classifier, storage, put } = await setup();
+    const res = await put({ thinking: "on", timeout_ms: 300_000, max_tokens: 2048 });
+    expect(res.status).toBe(200);
+    const { tuning } = (await res.json()) as { tuning: Record<string, unknown> };
+    expect(tuning).toEqual({
+      thinking: { value: "on", source: "setting" },
+      timeout_ms: { value: 300_000, source: "setting" },
+      max_tokens: { value: 2048, source: "setting" },
+    });
+    expect(classifier.timeoutMs).toBe(300_000);
+    expect(classifier.tuning.thinking.value).toBe("on");
+    expect(await storage.classifierSettings.get()).toEqual({ thinking: "on", timeoutMs: 300_000, maxTokens: 2048 });
+    const info = (await (await app.request("/api/classifier/info")).json()) as { tuning: unknown };
+    expect(info.tuning).toEqual(tuning);
+  });
+
+  it("a partial PUT leaves other settings alone; null clears back to default", async () => {
+    const { classifier, put } = await setup();
+    await put({ thinking: "on", timeout_ms: 300_000 });
+    await put({ timeout_ms: null });
+    expect(classifier.tuning.thinking).toEqual({ value: "on", source: "setting" });
+    expect(classifier.tuning.timeoutMs).toEqual({ value: 120_000, source: "default" });
+  });
+
+  it.each([
+    [{ thinking: "maybe" }],
+    [{ thinking: 1 }],
+    [{ timeout_ms: 9_999 }],
+    [{ timeout_ms: 900_001 }],
+    [{ timeout_ms: 15_000.5 }],
+    [{ timeout_ms: "30000" }],
+    [{ max_tokens: 255 }],
+    [{ max_tokens: 65_537 }],
+    [[1, 2]],
+  ])("PUT rejects %j with 400 and persists nothing", async (body) => {
+    const { classifier, storage, put } = await setup();
+    const res = await put(body);
+    expect(res.status).toBe(400);
+    expect(await storage.classifierSettings.get()).toEqual({ thinking: null, timeoutMs: null, maxTokens: null });
+    expect(classifier.timeoutMs).toBe(120_000);
+  });
+
+  it("PUT requires a classifier box and settings store", async () => {
+    const app = createApp({ recall: {}, store: {} } as never);
+    const res = await app.request("/api/classifier/settings", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(res.status).toBe(503);
   });
 });

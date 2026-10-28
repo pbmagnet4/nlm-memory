@@ -112,12 +112,7 @@ export class ClaudeCodeAdapter implements TranscriptAdapter {
     let totalBytes = 0;
 
     let lastModel: string | undefined;
-    let raw: string;
-    try {
-      raw = await fs.readFile(path, "utf8");
-    } catch {
-      return null;
-    }
+    const raw = await fs.readFile(path, "utf8");
 
     for (const line of raw.split("\n")) {
       totalBytes += Buffer.byteLength(line, "utf8") + 1; // +1 for newline

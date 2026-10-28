@@ -57,12 +57,12 @@ import { createApp } from "../http/app.js";
 import { createMcpServer, listMergeSuggestionsHandler, mergeWorkstreamsHandler, rebindSessionHandler, recallWorkstreamHandler, renameWorkstreamHandler, retireWorkstreamHandler } from "../mcp/server.js";
 import { classifierEgressNotice } from "../llm/classifier-egress.js";
 import { buildClassifier } from "../llm/build-classifier.js";
-import { OllamaCodeEmbedder, DEFAULT_CODE_EMBED_MODEL } from "../llm/ollama-code-embedder.js";
-import { OpenAICodeEmbedderClient } from "../llm/openai-code-embedder-client.js";
-import { resolveEmbedderInfo } from "../llm/embedder-info.js";
 import type { CodeEmbedder } from "../ports/code-embedder.js";
 import { autoloadEnv } from "../llm/env-autoload.js";
-import { buildEmbedder as _buildEmbedder } from "../llm/build-embedder.js";
+import { buildEmbedderFrom, buildCodeEmbedderFrom } from "../llm/build-embedder.js";
+import { EmbedderBox, CodeEmbedderBox } from "../llm/embedder-box.js";
+import { laneValues, resolveEmbedderLane, type EmbedderLaneValues } from "../core/embedding/embedder-config.js";
+import { NO_STORED_EMBEDDER } from "../ports/embedder-settings-store.js";
 import { addHook, buildHookCommand, removeHook } from "../core/hook/claude-settings.js";
 import {
   codexBinaryAvailable,
@@ -101,14 +101,14 @@ import { runScopeBackfill, formatBackfillResult } from "./scope-backfill.js";
 import { runScopeCoverage, formatCoverageResult } from "./scope-coverage.js";
 import { loadAliasMap } from "../core/scope/alias-map.js";
 import { getUpdateStatus } from "../core/update-check/check.js";
-import { checkDriftAndAlert, checkEmbedderAndAlert } from "../core/alerts/check-and-alert.js";
+import { checkDriftAndAlert, checkEmbedderAndAlert, checkIngestLagAndAlert } from "../core/alerts/check-and-alert.js";
 import { fireAlert } from "../core/alerts/fire-alert.js";
 import { buildJobAlertEvent } from "../core/alerts/job-alert.js";
 import { buildWikiDriftEvent, buildWikiFailureEvent } from "../core/alerts/wiki-alert.js";
 import { projectWiki } from "../core/wiki/project.js";
 import { FsWikiWriter } from "../core/adapters/fs-wiki-writer.js";
 import { JobSupervisor } from "../core/jobs/job-supervisor.js";
-import { realClock, createReprocessSpawnChild } from "./reprocess-job-adapters.js";
+import { realClock, createJobSpawnChild } from "./reprocess-job-adapters.js";
 import { connectHermes, disconnectHermes, hermesConfigPath } from "../install/hermes.js";
 import { connectHermesAgent, disconnectHermesAgent, hermesAgentPluginDir } from "../install/hermes-agent.js";
 import { connectWindsurf, disconnectWindsurf } from "../install/windsurf.js";
@@ -130,7 +130,8 @@ import { computeReDerivationRate, sqliteReDerivationDeps } from "../core/metrics
 import { reconcileLane } from "../core/embedding/embedding-config.js";
 import type { EmbeddingConfigStore, EmbeddingLaneConfig } from "../core/embedding/embedding-config.js";
 import { backfillFacts } from "../core/facts/backfill-facts.js";
-import { ScanScheduler, type IngestGate } from "../core/scheduler/scheduler.js";
+import { adapterStateReader, createIngestLagMonitor, ingestLagThresholdHours } from "../core/health/ingest-lag.js";
+import { DEFAULT_IDLE_MINUTES, ScanScheduler, type IngestGate } from "../core/scheduler/scheduler.js";
 import { makeClefIngestGate, parseIngestGateMode } from "../core/classifier/ingest-gate.js";
 import { GATE_MODEL } from "../core/classifier/gate-model-params.js";
 import { MemoSweepScheduler } from "../core/hook/memo-sweep.js";
@@ -273,44 +274,11 @@ function loadTopicProvider(): TopicProvider {
   }
 }
 
-/** Build the recall/document embedder. Delegates to the shared factory in
- *  src/llm/build-embedder.ts — see that file for provider routing details. */
-function buildEmbedder(): LLMClient {
-  return _buildEmbedder();
-}
-
-/** Build the code-lane embedder. Follows the same destination as the prose
- *  embedder (NLM_EMBED_PROVIDER / NLM_EMBED_BASE_URL) but with its own model
- *  (NLM_CODE_EMBED_MODEL, e.g. text-embedding-coderankembed on LM Studio).
- *  Switching providers on existing exemplars requires `nlm embed-backfill
- *  --exemplars`. */
-function buildCodeEmbedder(): CodeEmbedder {
-  const provider = (process.env["NLM_EMBED_PROVIDER"] ?? "ollama").toLowerCase();
-  if (provider === "openai") {
-    autoloadEnv();
-    const baseUrl = process.env["NLM_EMBED_BASE_URL"];
-    if (!baseUrl) {
-      throw new Error(
-        "NLM_EMBED_PROVIDER=openai requires NLM_EMBED_BASE_URL for the code embedder too, " +
-          "e.g. http://localhost:1234/v1 for LM Studio.",
-      );
-    }
-    return new OpenAICodeEmbedderClient({
-      baseUrl,
-      ...(process.env["NLM_CODE_EMBED_MODEL"] ? { model: process.env["NLM_CODE_EMBED_MODEL"] } : {}),
-      ...(process.env["NLM_EMBED_API_KEY"] ? { apiKey: process.env["NLM_EMBED_API_KEY"] } : {}),
-    });
-  }
-  // The bundled provider has no code-embedding engine (CodeRankEmbed has no ONNX equivalent
-  // in slice 1). Fall through to the Ollama default: the startup probe will fail soft and
-  // the code-exemplar lane stays unknown, which is the intended degradation.
-  return new OllamaCodeEmbedder({ baseUrl: ollamaUrl() });
-}
-
 async function reconcileEmbeddingLanes(
   storage: SqliteStorage | PgStorage,
   embedder: LLMClient,
   codeEmbedder: CodeEmbedder,
+  lanes: { readonly prose: EmbedderLaneValues; readonly code: EmbedderLaneValues },
 ): Promise<void> {
   const configStore = (storage as { embeddingConfig?: EmbeddingConfigStore }).embeddingConfig;
   if (!configStore) return;
@@ -320,7 +288,7 @@ async function reconcileEmbeddingLanes(
   try {
     const result = await embedder.embed("nlm dimension probe", "query");
     const dim = result.vector.length;
-    const info = resolveEmbedderInfo(process.env, dim);
+    const info = lanes.prose;
     const runtime: EmbeddingLaneConfig = { lane: "prose", provider: info.provider, model: info.model, dim };
     const rec = reconcileLane(configStore, runtime, nowIso);
     if (rec.state === "stale") {
@@ -341,8 +309,7 @@ async function reconcileEmbeddingLanes(
   try {
     const result = await codeEmbedder.embed("nlm dimension probe", "query");
     const dim = result.dim;
-    const provider = (process.env["NLM_EMBED_PROVIDER"] ?? "ollama").toLowerCase();
-    const model = process.env["NLM_CODE_EMBED_MODEL"] ?? DEFAULT_CODE_EMBED_MODEL;
+    const { provider, model } = lanes.code;
     const runtime: EmbeddingLaneConfig = { lane: "code", provider, model, dim };
     const rec = reconcileLane(configStore, runtime, nowIso);
     if (rec.state === "stale") {
@@ -419,8 +386,13 @@ async function buildStack() {
   // Recall only uses embed(). Default embedder is local Ollama; NLM_EMBED_*
   // can point it at any OpenAI-compatible endpoint. Classifier is wired
   // separately for Phase D ingest.
-  const embedder = buildEmbedder();
-  const classifier = buildClassifier();
+  const lanes = {
+    prose: laneValues(resolveEmbedderLane("prose", await storage.embedderSettings.get("prose"), process.env)),
+    code: laneValues(resolveEmbedderLane("code", await storage.embedderSettings.get("code"), process.env)),
+  };
+  const embedder = new EmbedderBox(buildEmbedderFrom(lanes.prose));
+  const codeEmbedder = new CodeEmbedderBox(buildCodeEmbedderFrom(lanes.code));
+  const classifier = buildClassifier(await storage.classifierSettings.get());
   if (judgeModeFromEnv() !== "off" && store instanceof SqliteSessionStore) {
     store.setFactJudge(new FactJudge({ store: facts, llm: classifier, embedder }));
   }
@@ -432,14 +404,14 @@ async function buildStack() {
     factStore: facts,
     learnerDeps: { learners: storage.learners, sessions: store },
     exemplarStore: storage.exemplars,
-    codeEmbedder: buildCodeEmbedder(),
+    codeEmbedder,
     installScope: scope,
     resolveWorkstreamMembers: async (tenantId, selector) => (await resolveRecallScope(wsStore, tenantId, selector)).workstreamIds ?? [],
   });
   const factRecall = new FactRecallService({ factStore: facts, llm: embedder, properties: storage.properties,
     resolveWorkstreamMembers: async (tenantId, selector) => (await resolveRecallScope(wsStore, tenantId, selector)).workstreamIds ?? [],
   });
-  return { storage, store, facts, signals, scope, sources, providers, recall, factRecall, embedder, classifier };
+  return { storage, store, facts, signals, scope, sources, providers, recall, factRecall, embedder, codeEmbedder, classifier, lanes };
 }
 
 export interface ClassifierEvalDeps {
@@ -542,7 +514,7 @@ program
     // non-browser callers. Idempotent: re-reads persisted token first.
     autoloadEnv();
     const mcpToken = ensureMcpToken();
-    const { storage, store, facts, signals, scope, sources, providers, recall, factRecall, embedder, classifier } = await buildStack();
+    const { storage, store, facts, signals, scope, sources, providers, recall, factRecall, embedder, codeEmbedder: codeEmb, classifier, lanes } = await buildStack();
     // Local-mode continuity (program spec §3 M3): idempotently seed the
     // existing NLM_MCP_TOKEN's hash for the default team, so an install that
     // already has a token keeps authenticating through the same
@@ -551,7 +523,6 @@ program
     await storage.teamTokens.ensureActive(hashTeamToken(mcpToken), DEFAULT_TEAM_ID);
     const { existsSync } = await import("node:fs");
     const hasMcpToken = Boolean(process.env["NLM_MCP_TOKEN"]);
-    const codeEmb = buildCodeEmbedder();
     // Job supervision: owns the daemon's own reprocess child, restarting it
     // on a non-clean exit while work remains and reporting stalls — see
     // core/jobs/job-supervisor.ts for why this exists (a detached
@@ -561,13 +532,32 @@ program
     // itself catches/logs anything an onEvent callback throws, so this can't
     // crash the daemon either way.
     const jobSupervisor = new JobSupervisor({
-      spawnChild: createReprocessSpawnChild({ execPath: process.execPath, nlmScriptPath: __filename }),
+      job: "reprocess",
+      spawnChild: createJobSpawnChild({ subcommand: "reprocess", execPath: process.execPath, nlmScriptPath: __filename }),
       clock: realClock,
       onEvent: (event) => {
         void fireAlert(buildJobAlertEvent(event));
       },
     });
+    // Embedding rebuild: the same supervisor running `nlm embed-backfill`, started
+    // by a confirmed embedder settings change (PUT /api/embedder/settings).
+    const embedJobSupervisor = new JobSupervisor({
+      job: "embed-rebuild",
+      spawnChild: createJobSpawnChild({ subcommand: "embed-backfill", execPath: process.execPath, nlmScriptPath: __filename }),
+      clock: realClock,
+      onEvent: (event) => {
+        void fireAlert(buildJobAlertEvent(event));
+      },
+    });
+    const ingestLag = createIngestLagMonitor({
+      listAdapters: () => buildAdapters(sources, DEFAULT_TEAM_ID),
+      readState: adapterStateReader(store),
+      idleMinutes: DEFAULT_IDLE_MINUTES,
+      thresholdHours: ingestLagThresholdHours(),
+      schedulerIntervalMs: opts.intervalMin * 60_000,
+    });
     const app = createApp({
+      ingestLag,
       properties: storage.properties,
       recall,
       store,
@@ -576,8 +566,10 @@ program
       factStore: facts,
       dbPath: dbPath(),
       classifier,
+      classifierSettings: storage.classifierSettings,
       sources,
       jobSupervisor,
+      embedder: { settings: storage.embedderSettings, config: storage.embeddingConfig, prose: embedder, code: codeEmb, jobs: embedJobSupervisor, env: process.env },
       providers,
       teamTokens: storage.teamTokens,
       ingest: {
@@ -598,7 +590,6 @@ program
       // the /api/exemplar + /api/recall-code routes at request time.
       exemplarStore: storage.exemplars,
       codeEmbedder: codeEmb,
-      embedderInfo: resolveEmbedderInfo(),
       ...(existsSync(UI_DIST) ? { uiDist: UI_DIST } : {}),
       // Wire POST /mcp only when NLM_MCP_TOKEN is present. Absent = route never
       // mounts, zero attack surface. Present = token-gated Streamable-HTTP MCP
@@ -626,7 +617,7 @@ program
         : {}),
     });
     warmCodeEmbedder(codeEmb);
-    void reconcileEmbeddingLanes(storage, embedder, codeEmb).catch(() => {});
+    void reconcileEmbeddingLanes(storage, embedder, codeEmb, lanes).catch(() => {});
 
     // Retried, not one-shot. A single attempt with a swallowed catch latched
     // this stage cold for the whole uptime whenever the backend was not yet
@@ -726,12 +717,16 @@ program
     alertDriftTimer.unref();
 
     const ALERT_EMBEDDER_CHECK_INTERVAL_MS = 5 * 60_000;
-    const alertEmbedderTimer = setInterval(() => {
-      void checkEmbedderAndAlert().catch(() => {
-        // Best-effort self-reporting — a failed check never blocks the daemon.
-      });
+    // Sequential on purpose: each check read-modify-writes alert-state.json, so
+    // overlapping checks would overwrite each other's state.
+    const alertHealthTimer = setInterval(() => {
+      // Best-effort self-reporting — a failed check never blocks the daemon or the next check.
+      void (async () => {
+        await checkEmbedderAndAlert().catch(() => {});
+        await checkIngestLagAndAlert(() => ingestLag.get()).catch(() => {});
+      })();
     }, ALERT_EMBEDDER_CHECK_INTERVAL_MS);
-    alertEmbedderTimer.unref();
+    alertHealthTimer.unref();
 
     // Corpus monitor: 24h stats job + pairs-cache refresh + weekly trend log.
     // SQLite only. First run is delayed ~60s so warmup finishes first; then
@@ -861,7 +856,7 @@ program
           const report = await backfillExemplarEmbeddings({
             tenantId: DEFAULT_TEAM_ID,
             dbPath: dbPath(),
-            embedder: buildCodeEmbedder(),
+            embedder: codeEmb,
             store: storage.exemplars,
           });
           if (report.succeeded > 0 || report.failed > 0) {
@@ -891,7 +886,7 @@ program
           const report = await runFactEmbedTick({
             tenantId: DEFAULT_TEAM_ID,
             storage: storage as SqliteStorage,
-            embedder: buildEmbedder(),
+            embedder,
             fire: fireAlert,
           });
           if (report.repaired > 0 || report.failed > 0) {
@@ -923,13 +918,14 @@ program
           store,
           adapters,
           classifier,
+          classifyTimeoutMs: () => classifier.timeoutMs,
           embedder,
           factStore: facts ?? null,
           signalStore: signals,
           installScope: scope,
           intervalMs: opts.intervalMin * 60_000,
           exemplarStore: storage.exemplars,
-          codeEmbedder: buildCodeEmbedder(),
+          codeEmbedder: codeEmb,
           workstreams: storage.workstreams,
           classifierDescriptor: { provider: classifier.provider, model: classifier.model },
           ingestGate: buildIngestGate(),
@@ -1199,11 +1195,11 @@ program
       process.stderr.write("recall-code requires NLM_CODE_EXEMPLARS_ENABLED=1\n");
       process.exit(1);
     }
-    const { storage } = await buildStack();
+    const { storage, codeEmbedder } = await buildStack();
     const { recallCode } = await import("../core/exemplars/recall-code.js");
     const { installScope: getScope } = await import("../core/signals/install-scope.js");
     try {
-      const embedder = buildCodeEmbedder();
+      const embedder = codeEmbedder;
       const result = await recallCode(
         DEFAULT_TEAM_ID,
         {
@@ -1510,12 +1506,12 @@ program
   .option("-v, --verbose", "per-session progress on stderr")
   .action(async (opts) => {
     if (opts.facts) {
-      const { storage } = await buildStack();
+      const { storage, embedder } = await buildStack();
       try {
         const report = await backfillFactEmbeddings({
           tenantId: DEFAULT_TEAM_ID,
           dbPath: dbPath(),
-          embedder: buildEmbedder(),
+          embedder,
           store: storage.facts,
           ...(opts.limit ? { limit: opts.limit } : {}),
           ...(opts.verbose
@@ -1533,12 +1529,12 @@ program
       return;
     }
     if (opts.exemplars) {
-      const { storage } = await buildStack();
+      const { storage, codeEmbedder } = await buildStack();
       try {
         const report = await backfillExemplarEmbeddings({
           tenantId: DEFAULT_TEAM_ID,
           dbPath: dbPath(),
-          embedder: buildCodeEmbedder(),
+          embedder: codeEmbedder,
           store: storage.exemplars,
           ...(opts.limit ? { limit: opts.limit } : {}),
           ...(opts.verbose
@@ -1555,11 +1551,14 @@ program
       }
       return;
     }
-    const embedder = buildEmbedder();
+    // Settings > env, like the daemon and the --facts/--exemplars paths: a model
+    // saved in the UI must not be rebuilt back to the env model by a manual run.
+    const { storage: settingsStorage, embedder, lanes } = await buildStack();
+    await settingsStorage.close();
     const pgUrl = process.env["NLM_PG_URL"];
     const sharedOpts = {
       embedder,
-      embedderProvider: resolveEmbedderInfo(process.env).provider,
+      embedderProvider: lanes.prose.provider,
       ...(opts.dryRun ? { dryRun: true } : {}),
       ...(opts.state ? { statePath: opts.state } : {}),
       ...(opts.limit ? { limit: opts.limit } : {}),
@@ -1752,7 +1751,7 @@ program
         await stack.storage.close();
         process.exit(1);
       }
-      const embedderInfo = resolveEmbedderInfo();
+      const embedderInfo = stack.lanes.prose;
       const report = await runReprocess(
         {
           db: stack.storage.rawDb(),
@@ -1873,7 +1872,7 @@ program
   .command("mcp")
   .description("Run as an MCP stdio server (for ~/.mcp.json)")
   .action(async () => {
-    const { recall, store, facts, factRecall, storage, scope, signals } = await buildStack();
+    const { recall, store, facts, factRecall, storage, scope, signals, codeEmbedder } = await buildStack();
     await runMcpStdio(storage, () => createMcpServer(
       {
         recall,
@@ -1881,7 +1880,7 @@ program
         factStore: facts,
         factRecall,
         exemplarStore: storage.exemplars,
-        codeEmbedder: buildCodeEmbedder(),
+        codeEmbedder,
         installScope: scope,
         signalStore: signals,
         sessionScopeReader: store,

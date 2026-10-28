@@ -2673,3 +2673,27 @@ a.session-label:hover { color: var(--accent); }
 /* Data */
 .card-data-validated { border-color: var(--accent); padding: 0.75rem 1rem; margin-top: 0.75rem; }
 .data-validated-text { margin: 0; }
+
+/* ── Ingest lag banner (app shell, every page) ─────────────────────────── */
+.ingest-banner {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 20px;
+  background: var(--warn-dim);
+  border-bottom: 1px solid rgba(255, 153, 51, 0.35);
+  color: var(--warn);
+  font-size: var(--text-sm);
+}
+.ingest-banner a { color: var(--warn); text-decoration: underline; }
+
+.source-badge {
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-sm);
+  padding: 1px 6px;
+}
+.source-badge[data-source="setting"] { color: var(--accent); border-color: rgba(232,255,110,0.25); }

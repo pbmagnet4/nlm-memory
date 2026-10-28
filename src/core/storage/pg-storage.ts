@@ -21,6 +21,8 @@ import { PgCodeExemplarStore } from "./pg-code-exemplar-store.js";
 import { PgWorkstreamStore } from "./pg-workstream-store.js";
 import { PgEmbeddingConfigStore } from "./pg-embedding-config.js";
 import { PgSourceRegistry } from "@core/sources/source-registry.js";
+import { PgClassifierSettingsStore } from "./pg-classifier-settings.js";
+import { PgEmbedderSettingsStore } from "./pg-embedder-settings.js";
 import { PgProviderRegistry } from "@core/providers/provider-registry.js";
 import { PgTeamTokenStore } from "@core/tenancy/team-token-store.js";
 
@@ -41,6 +43,8 @@ export class PgStorage implements Storage {
   readonly embeddingConfig: PgEmbeddingConfigStore;
   readonly sources: PgSourceRegistry;
   readonly providers: PgProviderRegistry;
+  readonly classifierSettings: PgClassifierSettingsStore;
+  readonly embedderSettings: PgEmbedderSettingsStore;
   readonly teamTokens: PgTeamTokenStore;
   private readonly _pool: Pool;
   private readonly _migrationsDir: string;
@@ -59,6 +63,8 @@ export class PgStorage implements Storage {
     this.embeddingConfig = new PgEmbeddingConfigStore(pool);
     this.sources = new PgSourceRegistry(pool);
     this.providers = new PgProviderRegistry(pool);
+    this.classifierSettings = new PgClassifierSettingsStore(pool);
+    this.embedderSettings = new PgEmbedderSettingsStore(pool);
     this.teamTokens = new PgTeamTokenStore(pool);
   }
 

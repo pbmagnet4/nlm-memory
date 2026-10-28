@@ -22,6 +22,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { LLMClient } from "@ports/llm-client.js";
+import { DEFAULT_CLASSIFY_TIMEOUT_MS } from "@core/classifier/tuning.js";
 import type { SessionChunk, TranscriptAdapter } from "@ports/transcript-adapter.js";
 import { deriveSubagentMeta } from "@core/adapters/claude-code.js";
 import { scanTranscriptDerivables } from "@core/ingest/transcript-derivables.js";
@@ -40,11 +41,12 @@ import type {
 import { PgSessionStore } from "@core/storage/pg-session-store.js";
 import type { PgFactStore } from "@core/storage/pg-fact-store.js";
 import type { Fact, Signal } from "@shared/types.js";
-import { MAX_CLASSIFY_FAILURES, recordClassified, recordClassifiedPg, recordFailed, recordFailedPg, recordSkippedLowConfidence, recordSkippedLowConfidencePg, scanOnce, scanOncePg } from "./scan-once.js";
+import { MAX_CLASSIFY_FAILURES, recordClassified, recordClassifiedPg, recordFailed, recordFailedPg, recordSkipped, recordSkippedPg, scanOnce, scanOncePg } from "./scan-once.js";
 import { runCheapChecksOnSqlite } from "@core/integrity/check-invariants.js";
 import { classifyAdaptive } from "@core/classifier/hierarchical-classify.js";
 import { isTransientLLMError } from "@core/classifier/transient-error.js";
 import { appendShadowLine, gatedClassification, type GateVerdict, type IngestGateMode } from "@core/classifier/ingest-gate.js";
+import { recordClassifyFailure, recordClassifySuccess, recordIngestProgress } from "@core/health/classify-outcomes.js";
 import { TimeoutError } from "@core/util/with-timeout.js";
 import { bindSessionToWorkstream } from "@core/workstream/bind.js";
 import { parseWorkTopics, aliasToLabelMap } from "@core/workstream/work-topics.js";
@@ -68,7 +70,6 @@ function loadAliasToLabel(): Map<string, string> {
 }
 
 const DEFAULT_INTERVAL_MS = 30 * 60 * 1000; // 30 min, matches Python default
-const DEFAULT_CLASSIFY_TIMEOUT_MS = 120_000; // per classifier request (per chunk for oversized sessions)
 const DEFER_BASE_MS = 30_000;
 const DEFER_CAP_MS = 10 * 60 * 1000;
 
@@ -76,7 +77,7 @@ function contentHash(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 const DEFAULT_CONFIDENCE_FLOOR = 0.3;
-const DEFAULT_IDLE_MINUTES = 15;
+export const DEFAULT_IDLE_MINUTES = 15;
 const SUBAGENT_RUNTIMES: ReadonlySet<string> = new Set(["claude-code", "muse"]);
 const DEFAULT_EXEMPLAR_MAX_PER_BUCKET = 50;
 const BODY_CAP = 200_000;
@@ -155,7 +156,8 @@ export interface SchedulerOptions {
    *  logs; in "live" a below-threshold session is stored without classification. */
   readonly ingestGate?: IngestGate | null;
   readonly intervalMs?: number;
-  readonly classifyTimeoutMs?: number;
+  /** Per classifier request (per chunk for oversized sessions), read on every call so a live retune applies. */
+  readonly classifyTimeoutMs?: () => number;
   readonly confidenceFloor?: number;
   readonly idleMinutes?: number;
   /** Defaults to console.error. Set to a noop in tests. */
@@ -217,7 +219,7 @@ export class ScanScheduler {
       classifierDescriptor: opts.classifierDescriptor,
       ingestGate: opts.ingestGate && opts.ingestGate.mode !== "off" ? opts.ingestGate : null,
       intervalMs: opts.intervalMs ?? DEFAULT_INTERVAL_MS,
-      classifyTimeoutMs: opts.classifyTimeoutMs ?? DEFAULT_CLASSIFY_TIMEOUT_MS,
+      classifyTimeoutMs: opts.classifyTimeoutMs ?? (() => DEFAULT_CLASSIFY_TIMEOUT_MS),
       confidenceFloor: opts.confidenceFloor ?? DEFAULT_CONFIDENCE_FLOOR,
       idleMinutes: opts.idleMinutes ?? DEFAULT_IDLE_MINUTES,
       logger: opts.logger ?? ((msg) => console.error(msg)),
@@ -295,8 +297,8 @@ export class ScanScheduler {
       let results;
       try {
         results = _pgPool
-          ? await scanOncePg(adapter, this.opts.idleMinutes, _pgPool)
-          : await scanOnce(adapter, this.opts.idleMinutes, sqliteDb!);
+          ? await scanOncePg(adapter, this.opts.idleMinutes, _pgPool, Date.now(), this.opts.logger)
+          : await scanOnce(adapter, this.opts.idleMinutes, sqliteDb!, Date.now(), this.opts.logger);
       } catch (e) {
         this.opts.logger(
           `[scheduler] scanOnce error for ${adapter.name}: ${e instanceof Error ? e.message : String(e)}`,
@@ -320,6 +322,7 @@ export class ScanScheduler {
           } else {
             recordClassified(sqliteDb!, adapter.name, chunk.sourcePath, chunk.id, fileSize);
           }
+          recordIngestProgress();
           deferred += 1;
           continue;
         }
@@ -337,9 +340,11 @@ export class ScanScheduler {
         } else {
           try {
             classification = await classifyAdaptive(chunk.text, this.opts.classifier, {
-              perCallTimeoutMs: this.opts.classifyTimeoutMs,
+              perCallTimeoutMs: this.opts.classifyTimeoutMs(),
             });
+            recordClassifySuccess();
           } catch (e) {
+            recordClassifyFailure(e instanceof TimeoutError ? "timeout" : "error");
             if (isTransientLLMError(e)) {
               // Infrastructure error, not the transcript's fault: no strike, retry with exponential backoff.
               const delayMs = Math.min((backoff?.delayMs ?? DEFER_BASE_MS / 2) * 2, DEFER_CAP_MS);
@@ -373,10 +378,11 @@ export class ScanScheduler {
         if (classification.confidence < this.opts.confidenceFloor) {
           skippedLowConfidence += 1;
           if (_pgPool) {
-            await recordSkippedLowConfidencePg(_pgPool, adapter.name, chunk.sourcePath, fileSize);
+            await recordSkippedPg(_pgPool, adapter.name, chunk.sourcePath, fileSize);
           } else {
-            recordSkippedLowConfidence(sqliteDb!, adapter.name, chunk.sourcePath, fileSize);
+            recordSkipped(sqliteDb!, adapter.name, chunk.sourcePath, fileSize);
           }
+          recordIngestProgress();
           this.opts.logger(
             `[scheduler] low-confidence (${classification.confidence} < ${this.opts.confidenceFloor}) for ${chunk.id} - skipping until file grows`,
           );
@@ -451,6 +457,7 @@ export class ScanScheduler {
           } else {
             recordClassified(sqliteDb!, adapter.name, chunk.sourcePath, chunk.id, fileSize);
           }
+          recordIngestProgress();
           inserted += 1;
           this.deferrals.delete(stateKey);
           if (!gated) this.classifiedHash.set(stateKey, hash);

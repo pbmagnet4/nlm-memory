@@ -228,8 +228,6 @@ export class OpenCodeAdapter implements TranscriptAdapter {
       // time_updated moves whenever the session gains messages, so it doubles
       // as the change marker scanOnce compares against adapter_state.
       return row ? { mtimeMs: row.time_updated, size: row.time_updated } : null;
-    } catch {
-      return null;
     } finally {
       db?.close();
     }
@@ -307,8 +305,6 @@ export class OpenCodeAdapter implements TranscriptAdapter {
         text: transcript,
         label,
       };
-    } catch {
-      return null;
     } finally {
       db?.close();
     }

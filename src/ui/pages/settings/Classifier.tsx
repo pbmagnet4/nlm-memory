@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { SettingsSubnav } from "./SettingsSubnav.js";
+import { SourceBadge, type ValueSource } from "../../components/SourceBadge.js";
+import { fmt } from "../../lib/format.js";
+import { useIngestHealth } from "../../lib/ingest-health.js";
 import {
   fetchProviders,
   fetchProviderModels,
@@ -9,10 +13,42 @@ import {
   type TestResult,
 } from "../../lib/registries.js";
 
+interface Tuned<T> { value: T; source: ValueSource }
+
+interface Tuning {
+  thinking: Tuned<"off" | "on">;
+  timeout_ms: Tuned<number>;
+  max_tokens: Tuned<number>;
+}
+
+type TuningField = keyof Tuning;
+
+interface TuningDraft { thinking: string; timeout_s: string; max_tokens: string }
+
+const INGEST_PANEL_POLL_MS = 30_000;
+
+function draftFromTuning(t: Tuning): TuningDraft {
+  return {
+    thinking: t.thinking.value,
+    timeout_s: String(t.timeout_ms.value / 1000),
+    max_tokens: String(t.max_tokens.value),
+  };
+}
+
+/** Only changed controls are sent; a cleared (blank) control sends null, which falls back to env/default. */
+function tuningPatch(t: Tuning, d: TuningDraft): Record<string, string | number | null> {
+  const patch: Record<string, string | number | null> = {};
+  const current = draftFromTuning(t);
+  if (d.thinking !== current.thinking) patch.thinking = d.thinking;
+  if (d.timeout_s !== current.timeout_s) patch.timeout_ms = d.timeout_s.trim() === "" ? null : Math.round(Number(d.timeout_s) * 1000);
+  if (d.max_tokens !== current.max_tokens) patch.max_tokens = d.max_tokens.trim() === "" ? null : Number(d.max_tokens);
+  return patch;
+}
+
 interface ClassifierInfo {
   provider: string;
   model: string;
-  embedder: { provider: string; model: string; dims: number };
+  tuning: Tuning;
 }
 
 /**
@@ -42,6 +78,10 @@ export function SettingsClassifierPage() {
   const [busy, setBusy] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [tuningDraft, setTuningDraft] = useState<TuningDraft | null>(null);
+  const [tuningMsg, setTuningMsg] = useState<string | null>(null);
+  const [tuningBusy, setTuningBusy] = useState(false);
+  const health = useIngestHealth(INGEST_PANEL_POLL_MS);
 
   const load = useCallback(async () => {
     try {
@@ -50,6 +90,7 @@ export function SettingsClassifierPage() {
         fetchProviders(),
       ]);
       setInfo(infoRes);
+      setTuningDraft(draftFromTuning(infoRes.tuning));
       setProviders(list);
       const active = list.find((p) => providerKindMatchesClassifier(p.kind, infoRes.provider) && p.enabled);
       const fallback = list.find((p) => p.enabled) ?? list[0] ?? null;
@@ -141,6 +182,44 @@ export function SettingsClassifierPage() {
     }
   };
 
+  const putTuning = async (patch: Record<string, string | number | null>) => {
+    setTuningBusy(true);
+    setTuningMsg(null);
+    try {
+      const r = await fetch("/api/classifier/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      const data = (await r.json()) as { tuning?: Tuning; error?: string };
+      if (!r.ok || !data.tuning) {
+        setTuningMsg(`Error: ${data.error ?? r.statusText}`);
+      } else {
+        const tuning = data.tuning;
+        setInfo((prev) => (prev ? { ...prev, tuning } : prev));
+        setTuningDraft(draftFromTuning(tuning));
+        setTuningMsg("Saved");
+      }
+    } catch (e) {
+      setTuningMsg(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setTuningBusy(false);
+    }
+  };
+
+  const tuningPatchNow = info && tuningDraft ? tuningPatch(info.tuning, tuningDraft) : {};
+  const tuningDirty = Object.keys(tuningPatchNow).length > 0;
+  const maxTokensIgnored = info?.provider === "ollama";
+
+  const sourceBadge = (field: TuningField) =>
+    info && (
+      <SourceBadge
+        source={info.tuning[field].source}
+        onReset={() => void putTuning({ [field]: null })}
+        disabled={tuningBusy}
+      />
+    );
+
   return (
     <div className="page-pad">
       <SettingsSubnav />
@@ -225,16 +304,107 @@ export function SettingsClassifierPage() {
             </>
           )}
 
+          <h3 className="section-title">Tuning</h3>
+          {tuningDraft && (
+            <>
+              <div className="form-row">
+                <label className="form-label">Thinking</label>
+                <select
+                  className="form-input form-input-inline"
+                  value={tuningDraft.thinking}
+                  onChange={(e) => setTuningDraft({ ...tuningDraft, thinking: e.target.value })}
+                  disabled={tuningBusy}
+                >
+                  <option value="off">off</option>
+                  <option value="on">on</option>
+                </select>
+                {sourceBadge("thinking")}
+              </div>
+              <div className="form-row">
+                <label className="form-label">Timeout (s)</label>
+                <input
+                  className="form-input form-input-inline"
+                  type="number"
+                  min={10}
+                  max={900}
+                  step={1}
+                  value={tuningDraft.timeout_s}
+                  onChange={(e) => setTuningDraft({ ...tuningDraft, timeout_s: e.target.value })}
+                  disabled={tuningBusy}
+                />
+                {sourceBadge("timeout_ms")}
+              </div>
+              <div className="form-row">
+                <label className="form-label">Max tokens</label>
+                <input
+                  className="form-input form-input-inline"
+                  type="number"
+                  min={256}
+                  max={65536}
+                  step={1}
+                  value={tuningDraft.max_tokens}
+                  onChange={(e) => setTuningDraft({ ...tuningDraft, max_tokens: e.target.value })}
+                  disabled={tuningBusy || maxTokensIgnored}
+                />
+                {sourceBadge("max_tokens")}
+              </div>
+              {maxTokensIgnored && <p className="muted small">The ollama provider ignores max tokens.</p>}
+              <div className="form-row">
+                <button
+                  type="button"
+                  className="btn btn-accent"
+                  onClick={() => void putTuning(tuningPatchNow)}
+                  disabled={!tuningDirty || tuningBusy}
+                >{tuningBusy ? "Saving…" : "Save tuning"}</button>
+                {tuningMsg && (
+                  <span className={`small ${tuningMsg.startsWith("Error") ? "form-error" : "muted"}`}>{tuningMsg}</span>
+                )}
+              </div>
+              <p className="muted small">Clear a field and save to fall back to the env or default value.</p>
+            </>
+          )}
+
+          <h3 className="section-title">Ingest health</h3>
+          {!health ? (
+            <p className="muted small">Ingest health unavailable.</p>
+          ) : (
+            <>
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Runtime</th>
+                    <th className="right">Pending</th>
+                    <th className="right">Parked</th>
+                    <th className="right">Unreadable</th>
+                    <th className="right">Oldest pending</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(health.adapters).map(([name, a]) => (
+                    <tr key={name}>
+                      <td className="mono">{name}</td>
+                      <td className="right mono">{fmt.count(a.pending)}</td>
+                      <td className="right mono">{fmt.count(a.parked)}</td>
+                      <td className="right mono">{fmt.count(a.unreadable)}</td>
+                      <td className="right mono">{fmt.age(a.oldest_pending_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <dl className="kv-list">
+                <dt className="kv-label">Last successful classify</dt>
+                <dd className="kv-value mono">{health.last_success_at ? `${fmt.age(health.last_success_at)} ago` : "—"}</dd>
+                <dt className="kv-label">Timeouts (1h)</dt>
+                <dd className="kv-value mono">{fmt.count(health.timeouts_1h)}</dd>
+                <dt className="kv-label">Errors (1h)</dt>
+                <dd className="kv-value mono">{fmt.count(health.errors_1h)}</dd>
+              </dl>
+              <p className="muted small">{health.summary}</p>
+            </>
+          )}
+
           <h3 className="section-title">Embedder</h3>
-          <dl className="kv-list">
-            <dt className="kv-label">Provider</dt>
-            <dd className="kv-value mono">{info.embedder.provider}</dd>
-            <dt className="kv-label">Model</dt>
-            <dd className="kv-value mono">{info.embedder.model}</dd>
-            <dt className="kv-label">Dimensions</dt>
-            <dd className="kv-value mono">{info.embedder.dims}</dd>
-          </dl>
-          <p className="muted small">Embedder is fixed at build time. Recall vectors must match the index dims, so it isn't hot-swappable. DeepSeek has no embeddings endpoint; Ollama serves both classification (optional) and embedding (always).</p>
+          <p className="muted small">The embedder (provider, model, endpoint and key per lane) is configured on the <Link to="/settings/embedder">Embedder settings</Link> page.</p>
         </>
       )}
     </div>

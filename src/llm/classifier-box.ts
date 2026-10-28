@@ -16,9 +16,9 @@ import type {
   RewriteResult,
 } from "@ports/llm-client.js";
 import { stripInjectedContext } from "@core/hook/strip-injected-context.js";
-import { DeepSeekClient } from "./deepseek-client.js";
+import { NO_STORED_SETTINGS, resolveClassifierTuning, type ClassifierTuning } from "@core/classifier/tuning.js";
+import { DeepSeekClient, type FetchImpl } from "./deepseek-client.js";
 import { OllamaClient } from "./ollama-client.js";
-import { classifierNeedsThinkDisabled } from "./model-quirks.js";
 
 export type ClassifierProvider = "deepseek" | "ollama" | "openai";
 
@@ -32,8 +32,11 @@ export interface ClassifierBoxOptions {
   /** API key for the `openai` provider. Optional — local servers ignore it,
    *  so a placeholder is sent when unset rather than failing keyless setups. */
   readonly apiKey?: string;
-  /** Classify output-token budget for the `openai` provider (reasoning + JSON). */
-  readonly maxTokens?: number;
+  /** Resolved tuning (thinking, timeout, max tokens). Defaults to the built-in
+   *  defaults, ignoring env — callers that honor env/settings resolve first. */
+  readonly tuning?: ClassifierTuning;
+  /** Inject a fake fetch for tests. */
+  readonly fetchImpl?: FetchImpl;
 }
 
 export class ClassifierBox implements LLMClient {
@@ -43,7 +46,8 @@ export class ClassifierBox implements LLMClient {
   private readonly ollamaUrl: string;
   private readonly baseUrl: string | undefined;
   private readonly apiKey: string | undefined;
-  private readonly maxTokens: number | undefined;
+  private readonly fetchImpl: FetchImpl | undefined;
+  private tuningState: ClassifierTuning;
 
   constructor(opts: ClassifierBoxOptions) {
     this.providerName = opts.provider;
@@ -51,8 +55,9 @@ export class ClassifierBox implements LLMClient {
     this.ollamaUrl = opts.ollamaUrl ?? "http://localhost:11434";
     this.baseUrl = opts.baseUrl;
     this.apiKey = opts.apiKey;
-    this.maxTokens = opts.maxTokens;
-    this.inner = this.construct(opts.provider, opts.model);
+    this.fetchImpl = opts.fetchImpl;
+    this.tuningState = opts.tuning ?? resolveClassifierTuning(NO_STORED_SETTINGS, {});
+    this.inner = this.construct(opts.provider, opts.model, this.tuningState);
   }
 
   get provider(): ClassifierProvider { return this.providerName; }
@@ -63,8 +68,18 @@ export class ClassifierBox implements LLMClient {
    *  selection. */
   get openAiSwapAvailable(): boolean { return this.baseUrl !== undefined; }
 
+  get tuning(): ClassifierTuning { return this.tuningState; }
+  /** Per-call classify timeout; the scheduler reads this on every call. */
+  get timeoutMs(): number { return this.tuningState.timeoutMs.value; }
+
+  /** Rebuild the inner client in place with new tuning (same pattern as swap). */
+  retune(tuning: ClassifierTuning): void {
+    this.inner = this.construct(this.providerName, this.modelName, tuning);
+    this.tuningState = tuning;
+  }
+
   swap(provider: ClassifierProvider, model: string): void {
-    this.inner = this.construct(provider, model);
+    this.inner = this.construct(provider, model, this.tuningState);
     this.providerName = provider;
     this.modelName = model;
   }
@@ -90,9 +105,14 @@ export class ClassifierBox implements LLMClient {
     return this.inner.nameWorkstream(content, candidates);
   }
 
-  private construct(provider: ClassifierProvider, model: string): LLMClient {
+  private construct(provider: ClassifierProvider, model: string, tuning: ClassifierTuning): LLMClient {
+    const classifyTimeoutMs = tuning.timeoutMs.value;
+    const thinkingOff = tuning.thinking.value === "off";
+    const fetchImpl = this.fetchImpl ? { fetchImpl: this.fetchImpl } : {};
+    // The client default token budget applies unless a setting or env set one.
+    const maxTokens = tuning.maxTokens.source === "default" ? {} : { classifyMaxTokens: tuning.maxTokens.value };
     if (provider === "ollama") {
-      return new OllamaClient({ baseUrl: this.ollamaUrl, classifyModel: model, ...(classifierNeedsThinkDisabled(model) ? { think: false } : {}) });
+      return new OllamaClient({ baseUrl: this.ollamaUrl, classifyModel: model, classifyTimeoutMs, ...(thinkingOff ? { think: false } : {}), ...fetchImpl });
     }
     if (provider === "openai") {
       if (!this.baseUrl) {
@@ -104,16 +124,20 @@ export class ClassifierBox implements LLMClient {
       // The openai provider rides DeepSeekClient (a generic OpenAI-compatible
       // client). response_format is omitted because some local engines (LM
       // Studio MLX) reject json_object; a placeholder key covers keyless local
-      // servers. Thinking can't be disabled via API on those engines, so we
-      // give max_tokens headroom rather than fight the model's CoT.
+      // servers. Thinking off is `chat_template_kwargs.enable_thinking=false`,
+      // the switch vLLM/LiteLLM-style gateways honor.
       return new DeepSeekClient({
         baseUrl: this.baseUrl,
         apiKey: this.apiKey ?? "local",
         classifyModel: model,
         responseFormat: "none",
-        ...(this.maxTokens ? { classifyMaxTokens: this.maxTokens } : {}),
+        classifyTimeoutMs,
+        ...maxTokens,
+        ...(thinkingOff ? { extraBody: { chat_template_kwargs: { enable_thinking: false } } } : {}),
+        ...fetchImpl,
       });
     }
-    return new DeepSeekClient({ classifyModel: model });
+    // deepseek cloud API has no thinking switch: nothing is sent for either mode.
+    return new DeepSeekClient({ classifyModel: model, classifyTimeoutMs, ...maxTokens, ...fetchImpl });
   }
 }

@@ -49,6 +49,10 @@ const LOCAL_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
   { method: "POST", path: "/api/data/restore" },
   { method: "GET", path: "/api/data/stats" },
   { method: "POST", path: "/api/classifier" },
+  { method: "GET", path: "/api/health/ingest" },
+  { method: "GET", path: "/api/embedder/settings" },
+  { method: "PUT", path: "/api/embedder/settings" },
+  { method: "POST", path: "/api/embedder/test" },
   { method: "POST", path: "/api/jobs/reprocess" },
   { method: "DELETE", path: "/api/jobs/reprocess" },
 ];

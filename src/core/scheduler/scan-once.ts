@@ -29,6 +29,7 @@ import type {
   SourceStat,
   TranscriptAdapter,
 } from "@ports/transcript-adapter.js";
+import { recordIngestProgress } from "@core/health/classify-outcomes.js";
 
 export interface ScanResult {
   readonly chunk: SessionChunk;
@@ -39,6 +40,24 @@ export interface ScanResult {
 }
 
 export const MAX_CLASSIFY_FAILURES = 3;
+
+/**
+ * parseSession returns null only for a source with nothing to classify; an I/O
+ * error throws. A throw leaves the source unrecorded so the next tick retries
+ * it, and must not stop the scan of the other sources.
+ */
+async function parseOrLog(
+  adapter: TranscriptAdapter,
+  source: string,
+  log: (msg: string) => void,
+): Promise<{ chunk: SessionChunk | null } | null> {
+  try {
+    return { chunk: await adapter.parseSession(source) };
+  } catch (e) {
+    log(`[scan] ${adapter.name} could not read ${source}, will retry: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }
+}
 
 /** Adapter-provided stat for non-file sources, else the file's; null when unreadable. */
 function statSource(adapter: TranscriptAdapter, source: string): SourceStat | null {
@@ -62,6 +81,7 @@ export async function scanOnce(
   idleMinutes: number,
   db: Database.Database,
   now: number = Date.now(),
+  log: (msg: string) => void = console.error,
 ): Promise<ReadonlyArray<ScanResult>> {
   const idleMs = idleMinutes * 60 * 1000;
   const stateRows = db
@@ -96,8 +116,14 @@ export async function scanOnce(
       }
     }
 
-    const chunk = await adapter.parseSession(path);
-    if (!chunk) continue;
+    const parsed = await parseOrLog(adapter, path, log);
+    if (!parsed) continue;
+    const chunk = parsed.chunk;
+    if (!chunk) {
+      recordSkipped(db, adapter.name, path, st.size);
+      recordIngestProgress();
+      continue;
+    }
     const supersedes =
       prior?.session_id && prior.session_id !== chunk.id ? prior.session_id : null;
     out.push({ chunk, supersedes, fileSize: st.size, resumed: prior !== undefined });
@@ -147,6 +173,7 @@ export async function scanOncePg(
   idleMinutes: number,
   pool: Pool,
   now: number = Date.now(),
+  log: (msg: string) => void = console.error,
 ): Promise<ScanResult[]> {
   const idleMs = idleMinutes * 60 * 1000;
   const stateRows = await pool.query<{
@@ -196,8 +223,14 @@ export async function scanOncePg(
       );
     }
 
-    const chunk = await adapter.parseSession(sourcePath);
-    if (!chunk) continue;
+    const parsed = await parseOrLog(adapter, sourcePath, log);
+    if (!parsed) continue;
+    const chunk = parsed.chunk;
+    if (!chunk) {
+      await recordSkippedPg(pool, adapter.name, sourcePath, st.size);
+      recordIngestProgress();
+      continue;
+    }
 
     const supersedes =
       state?.sessionId && state.sessionId !== chunk.id ? state.sessionId : null;
@@ -226,7 +259,8 @@ export async function recordClassifiedPg(
   );
 }
 
-export function recordSkippedLowConfidence(
+/** Marks a source seen at this size without a session (low-confidence or empty): skipped until it grows. */
+export function recordSkipped(
   db: Database.Database,
   adapterName: string,
   sourcePath: string,
@@ -244,7 +278,7 @@ export function recordSkippedLowConfidence(
   ).run(adapterName, sourcePath, fileSize, fileSize);
 }
 
-export async function recordSkippedLowConfidencePg(
+export async function recordSkippedPg(
   pool: Pool,
   adapterName: string,
   sourcePath: string,

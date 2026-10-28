@@ -449,8 +449,6 @@ export class CursorAdapter implements TranscriptAdapter {
         endedAt,
         label,
       );
-    } catch {
-      return null;
     } finally {
       db?.close();
     }
