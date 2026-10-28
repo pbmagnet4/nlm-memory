@@ -65,14 +65,30 @@ describe("scanOnce with a transcript that parses to null", () => {
     expect(parseCalls).toBe(2);
   });
 
-  it("does not record a source it could not read, so it is retried", async () => {
+  it("leaves a source whose read throws unrecorded, logs it, retries it next scan, and still scans the others", async () => {
+    const other = join(dir, "other.jsonl");
+    writeFileSync(other, "ok");
+    const old = (Date.now() - 3_600_000) / 1000;
+    utimesSync(other, old, old);
     write("x");
-    parse = () => {
-      rmSync(path);
-      return null;
-    };
-    await scanOnce(adapter, 15, db);
+    let failing = true;
+    const two = {
+      name: "pi",
+      discover: async () => [path, other],
+      parseSession: async (p: string) => {
+        if (p === path && failing) throw new Error("EMFILE");
+        return p === other ? { ...chunk, id: "other", sourcePath: other } : chunk;
+      },
+    } as unknown as TranscriptAdapter;
+    const logs: string[] = [];
+    const first = await scanOnce(two, 15, db, Date.now(), (m) => logs.push(m));
+    expect(first.map((r) => r.chunk.id)).toEqual(["other"]);
     expect(rows()).toEqual([]);
-    expect(classifyOutcomesSnapshot().lastProgressAt).toBeNull();
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain("EMFILE");
+
+    failing = false;
+    const second = await scanOnce(two, 15, db);
+    expect(second.map((r) => r.chunk.id).sort()).toEqual(["other", "s1"]);
   });
 });

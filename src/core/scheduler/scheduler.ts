@@ -41,7 +41,7 @@ import type {
 import { PgSessionStore } from "@core/storage/pg-session-store.js";
 import type { PgFactStore } from "@core/storage/pg-fact-store.js";
 import type { Fact, Signal } from "@shared/types.js";
-import { MAX_CLASSIFY_FAILURES, recordClassified, recordClassifiedPg, recordFailed, recordFailedPg, recordSkippedLowConfidence, recordSkippedLowConfidencePg, scanOnce, scanOncePg } from "./scan-once.js";
+import { MAX_CLASSIFY_FAILURES, recordClassified, recordClassifiedPg, recordFailed, recordFailedPg, recordSkipped, recordSkippedPg, scanOnce, scanOncePg } from "./scan-once.js";
 import { runCheapChecksOnSqlite } from "@core/integrity/check-invariants.js";
 import { classifyAdaptive } from "@core/classifier/hierarchical-classify.js";
 import { isTransientLLMError } from "@core/classifier/transient-error.js";
@@ -297,8 +297,8 @@ export class ScanScheduler {
       let results;
       try {
         results = _pgPool
-          ? await scanOncePg(adapter, this.opts.idleMinutes, _pgPool)
-          : await scanOnce(adapter, this.opts.idleMinutes, sqliteDb!);
+          ? await scanOncePg(adapter, this.opts.idleMinutes, _pgPool, Date.now(), this.opts.logger)
+          : await scanOnce(adapter, this.opts.idleMinutes, sqliteDb!, Date.now(), this.opts.logger);
       } catch (e) {
         this.opts.logger(
           `[scheduler] scanOnce error for ${adapter.name}: ${e instanceof Error ? e.message : String(e)}`,
@@ -378,9 +378,9 @@ export class ScanScheduler {
         if (classification.confidence < this.opts.confidenceFloor) {
           skippedLowConfidence += 1;
           if (_pgPool) {
-            await recordSkippedLowConfidencePg(_pgPool, adapter.name, chunk.sourcePath, fileSize);
+            await recordSkippedPg(_pgPool, adapter.name, chunk.sourcePath, fileSize);
           } else {
-            recordSkippedLowConfidence(sqliteDb!, adapter.name, chunk.sourcePath, fileSize);
+            recordSkipped(sqliteDb!, adapter.name, chunk.sourcePath, fileSize);
           }
           recordIngestProgress();
           this.opts.logger(

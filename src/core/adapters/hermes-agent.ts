@@ -227,8 +227,6 @@ export class HermesAgentAdapter implements TranscriptAdapter {
       // Timestamps are Unix seconds. The message count is the change marker:
       // it only moves when the session gains messages.
       return { mtimeMs: (row.last ?? row.started ?? 0) * 1000, size: row.n };
-    } catch {
-      return null;
     } finally {
       db?.close();
     }

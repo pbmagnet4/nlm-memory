@@ -21,7 +21,7 @@
  *     the file is permanently skipped until new content arrives.
  */
 
-import { accessSync, constants, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import type Database from "better-sqlite3";
 import type { Pool } from "pg";
 import type {
@@ -41,6 +41,24 @@ export interface ScanResult {
 
 export const MAX_CLASSIFY_FAILURES = 3;
 
+/**
+ * parseSession returns null only for a source with nothing to classify; an I/O
+ * error throws. A throw leaves the source unrecorded so the next tick retries
+ * it, and must not stop the scan of the other sources.
+ */
+async function parseOrLog(
+  adapter: TranscriptAdapter,
+  source: string,
+  log: (msg: string) => void,
+): Promise<{ chunk: SessionChunk | null } | null> {
+  try {
+    return { chunk: await adapter.parseSession(source) };
+  } catch (e) {
+    log(`[scan] ${adapter.name} could not read ${source}, will retry: ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }
+}
+
 /** Adapter-provided stat for non-file sources, else the file's; null when unreadable. */
 function statSource(adapter: TranscriptAdapter, source: string): SourceStat | null {
   if (adapter.stat) return adapter.stat(source);
@@ -48,21 +66,6 @@ function statSource(adapter: TranscriptAdapter, source: string): SourceStat | nu
     return statSync(source);
   } catch {
     return null;
-  }
-}
-
-/**
- * Adapters return null both for a transcript with nothing to classify and for
- * one they could not read. Only the first is recorded as seen; an unreadable
- * source is retried on the next tick.
- */
-function isReadable(adapter: TranscriptAdapter, source: string): boolean {
-  if (adapter.stat) return adapter.stat(source) !== null;
-  try {
-    accessSync(source, constants.R_OK);
-    return true;
-  } catch {
-    return false;
   }
 }
 
@@ -78,6 +81,7 @@ export async function scanOnce(
   idleMinutes: number,
   db: Database.Database,
   now: number = Date.now(),
+  log: (msg: string) => void = console.error,
 ): Promise<ReadonlyArray<ScanResult>> {
   const idleMs = idleMinutes * 60 * 1000;
   const stateRows = db
@@ -112,12 +116,12 @@ export async function scanOnce(
       }
     }
 
-    const chunk = await adapter.parseSession(path);
+    const parsed = await parseOrLog(adapter, path, log);
+    if (!parsed) continue;
+    const chunk = parsed.chunk;
     if (!chunk) {
-      if (isReadable(adapter, path)) {
-        recordSkippedLowConfidence(db, adapter.name, path, st.size);
-        recordIngestProgress();
-      }
+      recordSkipped(db, adapter.name, path, st.size);
+      recordIngestProgress();
       continue;
     }
     const supersedes =
@@ -169,6 +173,7 @@ export async function scanOncePg(
   idleMinutes: number,
   pool: Pool,
   now: number = Date.now(),
+  log: (msg: string) => void = console.error,
 ): Promise<ScanResult[]> {
   const idleMs = idleMinutes * 60 * 1000;
   const stateRows = await pool.query<{
@@ -218,12 +223,12 @@ export async function scanOncePg(
       );
     }
 
-    const chunk = await adapter.parseSession(sourcePath);
+    const parsed = await parseOrLog(adapter, sourcePath, log);
+    if (!parsed) continue;
+    const chunk = parsed.chunk;
     if (!chunk) {
-      if (isReadable(adapter, sourcePath)) {
-        await recordSkippedLowConfidencePg(pool, adapter.name, sourcePath, st.size);
-        recordIngestProgress();
-      }
+      await recordSkippedPg(pool, adapter.name, sourcePath, st.size);
+      recordIngestProgress();
       continue;
     }
 
@@ -254,7 +259,8 @@ export async function recordClassifiedPg(
   );
 }
 
-export function recordSkippedLowConfidence(
+/** Marks a source seen at this size without a session (low-confidence or empty): skipped until it grows. */
+export function recordSkipped(
   db: Database.Database,
   adapterName: string,
   sourcePath: string,
@@ -272,7 +278,7 @@ export function recordSkippedLowConfidence(
   ).run(adapterName, sourcePath, fileSize, fileSize);
 }
 
-export async function recordSkippedLowConfidencePg(
+export async function recordSkippedPg(
   pool: Pool,
   adapterName: string,
   sourcePath: string,

@@ -124,12 +124,7 @@ export class MuseAdapter implements TranscriptAdapter {
     let model = "";
     let totalBytes = 0;
 
-    let raw: string;
-    try {
-      raw = await fs.readFile(path, "utf8");
-    } catch {
-      return null;
-    }
+    const raw = await fs.readFile(path, "utf8");
 
     for (const line of raw.split("\n")) {
       totalBytes += Buffer.byteLength(line, "utf8") + 1;
