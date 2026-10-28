@@ -186,3 +186,17 @@ _Older entries archived in CHANGELOG-2026.md_
 **State:** The dedupe hash and backoff clocks live in daemon memory, so a restart costs at most one extra classification per grown source. Clearing `adapter_state` rows still forces re-ingest.
 
 **Next:** none.
+
+## 2026-10-16 - Source-grounded SDD retrieval improvement plan (T805)
+
+**Changes:** Added the measurable retrieval specification, ten-task SDD implementation plan and editable architecture diagram. The plan prioritizes source-grounded evaluation, tenant/workstream eligibility, semantic candidate completeness, exact-value ambiguity, shared request budgets and source anchors; optional ranking, evidence deltas and decision-model reranking require measured promotion. Linked from `docs/context-retrieval.md`.
+
+**Results:** Independent critical review's holdout-selection and model-usage/capability findings were accepted, corrected and cleared in scoped re-review. Verified local links, ten ordered tasks/sixty unchecked steps, diagram XML/render and whitespace. No runtime tests or new performance gains are claimed for this documentation-only change.
+
+**State:** Planning only, based on local main `e391597`. Implementation and installed daemon unchanged. Numeric improvement gates are proposed acceptance targets; final holdout stays sealed until preregistered candidate selection is complete. Each implementation task includes spec/code review and the release includes final branch review.
+
+**Next:** Execute Task 1 in its own task worktree/SDD ledger to establish independent evidence-sufficiency and actual-token baselines before optimizing.
+
+Session-level log per session protocol. Cap: 10 entries — archive older to `CHANGELOG-YYYY.md` when exceeded.
+
+_Older entries archived in CHANGELOG-2026.md_
