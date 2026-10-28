@@ -26,6 +26,7 @@ import { tokenize } from "@core/recall/tokenize.js";
 import type { PgFactStore } from "./pg-fact-store.js";
 import { ingestSessionFactsOnClient } from "./pg-fact-ingest.js";
 import { chunkSessionText } from "@core/embedding/chunk-body.js";
+import { MAX_CHUNK_EMBED_ATTEMPTS, type ChunkRef } from "@core/embedding/chunk-retry.js";
 import { storedBatchWinners } from "./fact-batch.js";
 import { loadActionOverlayPg, openQuestionId } from "@core/actions/overlay.js";
 import type { ActionOverlay } from "@core/actions/overlay.js";
@@ -666,24 +667,17 @@ export class PgSessionStore implements SessionStore {
     if (embedder) {
       const chunks = chunkSessionText({ label: record.label, summary: record.summary, body: record.body });
       await this.pool.query("DELETE FROM session_embedding_chunks WHERE session_id = $1", [record.id]);
+      // A re-ingest re-attempts every chunk, so earlier failures are moot.
+      await this.pool.query("DELETE FROM chunk_embed_pending WHERE session_id = $1", [record.id]);
       for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
         const text = chunks[chunkIdx]!;
         if (!text) continue;
         try {
           const { vector } = await embedder.embed(text, "document");
-          const vecStr = `[${Array.from(vector).join(",")}]`;
-          const ins = await this.pool.query<{ chunk_id: number }>(
-            `INSERT INTO session_embedding_chunks (session_id, chunk_idx, embedding)
-             VALUES ($1, $2, $3::vector) RETURNING chunk_id`,
-            [record.id, chunkIdx, vecStr],
-          );
-          const chunkId = ins.rows[0]!.chunk_id;
-          await this.pool.query(
-            "INSERT INTO session_chunk_map (chunk_id, session_id, chunk_idx) VALUES ($1, $2, $3)",
-            [chunkId, record.id, chunkIdx],
-          );
+          await this.insertChunkEmbedding(record.id, chunkIdx, vector);
         } catch (err) {
           recordEmbedFailure("chunk");
+          await this.markChunkEmbedPending(record.id, chunkIdx, String(err));
           process.stderr.write(`[nlm] embedding chunk failed session=${record.id} chunk=${chunkIdx}: ${String(err)}\n`);
         }
       }
@@ -746,6 +740,75 @@ export class PgSessionStore implements SessionStore {
   }
 
   /** PG counterpart of SqliteSessionStore.listBackfillCandidates. */
+  /**
+   * Write a chunk's vector and its map row as one unit: a failure between the
+   * two rolls the vector back instead of leaving a map-less orphan (I7b-1).
+   * Clears the chunk's retry record.
+   */
+  async insertChunkEmbedding(sessionId: string, chunkIdx: number, vector: Float32Array): Promise<void> {
+    const vecStr = `[${Array.from(vector).join(",")}]`;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const ins = await client.query<{ chunk_id: number }>(
+        `INSERT INTO session_embedding_chunks (session_id, chunk_idx, embedding)
+         VALUES ($1, $2, $3::vector) RETURNING chunk_id`,
+        [sessionId, chunkIdx, vecStr],
+      );
+      await client.query(
+        "INSERT INTO session_chunk_map (chunk_id, session_id, chunk_idx) VALUES ($1, $2, $3)",
+        [ins.rows[0]!.chunk_id, sessionId, chunkIdx],
+      );
+      await client.query("DELETE FROM chunk_embed_pending WHERE session_id = $1 AND chunk_idx = $2", [sessionId, chunkIdx]);
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /** See SqliteSessionStore.markChunkEmbedPending: 1 min backoff doubling to a 6 h cap. */
+  async markChunkEmbedPending(sessionId: string, chunkIdx: number, error: string, now: Date = new Date()): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO chunk_embed_pending (session_id, chunk_idx, attempts, last_error, next_attempt_at)
+       SELECT $1, $2, 1, $3, $4::timestamptz + interval '1 minute' WHERE EXISTS (SELECT 1 FROM sessions WHERE id = $1)
+       ON CONFLICT (session_id, chunk_idx) DO UPDATE SET
+         attempts = chunk_embed_pending.attempts + 1,
+         last_error = EXCLUDED.last_error,
+         next_attempt_at = $4::timestamptz
+           + LEAST(interval '1 minute' * power(2, chunk_embed_pending.attempts), interval '6 hours')`,
+      [sessionId, chunkIdx, error.slice(0, 300), now.toISOString()],
+    );
+  }
+
+  async listChunksDueForEmbedding(limit: number, now: Date = new Date()): Promise<ReadonlyArray<ChunkRef>> {
+    const res = await this.pool.query<{ session_id: string; chunk_idx: number }>(
+      `SELECT p.session_id, p.chunk_idx FROM chunk_embed_pending p
+       WHERE p.attempts < $1 AND p.next_attempt_at <= $2
+         AND NOT EXISTS (SELECT 1 FROM session_chunk_map m
+                         WHERE m.session_id = p.session_id AND m.chunk_idx = p.chunk_idx)
+       ORDER BY p.next_attempt_at LIMIT $3`,
+      [MAX_CHUNK_EMBED_ATTEMPTS, now.toISOString(), limit],
+    );
+    return res.rows.map((r) => ({ sessionId: r.session_id, chunkIdx: r.chunk_idx }));
+  }
+
+  /** The text of one chunk of a session as ingest would chunk it now; null when it no longer exists. */
+  async chunkText(sessionId: string, chunkIdx: number): Promise<string | null> {
+    const res = await this.pool.query<{ label: string | null; summary: string | null; body: string | null }>(
+      "SELECT label, summary, body FROM sessions WHERE id = $1",
+      [sessionId],
+    );
+    const row = res.rows[0];
+    return row ? chunkSessionText(row)[chunkIdx] || null : null;
+  }
+
+  async clearChunkEmbedPending(sessionId: string, chunkIdx: number): Promise<void> {
+    await this.pool.query("DELETE FROM chunk_embed_pending WHERE session_id = $1 AND chunk_idx = $2", [sessionId, chunkIdx]);
+  }
+
   async listBackfillCandidates(tenantId: string, filter: BackfillCandidateFilter): Promise<BackfillCandidate[]> {
     const params: unknown[] = [filter.cutoff];
     let fromClause = "";

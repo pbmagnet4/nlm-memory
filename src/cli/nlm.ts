@@ -119,6 +119,7 @@ import { reembedCorpus } from "../core/embedding/embed-backfill.js";
 import { reembedCorpusPg } from "../core/embedding/pg-embed-backfill.js";
 import { backfillExemplarEmbeddings } from "../core/exemplars/embed-backfill.js";
 import { backfillFactEmbeddings } from "../core/facts/embed-backfill.js";
+import { MAX_CHUNK_EMBED_ATTEMPTS, stuckChunksOnPg, stuckChunksOnSqlite, sweepChunkEmbeddings, type StuckChunk } from "../core/embedding/chunk-retry.js";
 import { runFactEmbedTick } from "../core/facts/embed-sweep-tick.js";
 import { warmCodeEmbedder } from "../core/exemplars/warm-embedder.js";
 import { markWarm, markWarmFailure } from "../core/health/warmup-state.js";
@@ -899,6 +900,27 @@ program
       setInterval(() => { void runFactEmbedSweep(); }, FACT_EMBED_SWEEP_INTERVAL_MS).unref();
       setTimeout(() => { void runFactEmbedSweep(); }, FACT_EMBED_SWEEP_INITIAL_DELAY_MS).unref();
       console.error("  fact-embed-sweep: enabled, retry sweep every 2m");
+    }
+
+    // Chunk-embedding retry sweep: re-embeds session chunks whose vector failed
+    // at ingest (chunk_embed_pending), a few every 2 min under the shared embed
+    // in-flight cap. Chunks failing 5 times are left for `nlm doctor` to report.
+    {
+      const CHUNK_EMBED_SWEEP_INTERVAL_MS = 2 * 60 * 1000;
+      const CHUNK_EMBED_SWEEP_INITIAL_DELAY_MS = 105 * 1000;
+      const runChunkEmbedSweep = async () => {
+        try {
+          const report = await sweepChunkEmbeddings({ store: storage instanceof PgStorage ? storage.sessions : (storage as SqliteStorage).sessions, embedder });
+          if (report.repaired > 0 || report.failed > 0) {
+            console.error(`[chunk-embed-sweep] ${report.repaired}/${report.attempted} repaired (${report.failed} failed${report.shed ? ", shed at cap" : ""})`);
+          }
+        } catch (e) {
+          console.error(`[chunk-embed-sweep] error: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      };
+      setInterval(() => { void runChunkEmbedSweep(); }, CHUNK_EMBED_SWEEP_INTERVAL_MS).unref();
+      setTimeout(() => { void runChunkEmbedSweep(); }, CHUNK_EMBED_SWEEP_INITIAL_DELAY_MS).unref();
+      console.error("  chunk-embed-sweep: enabled, retry sweep every 2m");
     }
 
     // Memo sweep runs independently of the transcript scheduler — it's the
@@ -3070,12 +3092,13 @@ async function gatherInstallProbe(): Promise<InstallProbe> {
 program
   .command("doctor")
   .description("Check database integrity invariants and install/runtime health, optionally repair safe violations")
-  .option("--fix", "repair mechanically safe violations: delete self-loop edges (I1), restore orphaned superseded/replaced sessions to closed (I2), delete ghost fact embeddings (I7), collapse unattributed conflicting facts under the newest (I5a); without --fix the I5a collapses are listed, not applied")
+  .option("--fix", "repair mechanically safe violations: delete self-loop edges (I1), restore orphaned superseded/replaced sessions to closed (I2), delete ghost fact embeddings (I7), delete map-less chunk vectors (I7b-1), collapse unattributed conflicting facts under the newest (I5a); without --fix the I5a collapses are listed, not applied")
   .option("--override-guard", "allow the ghost-embedding repair past the sweep guard")
   .action(async (opts) => {
     const storage = await buildStorage(dbPath());
     let violations;
     let fixReport;
+    let stuckChunks: StuckChunk[];
     try {
       if (opts.fix) {
         if (storage instanceof PgStorage) {
@@ -3095,8 +3118,14 @@ program
         if (fixReport.deletedGhostEmbeddings > 0) {
           console.log(`  fixed I7: deleted ${fixReport.deletedGhostEmbeddings} ghost embedding(s)`);
         }
+        if (fixReport.orphanChunkGuardRefusal) {
+          console.log(`  skipped I7b-1: refused by sweep guard: ${fixReport.orphanChunkGuardRefusal}`);
+        }
+        if (fixReport.deletedOrphanChunkIds.length > 0) {
+          console.log(`  fixed I7b-1: deleted ${fixReport.deletedOrphanChunkIds.length} map-less chunk vector(s): chunk_id ${fixReport.deletedOrphanChunkIds.join(", ")}`);
+        }
         for (const r of fixReport.supersededConflicts) printConflictRepair("fixed I5a: superseded", r);
-        if (fixReport.deletedSelfLoops === 0 && fixReport.restoredToClosed === 0 && fixReport.deletedGhostEmbeddings === 0 && fixReport.supersededConflicts.length === 0) {
+        if (fixReport.deletedSelfLoops === 0 && fixReport.restoredToClosed === 0 && fixReport.deletedGhostEmbeddings === 0 && fixReport.deletedOrphanChunkIds.length === 0 && fixReport.supersededConflicts.length === 0) {
           console.log("  --fix: nothing to repair");
         }
       } else {
@@ -3108,6 +3137,9 @@ program
       } else {
         violations = runChecksOnSqlite((storage as SqliteStorage).rawDb());
       }
+      stuckChunks = storage instanceof PgStorage
+        ? await stuckChunksOnPg(storage.pgPool())
+        : stuckChunksOnSqlite((storage as SqliteStorage).rawDb());
     } finally {
       await storage.close();
     }
@@ -3124,6 +3156,13 @@ program
         console.log(`FAIL ${id}  count=${v.count}  ${v.description}${samples ? "\n" + samples : ""}`);
       } else {
         console.log(`PASS ${id}`);
+      }
+    }
+    if (stuckChunks.length > 0) {
+      anyFail = true;
+      console.log(`FAIL chunk-embed  ${stuckChunks.length} chunk(s) failed ${MAX_CHUNK_EMBED_ATTEMPTS} embed attempts and are no longer retried`);
+      for (const c of stuckChunks.slice(0, 10)) {
+        console.log(`  ${c.sessionId} chunk ${c.chunkIdx}: ${c.lastError ?? "unknown error"}`);
       }
     }
     // I5a-mv is informational: multi-valued predicate groups legitimately exempt

@@ -321,13 +321,15 @@ export async function reembedCorpus(opts: BackfillOptions): Promise<BackfillRepo
       }
 
       try {
-        delChunks(row.id);
-        for (const { idx: cidx, vec } of vectors) {
-          const blob = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
-          // BigInt cast so vec0's aux chunk_idx column receives an INTEGER.
-          const info = insChunk.run(blob, row.id, BigInt(cidx));
-          insMap.run(Number(info.lastInsertRowid), row.id, cidx);
-        }
+        db.transaction(() => {
+          delChunks(row.id);
+          for (const { idx: cidx, vec } of vectors) {
+            const blob = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
+            // BigInt cast so vec0's aux chunk_idx column receives an INTEGER.
+            const info = insChunk.run(blob, row.id, BigInt(cidx));
+            insMap.run(Number(info.lastInsertRowid), row.id, cidx);
+          }
+        })();
       } catch (e) {
         failed += 1;
         opts.onProgress?.(idx, total, row.id, `FAIL (db): ${(e as Error).message}`);

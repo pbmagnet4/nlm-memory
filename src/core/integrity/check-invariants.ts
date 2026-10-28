@@ -688,6 +688,10 @@ export interface FixReport {
   readonly supersededConflicts: ReadonlyArray<ConflictRepair>;
   /** Set when the sweep guard refused the ghost-embedding deletion (I7). */
   readonly ghostGuardRefusal?: string;
+  /** chunk_ids of map-less chunk vectors deleted (I7b-1). */
+  readonly deletedOrphanChunkIds: ReadonlyArray<number>;
+  /** Set when the sweep guard refused the orphan-chunk deletion (I7b-1). */
+  readonly orphanChunkGuardRefusal?: string;
 }
 
 export interface FixGuardOptions {
@@ -744,6 +748,35 @@ export function applyFixOnSqlite(db: Database.Database, guard: FixGuardOptions =
     }
   }
 
+  // I7b-1 fix: vec0 vectors with no map row can never be reached by recall.
+  const orphanChunkIds = db
+    .prepare<[], { bad_id: number }>(`
+      SELECT r.rowid AS bad_id
+      FROM session_embedding_chunks_rowids r
+      LEFT JOIN session_chunk_map m ON m.chunk_id = r.rowid
+      WHERE m.chunk_id IS NULL
+    `)
+    .all()
+    .map((r) => r.bad_id);
+  const chunkTotal = (db.prepare("SELECT COUNT(*) AS n FROM session_embedding_chunks_rowids").get() as { n: number }).n;
+  const orphanDecision = guardSweep({
+    sweep: "doctor-fix-orphan-chunks",
+    actor: "cli:doctor --fix",
+    targetTotal: chunkTotal,
+    touching: orphanChunkIds.length,
+    override: guard.overrideGuard,
+    auditPath: guard.auditPath,
+  });
+  const deletedOrphanChunkIds: number[] = [];
+  if (orphanDecision.mode === "applied") {
+    const delChunk = db.prepare("DELETE FROM session_embedding_chunks WHERE chunk_id = ?");
+    db.transaction(() => {
+      for (const id of orphanChunkIds) {
+        if (delChunk.run(id).changes > 0) deletedOrphanChunkIds.push(id);
+      }
+    })();
+  }
+
   const supersededConflicts = planConflictRepairsOnSqlite(db);
   const supersede = db.prepare("UPDATE facts SET superseded_by = ? WHERE id = ?");
   const dropEmbedding = db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ?");
@@ -760,8 +793,10 @@ export function applyFixOnSqlite(db: Database.Database, guard: FixGuardOptions =
     deletedSelfLoops: deleteResult.changes,
     restoredToClosed: updateSuperseded.changes + updateReplaced.changes,
     deletedGhostEmbeddings,
+    deletedOrphanChunkIds,
     supersededConflicts,
     ...(ghostDecision.mode === "refused" ? { ghostGuardRefusal: ghostDecision.reason } : {}),
+    ...(orphanDecision.mode === "refused" ? { orphanChunkGuardRefusal: orphanDecision.reason } : {}),
   };
 }
 
@@ -794,6 +829,12 @@ export async function applyFixOnPg(pool: Pool): Promise<FixReport> {
     )
   `);
 
+  const orphanChunks = await pool.query<{ chunk_id: number }>(`
+    DELETE FROM session_embedding_chunks
+    WHERE chunk_id NOT IN (SELECT chunk_id FROM session_chunk_map)
+    RETURNING chunk_id
+  `);
+
   const supersededConflicts = await planConflictRepairsOnPg(pool);
   for (const repair of supersededConflicts) {
     await pool.query("UPDATE facts SET superseded_by = $1 WHERE id = ANY($2)", [repair.keptId, repair.supersededIds]);
@@ -804,6 +845,7 @@ export async function applyFixOnPg(pool: Pool): Promise<FixReport> {
     deletedSelfLoops: deleteResult.rowCount ?? 0,
     restoredToClosed: (updateSuperseded.rowCount ?? 0) + (updateReplaced.rowCount ?? 0),
     deletedGhostEmbeddings: ghostEmbResult.rowCount ?? 0,
+    deletedOrphanChunkIds: orphanChunks.rows.map((r) => r.chunk_id),
     supersededConflicts,
   };
 }
