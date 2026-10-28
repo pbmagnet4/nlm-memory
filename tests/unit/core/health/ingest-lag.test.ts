@@ -51,6 +51,7 @@ function deps(
     readState: async (name) => new Map(Object.entries(state[name] ?? {})),
     idleMinutes: 15,
     thresholdHours,
+    schedulerIntervalMs: 30 * 60_000,
   };
 }
 
@@ -81,6 +82,7 @@ describe("computeIngestLag", () => {
     expect(report.adapters["claude-code"]).toEqual({
       pending: 3,
       parked: 1,
+      unreadable: 0,
       oldest_pending_at: new Date(NOW - 4 * HOUR).toISOString(),
     });
     expect(report.lagging).toBe(false);
@@ -111,6 +113,37 @@ describe("computeIngestLag", () => {
     expect(since?.getTime()).toBe(NOW - LOOKBACK_MS);
   });
 
+  it("aggregates sources that share an adapter name", async () => {
+    const a = file("a", 1, 2 * HOUR);
+    const b = file("b", 1, 3 * HOUR);
+    const c = file("c", 1, 1 * HOUR);
+    const report = await computeIngestLag(
+      deps([adapter("hermes-agent", [a, c]), adapter("hermes-agent", [b])]),
+      NOW,
+    );
+    expect(report.adapters["hermes-agent"]).toEqual({
+      pending: 3,
+      parked: 0,
+      unreadable: 0,
+      oldest_pending_at: new Date(NOW - 3 * HOUR).toISOString(),
+    });
+  });
+
+  it("counts a source whose stat throws as unreadable without failing the pass", async () => {
+    const a = file("a", 1, 2 * HOUR);
+    const flaky = {
+      name: "hermes-agent",
+      discover: async () => ["bad", a],
+      stat: (p: string) => {
+        if (p === "bad") throw new Error("database is locked");
+        return { mtimeMs: NOW - 2 * HOUR, size: 1 };
+      },
+    } as unknown as TranscriptAdapter;
+    const report = await computeIngestLag(deps([flaky]), NOW);
+    expect(report.adapters["hermes-agent"]).toMatchObject({ pending: 1, unreadable: 1 });
+    expect(report.summary).toBe("1 pending, oldest 2h, 0 ok/1h, 1 unreadable");
+  });
+
   it("is caught up with no pending files", async () => {
     const report = await computeIngestLag(deps([adapter("pi", [])]), NOW);
     expect(report).toMatchObject({ lagging: false, last_success_at: null, summary: "0 pending, 0 ok/1h" });
@@ -135,16 +168,24 @@ describe("computeIngestLag", () => {
       expect((await computeIngestLag(deps([adapter("pi", [f])], {}, 1), NOW)).lagging).toBe(true);
     });
 
-    it("is lagging with pending files and no progress for over an hour", async () => {
-      recordIngestProgress(NOW - HOUR - 1000);
-      const f = file("f", 1, 1 * HOUR);
+    it("is lagging when a file has waited three ticks and there was no progress for three ticks", async () => {
+      recordIngestProgress(NOW - 90 * 60_000 - 1000);
+      const f = file("f", 1, 2 * HOUR);
       expect((await computeIngestLag(deps([adapter("pi", [f])]), NOW)).lagging).toBe(true);
     });
 
-    it("is not lagging when the last progress is within the hour", async () => {
-      recordIngestProgress(NOW - HOUR + 1000);
-      const f = file("f", 1, 1 * HOUR);
+    it("is not lagging when progress is within three ticks", async () => {
+      recordIngestProgress(NOW - 90 * 60_000 + 1000);
+      const f = file("f", 1, 2 * HOUR);
       expect((await computeIngestLag(deps([adapter("pi", [f])]), NOW)).lagging).toBe(false);
+    });
+
+    it("does not read a quiet period followed by one new session as lagging", async () => {
+      recordIngestProgress(NOW - 8 * HOUR);
+      const f = file("f", 1, 20 * 60_000);
+      const report = await computeIngestLag(deps([adapter("pi", [f])]), NOW);
+      expect(report.adapters["pi"]?.pending).toBe(1);
+      expect(report.lagging).toBe(false);
     });
 
     it("does not read gate-skip-only activity as stalled", async () => {

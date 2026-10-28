@@ -305,8 +305,6 @@ export class OpenCodeAdapter implements TranscriptAdapter {
         text: transcript,
         label,
       };
-    } catch {
-      return null;
     } finally {
       db?.close();
     }

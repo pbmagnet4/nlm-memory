@@ -280,8 +280,6 @@ export class HermesAgentAdapter implements TranscriptAdapter {
         text: transcript,
         label,
       };
-    } catch {
-      return null;
     } finally {
       db?.close();
     }

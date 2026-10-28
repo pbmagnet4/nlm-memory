@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 export interface IngestHealth {
-  adapters: Record<string, { pending: number; parked: number; oldest_pending_at: string | null }>;
+  adapters: Record<string, { pending: number; parked: number; unreadable: number; oldest_pending_at: string | null }>;
   last_success_at: string | null;
   last_progress_at: string | null;
   timeouts_1h: number;

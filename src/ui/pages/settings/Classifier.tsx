@@ -375,6 +375,7 @@ export function SettingsClassifierPage() {
                     <th>Runtime</th>
                     <th className="right">Pending</th>
                     <th className="right">Parked</th>
+                    <th className="right">Unreadable</th>
                     <th className="right">Oldest pending</th>
                   </tr>
                 </thead>
@@ -384,6 +385,7 @@ export function SettingsClassifierPage() {
                       <td className="mono">{name}</td>
                       <td className="right mono">{fmt.count(a.pending)}</td>
                       <td className="right mono">{fmt.count(a.parked)}</td>
+                      <td className="right mono">{fmt.count(a.unreadable)}</td>
                       <td className="right mono">{fmt.age(a.oldest_pending_at)}</td>
                     </tr>
                   ))}

@@ -554,6 +554,7 @@ program
       readState: adapterStateReader(store),
       idleMinutes: DEFAULT_IDLE_MINUTES,
       thresholdHours: ingestLagThresholdHours(),
+      schedulerIntervalMs: opts.intervalMin * 60_000,
     });
     const app = createApp({
       ingestLag,
@@ -716,18 +717,16 @@ program
     alertDriftTimer.unref();
 
     const ALERT_EMBEDDER_CHECK_INTERVAL_MS = 5 * 60_000;
-    const alertEmbedderTimer = setInterval(() => {
-      void checkEmbedderAndAlert().catch(() => {
-        // Best-effort self-reporting — a failed check never blocks the daemon.
-      });
+    // Sequential on purpose: each check read-modify-writes alert-state.json, so
+    // overlapping checks would overwrite each other's state.
+    const alertHealthTimer = setInterval(() => {
+      // Best-effort self-reporting — a failed check never blocks the daemon or the next check.
+      void (async () => {
+        await checkEmbedderAndAlert().catch(() => {});
+        await checkIngestLagAndAlert(() => ingestLag.get()).catch(() => {});
+      })();
     }, ALERT_EMBEDDER_CHECK_INTERVAL_MS);
-    alertEmbedderTimer.unref();
-    const alertIngestLagTimer = setInterval(() => {
-      void checkIngestLagAndAlert(() => ingestLag.get()).catch(() => {
-        // Best-effort self-reporting — a failed check never blocks the daemon.
-      });
-    }, ALERT_EMBEDDER_CHECK_INTERVAL_MS);
-    alertIngestLagTimer.unref();
+    alertHealthTimer.unref();
 
     // Corpus monitor: 24h stats job + pairs-cache refresh + weekly trend log.
     // SQLite only. First run is delayed ~60s so warmup finishes first; then

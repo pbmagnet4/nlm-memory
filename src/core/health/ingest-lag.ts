@@ -17,7 +17,7 @@ import type { SourceStat, TranscriptAdapter } from "@ports/transcript-adapter.js
 import { MAX_CLASSIFY_FAILURES } from "@core/scheduler/scan-once.js";
 import { PgSessionStore } from "@core/storage/pg-session-store.js";
 import type { SqliteSessionStore } from "@core/storage/sqlite-session-store.js";
-import { classifyOutcomesSnapshot, OUTCOME_WINDOW_MS } from "./classify-outcomes.js";
+import { classifyOutcomesSnapshot } from "./classify-outcomes.js";
 
 /** Only files modified in this window are stat'ed, which keeps the pass cheap. */
 export const LOOKBACK_MS = 14 * 86_400_000;
@@ -27,6 +27,8 @@ const DEFAULT_ALERT_HOURS = 6;
 export interface AdapterLag {
   readonly pending: number;
   readonly parked: number;
+  /** Sources whose stat threw (busy, mid-sync or corrupt DB); retried every pass. */
+  readonly unreadable: number;
   readonly oldest_pending_at: string | null;
 }
 
@@ -53,6 +55,8 @@ export interface IngestLagDeps {
   readonly readState: AdapterStateReader;
   readonly idleMinutes: number;
   readonly thresholdHours: number;
+  /** Scheduler tick interval; a stall needs three missed ticks. */
+  readonly schedulerIntervalMs: number;
 }
 
 /** NLM_INGEST_LAG_ALERT_HOURS, default 6; read once at boot. */
@@ -94,12 +98,14 @@ function pgStateReader(pool: Pool): AdapterStateReader {
   };
 }
 
-function statSource(adapter: TranscriptAdapter, source: string): SourceStat | null {
-  if (adapter.stat) return adapter.stat(source);
+const UNREADABLE = Symbol("unreadable");
+
+/** Null when the source is gone; UNREADABLE when stat throws (never fails the pass). */
+function statSource(adapter: TranscriptAdapter, source: string): SourceStat | null | typeof UNREADABLE {
   try {
-    return statSync(source);
+    return adapter.stat ? adapter.stat(source) : statSync(source);
   } catch {
-    return null;
+    return UNREADABLE;
   }
 }
 
@@ -107,14 +113,19 @@ async function adapterLag(
   adapter: TranscriptAdapter,
   deps: IngestLagDeps,
   now: number,
-): Promise<AdapterLag & { oldestMs: number | null }> {
+): Promise<{ pending: number; parked: number; unreadable: number; oldestMs: number | null }> {
   const state = await deps.readState(adapter.name);
   const idleMs = deps.idleMinutes * 60_000;
   let pending = 0;
   let parked = 0;
+  let unreadable = 0;
   let oldestMs: number | null = null;
   for (const path of await adapter.discover({ since: new Date(now - LOOKBACK_MS) })) {
     const st = statSource(adapter, path);
+    if (st === UNREADABLE) {
+      unreadable += 1;
+      continue;
+    }
     if (!st || now - st.mtimeMs < idleMs) continue;
     const prior = state.get(path);
     if (prior && (prior.fileSize ?? 0) === st.size) {
@@ -124,12 +135,7 @@ async function adapterLag(
     pending += 1;
     if (oldestMs === null || st.mtimeMs < oldestMs) oldestMs = st.mtimeMs;
   }
-  return {
-    pending,
-    parked,
-    oldest_pending_at: oldestMs === null ? null : new Date(oldestMs).toISOString(),
-    oldestMs,
-  };
+  return { pending, parked, unreadable, oldestMs };
 }
 
 function formatAge(ms: number): string {
@@ -140,25 +146,46 @@ function formatAge(ms: number): string {
 }
 
 export async function computeIngestLag(deps: IngestLagDeps, now: number = Date.now()): Promise<IngestLagReport> {
-  const adapters: Record<string, AdapterLag> = {};
+  // Several sources can share an adapter name (one hermes-agent per remote DB): aggregate by name.
+  const byName = new Map<string, { pending: number; parked: number; unreadable: number; oldestMs: number | null }>();
   let totalPending = 0;
+  let totalUnreadable = 0;
   let oldestMs: number | null = null;
   for (const adapter of await deps.listAdapters()) {
-    const { oldestMs: adapterOldest, ...lag } = await adapterLag(adapter, deps, now);
-    adapters[adapter.name] = lag;
+    const lag = await adapterLag(adapter, deps, now);
+    const agg = byName.get(adapter.name) ?? { pending: 0, parked: 0, unreadable: 0, oldestMs: null };
+    agg.pending += lag.pending;
+    agg.parked += lag.parked;
+    agg.unreadable += lag.unreadable;
+    if (lag.oldestMs !== null && (agg.oldestMs === null || lag.oldestMs < agg.oldestMs)) agg.oldestMs = lag.oldestMs;
+    byName.set(adapter.name, agg);
     totalPending += lag.pending;
-    if (adapterOldest !== null && (oldestMs === null || adapterOldest < oldestMs)) oldestMs = adapterOldest;
+    totalUnreadable += lag.unreadable;
+    if (lag.oldestMs !== null && (oldestMs === null || lag.oldestMs < oldestMs)) oldestMs = lag.oldestMs;
+  }
+  const adapters: Record<string, AdapterLag> = {};
+  for (const [name, { oldestMs: adapterOldest, ...counts }] of byName) {
+    adapters[name] = {
+      ...counts,
+      oldest_pending_at: adapterOldest === null ? null : new Date(adapterOldest).toISOString(),
+    };
   }
 
   const outcomes = classifyOutcomesSnapshot(now);
   const oldestAgeMs = oldestMs === null ? null : now - oldestMs;
-  const stalled = now - (outcomes.lastProgressAt ?? outcomes.startedAt) > OUTCOME_WINDOW_MS;
-  const lagging =
-    (oldestAgeMs !== null && oldestAgeMs > deps.thresholdHours * 3_600_000) || (totalPending > 0 && stalled);
+  // Stalled: a file has waited three ticks and three ticks passed without progress.
+  // Ticks that find nothing do not record progress, so a quiet period alone must not trip this.
+  const stallMs = 3 * deps.schedulerIntervalMs;
+  const stalled =
+    oldestAgeMs !== null &&
+    oldestAgeMs > stallMs &&
+    now - (outcomes.lastProgressAt ?? outcomes.startedAt) > stallMs;
+  const lagging = (oldestAgeMs !== null && oldestAgeMs > deps.thresholdHours * 3_600_000) || stalled;
   const summary =
     `${totalPending} pending, ` +
     (oldestAgeMs === null ? "" : `oldest ${formatAge(oldestAgeMs)}, `) +
-    `${outcomes.successes1h} ok/1h`;
+    `${outcomes.successes1h} ok/1h` +
+    (totalUnreadable > 0 ? `, ${totalUnreadable} unreadable` : "");
 
   return {
     adapters,

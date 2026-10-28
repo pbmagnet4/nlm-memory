@@ -183,3 +183,24 @@ describe("checkIngestLagAndAlert", () => {
     }
   });
 });
+
+describe("embedder and ingest-lag checks run in sequence", () => {
+  it("both persisted states survive one round of checks", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "nlm-alert-"));
+    const statePath = join(tmp, "alert-state.json");
+    resetWarmupState();
+    const slowReport = async (): Promise<IngestLagReport> => {
+      await new Promise((r) => setTimeout(r, 20));
+      return { adapters: {}, last_success_at: null, last_progress_at: null, timeouts_1h: 0, errors_1h: 0, lagging: true, summary: "s" };
+    };
+    try {
+      await checkEmbedderAndAlert({ statePath });
+      await checkIngestLagAndAlert(slowReport, { statePath });
+      const persisted = JSON.parse(readFileSync(statePath, "utf8")) as AlertState;
+      expect(persisted.embedderCold.notReadyStreak).toBe(1);
+      expect(persisted.ingestLag.laggingStreak).toBe(1);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
