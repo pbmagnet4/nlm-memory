@@ -69,6 +69,30 @@ function statSource(adapter: TranscriptAdapter, source: string): SourceStat | nu
   }
 }
 
+/**
+ * Stat failures from an adapter (a busy DB) skip that source for this tick; the
+ * scan continues. Collected so the tick logs once per adapter, not per source.
+ */
+class StatFailures {
+  private count = 0;
+  private first = "";
+
+  stat(adapter: TranscriptAdapter, source: string): SourceStat | null {
+    try {
+      return statSource(adapter, source);
+    } catch (e) {
+      if (this.count++ === 0) this.first = e instanceof Error ? e.message : String(e);
+      return null;
+    }
+  }
+
+  report(adapter: TranscriptAdapter, log: (msg: string) => void): void {
+    if (this.count > 0) {
+      log(`[scan] ${adapter.name} could not stat ${this.count} source(s), skipped this tick: ${this.first}`);
+    }
+  }
+}
+
 interface AdapterStateRow {
   source_path: string;
   file_size: number | null;
@@ -93,9 +117,10 @@ export async function scanOnce(
 
   const out: ScanResult[] = [];
   const files = await adapter.discover();
+  const statFailures = new StatFailures();
 
   for (const path of files) {
-    const st = statSource(adapter, path);
+    const st = statFailures.stat(adapter, path);
     if (!st) continue;
     const age = now - st.mtimeMs;
     if (age < idleMs) continue;
@@ -128,6 +153,7 @@ export async function scanOnce(
       prior?.session_id && prior.session_id !== chunk.id ? prior.session_id : null;
     out.push({ chunk, supersedes, fileSize: st.size, resumed: prior !== undefined });
   }
+  statFailures.report(adapter, log);
   return out;
 }
 
@@ -201,10 +227,11 @@ export async function scanOncePg(
 
   const paths = await adapter.discover();
   const results: ScanResult[] = [];
+  const statFailures = new StatFailures();
 
   for (const sourcePath of paths) {
     // Bug 1 fix: mtime gate — skip files still being written
-    const st = statSource(adapter, sourcePath);
+    const st = statFailures.stat(adapter, sourcePath);
     if (!st) continue;
     if (now - st.mtimeMs < idleMs) continue;
 
@@ -237,6 +264,7 @@ export async function scanOncePg(
     results.push({ chunk, supersedes, fileSize: st.size, resumed: state !== undefined });
   }
 
+  statFailures.report(adapter, log);
   return results;
 }
 
