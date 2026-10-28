@@ -16,6 +16,8 @@ import {
   runChecksOnPg,
   runCheapChecksOnPg,
   applyFixOnPg,
+  planConflictRepairsOnPg,
+  planDanglingRepairsOnPg,
 } from "../../src/core/integrity/check-invariants.js";
 import type { Pool } from "pg";
 import { usePgTestSchema } from "../helpers/pg-test-schema.js";
@@ -334,6 +336,83 @@ describe.skipIf(!PG_TEST_URL)("check-invariants (PostgreSQL)", () => {
       await insertFactEmbedding("f_clean_cheap_pg");
       const violations = await runCheapChecksOnPg(pool);
       expect(violations.find((v) => v.id === "I7")).toBeUndefined();
+    });
+  });
+
+  describe("I5a/I5b fact repairs", () => {
+    const FK = "facts_superseded_by_fkey";
+    let seq = 0;
+    async function seedFact(id: string, at: string, predicate = "color"): Promise<void> {
+      await pool.query(
+        `INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence, created_at)
+         VALUES ($1, 'attribute', 'x', $2, $3, 's1', 1.0, $4)`,
+        [id, predicate, `v${seq++}`, at],
+      );
+    }
+    async function embed(id: string): Promise<void> {
+      await pool.query("INSERT INTO fact_embeddings (fact_id, embedding) VALUES ($1, $2::vector)", [id, `[${Array(768).fill("0").join(",")}]`]);
+    }
+    const supersededBy = async (id: string) =>
+      (await pool.query<{ superseded_by: string | null }>("SELECT superseded_by FROM facts WHERE id = $1", [id])).rows[0]?.superseded_by;
+    const embeddingCount = async () =>
+      Number((await pool.query<{ n: string }>("SELECT COUNT(*) AS n FROM fact_embeddings")).rows[0]!.n);
+    // The FK makes a dangling pointer impossible, so drop it to reproduce one left by older data.
+    const dangle = async (id: string) => {
+      await pool.query(`ALTER TABLE facts DROP CONSTRAINT IF EXISTS ${FK}`);
+      await pool.query("UPDATE facts SET superseded_by = 'deleted-fact' WHERE id = $1", [id]);
+    };
+
+    beforeEach(async () => {
+      await insertSession(pool, "s1");
+    });
+
+    afterEach(async () => {
+      await pool.query(TRUNCATE_SQL);
+      await pool.query(`ALTER TABLE facts DROP CONSTRAINT IF EXISTS ${FK}`);
+      await pool.query(`ALTER TABLE facts ADD CONSTRAINT ${FK} FOREIGN KEY (superseded_by) REFERENCES facts(id) ON DELETE SET NULL`);
+    });
+
+    it("I5a repair supersedes older unattributed facts under the newest and drops their embeddings", async () => {
+      await seedFact("old1", "2026-01-01T00:00:00Z");
+      await seedFact("old2", "2026-01-02T00:00:00Z");
+      await seedFact("new", "2026-01-03T00:00:00Z");
+      await embed("old1");
+      const dryRun = await planConflictRepairsOnPg(pool);
+      expect(dryRun).toEqual([{ tenantId: "team_local", subject: "x", predicate: "color", keptId: "new", supersededIds: ["old1", "old2"] }]);
+      expect(await supersededBy("old1")).toBeNull();
+
+      const report = await applyFixOnPg(pool);
+      expect(report.supersededConflicts).toEqual(dryRun);
+      expect([await supersededBy("old1"), await supersededBy("old2"), await supersededBy("new")]).toEqual(["new", "new", null]);
+      expect(await embeddingCount()).toBe(0);
+      expect((await runChecksOnPg(pool)).find((v) => v.id === "I5a")).toBeUndefined();
+      expect((await applyFixOnPg(pool)).supersededConflicts).toEqual([]);
+    });
+
+    it("I5b repair puts a dangling fact under a newer active fact and drops its embedding", async () => {
+      await seedFact("stale", "2026-01-01T00:00:00Z");
+      await seedFact("newer", "2026-02-01T00:00:00Z");
+      await embed("stale");
+      await dangle("stale");
+      const plan = await planDanglingRepairsOnPg(pool);
+      expect(plan).toEqual([{ factId: "stale", tenantId: "team_local", subject: "x", predicate: "color", supersededBy: "newer", alsoSuperseded: [] }]);
+
+      expect((await applyFixOnPg(pool)).repairedDangling).toEqual(plan);
+      expect([await supersededBy("stale"), await supersededBy("newer")]).toEqual(["newer", null]);
+      expect(await embeddingCount()).toBe(0);
+      expect((await runChecksOnPg(pool)).find((v) => v.id === "I5b")).toBeUndefined();
+      expect((await applyFixOnPg(pool)).repairedDangling).toEqual([]);
+    });
+
+    it("I5b repair returns the newest dangling fact to active and supersedes older active facts under it", async () => {
+      await seedFact("older", "2026-01-01T00:00:00Z");
+      await seedFact("fresh", "2026-02-01T00:00:00Z");
+      await embed("older");
+      await dangle("fresh");
+      const [repair] = (await applyFixOnPg(pool)).repairedDangling;
+      expect(repair).toMatchObject({ factId: "fresh", supersededBy: null, alsoSuperseded: ["older"] });
+      expect([await supersededBy("fresh"), await supersededBy("older")]).toEqual([null, "fresh"]);
+      expect(await embeddingCount()).toBe(0);
     });
   });
 });

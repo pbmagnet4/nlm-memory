@@ -101,6 +101,59 @@ describe("chunk embed atomicity, retry and I7b-1 repair", () => {
     expect(count("chunk_embed_pending")).toBe(0);
   });
 
+  it("a sweep whose embed straddles a re-ingest drops its outdated vector", async () => {
+    embedder.failing = true;
+    await ingest("s1");
+    embedder.failing = false;
+
+    let releaseSweep!: () => void;
+    const sweepGate = new Promise<void>((r) => (releaseSweep = r));
+    const slowSweepEmbedder = {
+      embed: async () => {
+        await sweepGate;
+        return { vector: vec(100), dim: 768 };
+      },
+    };
+    let releaseIngest!: () => void;
+    const ingestGate = new Promise<void>((r) => (releaseIngest = r));
+    const slowIngestEmbedder = {
+      embed: async () => {
+        await ingestGate;
+        return { vector: vec(200), dim: 768 };
+      },
+    };
+
+    const sweep = sweepChunkEmbeddings({ store: storage.sessions, embedder: slowSweepEmbedder as never, now: later(1) });
+    await new Promise((r) => setTimeout(r, 0));
+    // re-ingest with new text: row rewritten, pending cleared, its own embed in flight
+    const reingest = storage.sessions.insertSession(
+      "team_local",
+      { ...record("s1"), body: "a different body after the re-ingest" },
+      slowIngestEmbedder as never,
+      null,
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    releaseSweep();
+    expect(await sweep).toMatchObject({ attempted: 1, repaired: 0, failed: 0 });
+    expect(count("session_embedding_chunks_rowids")).toBe(0);
+
+    releaseIngest();
+    await reingest;
+    expect(count("session_chunk_map")).toBe(1);
+    const stored = storage.rawDb().prepare("SELECT embedding FROM session_embedding_chunks").get() as { embedding: Buffer };
+    expect(new Float32Array(stored.embedding.buffer, stored.embedding.byteOffset, 768)[200]).toBe(1);
+  });
+
+  it("insertChunkEmbedding with ifTextIs drops the write when the chunk text changed even if pending was re-marked", async () => {
+    embedder.failing = true;
+    await ingest("s1");
+    const readText = storage.sessions.chunkText("s1", 0)!;
+    storage.rawDb().prepare("UPDATE sessions SET body = 'changed body' WHERE id = 's1'").run();
+    expect(storage.sessions.insertChunkEmbedding("s1", 0, vec(1), readText)).toBe(false);
+    expect(count("session_embedding_chunks_rowids")).toBe(0);
+    expect(count("chunk_embed_pending")).toBe(1);
+  });
+
   it("embedder down at ingest: no vec row, chunk enqueued; sweep embeds it on recovery", async () => {
     embedder.failing = true;
     await ingest("s1");

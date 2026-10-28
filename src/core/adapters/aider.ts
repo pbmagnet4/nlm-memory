@@ -98,13 +98,7 @@ function extractTurns(body: string): ParsedTurn[] {
 }
 
 function parseHistoryFile(filePath: string): ParsedSession[] {
-  let content: string;
-  try {
-    content = readFileSync(filePath, "utf-8");
-  } catch {
-    return [];
-  }
-
+  const content = readFileSync(filePath, "utf-8");
   const lines = content.split("\n");
   const sessionStarts: number[] = [];
   for (let i = 0; i < lines.length; i++) {
@@ -158,7 +152,12 @@ export class AiderAdapter implements TranscriptAdapter {
 
   async discover(options?: DiscoverOptions): Promise<ReadonlyArray<string>> {
     if (!existsSync(this.historyFile)) return [];
-    const sessions = parseHistoryFile(this.historyFile);
+    let sessions: ParsedSession[];
+    try {
+      sessions = parseHistoryFile(this.historyFile);
+    } catch {
+      return []; // unreadable now: nothing to discover this pass, the next scan retries
+    }
     if (options?.since) {
       const cutoff = options.since.getTime();
       return sessions

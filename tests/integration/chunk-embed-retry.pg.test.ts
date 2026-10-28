@@ -91,6 +91,52 @@ describe.skipIf(!PG_TEST_URL)("Postgres chunk embed retry", () => {
     expect(await count("chunk_embed_pending")).toBe(0);
   });
 
+  it("a sweep whose embed straddles a re-ingest drops its outdated vector", async () => {
+    await storage.sessions.insertSession(TENANT, makeRecord("s1"), new StubEmbedder({ fail: true }));
+    const gate = () => {
+      let release!: () => void;
+      const opened = new Promise<void>((r) => (release = r));
+      return { release, opened };
+    };
+    const sweepGate = gate();
+    const ingestGate = gate();
+    const slow = (g: ReturnType<typeof gate>, hot: number) => ({
+      embed: async () => {
+        await g.opened;
+        const vector = new Float32Array(768);
+        vector[hot] = 1;
+        return { vector, dim: 768 };
+      },
+    });
+
+    const sweep = sweepChunkEmbeddings({ store: storage.sessions, embedder: slow(sweepGate, 100) as never, now: later(1) });
+    await new Promise((r) => setTimeout(r, 20));
+    const reingest = storage.sessions.insertSession(
+      TENANT,
+      { ...makeRecord("s1"), body: "a different body after the re-ingest" },
+      slow(ingestGate, 200) as never,
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    sweepGate.release();
+    expect(await sweep).toMatchObject({ attempted: 1, repaired: 0, failed: 0 });
+    expect(await count("session_embedding_chunks")).toBe(0);
+
+    ingestGate.release();
+    await reingest;
+    expect(await count("session_chunk_map")).toBe(1);
+    const stored = await pool.query<{ hot: number }>("SELECT (embedding::real[])[201] AS hot FROM session_embedding_chunks");
+    expect(stored.rows[0]!.hot).toBe(1);
+  });
+
+  it("insertChunkEmbedding with ifTextIs drops the write when the chunk text changed", async () => {
+    await storage.sessions.insertSession(TENANT, makeRecord("s1"), new StubEmbedder({ fail: true }));
+    const readText = (await storage.sessions.chunkText("s1", 0))!;
+    await pool.query("UPDATE sessions SET body = 'changed body' WHERE id = 's1'");
+    expect(await storage.sessions.insertChunkEmbedding("s1", 0, new Float32Array(768), readText)).toBe(false);
+    expect(await count("session_embedding_chunks")).toBe(0);
+    expect(await count("chunk_embed_pending")).toBe(1);
+  });
+
   it("doctor --fix deletes map-less chunk vectors and keeps mapped ones", async () => {
     await storage.sessions.insertSession(TENANT, makeRecord("s1"), new FixedEmbedder());
     const orphan = await pool.query<{ chunk_id: number }>(

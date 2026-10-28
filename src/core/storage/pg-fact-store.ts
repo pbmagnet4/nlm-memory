@@ -327,6 +327,40 @@ export class PgFactStore implements FactStore {
        ON CONFLICT (fact_id) DO UPDATE SET embedding = EXCLUDED.embedding`,
       [factId, vecStr],
     );
+    await this.pool.query("DELETE FROM fact_embed_pending WHERE fact_id = $1", [factId]);
+  }
+
+  /** See SqliteFactStore.markEmbedPending: 1 min backoff doubling to a 6 h cap. */
+  async markEmbedPending(factId: string, error: string, now: Date = new Date()): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO fact_embed_pending (fact_id, attempts, last_error, next_attempt_at)
+       SELECT $1, 1, $2, $3::timestamptz + interval '1 minute' WHERE EXISTS (SELECT 1 FROM facts WHERE id = $1)
+       ON CONFLICT (fact_id) DO UPDATE SET
+         attempts = fact_embed_pending.attempts + 1,
+         last_error = EXCLUDED.last_error,
+         next_attempt_at = $3::timestamptz
+           + LEAST(interval '1 minute' * power(2, fact_embed_pending.attempts), interval '6 hours')`,
+      [factId, error.slice(0, 300), now.toISOString()],
+    );
+  }
+
+  /** See SqliteFactStore.listFactsDueForEmbedding: recall-eligible, vector-less, never pending or past backoff. */
+  async listFactsDueForEmbedding(
+    tenantId: string,
+    limit: number,
+    now: Date = new Date(),
+  ): Promise<ReadonlyArray<{ id: string; subject: string; predicate: string; value: string }>> {
+    const tc = tenantClausePg(tenantId, 1, "f.tenant_id");
+    const res = await this.pool.query<{ id: string; subject: string; predicate: string; value: string }>(
+      `SELECT f.id, f.subject, f.predicate, f.value FROM facts f
+       LEFT JOIN fact_embed_pending p ON p.fact_id = f.id
+       WHERE f.superseded_by IS NULL AND f.retired_at IS NULL AND ${tc.sql}
+         AND NOT EXISTS (SELECT 1 FROM fact_embeddings e WHERE e.fact_id = f.id)
+         AND (p.fact_id IS NULL OR p.next_attempt_at <= $2::timestamptz)
+       ORDER BY f.created_at, f.id LIMIT $3`,
+      [tc.param, now.toISOString(), limit],
+    );
+    return res.rows;
   }
 
   async summarizeCurrentValues(tenantId: string, query: CurrentValueQuery): Promise<CurrentValueSummary> {

@@ -28,7 +28,8 @@ export interface StuckChunk extends ChunkRef {
 export interface ChunkRetryStore {
   listChunksDueForEmbedding(limit: number, now?: Date): ReadonlyArray<ChunkRef> | Promise<ReadonlyArray<ChunkRef>>;
   chunkText(sessionId: string, chunkIdx: number): string | null | Promise<string | null>;
-  insertChunkEmbedding(sessionId: string, chunkIdx: number, vector: Float32Array): void | Promise<void>;
+  /** Writes only while the chunk is still pending with `ifTextIs`; false when the write was dropped. */
+  insertChunkEmbedding(sessionId: string, chunkIdx: number, vector: Float32Array, ifTextIs: string): boolean | Promise<boolean>;
   markChunkEmbedPending(sessionId: string, chunkIdx: number, error: string, now?: Date): void | Promise<void>;
   clearChunkEmbedPending(sessionId: string, chunkIdx: number): void | Promise<void>;
 }
@@ -68,8 +69,8 @@ export async function sweepChunkEmbeddings(opts: ChunkSweepOptions): Promise<Chu
     attempted += 1;
     try {
       const { vector } = await opts.embedder.embed(text, "document");
-      await opts.store.insertChunkEmbedding(sessionId, chunkIdx, vector);
-      repaired += 1;
+      // A dropped write means a re-ingest replaced the chunk meanwhile: not a repair, not a failure.
+      if (await opts.store.insertChunkEmbedding(sessionId, chunkIdx, vector, text)) repaired += 1;
     } catch (err) {
       failed += 1;
       await opts.store.markChunkEmbedPending(sessionId, chunkIdx, String(err), now());

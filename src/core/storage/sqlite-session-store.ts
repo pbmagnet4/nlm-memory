@@ -605,12 +605,18 @@ export class SqliteSessionStore implements SessionStore {
    * Write a chunk's vector and its map row as one unit: a failure between the
    * two rolls the vector back instead of leaving a map-less orphan (I7b-1).
    * Clears the chunk's retry record.
+   *
+   * With `ifTextIs` (the retry sweep) the write applies only while the chunk is
+   * still pending and still has that text, so a re-ingest during the embed
+   * cannot be overwritten by a vector of the old text. Returns false when the
+   * write was dropped.
    */
   insertChunkEmbedding(
     sessionId: string,
     chunkIdx: number,
     vector: Float32Array,
-  ): void {
+    ifTextIs?: string,
+  ): boolean {
     const db = this.db;
     const blob = Buffer.from(
       vector.buffer,
@@ -620,7 +626,13 @@ export class SqliteSessionStore implements SessionStore {
     // vec0 enforces strict integer typing on aux columns; better-sqlite3 binds
     // JS numbers as FLOAT, so cast chunk_idx via BigInt to bind as INTEGER.
     const idxInt = BigInt(chunkIdx);
-    db.transaction(() => {
+    return db.transaction((): boolean => {
+      if (ifTextIs !== undefined) {
+        const pending = db
+          .prepare("SELECT 1 FROM chunk_embed_pending WHERE session_id = ? AND chunk_idx = ?")
+          .get(sessionId, chunkIdx);
+        if (!pending || this.chunkText(sessionId, chunkIdx) !== ifTextIs) return false;
+      }
       // A concurrent re-ingest may have mapped this chunk while the vector was
       // being computed; a second vector would be a stale duplicate.
       const mapped = db
@@ -640,6 +652,7 @@ export class SqliteSessionStore implements SessionStore {
         sessionId,
         chunkIdx,
       );
+      return true;
     })();
   }
 
