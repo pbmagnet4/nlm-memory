@@ -6,7 +6,9 @@
 
 **Results:** Landing gates passed for 63b1f5a (T1179) and 25d0e16 (T1194); Muse reviews found 1 + 2 real issues, all fixed with tests. Deployed as 0.21.21-t1194.1 (schema 48, deps unchanged); backup ~/.nlm/backups/T1194-2026-10-28T15-54-59Z (quick_check ok). Both lanes reconcile "match"; exemplar `--dry-run` reports no rebuild needed; capture continues after restart.
 
-**State:** Live check of a real code-lane model switch (confirm dialog, job progress) not exercised. The embedder API key (shared with the classifier) is still a plain-text line in ~/.nlm/.env; the Infisical move awaits a design decision. #1142 has three open questions for Edward in the design doc.
+**State:** Live check of a real code-lane model switch (confirm dialog, job progress) not exercised. #1142 decisions recorded on the task (28-day window, full labelling, Muse re-score); build next.
+
+**Update (T1208):** settings never persist an embedder key (non-null `api_key` → 400; legacy stored keys still resolve and can be cleared). Deployed 0.21.21-t1208.1. The shared LiteLLM key moved to Infisical `/mini/nlm/NLM_LITELLM_API_KEY`; `run.sh` reads it per launch via `vault-key.mjs` on the bundled node (the nxtcli client sits under ~/Documents, which TCC blocks for the launch agent: the first attempt started keyless and 401'd until rolled back), with Keychain item `io.whtnxt.nlm.litellm-key` as launch fallback. Carry `run.sh` + `vault-key.mjs` forward on every deploy. The literal is out of ~/.nlm/.env; older `.env.bak-*` copies still hold it.
 
 **Next:** Infisical move for the embedder/classifier key; #1142 build after the open questions are answered.
 
