@@ -69,7 +69,7 @@ function seedFixture(): void {
     const body = `[user] Alpha and Beta ${i}\n\nAlpha and Beta share this ${i}`;
     add(`m-${i}`, runtimes[i % 4]!, `2026-11-03T0${i % 10}:30:00Z`, body, { names: ["Alpha", "Beta"], quote: `Alpha and Beta share this ${i}` });
   }
-  add("c-1", "pi/1", "2026-11-05T00:00:00Z", "[user] replay", { skill: "review", names: ["Gamma"] });
+  add("c-1", "pi/1", "2026-11-05T00:00:00Z", "[user] replay the Gamma notes", { skill: "review", names: ["Gamma"] });
   // Pre-window session (before freeze) and a child of a T1130 source inside the window.
   add("pre-1", "codex/1", "2026-10-30T00:00:00Z", `[user] x\n\n${quoteFor("Beta", 99)}`, { names: ["Beta"], quote: quoteFor("Beta", 99) });
   add("w-child", "codex/1", "2026-11-04T00:00:00Z", `[user] child\n\n${quoteFor("Gamma", 98)}`, { names: ["Gamma"], quote: quoteFor("Gamma", 98), parent: "old-1" });
@@ -254,7 +254,8 @@ describe("draw", () => {
     const entries = Object.values(predictions.cards);
     const factLane = entries.filter((e) => e.lane === "fact");
     expect(factLane.length).toBe(Object.values(manifest.draw!.population.factProposals).reduce((a, b) => a + b, 0));
-    expect(factLane.some((e) => e.stratum === "A")).toBe(true);
+    // The candidate abstains on stratum A's own predicate (several names or a dependency verb), so A holds no proposals.
+    expect(factLane.some((e) => e.stratum === "A")).toBe(false);
     expect(entries.filter((e) => e.lane === "abstention").length).toBe(20);
     expect(entries.filter((e) => e.lane === "abstention").every((e) => e.proposed.length === 0)).toBe(true);
     expect(manifest.draw!.population.sessionRefs["D"]).toBeGreaterThan(0);

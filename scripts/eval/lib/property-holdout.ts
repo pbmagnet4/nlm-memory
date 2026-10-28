@@ -123,8 +123,11 @@ export function runCandidate(db: Database.Database, catalog: readonly MemoryProp
   type Row = SourceAnchorRow & { id: string; kind: Fact["kind"]; subject: string; predicate: string; value: string; source_session_id: string; source_quote: string | null; confidence: number; created_at: string };
   const rows = db.prepare<unknown[], Row>(`SELECT f.*, s.body_version AS current_source_body_version FROM facts f JOIN sessions s ON s.id = f.source_session_id
     WHERE ${ft.sql} AND ${st.sql} AND f.superseded_by IS NULL AND f.retired_at IS NULL AND f.confidence >= 0.6`).all(ft.param, st.param).filter((r) => inWindow(r.source_session_id));
-  const attributed = attributeFacts(rows.map((r) => ({ id: r.id, kind: r.kind, subject: r.subject, predicate: r.predicate, value: r.value, sourceSessionId: r.source_session_id,
-    sourceQuote: r.source_quote, sourceAnchor: anchorFromRow(r, r.source_quote), confidence: r.confidence, createdAt: r.created_at, supersededBy: null })), catalog, []);
+  const bySession = new Map<string, Row[]>();
+  for (const r of rows) bySession.set(r.source_session_id, [...(bySession.get(r.source_session_id) ?? []), r]);
+  // The candidate reads each session's body to exclude quoted regions, so it runs once per source session.
+  const attributed = [...bySession].flatMap(([sessionId, group]) => attributeFacts(group.map((r) => ({ id: r.id, kind: r.kind, subject: r.subject, predicate: r.predicate, value: r.value, sourceSessionId: r.source_session_id,
+    sourceQuote: r.source_quote, sourceAnchor: anchorFromRow(r, r.source_quote), confidence: r.confidence, createdAt: r.created_at, supersededBy: null })), catalog, [], true, sessions.get(sessionId)?.body_version ?? null, sessions.get(sessionId)?.body ?? null));
   const ref = (f: Fact): FactRef => ({ id: f.id, sessionId: f.sourceSessionId, kind: f.kind, subject: f.subject, predicate: f.predicate, value: f.value, quote: f.sourceQuote ?? null,
     assertionKey: assertionKey(f, sessions.get(f.sourceSessionId)?.body_version ?? null) });
   const proposals: FactProposal[] = []; const abstained: FactRef[] = [];
@@ -138,7 +141,7 @@ export function runCandidate(db: Database.Database, catalog: readonly MemoryProp
   const entities = new Map<string, string[]>();
   for (const e of entityRows) if (inWindow(e.session_id)) entities.set(e.session_id, [...(entities.get(e.session_id) ?? []), e.entity_canonical]);
   const refsBySession = new Map<string, string[]>();
-  for (const [id, names] of entities) { const slugs = sessionPropertyReferences(names, catalog).map((r) => r.slug); if (slugs.length > 0) refsBySession.set(id, slugs); }
+  for (const [id, names] of entities) { const slugs = sessionPropertyReferences(names, catalog, sessions.get(id)?.body ?? null).map((r) => r.slug); if (slugs.length > 0) refsBySession.set(id, slugs); }
   const repoScope = new Map<string, string>(); const hasRepositoryOrExplicit = new Set<string>();
   for (const r of db.prepare<unknown[], { session_id: string; source: string; evidence: string }>(`SELECT session_id, source, evidence FROM session_properties WHERE ${tc.sql}`).all(tc.param)) {
     if (r.source !== "entity") hasRepositoryOrExplicit.add(r.session_id);

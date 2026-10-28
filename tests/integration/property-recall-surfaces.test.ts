@@ -11,6 +11,7 @@ import { recallFactsHandler, recallContextHandler, getFactHistoryHandler, type M
 import { sessionRecallInput, readRecallCursor } from "../../src/mcp/session-recall-page.js";
 import { FixedEmbedder } from "../fixtures/llm-stubs.js";
 import { anchorRecord } from "../contract/source-anchor.contract.js";
+import { locateSourceAnchor } from "../../src/core/facts/source-anchor.js";
 
 describe("property recall surfaces", () => {
   let tmp: string; let storage: SqliteStorage; let deps: McpDeps;
@@ -37,6 +38,23 @@ describe("property recall surfaces", () => {
     expect(context.scope.property).toBe("nxtads");
     expect(value(await getFactHistoryHandler(deps, "team_local", { subject: "api", property: "nxtseo" })).chains).toHaveLength(1);
     expect((await recallFactsHandler(deps, "team_local", { subject: "api", property: "missing" })).isError).toBe(true);
+  });
+  it("labels inferred associations with their source in MCP and HTTP output", async () => {
+    vi.stubEnv("NLM_PROPERTY_INFERENCE", "1");
+    const body = "[user] NxtSEO keeps a draft queue.";
+    const quote = "NxtSEO keeps a draft queue";
+    await storage.sessions.insertSession("team_local", { ...anchorRecord(body, "s2"), entities: ["NxtSEO"] }, null, null, { factStore: storage.facts, facts: [
+      { id: "inferred", kind: "attribute", subject: "queue", predicate: "kind", value: "draft", sourceSessionId: "s2", sourceQuote: quote, sourceAnchor: locateSourceAnchor(body, quote),
+        createdAt: "2026-01-01T00:00:00Z", supersededBy: null, confidence: 1 },
+    ] });
+    const mcp = value(await recallFactsHandler(deps, "team_local", { subject: "queue", property: "nxtseo", mode: "keyword" })).results;
+    expect(mcp.map((f: { id: string; property?: { source: string } }) => [f.id, f.property?.source])).toEqual([["inferred", "source-quote"]]);
+    const explicit = value(await recallFactsHandler(deps, "team_local", { subject: "api", property: "nxtseo", mode: "keyword" })).results;
+    expect(explicit.map((f: { property?: { source: string } }) => f.property?.source)).toEqual(["explicit"]);
+    const response = await createApp(deps).request("/api/recall/facts?subject=queue&property=nxtseo", { headers: { host: "localhost" } });
+    expect(((await response.json()) as { results: { id: string; property?: { source: string } }[] }).results.map((f) => [f.id, f.property?.source])).toEqual([["inferred", "source-quote"]]);
+    expect((await storage.sessions.keywordSearch("team_local", "draft", 5, { property: "nxtseo" })).map((r) => r.sessionId)).toEqual(["s2"]);
+    expect(await storage.sessions.keywordSearch("team_local", "draft", 5, { property: "nxtads" })).toEqual([]);
   });
   it("validates HTTP selectors without broadening an unknown property", async () => {
     const app = createApp(deps);
