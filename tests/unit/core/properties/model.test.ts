@@ -14,18 +14,18 @@ describe("property evidence", () => {
     expect(attributeFacts([fact], catalog, [])[0]?.property).toBeUndefined();
     const verified = { ...fact, sourceAnchor: { status: "verified" as const, start: 0, end: 22, bodyVersion: "version" } };
     expect(attributeFacts([verified], catalog, [], true, null, fact.sourceQuote)[0]?.property?.slug).toBe("nxtseo");
-    expect(attributeFacts([{ ...verified, sourceQuote: "NxtSEO and NxtAds use this API" }], catalog, [])[0]?.property).toBeUndefined();
+    expect(attributeFacts([{ ...verified, sourceQuote: "NxtSEO and NxtAds use this API" }], catalog, [], true, null, "[user] NxtSEO and NxtAds use this API")[0]?.property).toBeUndefined();
   });
   it("does not trust an unquoted subject label from a mixed component discussion", () => {
     expect(attributeFacts([{ ...fact, subject: "nxtseo", sourceQuote: null, value: "8799" }], catalog, [])[0]?.property).toBeUndefined();
   });
   it("abstains when the verified quote names a different owner than the subject", () => {
     const conflicting = { ...fact, subject: "nxtseo", sourceQuote: "NxtAds uses port 3940", sourceAnchor: { status: "verified" as const, start: 0, end: 20, bodyVersion: "version" } };
-    expect(attributeFacts([conflicting], catalog, [])[0]?.property).toBeUndefined();
+    expect(attributeFacts([conflicting], catalog, [], true, null, `[user] ${conflicting.sourceQuote}`)[0]?.property).toBeUndefined();
   });
   it.each(["~/.nxtseo/cache", "NXTSEO_BRIDGE_META_ROBOTS", "io.nxtseo.worker", "bridge/nxtseo-file.php"])("does not infer ownership from namespace fragments: %s", (quote) => {
     const embedded = { ...fact, sourceQuote: quote, sourceAnchor: { status: "verified" as const, start: 0, end: quote.length, bodyVersion: "version" } };
-    expect(attributeFacts([embedded], catalog, [])[0]?.property).toBeUndefined();
+    expect(attributeFacts([embedded], catalog, [], true, null, `[user] ${quote}`)[0]?.property).toBeUndefined();
   });
   it("strips unvalidated automatic attribution when inference is disabled", () => {
     const inherited = { ...fact, property: { slug: "nxtseo", source: "subject" as const, evidence: "nxtseo" } };
@@ -70,6 +70,9 @@ describe("property inference regressions", () => {
     "Packaging requires Kestrel to be present",
   ])("abstains on owner versus dependency: %s", (quote) => {
     expect(owner(`[user] ${quote}.`, quote)).toBeUndefined();
+  });
+  it("abstains when the fact value, not the quote, carries the dependency", () => {
+    expect(owner("[user] The sync runs every five minutes.", "The sync runs every five minutes", { value: "install Pillar first" })).toBeUndefined();
   });
   it.each([
     "Orbit Notes dev server listens on localhost:4123",

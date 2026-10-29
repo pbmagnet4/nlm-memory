@@ -5,7 +5,7 @@ export const clean = (s: string) => s.replace(/(?:sk|ghp|gho)_[A-Za-z0-9_-]{12,}
   .replace(/(?:Bearer\s+)[A-Za-z0-9_.-]{16,}/gi, "Bearer [REDACTED]")
   .replace(/((?:password|api[_ -]?key|access[_ -]?token|secret)\s*[=:]\s*)[^\s,;]{8,}/gi, "$1[REDACTED]");
 export function userEvidence(body: string): string[] {
-  const turns = [...body.matchAll(/\[(?:user|human)\]\s*([\s\S]*?)(?=\n\n\[(?:user|human|assistant|system)\]|$)/gi)]
+  const turns = [...body.matchAll(/\[(?:user|human)\]\s*([\s\S]*?)(?=\n\n\[(?:user|human|assistant|system|tool)\]|\[tool_result:|$)/gi)]
     .map((m) => m[1]!.trim()).filter((s) => !/^#?\s*(?:AGENTS\.md|CLAUDE\.md)|^<environment_context>|^<INSTRUCTIONS>/i.test(s));
   return turns.slice(0, 8).map((s) => clean(s.slice(0, 400)));
 }
