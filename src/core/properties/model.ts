@@ -94,7 +94,7 @@ function quoteOwner(fact: Fact, properties: readonly MemoryProperty[], quoted: r
   if (named.length !== 1) return undefined;
   const owner = named[0]!;
   if (properties.some((p) => p.slug !== owner.slug && exactlyNames(p, fact.subject))) return undefined;
-  if (DEPENDENCY.test(quote) || nearRuntimeToken(quote, names(owner)) || nearRuntimeToken(fact.value, names(owner))) return undefined;
+  if (DEPENDENCY.test(quote) || DEPENDENCY.test(fact.value) || nearRuntimeToken(quote, names(owner)) || nearRuntimeToken(fact.value, names(owner))) return undefined;
   return { slug: owner.slug, source: "source-quote", evidence: quote };
 }
 export function attributeFacts(facts: readonly Fact[], properties: readonly MemoryProperty[], overrides: readonly PropertyOverride[], infer = true, sourceVersion?: string | null, body?: string | null): Fact[] {

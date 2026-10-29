@@ -10,6 +10,7 @@ import { DEFAULT_TEAM_ID } from "../../../src/core/tenancy/default-team.js";
 import { bodyVersion } from "../../../src/core/context/source-version.js";
 import { assertionKey } from "../../../src/core/properties/model.js";
 import { assertSnapshot, fileHash, pathsIn, readJson, sha256, writePrivate, type Manifest } from "../../../scripts/eval/lib/property-holdout-io.js";
+import { userEvidence } from "../../../scripts/eval/lib/property-evidence.js";
 import { buildExclusions, countSessionRefs, drawHoldout, freezeHoldout, orderKey, type Candidate, type Predictions } from "../../../scripts/eval/lib/property-holdout.js";
 import { classifyFact, classifySession, factMatches, mentions } from "../../../scripts/eval/lib/property-holdout-strata.js";
 import { parseProperties } from "../../../src/core/properties/model.js";
@@ -454,5 +455,12 @@ describe("L2", () => {
     expect(readJson<{ promptHash: string; temperature: number }>(d.p.l2)).toMatchObject({ promptHash: manifest.l2PromptHash, temperature: 0 });
     writePrivate(d.p.manifest, { ...manifest, l2PromptHash: "0".repeat(64) });
     await expect(runL2(d.dir, "test-model", async () => "{}")).rejects.toThrow(/prompt does not match/);
+  });
+});
+
+describe("userEvidence", () => {
+  it("ends a user turn at a tool turn or inline tool result", () => {
+    expect(userEvidence("[user] fix the build\n\n[tool] ls output")).toEqual(["fix the build"]);
+    expect(userEvidence("[user] check this [tool_result: secret output]")).toEqual(["check this"]);
   });
 });
