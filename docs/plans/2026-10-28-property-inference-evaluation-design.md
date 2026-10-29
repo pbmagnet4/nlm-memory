@@ -154,3 +154,15 @@ New scope.
 - Labelling effort is about 55 minutes (about 160 session cards plus 20 abstention cards).
 
 The fact lane is deferred until a candidate yields enough proposals to reach a Q1 census.
+
+## Outcome 2026-10-29
+
+The window closed at 160 session references (snapshot 2026-10-29T13:25Z). The candidate failed Q2.
+
+- 154 scored references, post-stratified precision 0.76 (Wilson 0.69 to 0.82). Stratum precision: C 0.86, D 0.74, E 0.73.
+- Precision was flat by runtime (codex 0.76, claude-code 0.76, muse 0.75). L2 scored the same references at 0.79.
+- Misses were mostly properties named in passing (nxttasks 11, nxtos 9, nxtmcp 7).
+- L1/L2 session kappa was 0.40 (flagged). Approval-reviewer sessions, whose subject arrives as quoted input, were the hardest cards to label.
+- Annotation limits: L1 was a blinded Claude Opus labeller standing in for Edward at his direction, not Edward. It labelled 144 cards, dropped 5 still-unsure session cards and changed 9 labels on adjudication. L2 failed on 1 card. The abstention-correct rate was 0.40.
+
+Decision (Edward, 2026-10-29): NLM_PROPERTY_INFERENCE and NLM_SESSION_PROPERTY_INFERENCE stay off permanently. Name matching has now failed twice: T1130 rejected the subject, verified-quote and entity-only lanes, and this evaluation rejected the conservative entity lane. Property membership comes from repository and explicit associations only, which have been live since the T1130 cutover. A session with neither stays unassigned. A future proposal must bring a new kind of signal, not another name-matching variant. Private artifacts are in ~/.nlm/evaluations/T1142.
