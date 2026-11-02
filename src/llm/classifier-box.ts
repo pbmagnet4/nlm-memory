@@ -29,6 +29,10 @@ export interface ClassifierBoxOptions {
   /** Base URL for the `openai` provider (any OpenAI-compatible endpoint,
    *  local or cloud), e.g. http://localhost:1234/v1 (LM Studio). */
   readonly baseUrl?: string;
+  /** Optional second base URL for the `openai` provider (e.g. a Tailscale
+   *  fallback beside a LAN primary). Classify retries once against it on
+   *  network errors and HTTP 5xx from the primary. */
+  readonly fallbackBaseUrl?: string;
   /** API key for the `openai` provider. Optional — local servers ignore it,
    *  so a placeholder is sent when unset rather than failing keyless setups. */
   readonly apiKey?: string;
@@ -45,6 +49,7 @@ export class ClassifierBox implements LLMClient {
   private modelName: string;
   private readonly ollamaUrl: string;
   private readonly baseUrl: string | undefined;
+  private readonly fallbackBaseUrl: string | undefined;
   private readonly apiKey: string | undefined;
   private readonly fetchImpl: FetchImpl | undefined;
   private tuningState: ClassifierTuning;
@@ -54,6 +59,7 @@ export class ClassifierBox implements LLMClient {
     this.modelName = opts.model;
     this.ollamaUrl = opts.ollamaUrl ?? "http://localhost:11434";
     this.baseUrl = opts.baseUrl;
+    this.fallbackBaseUrl = opts.fallbackBaseUrl;
     this.apiKey = opts.apiKey;
     this.fetchImpl = opts.fetchImpl;
     this.tuningState = opts.tuning ?? resolveClassifierTuning(NO_STORED_SETTINGS, {});
@@ -128,6 +134,7 @@ export class ClassifierBox implements LLMClient {
       // the switch vLLM/LiteLLM-style gateways honor.
       return new DeepSeekClient({
         baseUrl: this.baseUrl,
+        ...(this.fallbackBaseUrl ? { fallbackBaseUrl: this.fallbackBaseUrl } : {}),
         apiKey: this.apiKey ?? "local",
         classifyModel: model,
         responseFormat: "none",

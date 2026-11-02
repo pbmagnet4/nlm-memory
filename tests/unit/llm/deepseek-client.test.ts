@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DeepSeekClient } from "../../../src/llm/deepseek-client.js";
+import { ClassifierSchemaError, LLMUnreachableError } from "../../../src/ports/llm-client.js";
 
 const VALID_CLASSIFY_JSON = JSON.stringify({
   label: "x",
@@ -138,5 +139,106 @@ describe("DeepSeekClient.nameWorkstream", () => {
       fetchImpl: fakeFetch("none"),
     });
     expect(await c.nameWorkstream("Zephyr persona work\nsummary", cands)).toBeNull();
+  });
+});
+
+const FALLBACK_PRIMARY = "http://192.168.2.2:4000/v1";
+const FALLBACK_BASE = "http://100.87.184.75:4000/v1";
+
+function okClassifyResponse(): Response {
+  return okClassifyEnvelope(VALID_CLASSIFY_JSON);
+}
+
+function okClassifyEnvelope(content: string): Response {
+  return {
+    ok: true,
+    status: 200,
+    text: async () => content,
+    json: async () => ({ choices: [{ message: { content } }] }),
+  } as unknown as Response;
+}
+
+function errClassifyResponse(status: number, body = ""): Response {
+  return {
+    ok: false,
+    status,
+    text: async () => body,
+    json: async () => ({}),
+  } as unknown as Response;
+}
+
+function stubClassifyFetch(handler: (url: string) => Response | Promise<Response>): typeof fetch {
+  return (async (input: unknown) => handler(String(input))) as unknown as typeof fetch;
+}
+
+function fallbackClientFor(fetchImpl: typeof fetch, fallbackBaseUrl?: string) {
+  return new DeepSeekClient({
+    apiKey: "test-key",
+    baseUrl: FALLBACK_PRIMARY,
+    fetchImpl,
+    classifyModel: "litellm-classifier",
+    responseFormat: "none",
+    classifyTimeoutMs: 5_000,
+    ...(fallbackBaseUrl ? { fallbackBaseUrl } : {}),
+  });
+}
+
+describe("DeepSeekClient gateway fallback", () => {
+  it("fails over to the fallback base on primary network error", async () => {
+    const seen: string[] = [];
+    const fetchImpl = stubClassifyFetch((url) => {
+      seen.push(url);
+      if (url.startsWith(FALLBACK_PRIMARY)) throw new TypeError("fetch failed");
+      return okClassifyResponse();
+    });
+    const out = await fallbackClientFor(fetchImpl, FALLBACK_BASE).classify("hello");
+    expect(out.summary).toBe("y");
+    expect(seen).toEqual([`${FALLBACK_PRIMARY}/chat/completions`, `${FALLBACK_BASE}/chat/completions`]);
+  });
+
+  it("fails over on primary HTTP 500", async () => {
+    const seen: string[] = [];
+    const fetchImpl = stubClassifyFetch((url) => {
+      seen.push(url);
+      if (url.startsWith(FALLBACK_PRIMARY)) return errClassifyResponse(500, "tunnel down");
+      return okClassifyResponse();
+    });
+    const out = await fallbackClientFor(fetchImpl, FALLBACK_BASE).classify("hello");
+    expect(out.summary).toBe("y");
+    expect(seen.some((u) => u.startsWith(FALLBACK_BASE))).toBe(true);
+  });
+
+  it("does not fail over on primary HTTP 401", async () => {
+    const seen: string[] = [];
+    const fetchImpl = stubClassifyFetch((url) => {
+      seen.push(url);
+      return errClassifyResponse(401, "unauthorized");
+    });
+    await expect(fallbackClientFor(fetchImpl, FALLBACK_BASE).classify("hello")).rejects.toBeInstanceOf(
+      LLMUnreachableError,
+    );
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((u) => u.startsWith(FALLBACK_PRIMARY))).toBe(true);
+  });
+
+  it("does not fail over on classifier schema errors", async () => {
+    const seen: string[] = [];
+    const fetchImpl = stubClassifyFetch((url) => {
+      seen.push(url);
+      return okClassifyEnvelope("not json at all");
+    });
+    await expect(fallbackClientFor(fetchImpl, FALLBACK_BASE).classify("hello")).rejects.toBeInstanceOf(
+      ClassifierSchemaError,
+    );
+    expect(seen.every((u) => u.startsWith(FALLBACK_PRIMARY))).toBe(true);
+  });
+
+  it("rejects without a fallback configured (existing behavior)", async () => {
+    const fetchImpl = stubClassifyFetch(() => {
+      throw new TypeError("fetch failed");
+    });
+    await expect(fallbackClientFor(fetchImpl).classify("hello")).rejects.toBeInstanceOf(
+      LLMUnreachableError,
+    );
   });
 });
