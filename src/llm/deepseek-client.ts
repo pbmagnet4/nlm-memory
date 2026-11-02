@@ -42,6 +42,13 @@ export type FetchImpl = typeof fetch;
 export interface DeepSeekClientOptions {
   readonly apiKey?: string;
   readonly baseUrl?: string;
+  /**
+   * Optional second base URL for the same OpenAI-compatible endpoint (e.g. a
+   * Tailscale fallback beside a LAN primary). Classify retries once against
+   * it on network errors and HTTP 5xx from the primary; 4xx and schema errors
+   * are not eligible and fail fast.
+   */
+  readonly fallbackBaseUrl?: string;
   readonly classifyModel?: string;
   readonly classifyTimeoutMs?: number;
   readonly maxTranscriptChars?: number;
@@ -72,9 +79,25 @@ interface ChatResponse {
   readonly choices?: ReadonlyArray<{ readonly message?: { readonly content?: string } }>;
 }
 
+/**
+ * Whether a failed primary classify attempt is worth retrying against the
+ * fallback base: network-level failures (fetch throw, timeout abort) and HTTP
+ * 5xx (the gateway's shape when its backend tunnel is down). HTTP 4xx (auth,
+ * bad request) and schema errors fail the same way on any base, so they are
+ * not eligible.
+ */
+function isFailoverEligible(error: unknown): boolean {
+  if (!(error instanceof LLMUnreachableError)) return false;
+  const match = /status (\d{3})/.exec(String(error.cause ?? error.message));
+  if (!match) return true;
+  const status = Number(match[1]);
+  return status < 400 || status >= 500;
+}
+
 export class DeepSeekClient implements LLMClient {
   private readonly apiKey: string;
   private readonly baseUrl: string;
+  private readonly fallbackBaseUrl: string | undefined;
   private readonly classifyModel: string;
   private readonly classifyTimeoutMs: number;
   private readonly maxTranscriptChars: number;
@@ -93,6 +116,7 @@ export class DeepSeekClient implements LLMClient {
     }
     this.apiKey = key;
     this.baseUrl = (opts.baseUrl ?? "https://api.deepseek.com/v1").replace(/\/+$/, "");
+    this.fallbackBaseUrl = opts.fallbackBaseUrl?.replace(/\/+$/, "");
     this.classifyModel = opts.classifyModel ?? "deepseek-v4-flash";
     this.classifyTimeoutMs = opts.classifyTimeoutMs ?? 180_000;
     this.maxTranscriptChars = opts.maxTranscriptChars ?? 30_000;
@@ -138,7 +162,29 @@ export class DeepSeekClient implements LLMClient {
             transcript.slice(transcript.length - this.maxTranscriptChars / 2 + 40);
       const userPrompt = buildUserPrompt(sized, priorContext);
 
-      const res = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
+      try {
+        return await this.postClassify(this.baseUrl, userPrompt, controller.signal);
+      } catch (e) {
+        if (this.fallbackBaseUrl && isFailoverEligible(e)) {
+          return await this.postClassify(this.fallbackBaseUrl, userPrompt, controller.signal);
+        }
+        throw e;
+      }
+    } catch (e) {
+      if (e instanceof LLMUnreachableError || e instanceof ClassifierSchemaError) throw e;
+      throw new LLMUnreachableError("deepseek", e);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async postClassify(
+    baseUrl: string,
+    userPrompt: string,
+    signal: AbortSignal,
+  ): Promise<ClassifyResult> {
+    try {
+      const res = await this.fetchImpl(`${baseUrl}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -163,7 +209,7 @@ export class DeepSeekClient implements LLMClient {
           max_tokens: this.classifyMaxTokens,
           stream: false,
         }),
-        signal: controller.signal,
+        signal,
       });
       if (!res.ok) {
         throw new LLMUnreachableError(
@@ -176,8 +222,6 @@ export class DeepSeekClient implements LLMClient {
     } catch (e) {
       if (e instanceof LLMUnreachableError || e instanceof ClassifierSchemaError) throw e;
       throw new LLMUnreachableError("deepseek", e);
-    } finally {
-      clearTimeout(timer);
     }
   }
 

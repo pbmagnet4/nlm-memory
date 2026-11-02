@@ -1,7 +1,8 @@
 /**
  * Shared classifier factory used by the CLI daemon and backfill scripts.
  * Reads NLM_CLASSIFIER / NLM_CLASSIFIER_MODEL / NLM_CLASSIFIER_BASE_URL /
- * NLM_CLASSIFIER_API_KEY / NLM_OLLAMA_URL, plus the tuning env vars resolved by
+ * NLM_CLASSIFIER_FALLBACK_URL / NLM_CLASSIFIER_API_KEY / NLM_OLLAMA_URL,
+ * plus the tuning env vars resolved by
  * resolveClassifierTuning (NLM_CLASSIFIER_THINKING / _TIMEOUT_MS / _MAX_TOKENS);
  * persisted settings, when passed, take precedence over env.
  *
@@ -19,6 +20,9 @@
  * The openai provider routes classification at any OpenAI-compatible endpoint
  * (local or cloud) via NLM_CLASSIFIER_BASE_URL (+ optional NLM_CLASSIFIER_API_KEY),
  * so the heavy classify lane can run off-box instead of taxing local Ollama.
+ * An optional NLM_CLASSIFIER_FALLBACK_URL names a second base for the same
+ * endpoint (e.g. a Tailscale fallback beside a LAN primary); classify retries
+ * once against it on network errors and HTTP 5xx from the primary.
  */
 
 import { autoloadEnv } from "./env-autoload.js";
@@ -44,6 +48,7 @@ export function buildClassifier(stored: StoredClassifierSettings = NO_STORED_SET
     model,
     ollamaUrl: process.env["NLM_OLLAMA_URL"] ?? "http://localhost:11434",
     ...(process.env["NLM_CLASSIFIER_BASE_URL"] ? { baseUrl: process.env["NLM_CLASSIFIER_BASE_URL"] } : {}),
+    ...(process.env["NLM_CLASSIFIER_FALLBACK_URL"] ? { fallbackBaseUrl: process.env["NLM_CLASSIFIER_FALLBACK_URL"] } : {}),
     ...(process.env["NLM_CLASSIFIER_API_KEY"] ? { apiKey: process.env["NLM_CLASSIFIER_API_KEY"] } : {}),
     tuning,
   });
