@@ -1,5 +1,13 @@
 # nlm-memory CHANGELOG
 
+## 2026-11-02 - Classifier gateway fallback: daemon retries Tailscale base, scanner verifies both forwards (T1360, deployed 0.21.21-t1360.1)
+
+**Changes:** `src/llm/deepseek-client.ts` — `DeepSeekClient` accepts `fallbackBaseUrl` and retries classify once against it on network errors and HTTP 5xx (4xx/schema fail fast); `classifier-box.ts` passes it through; `build-classifier.ts` reads `NLM_CLASSIFIER_FALLBACK_URL` (mirrors the session-close scanner's LAN/Tailscale fallback). Session-close `scan.py` (user skill, `~/.agents/skills/session-close`) now accepts both Pro-local oMLX forwards (`:8012`/`:8010`) at route verification instead of `:8012`-only. New tests: `tests/unit/llm/deepseek-client.test.ts` fallback block (5 cases); scanner regression test for mixed deployments. Full unit suite 2197 passed, typecheck clean. Deployed `0.21.21-t1360.1` (DB snapshotted first), `~/.nlm/.env` gained the fallback URL, daemon restarted via `launchctl kickstart -k`. (Shipped on `fix/classifier-gateway-fallback`, landed `0f54f26`; T1360 done.)
+
+**Decisions:** no cloud fallback (session text stays on the private gateway); per-call failover instead of sticky preference (the primary timeout bounds each attempt; the outer retry still applies). Env var, not a code default: stock checkouts keep single-base behavior.
+
+**State:** daemon healthy on the new build; single-fixture live eval 100% schema-valid (~12s); failover smoke (dead primary → real gateway) returned a valid classification.
+
 ## 2026-10-28 - Code-lane embedder switchable with rebuild; parked minors fixed (T1179, T1194)
 
 **Changes:** Settings > Embedder now edits the code lane's provider and model. A stale change needs `confirm_reembed`, then starts a supervised `nlm embed-backfill --exemplars` that drops and recreates the code vector table at the probed dim (SQLite vec0, pg `vector(n)` + index), records `embedding_config` right after the drop so an interrupted run resumes, and re-embeds every exemplar. The 24h exemplar sweep skips a stale lane instead of writing mixed-model vectors, and re-resolves the lane identity each tick. T1194: the chunk retry sweep's write is conditional on the pending row and chunk text (a re-ingest during the embed wins); `doctor --fix` prints applied I5b repairs and no longer claims "nothing to repair" after a guard refusal; aider/windsurf/cursor throw on unreadable sources so the next scan retries (ItemTable-less DBs skipped); pg gets the fact-embed retry sweep (pg migration 045) and pg I5a/I5b repair tests. #1142 evaluation design landed (docs/plans/2026-10-28-property-inference-evaluation-design.md).
@@ -84,12 +92,3 @@
 
 **Next:** Include this with the existing T803/T806 retrieval release, consistent backup/migration and live canaries. API and measured limits: `docs/context-retrieval.md`.
 
-## 2026-10-16 - Required retrieval integrity and measured optional no-go (T806)
-
-**Changes:** Tenant/workstream fencing, eligible exact semantic top-k, complete current-value probes, shared request budgets/embedding promises, bounded SQLite read workers, trusted attribution, and nullable literal UTF-16 source anchors with old-writer guards. Optional ranking, deltas and decision-model reranking remain off. Added frozen one-shot diagnostic entry and durable results/rulings.
-
-**Results:** Typecheck/build pass; full suite with real PostgreSQL: 3,278 pass / three pre-existing opt-in live embedder skips. Four stale PG schema expectations fixed after the first full run. Preregistered 55 heldout literal cases: 1→5 sufficient, grouped95% delta interval [0,+19.35] points; six no-answer cases fail both arms. Source audit has zero verified quote/passage contradictions. Exact tokens, primary answer quality and power unavailable: no scientific promotion. Legacy anchor CPU and broad latency gates did not pass; see `docs/memory-retrieval-results.md`.
-
-**State:** Required task reviews and final whole-branch/spec/security review pass; Low A1 is tracked in T810. Local landing is recorded in T806/git. Installed 0.21.17-t730 unchanged; deployment, consistent backup, migration and live MCP canary pending. No provider change, public publish or live database write.
-
-**Next:** Authorized deployment and live canaries after backup/binary preservation; T810 tracks duplicate legacy-body hydration. T527/T679 remain open with measured source evidence.
