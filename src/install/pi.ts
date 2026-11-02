@@ -13,17 +13,21 @@
  * extension surfaces as `nlm` in the [Extensions] list — matching the
  * naming convention used by pi-mcp-adapter, my-tasks, etc.
  *
- * `connect` appends the absolute path to that directory into `packages` if
- * not already present. `disconnect` strips any matching entry.
+ * `connect` converges `packages` on exactly one entry for the connected
+ * build: it writes the floating `current`-symlink path for versioned
+ * installs so upgrades do not need a re-connect, migrates version-pinned
+ * entries for the same build to it, and evicts entries that would load a
+ * different nlm-memory build (dev checkouts, dead paths, legacy
+ * `plugin-pi`). `disconnect` strips any matching entry.
  *
  * Idempotent. Format-preserving where possible — pi's settings.json is pure
  * JSON with no comments, so JSON.parse / JSON.stringify with 2-space indent
  * matches pi's own write convention.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { isStdioBlock, piMcpEntry, type McpTransport } from "./mcp-block.js";
 
 export interface ConnectPiOptions {
@@ -36,6 +40,8 @@ export interface ConnectPiReport {
   readonly settingsPath: string;
   readonly pluginDir: string;
   readonly alreadyPresent: boolean;
+  /** packages[] entries removed because they pointed at a different nlm-memory build. */
+  readonly evicted: readonly string[];
   readonly written: boolean;
   readonly dryRun: boolean;
 }
@@ -136,44 +142,126 @@ function writeSettings(path: string, settings: PiSettings): void {
   writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`, "utf8");
 }
 
+/**
+ * Resolve a packages[] entry the way pi does: relative to the pi agent
+ * dir, not the connecting process's cwd.
+ */
+function resolvePackageEntry(entry: string): string {
+  return resolve(piAgentDir(), entry);
+}
+
+/** realpath when the target exists, lexical resolution otherwise. */
+function canonicalOrResolved(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/**
+ * Floating equivalent of a version-pinned install path:
+ * `<root>/versions/<v>/app/nlm` → `<root>/current/app/nlm` when that
+ * symlink exists, so the wiring survives upgrades instead of pinning the
+ * build that happened to be current at connect time. Falls back to the
+ * resolved path for layouts without a versions/current pair (dev
+ * checkouts, npm installs).
+ */
+function floatPluginDir(pluginDir: string): string {
+  const resolved = resolve(pluginDir);
+  const parts = resolved.split(sep);
+  if (
+    parts.length >= 5 &&
+    parts[parts.length - 4] === "versions" &&
+    parts[parts.length - 2] === "app" &&
+    parts[parts.length - 1] === "nlm"
+  ) {
+    // Rejoin from segments rather than splicing the string: the leading
+    // "" segment of an absolute path must survive, or join() returns a
+    // relative path that existsSync can never find.
+    const root = parts.slice(0, parts.length - 4).join(sep) || sep;
+    const floating = join(root, "current", "app", "nlm");
+    if (existsSync(floating)) return floating;
+  }
+  return resolved;
+}
+
+/** True when the directory is an nlm-memory pi extension root. */
+function isNlmExtensionDir(dir: string): boolean {
+  try {
+    const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { name?: unknown };
+    return pkg.name === "nlm-memory-pi";
+  } catch {
+    return false;
+  }
+}
+
 export function connectPi(opts: ConnectPiOptions): ConnectPiReport {
   const settingsPath = piSettingsPath();
-  const pluginDir = resolve(opts.pluginDir);
+  const pluginDir = floatPluginDir(opts.pluginDir);
+  const targetCanonical = canonicalOrResolved(resolvePackageEntry(pluginDir));
   const settings = readSettings(settingsPath);
   const rawPackages = Array.isArray(settings.packages) ? settings.packages : [];
 
-  // Drop any legacy `plugin-pi` entries from nlm-memory <= 0.5.19 so the
-  // user doesn't end up with both the old basename and the new `nlm` one.
-  // The old path no longer resolves on disk after upgrade, so pi would
-  // silently fail to load it — cleaner to strip it here.
-  const packages = rawPackages.filter((p) => basename(resolve(p)) !== "plugin-pi");
-  const migrated = packages.length !== rawPackages.length;
+  // Evict entries that would load a different nlm-memory build alongside
+  // the one being connected. A dev-checkout path next to the deployed
+  // install fires the same hook twice from two builds — the older bundle
+  // predates the hook-log version stamp, so every one of its fires reads
+  // as a stale hook in the digest parity check. Identification is positive
+  // (package.json name), never bare-basename: an unrelated `nlm` dir is
+  // left alone, while a dead nlm path that resolves nowhere is dropped
+  // because pi could not load it anyway.
+  const evicted: string[] = [];
+  const kept = rawPackages.filter((p) => {
+    if (typeof p !== "string") return true;
+    const base = basename(resolvePackageEntry(p));
+    if (base === "plugin-pi") {
+      // Legacy entries from nlm-memory <= 0.5.19. The old path no longer
+      // resolves on disk after upgrade, so pi would silently fail to load
+      // it — cleaner to strip it here.
+      evicted.push(p);
+      return false;
+    }
+    if (canonicalOrResolved(resolvePackageEntry(p)) === targetCanonical) return true;
+    const abs = resolvePackageEntry(p);
+    if (base === "nlm" && (!existsSync(abs) || isNlmExtensionDir(abs))) {
+      evicted.push(p);
+      return false;
+    }
+    return true;
+  });
 
-  const alreadyPresent = packages.some((p) => resolve(p) === pluginDir);
+  // A version-pinned entry for the same build counts as present, but its
+  // literal form is migrated to the floating path so the next upgrade
+  // does not need another connect.
+  let migrated = false;
+  const packages = kept.map((p) => {
+    if (
+      typeof p === "string" &&
+      canonicalOrResolved(resolvePackageEntry(p)) === targetCanonical &&
+      resolvePackageEntry(p) !== resolvePackageEntry(pluginDir)
+    ) {
+      migrated = true;
+      return pluginDir;
+    }
+    return p;
+  });
 
-  if (alreadyPresent && !migrated) {
-    return {
-      settingsPath,
-      pluginDir,
-      alreadyPresent: true,
-      written: false,
-      dryRun: Boolean(opts.dryRun),
-    };
-  }
+  const alreadyPresent = packages.some(
+    (p) => typeof p === "string" && canonicalOrResolved(resolvePackageEntry(p)) === targetCanonical,
+  );
 
   if (opts.dryRun) {
-    return {
-      settingsPath,
-      pluginDir,
-      alreadyPresent,
-      written: false,
-      dryRun: true,
-    };
+    return { settingsPath, pluginDir, alreadyPresent, evicted, written: false, dryRun: true };
+  }
+
+  if (alreadyPresent && evicted.length === 0 && !migrated) {
+    return { settingsPath, pluginDir, alreadyPresent: true, evicted, written: false, dryRun: false };
   }
 
   if (!alreadyPresent) packages.push(pluginDir);
   writeSettings(settingsPath, { ...settings, packages });
-  return { settingsPath, pluginDir, alreadyPresent, written: true, dryRun: false };
+  return { settingsPath, pluginDir, alreadyPresent, evicted, written: true, dryRun: false };
 }
 
 export function disconnectPi(opts?: { dryRun?: boolean }): DisconnectPiReport {

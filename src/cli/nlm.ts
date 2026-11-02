@@ -2658,15 +2658,17 @@ connect
     const pluginDir = join(REPO_ROOT, "nlm");
     const report = connectPi({ pluginDir, dryRun: Boolean(opts.dryRun) });
     if (opts.dryRun) {
-      const verb = report.alreadyPresent ? "already present in" : "append to";
-      console.error(`nlm connect pi (dry run): ${verb} packages[] in ${report.settingsPath} → ${pluginDir}`);
+      const verb = report.alreadyPresent && report.evicted.length === 0 ? "already present in" : "append to";
+      console.error(`nlm connect pi (dry run): ${verb} packages[] in ${report.settingsPath} → ${report.pluginDir}`);
+      for (const e of report.evicted) console.error(`  would remove stale entry: ${e}`);
       return;
     }
-    if (report.alreadyPresent) {
+    if (report.alreadyPresent && report.evicted.length === 0) {
       console.error(`nlm: pi extension already registered → ${report.pluginDir}`);
     } else {
       console.error(`nlm: pi extension registered → ${report.settingsPath}`);
       console.error(`  Packages entry: ${report.pluginDir}`);
+      for (const e of report.evicted) console.error(`  removed stale entry: ${e}`);
     }
     // Two different files: the extension supplies the hook, mcp.json supplies
     // the callable tools. pi core has no MCP concept; pi-mcp-adapter reads it.
