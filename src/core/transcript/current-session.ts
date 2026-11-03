@@ -8,7 +8,10 @@
  * requested cwd. No match is null, never a guess.
  */
 
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
+import type { SourceRow } from "../sources/source-registry.js";
+import { adapterFromSource } from "../adapters/from-source.js";
+import { CodexAdapter } from "../adapters/codex.js";
 import type { SessionChunk, TranscriptAdapter } from "@ports/transcript-adapter.js";
 
 export type CurrentSessionSelection = "exact-session-id" | "latest-in-project";
@@ -28,6 +31,14 @@ export interface CurrentSessionResult {
 }
 
 type Env = Readonly<Record<string, string | undefined>>;
+
+export function adapterForCurrentSession(source: SourceRow, env: Env): TranscriptAdapter | null {
+  // A client profile's active transcript is separate from the daemon's registered store.
+  if (source.kind === "codex" && env["CODEX_HOME"]) {
+    return new CodexAdapter({ sessionsPath: join(env["CODEX_HOME"], "sessions") });
+  }
+  return adapterFromSource(source);
+}
 
 const RUNTIME_ALIASES: Readonly<Record<string, ReadonlyArray<string>>> = {
   "claude": ["claude-code"],

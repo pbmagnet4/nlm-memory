@@ -34,3 +34,8 @@ Open `http://localhost:3940/ui` after the daemon starts.
 | **Search** | Keyword, semantic, or hybrid recall with match snippets and field-origin tags |
 | **Recall** | Adoption telemetry — useful_hit_rate, source breakdown, query log |
 | **Settings** | Sources, providers, classifier, data backup/restore |
+
+
+## Current-session transcript lookup
+
+`nlm transcript current --runtime codex --session-id <exact-id> --cwd <project>` honors the invoking process's `CODEX_HOME`, reading its `sessions/` directory instead of the registered Codex source. This allows isolated client profiles to normalize their own live session without changing daemon ingestion or adding another profile to the shared source registry. Without `CODEX_HOME`, the registered source remains authoritative. An unknown exact ID fails rather than selecting another session. This command only normalizes local text; it does not call a classifier.

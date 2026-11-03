@@ -143,7 +143,7 @@ import { DAEMON_PKILL_PATTERN, planRestart, executeRestartPlan, type ExecuteRest
 import { isDevBuild, updateCheckCachePath } from "./upgrade-helpers.js";
 import { applyEnvAssignment } from "./config-env.js";
 import { adapterFromSource } from "../core/adapters/from-source.js";
-import { findCurrentSession, runtimeAdapterNames, sessionIdFromEnvironment } from "../core/transcript/current-session.js";
+import { adapterForCurrentSession, findCurrentSession, runtimeAdapterNames, sessionIdFromEnvironment } from "../core/transcript/current-session.js";
 import type { TranscriptAdapter } from "../ports/transcript-adapter.js";
 import type { LLMClient } from "../ports/llm-client.js";
 import { runDigest } from "./digest.js";
@@ -485,7 +485,7 @@ transcriptCmd
       await storage.sources.seedDefaults(DEFAULT_TEAM_ID);
       const allowed = adapterNames ? new Set(adapterNames) : null;
       const adapters = (await storage.sources.list(DEFAULT_TEAM_ID))
-        .map((row) => adapterFromSource(row))
+        .map((row) => adapterForCurrentSession(row, process.env))
         .filter((a): a is TranscriptAdapter => a !== null && (!allowed || allowed.has(a.name)));
       const result = await findCurrentSession({
         adapters,
