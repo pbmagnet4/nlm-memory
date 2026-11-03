@@ -1,5 +1,9 @@
 # nlm-memory CHANGELOG
 
+## 2026-11-03 — Honor active Codex home during current-session normalization (T1456)
+
+Fixed pinned current-session lookup for isolated Codex client profiles: use the invoking CODEX_HOME sessions directory for this command while preserving registered daemon sources. Added real fixture discovery, exact-ID refusal, and registered-source fallback tests. The actual MetaZoo session normalizes with exact-session-id selection; no transcript classifier call is needed for verification.
+
 ## 2026-11-02 - Classifier gateway fallback: daemon retries Tailscale base, scanner verifies both forwards (T1360, deployed 0.21.21-t1360.1)
 
 **Changes:** `src/llm/deepseek-client.ts` — `DeepSeekClient` accepts `fallbackBaseUrl` and retries classify once against it on network errors and HTTP 5xx (4xx/schema fail fast); `classifier-box.ts` passes it through; `build-classifier.ts` reads `NLM_CLASSIFIER_FALLBACK_URL` (mirrors the session-close scanner's LAN/Tailscale fallback). Session-close `scan.py` (user skill, `~/.agents/skills/session-close`) now accepts both Pro-local oMLX forwards (`:8012`/`:8010`) at route verification instead of `:8012`-only. New tests: `tests/unit/llm/deepseek-client.test.ts` fallback block (5 cases); scanner regression test for mixed deployments. Full unit suite 2197 passed, typecheck clean. Deployed `0.21.21-t1360.1` (DB snapshotted first), `~/.nlm/.env` gained the fallback URL, daemon restarted via `launchctl kickstart -k`. (Shipped on `fix/classifier-gateway-fallback`, landed `0f54f26`; T1360 done.)
@@ -81,14 +85,4 @@
 **State:** npm latest and the active daemon are 0.21.20. Consistent pre-migration SQLite/config backup verified; original 0.21.17 and compatible 0.21.19 installations preserved for rollback. Provider configuration unchanged. Scientific promotion remains inconclusive as recorded in T806; no optional ranking/model feature was enabled.
 
 **Next:** Routine operation. Existing T810 hydration advisory and T527/T679 remain separate follow-ups.
-
-## 2026-10-21 - Compact, budgeted MCP session discovery (T937)
-
-**Changes:** `recall_sessions` now returns five compact hits within 8,000 formatted characters by default. Query-selected decisions/open questions, explicit omission counts, source expansion selectors, and scoped continuation cursors replace verbose unbounded hits. The existing ten-candidate retrieval window remains the default; widening it is explicit because it can change ranking. Paging detects changed candidate order and telemetry records only displayed IDs. Reused existing compact `get_session` and lossless transcript paging; no storage, provider, ranking algorithm or fact-recall changes.
-
-**Results:** Typecheck/build and full npm suite pass (3,289 pass, three opt-in tests skipped). JSON/TOON, whole-window traversal, long escaped text, supersedence, cursor binding/change detection, scope-preserving expansions, degradation and actual-returned-ID telemetry are covered. Ten keyword queries against a migrated disposable live-corpus snapshot kept the same top-five IDs; median JSON size fell from 9,253 to about 3,800 characters. Two old responses exceeded 25,000; all new responses fit 8,000. This checks size/order, not independent answer quality or actual tokens. Local code/security review found no remaining issue after correcting the initial wider-window ranking change. No `.agent-quality.yml` is configured; npm CI checks ran directly.
-
-**State:** Source implementation only. The installed 0.21.17 daemon still has the older all-or-nothing guard and schema; it was not changed or migrated. After Edward approved sending the landed diff, independent Muse Spark 1.3 xhigh code/security review returned zero findings. Review evidence is recorded with T937. No public release was made and no live corpus was written.
-
-**Next:** Include this with the existing T803/T806 retrieval release, consistent backup/migration and live canaries. API and measured limits: `docs/context-retrieval.md`.
 

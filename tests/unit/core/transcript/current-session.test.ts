@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, mkdirSync, copyFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import type { SourceRow } from "../../../../src/core/sources/source-registry.js";
 import type { SessionChunk, TranscriptAdapter } from "../../../../src/ports/transcript-adapter.js";
 import {
+  adapterForCurrentSession,
   findCurrentSession,
   runtimeAdapterNames,
   sessionIdFromEnvironment,
@@ -106,5 +111,37 @@ describe("sessionIdFromEnvironment", () => {
 
   it("ignores another runtime's session id", () => {
     expect(sessionIdFromEnvironment(["codex"], { CLAUDE_SESSION_ID: "cl" })).toBeUndefined();
+  });
+});
+
+
+describe("active Codex profile", () => {
+  const source: SourceRow = {
+    id: 1, tenantId: "default", kind: "codex", name: "Codex",
+    pathOrUrl: "/missing/registered-store", runtimeLabel: "codex/1.0",
+    parseConfig: {}, enabled: true, token: null, hasToken: false,
+    createdAt: "", updatedAt: "",
+  };
+
+  it("finds the exact session in CODEX_HOME without changing registered sources", async () => {
+    const home = mkdtempSync(join(tmpdir(), "nlm-codex-profile-"));
+    try {
+      const sessions = join(home, "sessions", "2026", "05", "29");
+      mkdirSync(sessions, { recursive: true });
+      copyFileSync(resolve("tests/fixtures/codex/standard_session.jsonl"), join(sessions, "rollout-profile.jsonl"));
+      const active = adapterForCurrentSession(source, { CODEX_HOME: home });
+      const result = await findCurrentSession({ adapters: [active!], sessionId: "019e69aa-c9f7-7363-89bd-245cb8d62905" });
+      expect(result?.selection).toBe("exact-session-id");
+      expect(result?.session.sourcePath).toContain(home);
+      expect(source.pathOrUrl).toBe("/missing/registered-store");
+      expect(await findCurrentSession({ adapters: [active!], sessionId: "other-profile-id" })).toBeNull();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves the registered store when CODEX_HOME is absent", async () => {
+    const registered = adapterForCurrentSession(source, {});
+    expect(await registered!.discover()).toEqual([]);
   });
 });
