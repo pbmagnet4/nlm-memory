@@ -85,6 +85,16 @@ describe("dream judge", () => {
     await expect(judgeDreamFact({ llm, env: {} }, "fact", "excerpt")).rejects.toThrow(TransportError);
   });
 
+  it("sends the resolved model as the complete() override so the knob drives inference", async () => {
+    const { llm, calls } = stubLlm(VERDICT("still-true"));
+    await judgeDreamFact({ llm, env: {} }, "fact", "excerpt");
+    expect(calls[0]!.opts).toMatchObject({ model: DEFAULT_DREAM_MODEL });
+
+    const explicit = stubLlm(VERDICT("still-true"));
+    await judgeDreamFact({ llm: explicit.llm, model: "qwen-mini", env: {} }, "fact", "excerpt");
+    expect(explicit.calls[0]!.opts).toMatchObject({ model: "qwen-mini" });
+  });
+
   it("model precedence: explicit dep > NLM_DREAM_MODEL > default", async () => {
     const { llm } = stubLlm(VERDICT("unverifiable", ""));
     const model = (deps: Parameters<typeof judgeDreamFact>[0]) => judgeDreamFact(deps, "f", "e").then((j) => j.model);
@@ -105,7 +115,7 @@ describe("dream judge", () => {
     const { llm, calls } = stubLlm(VERDICT("still-true"));
     const controller = new AbortController();
     await judgeDreamFact({ llm, env: {}, maxTokens: 128, signal: controller.signal }, "fact", "excerpt");
-    expect(calls[0]!.opts).toEqual({ enable_thinking: false, signal: controller.signal, maxTokens: 128 });
+    expect(calls[0]!.opts).toEqual({ enable_thinking: false, model: DEFAULT_DREAM_MODEL, signal: controller.signal, maxTokens: 128 });
     expect(fetch).not.toHaveBeenCalled();
   });
 

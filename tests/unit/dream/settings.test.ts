@@ -37,7 +37,6 @@ describe("dream settings — defaults", () => {
       enabled: false,
       cadenceMs: DEFAULT_PASS_CADENCE_MS,
       sampleSize: DEFAULT_DEDUP_SAMPLE_SIZE,
-      maxInFlight: DEFAULT_MAX_IN_FLIGHT,
       applyMode: "dry-run",
     });
   });
@@ -83,14 +82,12 @@ describe("dream settings — env seeding", () => {
       NLM_DREAM_CONTRADICTION_MAX_INFLIGHT: "2",
       NLM_DREAM_CONTRADICTION_CADENCE_MS: "3600000",
       NLM_DREAM_DEDUP_SAMPLE: "500",
-      NLM_DREAM_DEDUP_MAX_INFLIGHT: "8",
       NLM_DREAM_DEDUP_CADENCE_MS: "600000",
     });
     expect(seeded.contradiction.sampleSize).toBe(50);
     expect(seeded.contradiction.maxInFlight).toBe(2);
     expect(seeded.contradiction.cadenceMs).toBe(3_600_000);
     expect(seeded.dedup.sampleSize).toBe(500);
-    expect(seeded.dedup.maxInFlight).toBe(8);
     expect(seeded.dedup.cadenceMs).toBe(600_000);
 
     const bad = dreamSettingsFromEnv({
@@ -132,6 +129,13 @@ describe("dream settings — update validation", () => {
 
   it("rejects an unknown field on a pass", () => {
     expect(() => updateDreamSettings({ dedup: { interval: 5 } })).toThrow(/unknown field "interval" on pass "dedup"/);
+  });
+
+  it("rejects maxInFlight on dedup: the dedup lane runs no judge pool", () => {
+    const before = getDreamSettings();
+    expect(() => updateDreamSettings({ dedup: { maxInFlight: 8 } })).toThrow(/unknown field "maxInFlight" on pass "dedup"/);
+    expect(getDreamSettings()).toEqual(before);
+    expect(dreamSettingsFromEnv({ NLM_DREAM_DEDUP_MAX_INFLIGHT: "8" }).dedup).not.toHaveProperty("maxInFlight");
   });
 
   it("rejects bad shapes on every field", () => {
@@ -191,6 +195,13 @@ describe("dream settings — last-run registry", () => {
     recordLastRun("dedup", { ok: true });
     resetLastRuns();
     expect(lastRuns()).toEqual({ contradiction: null, dedup: null });
+  });
+
+  it("hands out copies: mutating a returned record cannot corrupt the registry", () => {
+    const returned = recordLastRun("contradiction", { sampled: 7 });
+    (returned.summary as Record<string, unknown>).sampled = 999;
+    (lastRuns().contradiction!.summary as Record<string, unknown>).sampled = 888;
+    expect(lastRuns().contradiction!.summary).toEqual({ sampled: 7 });
   });
 });
 

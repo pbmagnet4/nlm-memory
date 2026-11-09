@@ -29,6 +29,13 @@ import {
   type DreamPassSpec,
 } from "../../src/core/dream/contradiction-pass.js";
 import { ScanScheduler } from "../../src/core/scheduler/scheduler.js";
+import {
+  getDreamSettings,
+  lastRuns,
+  reseedDreamSettings,
+  resetLastRuns,
+  updateDreamSettings,
+} from "../../src/core/dream/settings.js";
 import type { LLMClient } from "../../src/ports/llm-client.js";
 import type { Fact } from "../../src/shared/types.js";
 import { makeFact } from "../fixtures/facts.js";
@@ -358,21 +365,19 @@ describe("dream contradiction pass", () => {
     expect(DEFAULT_MAX_IN_FLIGHT).toBe(4); // the wired default matches oMLX concurrency
   });
 
-  it("scheduler wiring: enabled via env, the tick runs the pass; disabled it writes nothing", async () => {
+  it("scheduler wiring: enabled via the settings module, the tick runs the pass; disabled it writes nothing", async () => {
     await facts.insertMany(DEFAULT_TEAM_ID, [factText({ id: "f_sched" })]);
     const envKeys = [
       "NLM_INTEGRITY_CACHE",
       "NLM_SUPERSEDENCE_LOG",
-      "NLM_DREAM_CONTRADICTION_PASS",
-      "NLM_DREAM_CONTRADICTION_APPLY",
     ] as const;
     const envBackup: Record<string, string | undefined> = {};
     for (const k of envKeys) envBackup[k] = process.env[k];
     process.env["NLM_INTEGRITY_CACHE"] = join(tmp, "integrity-check.json");
     const logPath = join(tmp, "supersedence-log.jsonl");
     process.env["NLM_SUPERSEDENCE_LOG"] = logPath;
-    process.env["NLM_DREAM_CONTRADICTION_PASS"] = "1";
-    process.env["NLM_DREAM_CONTRADICTION_APPLY"] = "1";
+    const settingsBefore = getDreamSettings();
+    reseedDreamSettings({ NLM_DREAM_CONTRADICTION_PASS: "1", NLM_DREAM_CONTRADICTION_APPLY: "1" });
     try {
       const { llm } = stubJudge(() => verdict("contradicted", "we migrated off Fastify to Hono in June"));
       const lines: string[] = [];
@@ -393,45 +398,67 @@ describe("dream contradiction pass", () => {
         if (envBackup[k] === undefined) delete process.env[k];
         else process.env[k] = envBackup[k]!;
       }
+      updateDreamSettings(settingsBefore);
+      resetLastRuns();
     }
 
-    // Disabled by default: a fresh scheduler on the same DB retires nothing.
+    // Disabled via the settings module (the POST path): the registered pass
+    // runs but returns early and retires nothing.
     await facts.insertMany(DEFAULT_TEAM_ID, [factText({ id: "f_sched2" })]);
-    const { llm } = stubJudge(() => verdict("contradicted", "evidence"));
-    const scheduler = new ScanScheduler({
-      store: sessions,
-      adapters: [],
-      classifier: llm,
-      factStore: facts,
-      logger: () => {},
-    });
-    await scheduler.tick();
-    expect(retiredAt(dbPath, "f_sched2")).toBeNull();
+    updateDreamSettings({ contradiction: { enabled: false } });
+    try {
+      const { llm } = stubJudge(() => verdict("contradicted", "evidence"));
+      const scheduler = new ScanScheduler({
+        store: sessions,
+        adapters: [],
+        classifier: llm,
+        factStore: facts,
+        logger: () => {},
+      });
+      await scheduler.tick();
+      expect(retiredAt(dbPath, "f_sched2")).toBeNull();
+    } finally {
+      updateDreamSettings(settingsBefore);
+      resetLastRuns();
+    }
   });
 
-  it("registerContradictionPass is a no-op unless the pass env flag is set", () => {
-    const passes: DreamPassSpec[] = [];
-    const host = { registerDreamPass: (p: DreamPassSpec) => passes.push(p) };
-    registerContradictionPass({
-      host,
-      sqliteDb: sessions.rawDb(),
-      factStore: facts,
-      transcripts: sessions,
-      llm: stubJudge(() => "").llm,
-      env: {},
-    });
-    expect(passes).toHaveLength(0);
+  it("registerContradictionPass registers a live pass: disabled it runs nothing, edits apply with no re-registration", async () => {
+    const settingsBefore = getDreamSettings();
+    try {
+      reseedDreamSettings({});
+      resetLastRuns();
+      const passes: DreamPassSpec[] = [];
+      const host = { registerDreamPass: (p: DreamPassSpec) => passes.push(p) };
+      const { llm, calls } = stubJudge(() => verdict("contradicted", "we migrated off Fastify to Hono in June"));
+      registerContradictionPass({
+        host,
+        sqliteDb: sessions.rawDb(),
+        factStore: facts,
+        transcripts: sessions,
+        llm,
+      });
+      expect(passes).toHaveLength(1);
+      expect(passes[0]!.name).toBe("dream-contradiction");
 
-    registerContradictionPass({
-      host,
-      sqliteDb: sessions.rawDb(),
-      factStore: facts,
-      transcripts: sessions,
-      llm: stubJudge(() => "").llm,
-      env: { NLM_DREAM_CONTRADICTION_PASS: "1" },
-    });
-    expect(passes).toHaveLength(1);
-    expect(passes[0]!.name).toBe("dream-contradiction");
+      // Disabled: the run returns early — no judge call, no registry entry.
+      await passes[0]!.run();
+      expect(calls).toHaveLength(0);
+      expect(lastRuns()).toEqual({ contradiction: null, dedup: null });
+
+      // Enabled after registration (the POST path): the same spec runs live,
+      // the cadence getter reschedules, and apply mode retires.
+      await facts.insertMany(DEFAULT_TEAM_ID, [factText({ id: "f_live" })]);
+      updateDreamSettings({ contradiction: { enabled: true, applyMode: "apply", cadenceMs: 12345 } });
+      expect(passes[0]!.intervalMs).toBe(12345);
+      await passes[0]!.run();
+      expect(calls).toHaveLength(1);
+      expect(retiredAt(dbPath, "f_live")).not.toBeNull();
+      expect(lastRuns().contradiction).not.toBeNull();
+    } finally {
+      updateDreamSettings(settingsBefore);
+      resetLastRuns();
+    }
   });
 });
 

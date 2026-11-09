@@ -55,7 +55,6 @@ describe("GET /api/dreaming", () => {
         enabled: false,
         cadenceMs: DEFAULT_PASS_CADENCE_MS,
         sampleSize: DEFAULT_DEDUP_SAMPLE_SIZE,
-        maxInFlight: DEFAULT_MAX_IN_FLIGHT,
         applyMode: "dry-run",
       },
     });

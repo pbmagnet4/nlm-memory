@@ -8,7 +8,9 @@
  *
  * Transport goes through the existing LLMClient port (`complete()` chat
  * lane) so callers wire whatever classifier client they already have and
- * tests stub the port — this module never touches the network.
+ * tests stub the port — this module never touches the network. The resolved
+ * model is passed as the `complete()` model override, so the dream-model
+ * knob selects the weights that judge, not just the audit label.
  *
  * Invariants:
  *  - The dream lane always runs without thinking tokens: every call passes
@@ -71,6 +73,7 @@ export interface DreamJudgeChatOptions {
   readonly signal?: AbortSignal;
   readonly maxTokens?: number;
   readonly enable_thinking?: boolean;
+  readonly model?: string;
 }
 
 export interface DreamJudgeDeps {
@@ -146,6 +149,7 @@ export async function judgeDreamFact(
   // on the port's narrower opts.
   const chatOpts: DreamJudgeChatOptions = {
     enable_thinking: false,
+    model,
     ...(deps.signal ? { signal: deps.signal } : {}),
     ...(deps.maxTokens !== undefined ? { maxTokens: deps.maxTokens } : {}),
   };

@@ -17,7 +17,7 @@ interface DreamPassSettings {
   enabled: boolean;
   cadenceMs: number;
   sampleSize: number;
-  maxInFlight: number;
+  maxInFlight?: number;
   applyMode: DreamApplyMode;
 }
 
@@ -38,8 +38,6 @@ interface DreamLastRuns {
   dedup: DreamRunRecord | null;
 }
 
-const MS_PER_MINUTE = 60_000;
-
 const PASS_NAMES: readonly DreamPassName[] = ["contradiction", "dedup"];
 const PASS_TITLE: Record<DreamPassName, string> = {
   contradiction: "Contradiction pass",
@@ -50,20 +48,22 @@ const PASS_TITLE: Record<DreamPassName, string> = {
    user actually changed, and number fields must parse to positive integers
    (the API rejects anything else and changes nothing). */
 
-interface PassDraft { enabled: string; cadence_min: string; sample_size: string; apply_mode: string }
+interface PassDraft { enabled: string; cadence_ms: string; sample_size: string; apply_mode: string }
 
 function draftFromPass(p: DreamPassSettings): PassDraft {
   return {
     enabled: p.enabled ? "true" : "false",
-    cadence_min: String(Math.round(p.cadenceMs / MS_PER_MINUTE)),
+    cadence_ms: String(p.cadenceMs),
     sample_size: String(p.sampleSize),
     apply_mode: p.applyMode,
   };
 }
 
 function positiveInt(raw: string): number | null {
-  const n = Number.parseInt(raw.trim(), 10);
-  return Number.isInteger(n) && n > 0 ? n : null;
+  const text = raw.trim();
+  if (!/^\d+$/.test(text)) return null;
+  const n = Number(text);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
 interface PassEdit { patch: Record<string, boolean | number | string>; invalid: boolean }
@@ -73,10 +73,10 @@ function passEdit(current: DreamPassSettings, d: PassDraft): PassEdit {
   const patch: Record<string, boolean | number | string> = {};
   let invalid = false;
   if (d.enabled !== base.enabled) patch.enabled = d.enabled === "true";
-  if (d.cadence_min !== base.cadence_min) {
-    const n = positiveInt(d.cadence_min);
+  if (d.cadence_ms !== base.cadence_ms) {
+    const n = positiveInt(d.cadence_ms);
     if (n === null) invalid = true;
-    else patch.cadenceMs = n * MS_PER_MINUTE;
+    else patch.cadenceMs = n;
   }
   if (d.sample_size !== base.sample_size) {
     const n = positiveInt(d.sample_size);
@@ -409,14 +409,14 @@ function PassSection(props: {
         </select>
       </div>
       <div className="form-row">
-        <label className="form-label">Cadence (min)</label>
+        <label className="form-label">Cadence (ms)</label>
         <input
           className="form-input form-input-inline"
           type="number"
           min={1}
           step={1}
-          value={draft.cadence_min}
-          onChange={(e) => onDraftChange({ ...draft, cadence_min: e.target.value })}
+          value={draft.cadence_ms}
+          onChange={(e) => onDraftChange({ ...draft, cadence_ms: e.target.value })}
           disabled={busy}
         />
         <label className="form-label">Sample size</label>

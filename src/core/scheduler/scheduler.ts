@@ -232,9 +232,9 @@ export class ScanScheduler {
     };
     this.aliasToLabel = loadAliasToLabel();
 
-    // T1609 contradiction dream pass. Policy lives in the pass module: it
-    // registers only when NLM_DREAM_CONTRADICTION_PASS is set, and stays
-    // dry-run unless NLM_DREAM_CONTRADICTION_APPLY is set too. The PG
+    // T1609 contradiction dream pass. Policy lives in the settings module:
+    // the pass always registers and its run closure reads the live
+    // settings, so POST /api/dreaming edits apply with no restart. The PG
     // backend passes no sqlite handle and the pass self-skips.
     registerContradictionPass({
       host: this,
@@ -246,10 +246,11 @@ export class ScanScheduler {
       logger: this.opts.logger,
     });
 
-    // T1610 dedup dream pass. Same policy-in-the-module split: it registers
-    // only when NLM_DREAM_DEDUP_PASS is set and stays report-only unless
-    // NLM_DREAM_DEDUP_APPLY is set too. Deterministic scoring, no LLM lane.
-    // The PG backend passes no sqlite handle and the pass self-skips.
+    // T1610 dedup dream pass. Same live-settings split: it always
+    // registers and its run closure reads the live settings, so
+    // POST /api/dreaming edits apply with no restart. Deterministic
+    // scoring, no LLM lane. The PG backend passes no sqlite handle and
+    // the pass self-skips.
     registerDedupPass({
       host: this,
       sqliteDb: opts.store instanceof PgSessionStore ? null : opts.store.rawDb(),

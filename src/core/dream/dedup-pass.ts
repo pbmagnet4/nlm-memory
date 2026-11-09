@@ -44,9 +44,8 @@ import {
 } from "./fact-dedup.js";
 import {
   DEFAULT_DEDUP_SAMPLE_SIZE,
-  dreamSettingsFromEnv,
+  getDreamSettings,
   recordLastRun,
-  type DreamSettings,
 } from "./settings.js";
 
 /** `source` stamped on the fact-supersedence audit entry. */
@@ -259,42 +258,23 @@ export interface DedupPassRegistration {
   readonly sqliteDb: Database.Database | null;
   readonly factStore: FactStore | null;
   readonly tenantId?: string;
-  /**
-   * Env source used to seed the settings snapshot consulted at
-   * registration; default — the settings module resolves it from
-   * process.env through its own seed rules, this module never reads
-   * process.env itself. Injectable for tests.
-   */
-  readonly env?: Readonly<Record<string, string | undefined>>;
   readonly logger?: (msg: string) => void;
 }
 
 /**
- * Resolve the settings snapshot this registration consults — same contract
- * as resolvePassSettings in contradiction-pass.ts: the settings module's
- * own seed rules, over reg.env (tests) or the live process.env.
- */
-function resolvePassSettings(
-  reg: Pick<DedupPassRegistration, "env">,
-): DreamSettings {
-  return dreamSettingsFromEnv(reg.env ?? process.env);
-}
-
-/**
- * The single wiring entry point. Registers the pass when the settings
- * module says the dedup pass is enabled (seeded from NLM_DREAM_DEDUP_PASS;
- * the flag is read once, at registration); otherwise a no-op. Cadence,
- * sample size and the dry-run/apply mode all come from the same settings
- * snapshot (dream/settings.ts) — this module owns no env parsing or
- * defaults. Every completed run logs its one-line summary and records it in
- * the settings module's last-run registry. A pass failure is logged, never
- * thrown — dreaming must not break ingestion ticks.
+ * The single wiring entry point. Always registers when the backend is
+ * wired (the PG backend passes no sqlite handle and the pass self-skips);
+ * the run closure consults the live settings module on every tick, so
+ * POST /api/dreaming edits (enabled, cadence, sample, apply mode) apply
+ * to the next scheduled run with no restart. The spec's intervalMs is a
+ * live getter over the same module, so cadence edits reschedule the pass
+ * too. A disabled pass registers but its run returns early without
+ * writing or recording anything. Every completed run logs its one-line
+ * summary and records it in the settings module's last-run registry. A
+ * pass failure is logged, never thrown — dreaming must not break
+ * ingestion ticks.
  */
 export function registerDedupPass(reg: DedupPassRegistration): void {
-  const settings = resolvePassSettings(reg);
-  const pass = settings.dedup;
-  if (!pass.enabled) return;
-
   const log = reg.logger ?? ((msg: string) => console.error(msg));
   if (!reg.sqliteDb || !reg.factStore) {
     log("[dream] dedup pass enabled but the PG backend or fact store is not wired — skipping");
@@ -302,19 +282,22 @@ export function registerDedupPass(reg: DedupPassRegistration): void {
   }
 
   const tenantId = reg.tenantId ?? DEFAULT_TEAM_ID;
-  const apply = pass.applyMode === "apply";
-  const sampleSize = pass.sampleSize;
   const db: Database.Database = reg.sqliteDb;
 
   reg.host.registerDreamPass({
     name: "dream-dedup",
-    intervalMs: pass.cadenceMs,
+    get intervalMs() {
+      return getDreamSettings().dedup.cadenceMs;
+    },
     run: async () => {
+      const live = getDreamSettings();
+      if (!live.dedup.enabled) return;
+      const apply = live.dedup.applyMode === "apply";
       const report = await runDedupPass({
         tenantId,
         facts: reg.factStore!,
         apply,
-        sampleSize,
+        sampleSize: live.dedup.sampleSize,
         sampleFacts: (limit) => Promise.resolve(sampleActiveFactsSqlite(db, tenantId, limit)),
         logger: log,
       });
