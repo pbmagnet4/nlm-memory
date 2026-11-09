@@ -27,6 +27,7 @@ import type { SessionChunk, TranscriptAdapter } from "@ports/transcript-adapter.
 import { deriveSubagentMeta } from "@core/adapters/claude-code.js";
 import { scanTranscriptDerivables } from "@core/ingest/transcript-derivables.js";
 import { registerContradictionPass, type DreamPassSpec } from "@core/dream/contradiction-pass.js";
+import { registerDedupPass } from "@core/dream/dedup-pass.js";
 import type { SignalStore } from "@ports/signal-store.js";
 import type { CodeExemplarStore } from "@ports/code-exemplar-store.js";
 import type { CodeEmbedder } from "@ports/code-embedder.js";
@@ -240,6 +241,18 @@ export class ScanScheduler {
       factStore: this.opts.factStore,
       transcripts: this.opts.store,
       llm: this.opts.classifier,
+      tenantId: this.opts.tenantId,
+      logger: this.opts.logger,
+    });
+
+    // T1610 dedup dream pass. Same policy-in-the-module split: it registers
+    // only when NLM_DREAM_DEDUP_PASS is set and stays report-only unless
+    // NLM_DREAM_DEDUP_APPLY is set too. Deterministic scoring, no LLM lane.
+    // The PG backend passes no sqlite handle and the pass self-skips.
+    registerDedupPass({
+      host: this,
+      sqliteDb: opts.store instanceof PgSessionStore ? null : opts.store.rawDb(),
+      factStore: this.opts.factStore,
       tenantId: this.opts.tenantId,
       logger: this.opts.logger,
     });
