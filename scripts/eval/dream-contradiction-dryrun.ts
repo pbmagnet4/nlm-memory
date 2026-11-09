@@ -84,12 +84,17 @@ function parseArgs(argv: string[]): CliArgs {
 /** Copy the corpus (+ WAL/SHM if present) into a throwaway sandbox dir. */
 function sandboxCopy(srcDb: string): { path: string; cleanup: () => void } {
   const dir = mkdtempSync(join(tmpdir(), "nlm-dream-contradiction-"));
-  const dst = join(dir, "canonical.sqlite");
-  copyFileSync(srcDb, dst);
-  for (const suffix of ["-wal", "-shm"]) {
-    if (existsSync(srcDb + suffix)) copyFileSync(srcDb + suffix, dst + suffix);
+  try {
+    const dst = join(dir, "canonical.sqlite");
+    copyFileSync(srcDb, dst);
+    for (const suffix of ["-wal", "-shm"]) {
+      if (existsSync(srcDb + suffix)) copyFileSync(srcDb + suffix, dst + suffix);
+    }
+    return { path: dst, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  } catch (err) {
+    rmSync(dir, { recursive: true, force: true });
+    throw err;
   }
-  return { path: dst, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 /** Deterministic PRNG (mulberry32) — fixed seed => reproducible sample. */
