@@ -77,8 +77,8 @@ export interface ReDerivationRate {
 
 /**
  * GENUINE-positive rate per fixed-size UTC window over the labelled pairs.
- * Windows with zero judged rows are still emitted (rate: null) so a timeline
- * plot has no silent gaps. Output windows are sorted by start.
+ * Only windows that contain judged rows are emitted. Output windows are
+ * sorted by start.
  */
 export function reDerivationRateByWindow(
   rows: ReadonlyArray<ReDerivationLabelRow>,
