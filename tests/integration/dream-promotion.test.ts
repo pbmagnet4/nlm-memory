@@ -23,6 +23,8 @@ import type { IngestRecord, SqliteSessionStore } from "../../src/core/storage/sq
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
 import {
+  listActiveFactIdsSqlite,
+  loadFactCandidatesSqlite,
   loadPromotionTelemetry,
   registerPromotionPass,
   runPromotionPass,
@@ -30,6 +32,7 @@ import {
   SqlitePromotionStore,
   type PromotionPassSpec,
 } from "../../src/core/dream/promotion-pass.js";
+import { renderPromotionLine } from "../../src/core/dream/promotion.js";
 import { ScanScheduler } from "../../src/core/scheduler/scheduler.js";
 import type { LLMClient } from "../../src/ports/llm-client.js";
 import type { Fact } from "../../src/shared/types.js";
@@ -309,5 +312,114 @@ describe("dream promotion pass", () => {
       delete process.env["NLM_HOOK_LOG"];
       delete process.env["NLM_CITATION_LOG"];
     }
+  });
+
+  describe("landing-review regressions", () => {
+    /** Production-shaped options: demotion from the full active set and
+     *  real candidates for sample-missing actives (both SQLite-backed). */
+    function wiredOpts(extra: Record<string, unknown> = {}) {
+      const db = sessions.rawDb();
+      return runOpts({
+        listActiveFactIds: () => Promise.resolve(listActiveFactIdsSqlite(db, DEFAULT_TEAM_ID)),
+        loadFactCandidates: (ids: ReadonlyArray<string>) =>
+          Promise.resolve(loadFactCandidatesSqlite(db, DEFAULT_TEAM_ID, ids)),
+        ...extra,
+      });
+    }
+
+    function emptyTelemetry(candidates: Parameters<typeof loadPromotionTelemetry>[0]) {
+      return Promise.resolve(
+        loadPromotionTelemetry(candidates, {
+          hookLogPath: join(tmp, "missing.jsonl"),
+          citationLogPath: join(tmp, "missing.jsonl"),
+          windowDays: 30,
+          now: Date.parse("2026-05-21T00:00:00Z"),
+        }),
+      );
+    }
+
+    it("does not demote promoted facts the sample did not draw", async () => {
+      const all = await runOpts().sampleCandidates(10);
+      const keep1 = all.find((c) => c.id === "f_keep_1")!;
+      const keep2 = all.find((c) => c.id === "f_keep_2")!;
+      for (const c of [keep1, keep2]) {
+        promotions.promote(DEFAULT_TEAM_ID, { ...c, score: 4, retrievals: 0, citations: 0, reason: "seed" });
+      }
+      // The sample draws only one of the two promoted facts; the other is
+      // still active, so it must be kept — never "left the active set".
+      const report = await runPromotionPass(
+        wiredOpts({
+          apply: true,
+          maxLines: 10,
+          sampleCandidates: () => Promise.resolve([keep1]),
+          loadTelemetry: emptyTelemetry,
+        }),
+      );
+      expect(report.findings.filter((f) => f.action === "demote")).toEqual([]);
+      expect(report.findings.some((f) => f.factId === "f_keep_2" && f.action === "keep")).toBe(true);
+      const rows = promotionRows(dbPath);
+      expect(rows).toHaveLength(2);
+      for (const row of rows) expect(row.demoted_at).toBeNull();
+    });
+
+    it("lifetime citations shield a promotion from the never-cited grace rule", async () => {
+      const all = await runOpts().sampleCandidates(10);
+      const keep1 = all.find((c) => c.id === "f_keep_1")!;
+      promotions.promote(DEFAULT_TEAM_ID, { ...keep1, score: 4, retrievals: 0, citations: 0, reason: "seed" });
+      // Promoted 20 days ago; cited 60 days ago — outside the 30-day window.
+      sessions.rawDb().prepare("UPDATE fact_promotions SET promoted_at = '2026-05-01T00:00:00Z' WHERE fact_id = 'f_keep_1'").run();
+      const oldCite = join(tmp, "old-citation-log.jsonl");
+      writeFileSync(oldCite, JSON.stringify({ ts: "2026-03-22T00:00:00Z", conversation_id: "c0", cited_id: "f_keep_1" }) + "\n");
+      const report = await runPromotionPass(
+        wiredOpts({
+          now: Date.parse("2026-05-21T00:00:00Z"),
+          loadTelemetry: (candidates: Parameters<typeof loadPromotionTelemetry>[0]) =>
+            Promise.resolve(
+              loadPromotionTelemetry(candidates, {
+                hookLogPath: join(tmp, "missing.jsonl"),
+                citationLogPath: oldCite,
+                windowDays: 30,
+                now: Date.parse("2026-05-21T00:00:00Z"),
+              }),
+            ),
+        }),
+      );
+      expect(report.findings.filter((f) => f.factId === "f_keep_1" && f.action === "demote")).toEqual([]);
+    });
+
+    it("writes promoted_at/demoted_at as ISO UTC so aging agrees on any host TZ", async () => {
+      const all = await runOpts().sampleCandidates(10);
+      const one = all[0]!;
+      promotions.promote(DEFAULT_TEAM_ID, { ...one, score: 4, retrievals: 0, citations: 0, reason: "seed" });
+      const db = sessions.rawDb();
+      const stamped = db.prepare("SELECT promoted_at FROM fact_promotions WHERE fact_id = ?").get(one.id) as { promoted_at: string };
+      expect(stamped.promoted_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+      promotions.demote(DEFAULT_TEAM_ID, one.id, "test reason");
+      const destamped = db.prepare("SELECT demoted_at FROM fact_promotions WHERE fact_id = ?").get(one.id) as { demoted_at: string };
+      expect(destamped.demoted_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    });
+
+    it("measures the cap on real rendered lines for sample-missing actives", async () => {
+      const bigValue = "x".repeat(2000);
+      await facts.insertMany(DEFAULT_TEAM_ID, [
+        makeFact({ id: "f_big_1", subject: "whtnxt-api", predicate: "notes", value: bigValue, sourceSessionId: S1 }),
+        makeFact({ id: "f_big_2", subject: "whtnxt-api", predicate: "notes", value: bigValue, sourceSessionId: S2 }),
+      ]);
+      const loaded = loadFactCandidatesSqlite(sessions.rawDb(), DEFAULT_TEAM_ID, ["f_big_1"]);
+      expect(loaded).toHaveLength(1);
+      promotions.promote(DEFAULT_TEAM_ID, { ...loaded[0]!, score: 1, retrievals: 0, citations: 0, reason: "seed" });
+      // Empty sample: the only active promotion is sample-missing, so the
+      // cap must still account its full rendered line.
+      const report = await runPromotionPass(
+        wiredOpts({
+          maxBytes: 100_000,
+          sampleCandidates: () => Promise.resolve([]),
+          loadTelemetry: emptyTelemetry,
+        }),
+      );
+      const expected = Buffer.byteLength(renderPromotionLine(loaded[0]!), "utf8");
+      expect(expected).toBeGreaterThan(2000);
+      expect(report.usedBytes).toBe(expected);
+    });
   });
 });
