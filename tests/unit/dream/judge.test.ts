@@ -199,6 +199,14 @@ describe("dream judge", () => {
       expect(contradictedClaimStands("T816 build cache: 100 entries", "T816 build cache holds 810 entries")).toBe(true);
     });
 
+    it("exact restatement with echoed context number still downgrades", () => {
+      expect(contradictedClaimStands("T816 cleanup: 90 dirty files", "T816 cleanup: 90 dirty files")).toBe(false);
+    });
+
+    it("an echoed task id in evidence never corroborates a genuine value conflict", () => {
+      expect(contradictedClaimStands("T816 cache: 810 entries", "T816 cache holds 100 entries")).toBe(true);
+    });
+
     it("prompt states the direct-negation, numeric-agreement, and layer rules", () => {
       expect(DREAM_JUDGE_SYSTEM_PROMPT).toMatch(/DIRECT negation/);
       expect(DREAM_JUDGE_SYSTEM_PROMPT).toMatch(/incompatible counter-value/);
