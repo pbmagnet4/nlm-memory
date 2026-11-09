@@ -24,9 +24,12 @@
  *    repeat losers, and a fact that lost since sampling simply no longer
  *    appears in the active slice.
  *
- * Scheduler wiring: this module owns the policy (env flags, defaults, the
- * SQLite sampler); the scheduler is a dumb host for periodic passes. The
- * single entry point is registerDedupPass().
+ * Scheduler wiring: this module owns the pass logic; the run policy
+ * (enabled, cadence, sample, apply mode) is resolved through the dreaming
+ * settings module (dream/settings.ts) — the single home of the NLM_DREAM_*
+ * names, their parsing and their defaults — instead of reading process.env
+ * directly. The scheduler is a dumb host for periodic passes. The single
+ * entry point is registerDedupPass().
  */
 
 import type Database from "better-sqlite3";
@@ -39,17 +42,12 @@ import {
   type FactDedupFact,
   type FactMergeProposal,
 } from "./fact-dedup.js";
-
-/** Enable the scheduled wiring (registerDedupPass). Off unless 1/true. */
-export const DREAM_DEDUP_PASS_ENV = "NLM_DREAM_DEDUP_PASS";
-/** Mutate (supersede + audit) instead of report-only. Off unless 1/true. */
-export const DREAM_DEDUP_APPLY_ENV = "NLM_DREAM_DEDUP_APPLY";
-/** Facts considered per run. */
-export const DREAM_DEDUP_SAMPLE_ENV = "NLM_DREAM_DEDUP_SAMPLE";
-
-/** Once a day — the pass is a nightly sweep, not a per-tick cost. */
-export const DEFAULT_PASS_INTERVAL_MS = 24 * 60 * 60 * 1000;
-export const DEFAULT_SAMPLE_SIZE = 200;
+import {
+  DEFAULT_DEDUP_SAMPLE_SIZE,
+  dreamSettingsFromEnv,
+  recordLastRun,
+  type DreamSettings,
+} from "./settings.js";
 
 /** `source` stamped on the fact-supersedence audit entry. */
 export const DEDUP_PASS_SOURCE = "dream-dedup-pass";
@@ -116,16 +114,6 @@ export interface DedupPassOptions {
   /** Supersedence audit log override (tests); default is the tenant-derived path. */
   readonly supersedenceLogPath?: string;
   readonly logger?: (msg: string) => void;
-}
-
-function flagEnabled(raw: string | undefined): boolean {
-  const v = (raw ?? "").trim().toLowerCase();
-  return v === "1" || v === "true";
-}
-
-function positiveInt(raw: string | undefined, fallback: number): number {
-  const n = Number.parseInt((raw ?? "").trim(), 10);
-  return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
 /** The proposal's own reason states the merge evidence and the winner
@@ -196,7 +184,7 @@ export function sampleActiveFactsSqlite(
 export async function runDedupPass(opts: DedupPassOptions): Promise<DedupPassReport> {
   const tenantId = opts.tenantId ?? DEFAULT_TEAM_ID;
   const apply = opts.apply === true;
-  const sampleSize = opts.sampleSize ?? DEFAULT_SAMPLE_SIZE;
+  const sampleSize = opts.sampleSize ?? DEFAULT_DEDUP_SAMPLE_SIZE;
 
   const facts = await opts.sampleFacts(sampleSize);
   // Propose per assertion context: fact collapse matches property context as
@@ -271,21 +259,41 @@ export interface DedupPassRegistration {
   readonly sqliteDb: Database.Database | null;
   readonly factStore: FactStore | null;
   readonly tenantId?: string;
-  /** Injectable for tests; default process.env. */
+  /**
+   * Env source used to seed the settings snapshot consulted at
+   * registration; default — the settings module resolves it from
+   * process.env through its own seed rules, this module never reads
+   * process.env itself. Injectable for tests.
+   */
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly logger?: (msg: string) => void;
 }
 
 /**
- * The single wiring entry point. If enabled by NLM_DREAM_DEDUP_PASS,
- * registers the pass on the host; otherwise a no-op (the flag is read once,
- * at registration). Reads NLM_DREAM_DEDUP_APPLY / _SAMPLE for run policy.
- * A pass failure is logged, never thrown — dreaming must not break
- * ingestion ticks.
+ * Resolve the settings snapshot this registration consults — same contract
+ * as resolvePassSettings in contradiction-pass.ts: the settings module's
+ * own seed rules, over reg.env (tests) or the live process.env.
+ */
+function resolvePassSettings(
+  reg: Pick<DedupPassRegistration, "env">,
+): DreamSettings {
+  return dreamSettingsFromEnv(reg.env ?? process.env);
+}
+
+/**
+ * The single wiring entry point. Registers the pass when the settings
+ * module says the dedup pass is enabled (seeded from NLM_DREAM_DEDUP_PASS;
+ * the flag is read once, at registration); otherwise a no-op. Cadence,
+ * sample size and the dry-run/apply mode all come from the same settings
+ * snapshot (dream/settings.ts) — this module owns no env parsing or
+ * defaults. Every completed run logs its one-line summary and records it in
+ * the settings module's last-run registry. A pass failure is logged, never
+ * thrown — dreaming must not break ingestion ticks.
  */
 export function registerDedupPass(reg: DedupPassRegistration): void {
-  const env = reg.env ?? process.env;
-  if (!flagEnabled(env[DREAM_DEDUP_PASS_ENV])) return;
+  const settings = resolvePassSettings(reg);
+  const pass = settings.dedup;
+  if (!pass.enabled) return;
 
   const log = reg.logger ?? ((msg: string) => console.error(msg));
   if (!reg.sqliteDb || !reg.factStore) {
@@ -294,13 +302,13 @@ export function registerDedupPass(reg: DedupPassRegistration): void {
   }
 
   const tenantId = reg.tenantId ?? DEFAULT_TEAM_ID;
-  const apply = flagEnabled(env[DREAM_DEDUP_APPLY_ENV]);
-  const sampleSize = positiveInt(env[DREAM_DEDUP_SAMPLE_ENV], DEFAULT_SAMPLE_SIZE);
+  const apply = pass.applyMode === "apply";
+  const sampleSize = pass.sampleSize;
   const db: Database.Database = reg.sqliteDb;
 
   reg.host.registerDreamPass({
     name: "dream-dedup",
-    intervalMs: DEFAULT_PASS_INTERVAL_MS,
+    intervalMs: pass.cadenceMs,
     run: async () => {
       const report = await runDedupPass({
         tenantId,
@@ -310,11 +318,21 @@ export function registerDedupPass(reg: DedupPassRegistration): void {
         sampleFacts: (limit) => Promise.resolve(sampleActiveFactsSqlite(db, tenantId, limit)),
         logger: log,
       });
-      log(
+      const summary =
         `[dream] dedup pass (${apply ? "apply" : "dry-run"}): sampled=${report.sampled}` +
-          ` proposals=${report.proposals} exact=${report.exact} restatement=${report.restatement}` +
-          ` superseded=${report.superseded} errors=${report.errors}`,
-      );
+        ` proposals=${report.proposals} exact=${report.exact} restatement=${report.restatement}` +
+        ` superseded=${report.superseded} errors=${report.errors}`;
+      log(summary);
+      recordLastRun("dedup", {
+        mode: apply ? "apply" : "dry-run",
+        summary,
+        sampled: report.sampled,
+        proposals: report.proposals,
+        exact: report.exact,
+        restatement: report.restatement,
+        superseded: report.superseded,
+        errors: report.errors,
+      });
     },
   });
 }

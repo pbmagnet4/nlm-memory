@@ -71,6 +71,7 @@ import {
   type ClassifierTuning,
 } from "@core/classifier/tuning.js";
 import { ClassifierBox, type ClassifierProvider } from "../llm/classifier-box.js";
+import { DreamSettingsError, getDreamSettings, lastRuns, updateDreamSettings } from "@core/dream/settings.js";
 import {
   SourceRegistry,
   PgSourceRegistry,
@@ -218,6 +219,14 @@ export interface HttpDeps {
   readonly jobSupervisor?: Pick<JobSupervisor, "start" | "stop" | "snapshot">;
   /** Wire to enable GET /api/health/ingest. */
   readonly ingestLag?: IngestLagMonitor;
+  /**
+   * Wire to enable the GET/POST /api/dreaming control-plane pair. The
+   * settings themselves are the process-global in-memory registry
+   * (core/dream/settings.ts) the dream passes consult; the flag only gates
+   * the surface — when omitted both routes 503, same pattern as the
+   * classifier/embedder wiring gates above.
+   */
+  readonly dreaming?: boolean;
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -444,6 +453,7 @@ export function createApp(deps: HttpDeps): Hono<AppEnv> {
   registerDataManagementRoutes(app, deps);
   registerActionRoutes(app, deps);
   registerClassifierRoutes(app, deps);
+  registerDreamingRoutes(app, deps);
   registerEmbedderRoutes(app, deps);
   registerSourceRoutes(app, deps);
   registerIngestRoute(app, deps);
@@ -622,6 +632,11 @@ const HOSTED_GATED_ROUTES: ReadonlyArray<{ method: string; path: string; disposi
   { method: "GET", path: "/api/health/ingest", disposition: "LOCAL" },
   { method: "POST", path: "/api/classifier", disposition: "LOCAL" },
   { method: "PUT", path: "/api/classifier/settings", disposition: "LOCAL" },
+  // Process-global dreaming lane (the scheduler's background passes) — a
+  // single-operator knob with no per-tenant meaning, same LOCAL class as
+  // the classifier settings entries above.
+  { method: "GET", path: "/api/dreaming", disposition: "LOCAL" },
+  { method: "POST", path: "/api/dreaming", disposition: "LOCAL" },
   { method: "GET", path: "/api/embedder/settings", disposition: "LOCAL" },
   { method: "PUT", path: "/api/embedder/settings", disposition: "LOCAL" },
   { method: "POST", path: "/api/embedder/test", disposition: "LOCAL" },
@@ -1558,6 +1573,35 @@ function registerEmbedderRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
       // Settings are persisted and applied before the rebuild job starts, so
       // the only throw left is the job's own spawn failure.
       return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    }
+  });
+}
+
+// ── Dreaming lane control plane ───────────────────────────────────────────
+// GET returns the current settings snapshot plus the last-run registry the
+// pass registrations write into; POST patches the runtime settings through
+// updateDreamSettings (validated all-or-nothing there — an unknown pass,
+// unknown field or bad shape is a 400 and changes nothing). Process-global
+// by design (the dream passes are one scheduler-lane knobs), hence the
+// LOCAL hosted disposition next to the classifier entries.
+function registerDreamingRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
+  app.get("/api/dreaming", (c) => {
+    if (!deps.dreaming) return c.json({ error: "dreaming settings not wired in this deployment" }, 503);
+    return c.json({ settings: getDreamSettings(), lastRuns: lastRuns() });
+  });
+
+  app.post("/api/dreaming", async (c) => {
+    if (!deps.dreaming) return c.json({ error: "dreaming settings not wired in this deployment" }, 503);
+    const body = await c.req.json().catch(() => null);
+    if (body === null || typeof body !== "object" || Array.isArray(body)) {
+      return c.json({ error: "body must be a JSON object" }, 400);
+    }
+    try {
+      const settings = updateDreamSettings(body);
+      return c.json({ ok: true, settings, lastRuns: lastRuns() });
+    } catch (e) {
+      if (e instanceof DreamSettingsError) return c.json({ error: e.message }, 400);
+      throw e;
     }
   });
 }
