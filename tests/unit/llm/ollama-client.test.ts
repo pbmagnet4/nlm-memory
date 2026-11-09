@@ -168,3 +168,42 @@ describe("OllamaClient.nameWorkstream", () => {
     expect(await c.nameWorkstream("nlm-memory work\nsummary", cands)).toBe("NLM");
   });
 });
+
+describe("OllamaClient.complete thinking switch", () => {
+  function captureFetch() {
+    const seen: Array<Record<string, unknown>> = [];
+    const fetchImpl = makeFetch(({ body }) => {
+      seen.push(body as Record<string, unknown>);
+      return jsonResponse({ message: { content: "ok" } });
+    });
+    return { seen, fetchImpl };
+  }
+
+  it("maps per-call enable_thinking:false onto the think field", async () => {
+    const { seen, fetchImpl } = captureFetch();
+    const client = new OllamaClient({ fetchImpl });
+    await expect(client.complete("sys", "user", { enable_thinking: false })).resolves.toBe("ok");
+    expect(seen[0]).toMatchObject({ think: false });
+  });
+
+  it("construction-time think:false still applies when the call passes nothing", async () => {
+    const { seen, fetchImpl } = captureFetch();
+    const client = new OllamaClient({ fetchImpl, think: false });
+    await client.complete("sys", "user");
+    expect(seen[0]).toMatchObject({ think: false });
+  });
+
+  it("per-call enable_thinking overrides construction-time think", async () => {
+    const { seen, fetchImpl } = captureFetch();
+    const client = new OllamaClient({ fetchImpl, think: false });
+    await client.complete("sys", "user", { enable_thinking: true });
+    expect(seen[0]).toMatchObject({ think: true });
+  });
+
+  it("omits think when neither construction nor call sets it", async () => {
+    const { seen, fetchImpl } = captureFetch();
+    const client = new OllamaClient({ fetchImpl });
+    await client.complete("sys", "user");
+    expect(seen[0]).not.toHaveProperty("think");
+  });
+});

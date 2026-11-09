@@ -28,6 +28,7 @@ import { deriveSubagentMeta } from "@core/adapters/claude-code.js";
 import { scanTranscriptDerivables } from "@core/ingest/transcript-derivables.js";
 import { registerContradictionPass, type DreamPassSpec } from "@core/dream/contradiction-pass.js";
 import { registerDedupPass } from "@core/dream/dedup-pass.js";
+import { registerPromotionPass } from "@core/dream/promotion-pass.js";
 import type { SignalStore } from "@ports/signal-store.js";
 import type { CodeExemplarStore } from "@ports/code-exemplar-store.js";
 import type { CodeEmbedder } from "@ports/code-embedder.js";
@@ -254,6 +255,18 @@ export class ScanScheduler {
       host: this,
       sqliteDb: opts.store instanceof PgSessionStore ? null : opts.store.rawDb(),
       factStore: this.opts.factStore,
+      tenantId: this.opts.tenantId,
+      logger: this.opts.logger,
+    });
+
+    // T1611 promotion dream pass. Same policy-in-the-module split: it
+    // registers only when NLM_DREAM_PROMOTE_PASS is set and stays
+    // report-only unless NLM_DREAM_PROMOTE_APPLY is set too. Deterministic
+    // scoring over hook/citation telemetry, no LLM lane. The PG backend
+    // passes no sqlite handle and the pass self-skips.
+    registerPromotionPass({
+      host: this,
+      sqliteDb: opts.store instanceof PgSessionStore ? null : opts.store.rawDb(),
       tenantId: this.opts.tenantId,
       logger: this.opts.logger,
     });
@@ -582,9 +595,11 @@ export class ScanScheduler {
     // long sample never delays discovery/classification of new transcripts.
     for (const pass of this.dreamPasses) {
       if (now - (this.dreamPassLastRun.get(pass.name) ?? 0) < pass.intervalMs) continue;
-      this.dreamPassLastRun.set(pass.name, now);
       try {
         await pass.run();
+        // Stamp only on success: a throwing pass must retry on the next tick
+        // instead of consuming its whole interval slot.
+        this.dreamPassLastRun.set(pass.name, Date.now());
       } catch (e) {
         this.opts.logger(
           `[scheduler] dream pass ${pass.name} failed: ${e instanceof Error ? e.message : String(e)}`,

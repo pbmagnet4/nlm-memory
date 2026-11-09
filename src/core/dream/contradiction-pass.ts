@@ -20,8 +20,14 @@
  *  - Unverifiable is flagged in the report and NEVER touched — same rule as
  *    the judge's "doubt is unverifiable". A fact whose transcript is gone
  *    (no body) is unverifiable by construction: no judge call, no write.
+ *  - A contradicted verdict retires only with a non-empty evidence quote
+ *    that occurs in the judged excerpt; anything else is downgraded to
+ *    unverifiable — a hallucinated contradiction must never retire a fact.
  *  - A failed judge call (DreamJudgeError / transport) leaves the fact
- *    alone; sampling another day gets another shot.
+ *    alone; sampling another day gets another shot. A failed audit write
+ *    after a retire is reported as an error, not counted as superseded.
+ *  - A thrown transcript-store fetch is a judge-error, never
+ *    no-transcript: a transient failure must not pose as a missing session.
  *  - Judge calls run through a worker pool capped at `maxInFlight`
  *    (default 4, the oMLX gateway's concurrency) — never one per fact at
  *    once across a large sample.
@@ -39,7 +45,7 @@ import type { LLMClient } from "@ports/llm-client.js";
 import type { FactStore } from "@ports/fact-store.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import { tenantClause } from "@core/tenancy/tenant-clause.js";
-import { appendFactSupersedence } from "@core/storage/supersedence-log.js";
+import { appendFactSupersedenceOrThrow } from "@core/storage/supersedence-log.js";
 import { judgeDreamFact, type DreamVerdict } from "./judge.js";
 import {
   DEFAULT_CONTRADICTION_SAMPLE_SIZE,
@@ -121,7 +127,8 @@ export interface ContradictionPassReport {
   readonly stillTrue: number;
   readonly unverifiable: number;
   readonly noTranscript: number;
-  /** Failed judge calls + failed retires — facts left untouched with an error note. */
+  /** Failed judge calls, failed retire/audit writes, and contradicted
+   *  verdicts downgraded for bad evidence — each carries an error note. */
   readonly errors: number;
   /** Peak concurrent in-flight judge calls observed (bounded by maxInFlight). */
   readonly peakInFlight: number;
@@ -268,8 +275,25 @@ export async function runContradictionPass(
       value: fact.value,
       sourceSessionId: fact.sourceSessionId,
     };
-    const session = await opts.transcripts.getById(tenantId, fact.sourceSessionId).catch(() => null);
-    const excerpt = buildTranscriptExcerpt(session?.body ?? "", fact.sourceQuote, excerptChars);
+    // A null session (or an empty body) means the transcript is genuinely
+    // gone — unverifiable without a judge call. A thrown store error is a
+    // different case: record it as an error so a transient failure is never
+    // mistaken for a missing transcript.
+    let body: string;
+    try {
+      body = (await opts.transcripts.getById(tenantId, fact.sourceSessionId))?.body ?? "";
+    } catch (e) {
+      findings.push({
+        ...base,
+        outcome: "judge-error",
+        verdict: null,
+        evidenceQuote: "",
+        superseded: false,
+        error: `transcript store fetch failed: ${e instanceof Error ? e.message : String(e)}`,
+      });
+      return;
+    }
+    const excerpt = buildTranscriptExcerpt(body, fact.sourceQuote, excerptChars);
     if (excerpt === "") {
       findings.push({ ...base, outcome: "no-transcript", verdict: null, evidenceQuote: "", superseded: false });
       return;
@@ -303,6 +327,28 @@ export async function runContradictionPass(
       return;
     }
 
+    // A contradicted verdict is only actionable with a non-empty evidence
+    // quote that actually occurs in the judged excerpt — otherwise the model
+    // hallucinated the contradiction and retiring would drop a good fact on
+    // a bogus reason. Downgrade to unverifiable (never touched) with an
+    // error note instead.
+    const quote = evidenceQuote.trim();
+    if (quote === "" || !excerpt.includes(quote)) {
+      findings.push({
+        ...base,
+        outcome: "unverifiable",
+        verdict: "unverifiable",
+        evidenceQuote,
+        model,
+        superseded: false,
+        error:
+          quote === ""
+            ? "contradicted verdict carried no evidence quote — downgraded to unverifiable"
+            : "contradicted verdict evidence quote not found in the judged excerpt — downgraded to unverifiable",
+      });
+      return;
+    }
+
     const reason = contradictionReason(fact, evidenceQuote, model);
     const finding = {
       ...base,
@@ -316,23 +362,36 @@ export async function runContradictionPass(
       findings.push({ ...finding, superseded: false });
       return;
     }
+    // Retire = the fact's superseded lane: recall-ineligible, row kept,
+    // embedding evicted (supersedence.md: mark explicitly, never erase).
     try {
-      // Retire = the fact's superseded lane: recall-ineligible, row kept,
-      // embedding evicted (supersedence.md: mark explicitly, never erase).
       await opts.facts.retire(tenantId, fact.id);
-      await appendFactSupersedence(
-        tenantId,
-        { factId: fact.id, reason, source: CONTRADICTION_PASS_SOURCE },
-        opts.supersedenceLogPath,
-      );
-      findings.push({ ...finding, superseded: true });
     } catch (e) {
       findings.push({
         ...finding,
         superseded: false,
-        error: e instanceof Error ? e.message : String(e),
+        error: `retire failed: ${e instanceof Error ? e.message : String(e)}`,
       });
+      return;
     }
+    // The audit append throws (unlike the telemetry variant) so a failed
+    // write lands in the report errors instead of silently leaving a
+    // retired fact with no audit entry.
+    try {
+      await appendFactSupersedenceOrThrow(
+        tenantId,
+        { factId: fact.id, reason, source: CONTRADICTION_PASS_SOURCE },
+        opts.supersedenceLogPath,
+      );
+    } catch (e) {
+      findings.push({
+        ...finding,
+        superseded: false,
+        error: `retired but audit write failed: ${e instanceof Error ? e.message : String(e)}`,
+      });
+      return;
+    }
+    findings.push({ ...finding, superseded: true });
   });
 
   const count = (o: ContradictionOutcome) => findings.filter((f) => f.outcome === o).length;

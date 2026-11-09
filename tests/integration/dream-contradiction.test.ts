@@ -248,6 +248,102 @@ describe("dream contradiction pass", () => {
     expect(existsSync(opts.supersedenceLogPath)).toBe(false);
   });
 
+  it("downgrades contradicted verdicts with empty or off-excerpt evidence, never retiring", async () => {
+    await facts.insertMany(DEFAULT_TEAM_ID, [
+      factText({ id: "f_empty_evidence" }),
+      factText({ id: "f_hallucinated", subject: "other-app" }),
+    ]);
+    const { llm, calls } = stubJudge((user) =>
+      user.includes("other-app")
+        ? verdict("contradicted", "the model invented this sentence")
+        : verdict("contradicted", ""),
+    );
+
+    const report = await runContradictionPass({
+      ...defaultOptions(tmp, llm, { facts, sessions }),
+      apply: true,
+    });
+
+    expect(report).toMatchObject({ sampled: 2, contradicted: 0, superseded: 0, unverifiable: 2, errors: 2 });
+    expect(calls).toHaveLength(2);
+    for (const id of ["f_empty_evidence", "f_hallucinated"]) {
+      expect(retiredAt(dbPath, id)).toBeNull();
+      const finding = report.findings.find((f) => f.factId === id);
+      expect(finding).toMatchObject({ outcome: "unverifiable", verdict: "unverifiable", superseded: false });
+      expect(finding!.error).toContain("downgraded to unverifiable");
+    }
+    expect(report.findings.find((f) => f.factId === "f_empty_evidence")!.error).toContain("no evidence quote");
+    expect(report.findings.find((f) => f.factId === "f_hallucinated")!.error).toContain("not found in the judged excerpt");
+  });
+
+  it("records a thrown transcript-store fetch as a judge-error, not no-transcript", async () => {
+    await facts.insertMany(DEFAULT_TEAM_ID, [factText({ id: "f_store_down" })]);
+    const { llm, calls } = stubJudge(() => verdict("contradicted", "we migrated off Fastify to Hono in June"));
+    const throwingTranscripts = {
+      getById: async () => { throw new Error("store down"); },
+    };
+
+    const report = await runContradictionPass({
+      ...defaultOptions(tmp, llm, { facts, sessions }),
+      transcripts: throwingTranscripts,
+    });
+
+    expect(report).toMatchObject({ sampled: 1, noTranscript: 0, errors: 1 });
+    expect(calls).toHaveLength(0); // the judge is never reached
+    expect(report.findings[0]).toMatchObject({
+      factId: "f_store_down",
+      outcome: "judge-error",
+      verdict: null,
+      superseded: false,
+    });
+    expect(report.findings[0]!.error).toContain("transcript store fetch failed");
+    expect(retiredAt(dbPath, "f_store_down")).toBeNull();
+  });
+
+  it("reports a failed audit write after retire as an error, not superseded", async () => {
+    await facts.insertMany(DEFAULT_TEAM_ID, [factText({ id: "f_audit_fail" })]);
+    const { llm } = stubJudge(() => verdict("contradicted", "we migrated off Fastify to Hono in June"));
+
+    const report = await runContradictionPass({
+      ...defaultOptions(tmp, llm, { facts, sessions }),
+      apply: true,
+      supersedenceLogPath: tmp, // a directory: the audit append cannot succeed
+    });
+
+    expect(report).toMatchObject({ sampled: 1, contradicted: 1, superseded: 0, errors: 1 });
+    expect(report.findings[0]).toMatchObject({ factId: "f_audit_fail", superseded: false });
+    expect(report.findings[0]!.error).toContain("audit write failed");
+    // The retire itself happened — the error text says so explicitly.
+    expect(retiredAt(dbPath, "f_audit_fail")).not.toBeNull();
+  });
+
+  it("a throwing dream pass retries on the next tick instead of consuming its slot", async () => {
+    const { llm } = stubJudge(() => verdict("still-true", "supports"));
+    const lines: string[] = [];
+    const scheduler = new ScanScheduler({
+      store: sessions,
+      adapters: [],
+      classifier: llm,
+      factStore: facts,
+      logger: (m) => lines.push(m),
+    });
+    let runs = 0;
+    scheduler.registerDreamPass({
+      name: "flaky-pass",
+      intervalMs: 60 * 60 * 1000,
+      run: async () => {
+        runs += 1;
+        if (runs === 1) throw new Error("gateway down");
+      },
+    });
+
+    await scheduler.tick();
+    await scheduler.tick();
+
+    expect(runs).toBe(2);
+    expect(lines.some((l) => l.includes("[scheduler] dream pass flaky-pass failed"))).toBe(true);
+  });
+
   it("caps in-flight judge calls at maxInFlight (oMLX lane serves 4)", async () => {
     const many = Array.from({ length: 12 }, (_, i) =>
       factText({ id: `f_cap_${i}`, subject: `app-${i}` }),
