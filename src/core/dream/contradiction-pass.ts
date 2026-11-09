@@ -26,9 +26,12 @@
  *    (default 4, the oMLX gateway's concurrency) — never one per fact at
  *    once across a large sample.
  *
- * Scheduler wiring: this module owns the policy (env flags, defaults, the
- * SQLite sampler); the scheduler is a dumb host for periodic passes. The
- * single entry point is registerContradictionPass().
+ * Scheduler wiring: this module owns the pass logic; the run policy
+ * (enabled, cadence, sample, in-flight, apply mode) is resolved through the
+ * dreaming settings module (dream/settings.ts) — the single home of the
+ * NLM_DREAM_* names, their parsing and their defaults — instead of reading
+ * process.env directly. The scheduler is a dumb host for periodic passes.
+ * The single entry point is registerContradictionPass().
  */
 
 import type Database from "better-sqlite3";
@@ -38,24 +41,20 @@ import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import { tenantClause } from "@core/tenancy/tenant-clause.js";
 import { appendFactSupersedence } from "@core/storage/supersedence-log.js";
 import { judgeDreamFact, type DreamVerdict } from "./judge.js";
-
-/** Enable the scheduled wiring (registerContradictionPass). Off unless 1/true. */
-export const DREAM_CONTRADICTION_PASS_ENV = "NLM_DREAM_CONTRADICTION_PASS";
-/** Mutate (retire + audit) instead of report-only. Off unless 1/true. */
-export const DREAM_CONTRADICTION_APPLY_ENV = "NLM_DREAM_CONTRADICTION_APPLY";
-/** Facts judged per run. */
-export const DREAM_CONTRADICTION_SAMPLE_ENV = "NLM_DREAM_CONTRADICTION_SAMPLE";
-/** Concurrent judge calls. Capped by the dream lane's serving capacity. */
-export const DREAM_CONTRADICTION_INFLIGHT_ENV = "NLM_DREAM_CONTRADICTION_MAX_INFLIGHT";
-
-/** Once a day — the pass is a nightly sweep, not a per-tick cost. */
-export const DEFAULT_PASS_INTERVAL_MS = 24 * 60 * 60 * 1000;
-export const DEFAULT_SAMPLE_SIZE = 20;
-/** oMLX serves 4 concurrent requests; more in-flight just queues at the gateway. */
-export const DEFAULT_MAX_IN_FLIGHT = 4;
+import {
+  DEFAULT_CONTRADICTION_SAMPLE_SIZE,
+  DEFAULT_MAX_IN_FLIGHT,
+  dreamSettingsFromEnv,
+  recordLastRun,
+  type DreamSettings,
+} from "./settings.js";
 
 /** `source` stamped on the fact-supersedence audit entry. */
 export const CONTRADICTION_PASS_SOURCE = "dream-contradiction-pass";
+
+// The run defaults live in the settings module; re-exported here so the
+// pass's public surface keeps naming the values it actually runs with.
+export { DEFAULT_MAX_IN_FLIGHT };
 
 const DEFAULT_EXCERPT_CHARS = 4_000;
 
@@ -147,16 +146,6 @@ export interface ContradictionPassOptions {
   /** Supersedence audit log override (tests); default is the tenant-derived path. */
   readonly supersedenceLogPath?: string;
   readonly logger?: (msg: string) => void;
-}
-
-function flagEnabled(raw: string | undefined): boolean {
-  const v = (raw ?? "").trim().toLowerCase();
-  return v === "1" || v === "true";
-}
-
-function positiveInt(raw: string | undefined, fallback: number): number {
-  const n = Number.parseInt((raw ?? "").trim(), 10);
-  return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
 /** Fact text handed to the judge: subject/predicate give the value its scope. */
@@ -265,7 +254,7 @@ export async function runContradictionPass(
 ): Promise<ContradictionPassReport> {
   const tenantId = opts.tenantId ?? DEFAULT_TEAM_ID;
   const apply = opts.apply === true;
-  const sampleSize = opts.sampleSize ?? DEFAULT_SAMPLE_SIZE;
+  const sampleSize = opts.sampleSize ?? DEFAULT_CONTRADICTION_SAMPLE_SIZE;
   const maxInFlight = Math.max(1, opts.maxInFlight ?? DEFAULT_MAX_IN_FLIGHT);
   const excerptChars = opts.excerptChars ?? DEFAULT_EXCERPT_CHARS;
 
@@ -372,22 +361,47 @@ export interface ContradictionPassRegistration {
   readonly transcripts: TranscriptSource;
   readonly llm: LLMClient;
   readonly tenantId?: string;
-  /** Injectable for tests; default process.env. */
+  /**
+   * Env source used to seed the settings snapshot consulted at
+   * registration; default — the settings module resolves it from
+   * process.env through its own seed rules, this module never reads
+   * process.env itself. Injectable for tests.
+   */
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly model?: string;
   readonly logger?: (msg: string) => void;
 }
 
 /**
- * The single wiring entry point. If enabled by NLM_DREAM_CONTRADICTION_PASS,
- * registers the pass on the host; otherwise a no-op (the flag is read once,
- * at registration). Reads NLM_DREAM_CONTRADICTION_APPLY / _SAMPLE /
- * _MAX_INFLIGHT for run policy. A pass failure is logged, never thrown —
- * dreaming must not break ingestion ticks.
+ * Resolve the settings snapshot this registration consults, through the
+ * settings module's own seed rules — the single home of the NLM_DREAM_*
+ * names, their parsing and their defaults (this module owns no env
+ * parsing). The env source is re-read at registration exactly as the
+ * pre-settings contract did, which the scheduler wiring relies on; hosts
+ * that drive the settings module themselves pass no env and seed from
+ * process.env the same way.
+ */
+function resolvePassSettings(
+  reg: Pick<ContradictionPassRegistration, "env">,
+): DreamSettings {
+  return dreamSettingsFromEnv(reg.env ?? process.env);
+}
+
+/**
+ * The single wiring entry point. Registers the pass when the settings
+ * module says the contradiction pass is enabled (seeded from
+ * NLM_DREAM_CONTRADICTION_PASS; the flag is read once, at registration);
+ * otherwise a no-op. Cadence, sample size, in-flight cap and the dry-run/
+ * apply mode all come from the same settings snapshot
+ * (dream/settings.ts) — this module owns no env parsing or defaults.
+ * Every completed run logs its one-line summary and records it in the
+ * settings module's last-run registry. A pass failure is logged, never
+ * thrown — dreaming must not break ingestion ticks.
  */
 export function registerContradictionPass(reg: ContradictionPassRegistration): void {
-  const env = reg.env ?? process.env;
-  if (!flagEnabled(env[DREAM_CONTRADICTION_PASS_ENV])) return;
+  const settings = resolvePassSettings(reg);
+  const pass = settings.contradiction;
+  if (!pass.enabled) return;
 
   const log = reg.logger ?? ((msg: string) => console.error(msg));
   if (!reg.sqliteDb || !reg.factStore) {
@@ -396,14 +410,14 @@ export function registerContradictionPass(reg: ContradictionPassRegistration): v
   }
 
   const tenantId = reg.tenantId ?? DEFAULT_TEAM_ID;
-  const apply = flagEnabled(env[DREAM_CONTRADICTION_APPLY_ENV]);
-  const sampleSize = positiveInt(env[DREAM_CONTRADICTION_SAMPLE_ENV], DEFAULT_SAMPLE_SIZE);
-  const maxInFlight = positiveInt(env[DREAM_CONTRADICTION_INFLIGHT_ENV], DEFAULT_MAX_IN_FLIGHT);
+  const apply = pass.applyMode === "apply";
+  const sampleSize = pass.sampleSize;
+  const maxInFlight = pass.maxInFlight;
   const db: Database.Database = reg.sqliteDb;
 
   reg.host.registerDreamPass({
     name: "dream-contradiction",
-    intervalMs: DEFAULT_PASS_INTERVAL_MS,
+    intervalMs: pass.cadenceMs,
     run: async () => {
       const report = await runContradictionPass({
         tenantId,
@@ -417,11 +431,21 @@ export function registerContradictionPass(reg: ContradictionPassRegistration): v
         sampleFacts: (limit) => Promise.resolve(sampleActiveFactsSqlite(db, tenantId, limit)),
         logger: log,
       });
-      log(
+      const summary =
         `[dream] contradiction pass (${apply ? "apply" : "dry-run"}): sampled=${report.sampled}` +
-          ` contradicted=${report.contradicted} superseded=${report.superseded}` +
-          ` unverifiable=${report.unverifiable} no-transcript=${report.noTranscript} errors=${report.errors}`,
-      );
+        ` contradicted=${report.contradicted} superseded=${report.superseded}` +
+        ` unverifiable=${report.unverifiable} no-transcript=${report.noTranscript} errors=${report.errors}`;
+      log(summary);
+      recordLastRun("contradiction", {
+        mode: apply ? "apply" : "dry-run",
+        summary,
+        sampled: report.sampled,
+        contradicted: report.contradicted,
+        superseded: report.superseded,
+        unverifiable: report.unverifiable,
+        noTranscript: report.noTranscript,
+        errors: report.errors,
+      });
     },
   });
 }
