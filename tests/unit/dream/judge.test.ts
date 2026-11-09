@@ -167,6 +167,11 @@ describe("dream judge", () => {
       expect(contradictedClaimStands("cleanup: 90 dirty files", "90 dirty files")).toBe(false);
     });
 
+    it("a derived +-run sum equal to the fact value corroborates despite distinct parts", () => {
+      expect(contradictedClaimStands("repo files count: 89", "52 tracked + 37 untracked = 89")).toBe(false);
+      expect(contradictedClaimStands("cleanup: 90 dirty files", "90 was wrong, it is 20 files")).toBe(true);
+    });
+
     it("small counts agree only on exact equality", () => {
       expect(contradictedClaimStands("0 errors", "1 error")).toBe(true);
       expect(contradictedClaimStands("1 retry", "2 retries")).toBe(true);

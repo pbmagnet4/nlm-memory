@@ -162,18 +162,18 @@ function numbersAgree(n: number, m: number): boolean {
   return Math.abs(n - m) <= agreeTol(n);
 }
 
-/** Comparison candidates for one side: its numbers, plus the sum of each
- *  "+"-joined run ("52 tracked + 37 untracked" adds 89) — never the sum of
- *  all numbers in the text ("day 10: 20 users + 30 guests" adds only 50).
- *  Numbers count as joined when only words/space sit between each number
- *  and its "+", so "20 users + 30" runs but the unjoined "day 10" stays out. */
-function sideCandidates(text: string, nums: number[]): number[] {
+/** Sum of each "+"-joined run ("52 tracked + 37 untracked" adds 89) — never
+ *  the sum of all numbers in the text ("day 10: 20 users + 30 guests" adds
+ *  only 50). Numbers count as joined when only words/space sit between each
+ *  number and its "+", so "20 users + 30" runs but the unjoined "day 10"
+ *  stays out. */
+function plusRunSums(text: string): number[] {
   const sums: number[] = [];
   for (const m of text.matchAll(/(-?\d+(?:\.\d+)?(?:[^+\d]*\+[^+\d]*-?\d+(?:\.\d+)?)+)/g)) {
     const parts = (m[1] ?? "").match(/-?\d+(?:\.\d+)?/g);
     if (parts && parts.length >= 2) sums.push(parts.reduce((a, b) => a + Number(b), 0));
   }
-  return [...nums, ...sums];
+  return sums;
 }
 
 /** Split fact text into its subject/predicate context (before the first ":")
@@ -194,14 +194,18 @@ function splitFactValue(factText: string): { contextNums: number[]; valueText: s
  *  task id in the subject cannot mask a genuine value conflict. Evidence
  *  numbers exactly restating a fact number are ignored when the evidence
  *  also states a distinct number ("90 was wrong, it is 20 files" judges
- *  90-vs-20, not the restated 90-vs-90). */
+ *  90-vs-20, not the restated 90-vs-90). The restatement filter applies to
+ *  literal evidence numbers only; derived "+"-run sums are always kept, so
+ *  a sum that equals the fact value ("52 + 37 = 89") corroborates. */
 function numbersRoughlyAgree(factText: string, evidenceQuote: string): boolean {
   const { contextNums, valueText } = splitFactValue(factText);
   const contextSet = new Set(contextNums);
-  const factNums = sideCandidates(valueText, extractCountables(valueText)).filter((n) => !contextSet.has(n));
-  let evNums = sideCandidates(evidenceQuote, extractCountables(evidenceQuote)).filter((n) => !contextSet.has(n));
-  const distinct = evNums.filter((e) => !factNums.some((f) => f === e));
-  if (distinct.length > 0 && distinct.length < evNums.length) evNums = distinct;
+  const factNums = [...extractCountables(valueText), ...plusRunSums(valueText)].filter((n) => !contextSet.has(n));
+  const evLiterals = extractCountables(evidenceQuote).filter((n) => !contextSet.has(n));
+  const evSums = plusRunSums(evidenceQuote).filter((n) => !contextSet.has(n));
+  let evNums = [...evLiterals, ...evSums];
+  const distinct = evLiterals.filter((e) => !factNums.some((f) => f === e));
+  if (distinct.length > 0 && distinct.length < evLiterals.length) evNums = [...distinct, ...evSums];
   return factNums.some((n) => evNums.some((m) => numbersAgree(n, m)));
 }
 
