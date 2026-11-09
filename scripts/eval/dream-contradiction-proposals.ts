@@ -13,7 +13,8 @@
  *    ever invented beyond the JSON fields.
  *  - Findings with verdict != "contradicted" are never rendered.
  *  - Findings outside --allow are never rendered (FPs stay out by label,
- *    not by heuristic). Allow entries match exact ids or id prefixes.
+ *    not by heuristic). Allow entries match exact ids or id prefixes of at
+ *    least "fact_" + 8 hex chars; shorter entries are rejected loudly.
  *  - Findings missing a grounding field (fact id, subject, predicate,
  *    value, source session, evidence quote) are skipped, never padded.
  *  - Precision-gate invariant: auto-apply stays OFF. This script only stages
@@ -34,8 +35,8 @@
  * (Agents/ for agent-persona subjects, Operations/ otherwise).
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 
 export interface ProposalFinding {
   factId: string;
@@ -95,9 +96,28 @@ export function parseArgs(argv: string[]): CliArgs {
   };
 }
 
-/** Exact id or id-prefix match (short human labels match full fact ids). */
+/**
+ * Exact id or id-prefix match (short human labels match full fact ids).
+ *
+ * Every allow entry must be an exact full fact id or a prefix of at least
+ * "fact_" + 8 hex chars (13 chars). Shorter or empty entries throw: a bare
+ * "fact_" prefix would otherwise stage every contradicted finding with an
+ * unearned human TP label.
+ */
+const ALLOW_ENTRY_RE = /^fact_[0-9a-fA-F]{8}/;
+
+function assertValidAllowEntry(entry: string): void {
+  if (!ALLOW_ENTRY_RE.test(entry)) {
+    throw new Error(
+      `dream-contradiction-proposals: invalid --allow entry ${JSON.stringify(entry)}: ` +
+        `entries must be exact full fact ids or prefixes of at least "fact_" + 8 hex chars`,
+    );
+  }
+}
+
 export function allowMatches(factId: string, allow: string[]): boolean {
-  return allow.some((entry) => entry.length > 0 && factId.startsWith(entry));
+  for (const entry of allow) assertValidAllowEntry(entry);
+  return allow.some((entry) => factId.startsWith(entry));
 }
 
 const AGENT_SUFFIXES = [
@@ -191,23 +211,51 @@ export function docMeta(doc: FindingsDoc): RunMeta {
   };
 }
 
-/** Write one draft per finding; returns the written file paths. */
+export interface WriteResult {
+  written: string[];
+  skipped: string[];
+}
+
+/**
+ * Write one draft per finding. Fails loud before writing anything when two
+ * findings resolve to one path; skips (never overwrites) paths that already
+ * exist so re-runs cannot clobber human edits in the adoption queue.
+ */
 export function writeDrafts(
   findings: ProposalFinding[],
   meta: RunMeta,
   opts: { outDir: string; labeledBy: string },
-): string[] {
-  const written: string[] = [];
+): WriteResult {
+  const pending: { path: string; body: string; factId: string }[] = [];
   for (const f of findings) {
     const body = renderDraft(f, meta, opts.labeledBy);
     if (body === null) continue;
     const dir = join(resolve(opts.outDir), queueFor(f.subject));
-    mkdirSync(dir, { recursive: true });
-    const path = join(dir, draftFilename(f));
-    writeFileSync(path, body);
-    written.push(path);
+    pending.push({ path: join(dir, draftFilename(f)), body, factId: f.factId });
   }
-  return written;
+  const owners = new Map<string, string[]>();
+  for (const p of pending) owners.set(p.path, [...(owners.get(p.path) ?? []), p.factId]);
+  for (const [path, factIds] of owners) {
+    if (factIds.length > 1) {
+      throw new Error(
+        `dream-contradiction-proposals: path collision for ${path} ` +
+          `from fact ids ${factIds.join(", ")} — refusing to write; narrow the findings first`,
+      );
+    }
+  }
+  const written: string[] = [];
+  const skipped: string[] = [];
+  for (const p of pending) {
+    mkdirSync(dirname(p.path), { recursive: true });
+    if (existsSync(p.path)) {
+      console.error(`dream-contradiction-proposals: skipped existing ${p.path}`);
+      skipped.push(p.path);
+      continue;
+    }
+    writeFileSync(p.path, p.body);
+    written.push(p.path);
+  }
+  return { written, skipped };
 }
 
 function main(): void {
@@ -219,10 +267,10 @@ function main(): void {
   }
   const meta = docMeta(doc);
   const selected = selectFindings(doc, args.allow);
-  const written = writeDrafts(selected, meta, { outDir: args.outDir, labeledBy: args.labeledBy });
-  for (const p of written) console.error(`dream-contradiction-proposals: wrote ${p}`);
+  const result = writeDrafts(selected, meta, { outDir: args.outDir, labeledBy: args.labeledBy });
+  for (const p of result.written) console.error(`dream-contradiction-proposals: wrote ${p}`);
   console.error(
-    `dream-contradiction-proposals: findings=${doc.findings.length} selected=${selected.length} wrote=${written.length}`,
+    `dream-contradiction-proposals: findings=${doc.findings.length} selected=${selected.length} wrote=${result.written.length} skipped=${result.skipped.length}`,
   );
 }
 
