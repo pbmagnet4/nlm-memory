@@ -38,6 +38,7 @@ Dispositions per program spec §2: **STAMP** = carries `tenant_id NOT NULL`; **D
 | team_tokens | NEUTRAL | credential registry, keyed by team_id FK (created in Task 2) |
 | fact_embed_pending | DERIVE | via facts.id (ON DELETE CASCADE); retry bookkeeping for dropped fact vectors |
 | chunk_embed_pending | DERIVE | via sessions.id (ON DELETE CASCADE); retry bookkeeping for dropped session chunk vectors |
+| fact_promotions | STAMP | dream-pass nomination set (T1611); tenant-scoped like facts |
 | learners | STAMP | learner-evidence corpus (spec 2026-10-06) |
 | enrollments | STAMP | learner-evidence corpus (spec 2026-10-06) |
 | learning_events | STAMP | learner-evidence corpus (spec 2026-10-06) |
