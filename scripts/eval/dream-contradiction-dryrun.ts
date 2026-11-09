@@ -157,6 +157,7 @@ function renderMarkdown(opts: {
   seed: number;
   escalated: boolean;
   firstRunContradicted: number | null;
+  firstRunSampleSize: number | null;
   poolSize: number;
   report: ContradictionPassReport;
 }): string {
@@ -179,7 +180,7 @@ function renderMarkdown(opts: {
     `- Judge in-flight cap: ${MAX_IN_FLIGHT} (observed peak ${report.peakInFlight})`,
     ...(opts.escalated
       ? [
-          `- Escalation: the first run (sample 50) yielded only ${opts.firstRunContradicted} contradicted candidates (< ${MIN_CONTRADICTED}), so the sample was raised to ${ESCALATED_SAMPLE} per the package spec. This package lists the ${ESCALATED_SAMPLE}-sample run.`,
+          `- Escalation: the first run (sample ${opts.firstRunSampleSize}) yielded only ${opts.firstRunContradicted} contradicted candidates (< ${MIN_CONTRADICTED}), so the sample was raised to ${ESCALATED_SAMPLE} per the package spec. This package lists the ${ESCALATED_SAMPLE}-sample run.`,
         ]
       : []),
     "",
@@ -274,8 +275,9 @@ async function main(): Promise<void> {
   const tenantId = DEFAULT_TEAM_ID;
 
   const sb = sandboxCopy(args.dbPath);
-  const storage = SqliteStorage.create({ dbPath: sb.path, migrationsDir: MIGRATIONS_DIR });
+  let storage: SqliteStorage | undefined;
   try {
+    storage = SqliteStorage.create({ dbPath: sb.path, migrationsDir: MIGRATIONS_DIR });
     const llm = new ClassifierBox({ provider: "openai", model, baseUrl });
     const seed2 = args.seed + 1000;
     let { report, poolSize } = await runOnce({ storage, llm, model, tenantId, sampleSize: args.sample, seed: args.seed });
@@ -342,13 +344,14 @@ async function main(): Promise<void> {
         seed: finalSeed,
         escalated,
         firstRunContradicted,
+        firstRunSampleSize: escalated ? args.sample : null,
         poolSize,
         report,
       }),
     );
     console.error(`dream-contradiction-dryrun: wrote ${mdPath}\ndream-contradiction-dryrun: wrote ${jsonPath}`);
   } finally {
-    await storage.close();
+    await storage?.close();
     sb.cleanup();
   }
 }
