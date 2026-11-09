@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   appendFactSupersedence,
+  appendFactSupersedenceOrThrow,
   appendSupersedence,
   readSupersedenceLog,
 } from "../../../src/core/storage/supersedence-log.js";
@@ -154,6 +155,23 @@ describe("appendFactSupersedence", () => {
 
     expect(stderrSpy).toHaveBeenCalledOnce();
     expect(String(stderrSpy.mock.calls[0]?.[0] ?? "")).toContain("fact-supersedence-log");
+  });
+
+  it("OrThrow variant writes the same entry and rejects on write failure", async () => {
+    const logPath = join(tmp, "supersedence-log.jsonl");
+    await appendFactSupersedenceOrThrow(
+      DEFAULT_TEAM_ID,
+      { factId: "fact_t", reason: "stale", source: "dream-contradiction-pass" },
+      logPath,
+    );
+    const entry = JSON.parse(readFileSync(logPath, "utf8").trim()) as Record<string, unknown>;
+    expect(entry).toMatchObject({ kind: "fact", fact_id: "fact_t", source: "dream-contradiction-pass" });
+
+    const block = join(tmp, "blocking-file");
+    writeFileSync(block, "not a dir");
+    await expect(
+      appendFactSupersedenceOrThrow(DEFAULT_TEAM_ID, { factId: "fact_x" }, join(block, "log.jsonl")),
+    ).rejects.toThrow();
   });
 });
 

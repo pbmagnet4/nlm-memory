@@ -12,10 +12,11 @@
  *
  * Invariants:
  *  - The dream lane always runs without thinking tokens: every call passes
- *    `enable_thinking: false` in the chat options. Classifier-lane gateway
- *    clients forward that flag into their chat template (the same switch
- *    `ClassifierBox` sets at construction via `chat_template_kwargs`);
- *    clients that ignore it are unaffected.
+ *    `enable_thinking: false` in the chat options. Ollama maps it onto the
+ *    `think` request field; OpenAI-compatible gateway clients merge
+ *    `chat_template_kwargs.enable_thinking=false` over their constructed
+ *    body (the same switch `ClassifierBox` sets at construction); the
+ *    per-call flag wins over construction-time tuning in both.
  *  - Empty completion content is a FAILED CALL, never a verdict: the model
  *    answered nothing, which is not the same as "unverifiable". It throws
  *    `DreamJudgeError` so the caller can retry or leave the fact alone.
@@ -107,7 +108,7 @@ const VERDICTS: ReadonlySet<string> = new Set<DreamVerdict>(["still-true", "cont
 
 /** Strict parse of the model reply. Returns null on anything but a valid verdict. */
 function parseDreamJudgeReply(raw: string): { verdict: DreamVerdict; evidenceQuote: string } | null {
-  const text = stripJsonFences(raw.replace(/<|im_start|>[\s\S]*?<\/think>/g, "").trim());
+  const text = stripJsonFences(raw.replace(/<think>[\s\S]*?<\/think>/g, "").trim());
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
   if (start < 0 || end <= start) return null;

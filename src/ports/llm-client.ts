@@ -101,5 +101,5 @@ export interface LLMClient {
    * transport or HTTP failure. Optional: clients without a chat lane (embedder-only
    * clients) omit it.
    */
-  complete?(system: string, user: string, opts?: { signal?: AbortSignal; maxTokens?: number }): Promise<string>;
+  complete?(system: string, user: string, opts?: { signal?: AbortSignal; maxTokens?: number; enable_thinking?: boolean }): Promise<string>;
 }

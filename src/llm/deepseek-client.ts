@@ -266,10 +266,22 @@ export class DeepSeekClient implements LLMClient {
     }
   }
 
-  async complete(system: string, user: string, opts: { signal?: AbortSignal; maxTokens?: number } = {}): Promise<string> {
+  async complete(system: string, user: string, opts: { signal?: AbortSignal; maxTokens?: number; enable_thinking?: boolean } = {}): Promise<string> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.classifyTimeoutMs);
     opts.signal?.addEventListener("abort", () => controller.abort(), { once: true });
+    // Per-call enable_thinking:false merges the gateway thinking-off switch
+    // over construction-time extraBody (the dream lane passes false
+    // explicitly); any other value leaves the constructed body untouched.
+    const thinkOverride =
+      opts.enable_thinking === false
+        ? {
+            chat_template_kwargs: {
+              ...((this.extraBody["chat_template_kwargs"] as Record<string, unknown> | undefined) ?? {}),
+              enable_thinking: false,
+            },
+          }
+        : {};
     try {
       const res = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
         method: "POST",
@@ -282,6 +294,7 @@ export class DeepSeekClient implements LLMClient {
           ],
           ...this.responseFormatField(),
           ...this.extraBody,
+          ...thinkOverride,
           temperature: 0,
           max_tokens: opts.maxTokens ?? this.classifyMaxTokens,
           stream: false,

@@ -594,9 +594,11 @@ export class ScanScheduler {
     // long sample never delays discovery/classification of new transcripts.
     for (const pass of this.dreamPasses) {
       if (now - (this.dreamPassLastRun.get(pass.name) ?? 0) < pass.intervalMs) continue;
-      this.dreamPassLastRun.set(pass.name, now);
       try {
         await pass.run();
+        // Stamp only on success: a throwing pass must retry on the next tick
+        // instead of consuming its whole interval slot.
+        this.dreamPassLastRun.set(pass.name, Date.now());
       } catch (e) {
         this.opts.logger(
           `[scheduler] dream pass ${pass.name} failed: ${e instanceof Error ? e.message : String(e)}`,
