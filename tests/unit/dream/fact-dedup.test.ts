@@ -144,6 +144,31 @@ describe("fact-dedup scoring core", () => {
       expect(props).toHaveLength(1);
       expect(props[0]!.cls).toBe("restatement");
     });
+
+    it("added alphanumeric spec token means a distinct facet — no merge", () => {
+      const props = proposeFactMerges([
+        fact({ id: "s1", value: "mac pro 16gb" }),
+        fact({ id: "s2", value: "mac pro 16gb 512gb" }),
+      ]);
+      expect(props).toEqual([]);
+    });
+
+    it("added version-like token blocks the restatement", () => {
+      const props = proposeFactMerges([
+        fact({ id: "q1", value: "api v2" }),
+        fact({ id: "q2", value: "api v2 plus v3" }),
+      ]);
+      expect(props).toEqual([]);
+    });
+
+    it("repeated spec token does not block the restatement", () => {
+      const props = proposeFactMerges([
+        fact({ id: "r1", value: "mac pro 16gb" }),
+        fact({ id: "r2", value: "mac pro 16gb tower" }),
+      ]);
+      expect(props).toHaveLength(1);
+      expect(props[0]!.cls).toBe("restatement");
+    });
   });
 
   describe("distinct facets must NOT merge", () => {
@@ -271,6 +296,22 @@ describe("fact-dedup scoring core", () => {
       }
       const ids = new Set(props.map((p) => p.winnerId));
       for (const p of props) expect(ids.has(p.loserId)).toBe(false);
+    });
+
+    it("graded corroboration elects one hub — no transitive chains", () => {
+      // Repro: fold-equal triple, corroboration rising with id order. The old
+      // pair scan emitted {winner:b,loser:a} then {winner:c,loser:b}, leaving
+      // a pointing at the superseded b. One hub (c) must win both.
+      const props = proposeFactMerges([
+        fact({ id: "a", value: "postgres 16", corroborationCount: 1 }),
+        fact({ id: "b", value: "Postgres 16.", corroborationCount: 5 }),
+        fact({ id: "c", value: "postgres-16", corroborationCount: 10 }),
+      ]);
+      expect(props).toHaveLength(2);
+      expect(props.every((p) => p.winnerId === "c" && p.cls === "exact")).toBe(true);
+      expect(props.map((p) => p.loserId).sort()).toEqual(["a", "b"]);
+      const winners = new Set(props.map((p) => p.winnerId));
+      for (const p of props) expect(winners.has(p.loserId)).toBe(false);
     });
 
     it("exact proposals are emitted before restatements in a group", () => {
