@@ -11,6 +11,7 @@ import {
   tokenRecall,
   WIKI_BLEND,
 } from "../../../scripts/eval/lib/wiki-live-scoring.js";
+import { parseArgs } from "../../../scripts/eval/wiki-live-ablation.js";
 
 describe("wiki-live-scoring", () => {
   it("declares the single fixed 50/50 blend", () => {
@@ -66,5 +67,19 @@ describe("wiki-live-scoring", () => {
     expect(recallAtK(["s1", "s2"], ["s1", "s2"])).toBe(1);
     expect(recallAtK(["s1", "s2"], ["s9"])).toBe(0);
     expect(recallAtK([], ["s1"])).toBe(0);
+  });
+});
+
+describe("wiki-live-ablation parseArgs", () => {
+  it("clamps depth up to the limit so the wiki arm pool is never shorter than top-K", () => {
+    expect(parseArgs(["--limit=10", "--depth=5"]).depth).toBe(10);
+    expect(parseArgs(["--limit=10", "--depth=5"]).limit).toBe(10);
+  });
+
+  it("leaves depth above the limit untouched and keeps defaults", () => {
+    expect(parseArgs(["--limit=10", "--depth=30"]).depth).toBe(30);
+    expect(parseArgs([])).toEqual(
+      expect.objectContaining({ limit: 10, depth: 30 }),
+    );
   });
 });

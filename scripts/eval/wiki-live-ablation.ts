@@ -39,7 +39,7 @@
  * do NOT commit these; commit only this script, the scoring lib, and tests).
  */
 
-import { copyFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -186,18 +186,23 @@ interface CliArgs {
   depth: number;
 }
 
-function parseArgs(argv: string[]): CliArgs {
+export function parseArgs(argv: string[]): CliArgs {
   const get = (k: string): string | undefined => {
     const hit = argv.find((a) => a.startsWith(`--${k}=`));
     return hit ? hit.slice(k.length + 3) : undefined;
   };
-  const limit = Number.parseInt(get("limit") ?? "10", 10);
-  const depth = Number.parseInt(get("depth") ?? "30", 10);
+  const limitRaw = Number.parseInt(get("limit") ?? "10", 10);
+  const depthRaw = Number.parseInt(get("depth") ?? "30", 10);
+  const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? limitRaw : 10;
+  const depthParsed = Number.isInteger(depthRaw) && depthRaw > 0 ? depthRaw : 30;
   return {
     dbPath: get("db") ?? join(homedir(), ".nlm", "canonical.sqlite"),
     outDir: get("out-dir") ?? join(process.cwd(), "reports"),
-    limit: Number.isInteger(limit) && limit > 0 ? limit : 10,
-    depth: Number.isInteger(depth) && depth > 0 ? depth : 30,
+    limit,
+    // The wiki arm re-ranks the top-depth pool down to top-K: a depth
+    // below the limit would structurally shorten the wiki arm's pool and
+    // bias recall toward search-alone. Clamp depth up to the limit.
+    depth: Math.max(depthParsed, limit),
   };
 }
 
@@ -260,7 +265,6 @@ export async function runWikiLiveAblation(args: CliArgs): Promise<WikiLiveAblati
       const pageTokens = new Map<string, Set<string>>();
       let wikiBytes = 0;
       let sourceBytes = 0;
-      let pagesBuilt = 0;
       const allMemberIds: string[] = [];
       for (const w of workstreams) {
         const memberIds = await storage.sessions.listSessionIdsByWorkstreams(DEFAULT_TEAM_ID, [w.id]);
@@ -271,7 +275,6 @@ export async function runWikiLiveAblation(args: CliArgs): Promise<WikiLiveAblati
         allMemberIds.push(...memberIds);
         const page = buildWorkstreamPage({ workstream: w, sessions, facts });
         if (!page) continue;
-        pagesBuilt += 1;
         wikiBytes += page.content.length;
         pageTokens.set(w.id, tokenize(page.content));
       }
@@ -400,6 +403,7 @@ if (isMain) {
   const args = parseArgs(process.argv.slice(2));
   runWikiLiveAblation(args).then(
     (report) => {
+      mkdirSync(args.outDir, { recursive: true });
       writeFileSync(join(args.outDir, "wiki-live-ablation.json"), JSON.stringify(report, null, 2));
       writeFileSync(join(args.outDir, "wiki-live-ablation.md"), renderMarkdown(report));
       console.log(
