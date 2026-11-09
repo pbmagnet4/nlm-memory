@@ -27,7 +27,7 @@
  *   npx tsx scripts/eval/dream-contradiction-proposals.ts
  *     --input=reports/dream-contradiction-dryrun.json
  *     --allow='["fact_25e09a4d", "fact_fea4f038", "fact_b80fda6f"]'
- *     --labeled-by="Edward Chalupa (2026-11-09)"
+ *     --labeled-by="<who labeled the TPs> (<date>)"   (required, no default)
  *     [--out-dir=proposals]
  *
  * Writes <out-dir>/<queue>/<subject>--<shortid>.md, one per allowed
@@ -88,10 +88,14 @@ export function parseArgs(argv: string[]): CliArgs {
     const hit = argv.find((a) => a.startsWith(`--${k}=`));
     return hit ? hit.slice(k.length + 3) : undefined;
   };
+  // Attribution is never defaulted: a draft must name whoever actually
+  // labeled its TP, so a missing or blank labeler is a usage error.
+  const labeledBy = (get("labeled-by") ?? "").trim();
+  if (labeledBy === "") throw new Error("dream-contradiction-proposals: --labeled-by=<labeler> is required (no default)");
   return {
     input: get("input") ?? join(process.cwd(), "reports", "dream-contradiction-dryrun.json"),
     allow: parseAllow(get("allow") ?? "[]"),
-    labeledBy: get("labeled-by") ?? "",
+    labeledBy,
     outDir: get("out-dir") ?? join(process.cwd(), "proposals"),
   };
 }
@@ -172,6 +176,7 @@ function hasGrounding(f: ProposalFinding): boolean {
  * missing — the caller skips such findings instead of padding them.
  */
 export function renderDraft(f: ProposalFinding, meta: RunMeta, labeledBy: string): string | null {
+  if (labeledBy.trim() === "") throw new Error("renderDraft: a non-blank labeler is required for the TP label");
   if (f.verdict !== "contradicted" || !hasGrounding(f)) return null;
   const factLine = `\`${f.subject} ${f.predicate}: ${f.value}\``;
   const lines = [
@@ -182,7 +187,7 @@ export function renderDraft(f: ProposalFinding, meta: RunMeta, labeledBy: string
     `- Fact: ${factLine} (id \`${f.factId}\`)`,
     `- Conflict: "${f.evidenceQuote}" (session \`${f.sourceSessionId}\`)`,
     `- Judge: model \`${f.model || meta.model}\` — dry-run sample ${meta.sampleSize}, seed ${meta.seed}, generated ${meta.generatedAt}`,
-    `- Human label: TP (labeled by ${labeledBy || "unknown"})`,
+    `- Human label: TP (labeled by ${labeledBy.trim()})`,
     "",
     "Guidance: adopt — if the quoted transcript evidence holds on re-read,",
     "supersede or retire the fact with the source session as provenance;",
@@ -259,7 +264,13 @@ export function writeDrafts(
 }
 
 function main(): void {
-  const args = parseArgs(process.argv.slice(2));
+  let args: CliArgs;
+  try {
+    args = parseArgs(process.argv.slice(2));
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exit(2);
+  }
   const doc = JSON.parse(readFileSync(args.input, "utf-8")) as FindingsDoc;
   if (!Array.isArray(doc.findings)) {
     console.error("dream-contradiction-proposals: no findings array in input");

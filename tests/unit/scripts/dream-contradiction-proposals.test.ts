@@ -46,20 +46,24 @@ describe("parseArgs", () => {
     const args = parseArgs([
       "--input=reports/dream-contradiction-dryrun.json",
       "--allow=[\"fact_aaaa1111\"]",
-      "--labeled-by=Edward Chalupa (2026-11-09)",
+      "--labeled-by=Reviewer A (2026-11-09)",
       "--out-dir=proposals",
     ]);
     expect(args.input).toBe("reports/dream-contradiction-dryrun.json");
     expect(args.allow).toEqual(["fact_aaaa1111"]);
-    expect(args.labeledBy).toBe("Edward Chalupa (2026-11-09)");
+    expect(args.labeledBy).toBe("Reviewer A (2026-11-09)");
     expect(args.outDir).toBe("proposals");
   });
 
-  it("defaults out-dir and labeled-by, empty allow renders nothing", () => {
-    const args = parseArgs(["--input=r.json"]);
+  it("defaults out-dir, empty allow renders nothing", () => {
+    const args = parseArgs(["--input=r.json", "--labeled-by=Reviewer A"]);
     expect(args.allow).toEqual([]);
-    expect(args.labeledBy).toBe("");
     expect(args.outDir).toBe(`${process.cwd()}/proposals`);
+  });
+
+  it("refuses to run without an explicit labeler: no default attribution", () => {
+    expect(() => parseArgs(["--input=r.json"])).toThrow(/--labeled-by/);
+    expect(() => parseArgs(["--input=r.json", "--labeled-by=  "])).toThrow(/--labeled-by/);
   });
 });
 
@@ -134,7 +138,7 @@ describe("draftFilename", () => {
 
 describe("renderDraft", () => {
   it("renders fact, evidence, provenance, human label, and guidance", () => {
-    const body = renderDraft(finding(), META, "Edward Chalupa (2026-11-09)")!;
+    const body = renderDraft(finding(), META, "Reviewer A (2026-11-09)")!;
     expect(body).toContain("# Proposed:");
     expect(body).toContain("synthetic-widget");
     expect(body).toContain("fact_aaaa1111-0000-4000-8000-000000000000");
@@ -143,7 +147,7 @@ describe("renderDraft", () => {
     expect(body).toContain("synthetic-judge-v1");
     expect(body).toContain("500");
     expect(body).toContain("TP");
-    expect(body).toContain("Edward Chalupa (2026-11-09)");
+    expect(body).toContain("Reviewer A (2026-11-09)");
     expect(body.toLowerCase()).toContain("adopt");
     expect(body.toLowerCase()).toContain("drop");
   });
@@ -152,6 +156,11 @@ describe("renderDraft", () => {
     expect(renderDraft(finding({ evidenceQuote: "" }), META, "x")).toBeNull();
     expect(renderDraft(finding({ sourceSessionId: "" }), META, "x")).toBeNull();
     expect(renderDraft(finding({ value: "" }), META, "x")).toBeNull();
+  });
+
+  it("refuses a blank labeler instead of rendering an unattributed TP label", () => {
+    expect(() => renderDraft(finding(), META, "")).toThrow(/labeler/);
+    expect(() => renderDraft(finding(), META, "   ")).toThrow(/labeler/);
   });
 });
 
@@ -217,7 +226,7 @@ describe("writeDrafts", () => {
     const outDir = mkdtempSync(join(tmpdir(), "proposals-fresh-"));
     const result = writeDrafts([finding()], META, {
       outDir,
-      labeledBy: "Edward Chalupa (2026-11-09)",
+      labeledBy: "Reviewer A (2026-11-09)",
     });
     expect(result.skipped).toEqual([]);
     expect(result.written).toHaveLength(1);
