@@ -91,11 +91,13 @@ const EVIDENCE_MAX_CHARS = 300;
 export const DREAM_JUDGE_SYSTEM_PROMPT = `You audit a stored memory fact against a source transcript excerpt. Decide exactly one verdict:
 
 still-true: the excerpt supports the fact.
-contradicted: the excerpt states the opposite, or a newer statement in it supersedes the fact.
+contradicted: the excerpt states the opposite — it gives the incompatible counter-value itself — or a newer statement in it supersedes the fact.
 unverifiable: the excerpt neither supports nor contradicts the fact (wrong scope, missing context, or it does not mention the fact's subject).
 
 Rules:
 - Judge only from the excerpt. Your "evidence" MUST be a short verbatim quote copied from the excerpt, or an empty string for unverifiable when nothing is relevant.
+- "contradicted" needs a DIRECT negation: the evidence quote must state the incompatible counter-value, not merely differ in framing, rounding, or source. Approximate numeric agreement is corroboration, never contradiction: component counts that sum to the fact's total, percentages within a point, and "~"-qualified counts that match are still-true (or unverifiable when unrelated).
+- A missing tool, client, or integration never contradicts an API or endpoint existence claim, and a missing API never contradicts a tool claim: different layers, compatible claims. That is unverifiable (or still-true when the excerpt otherwise supports the fact), never contradicted.
 - Doubt is "unverifiable", never "still-true".
 
 Reply with one JSON object and nothing else:
@@ -105,6 +107,76 @@ Reply with one JSON object and nothing else:
  *  it as material to judge, never as instructions. */
 export function buildDreamJudgeUserPrompt(factText: string, transcriptExcerpt: string): string {
   return `FACT:\n${factText.trim()}\n\nTRANSCRIPT EXCERPT:\n"""\n${transcriptExcerpt.trim()}\n"""`;
+}
+
+/** API-layer markers vs tool-layer markers for the cross-layer rule below.
+ *  Deliberately narrow: ambiguous words ("view", "get") stay out so only an
+ *  explicit layer term on each side triggers the downgrade. */
+const API_LAYER_RE = /\b(api|endpoint|rest|http|post|route)\b/i;
+const TOOL_LAYER_RE = /\b(mcp|tools?|sdk|integration|client)\b/i;
+
+/** Integers that look like years are never counts — skip them in agreement. */
+function isYearLike(n: number): boolean {
+  return Number.isInteger(n) && n >= 1800 && n <= 2200;
+}
+
+function extractCountables(text: string): number[] {
+  const out: number[] = [];
+  for (const m of text.matchAll(/-?\d+(?:\.\d+)?/g)) {
+    const n = Number(m[0]);
+    if (Number.isFinite(n) && !isYearLike(n)) out.push(n);
+  }
+  return out;
+}
+
+/** Rounding noise: one point for small counts/percentages, 1% above that. */
+function agreeTol(n: number): number {
+  return Math.max(1, Math.abs(n) * 0.01);
+}
+
+/** Comparison candidates for one side: its numbers, plus their total when
+ *  the text splits a count into components ("52 tracked + 37 untracked"). */
+function sideCandidates(text: string, nums: number[]): number[] {
+  if (nums.length >= 2 && text.includes("+")) return [...nums, nums.reduce((a, b) => a + b, 0)];
+  return nums;
+}
+
+/** True when any fact/evidence number pair agrees within rounding noise —
+ *  approximate numeric agreement, which is corroboration per the prompt. */
+function numbersRoughlyAgree(factText: string, evidenceQuote: string): boolean {
+  const factNums = sideCandidates(factText, extractCountables(factText));
+  const evNums = sideCandidates(evidenceQuote, extractCountables(evidenceQuote));
+  return factNums.some((n) => evNums.some((m) => Math.abs(n - m) <= agreeTol(n)));
+}
+
+function mentionsOnly(text: string, re: RegExp, other: RegExp): boolean {
+  return re.test(text) && !other.test(text);
+}
+
+/** True when the fact claims on one layer (API/endpoint existence) and the
+ *  evidence answers on the other (tool/client presence or absence): different
+ *  layers, compatible claims — never a contradiction, in either direction. */
+function isCrossLayerClaim(factText: string, evidenceQuote: string): boolean {
+  return (
+    (mentionsOnly(factText, API_LAYER_RE, TOOL_LAYER_RE) &&
+      mentionsOnly(evidenceQuote, TOOL_LAYER_RE, API_LAYER_RE)) ||
+    (mentionsOnly(factText, TOOL_LAYER_RE, API_LAYER_RE) &&
+      mentionsOnly(evidenceQuote, API_LAYER_RE, TOOL_LAYER_RE))
+  );
+}
+
+/**
+ * Deterministic backstop for a "contradicted" verdict (precision gate: two
+ * compatible facts were retired as contradicted). Returns false when the
+ * evidence quote cannot directly negate the fact — approximate numeric
+ * agreement, or a cross-layer tool/API claim — so the caller must downgrade
+ * to unverifiable, never retire. Anything else returns true: the model's
+ * verdict stands, subject to the existing empty/off-excerpt evidence guards.
+ */
+export function contradictedClaimStands(factText: string, evidenceQuote: string): boolean {
+  if (numbersRoughlyAgree(factText, evidenceQuote)) return false;
+  if (isCrossLayerClaim(factText, evidenceQuote)) return false;
+  return true;
 }
 
 const VERDICTS: ReadonlySet<string> = new Set<DreamVerdict>(["still-true", "contradicted", "unverifiable"]);
