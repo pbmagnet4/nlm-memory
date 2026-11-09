@@ -26,6 +26,7 @@ import { DEFAULT_CLASSIFY_TIMEOUT_MS } from "@core/classifier/tuning.js";
 import type { SessionChunk, TranscriptAdapter } from "@ports/transcript-adapter.js";
 import { deriveSubagentMeta } from "@core/adapters/claude-code.js";
 import { scanTranscriptDerivables } from "@core/ingest/transcript-derivables.js";
+import { registerContradictionPass, type DreamPassSpec } from "@core/dream/contradiction-pass.js";
 import type { SignalStore } from "@ports/signal-store.js";
 import type { CodeExemplarStore } from "@ports/code-exemplar-store.js";
 import type { CodeEmbedder } from "@ports/code-embedder.js";
@@ -196,6 +197,9 @@ export class ScanScheduler {
     readonly ingestGate: IngestGate | null;
   };
   private readonly aliasToLabel: ReadonlyMap<string, string>;
+  /** Periodic background passes (dream lane), run from the tick tail. */
+  private readonly dreamPasses: DreamPassSpec[] = [];
+  private readonly dreamPassLastRun = new Map<string, number>();
   private stopped = true;
   /** Hash of the normalized text last classified per source; a touch that adds no content is not re-classified. */
   private readonly classifiedHash = new Map<string, string>();
@@ -225,6 +229,29 @@ export class ScanScheduler {
       logger: opts.logger ?? ((msg) => console.error(msg)),
     };
     this.aliasToLabel = loadAliasToLabel();
+
+    // T1609 contradiction dream pass. Policy lives in the pass module: it
+    // registers only when NLM_DREAM_CONTRADICTION_PASS is set, and stays
+    // dry-run unless NLM_DREAM_CONTRADICTION_APPLY is set too. The PG
+    // backend passes no sqlite handle and the pass self-skips.
+    registerContradictionPass({
+      host: this,
+      sqliteDb: opts.store instanceof PgSessionStore ? null : opts.store.rawDb(),
+      factStore: this.opts.factStore,
+      transcripts: this.opts.store,
+      llm: this.opts.classifier,
+      tenantId: this.opts.tenantId,
+      logger: this.opts.logger,
+    });
+  }
+
+  /**
+   * Register a periodic background pass (e.g. the contradiction dream pass).
+   * Runs at the end of a tick at most once per `pass.intervalMs`; a failing
+   * pass is logged and never breaks ingest.
+   */
+  registerDreamPass(pass: DreamPassSpec): void {
+    this.dreamPasses.push(pass);
   }
 
   /** Returns the verdict when the live gate says skip; null means classify. */
@@ -533,6 +560,20 @@ export class ScanScheduler {
       } catch (e) {
         this.opts.logger(
           `[scheduler] exemplar bucket cap failed: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+
+    // Dream lane: rate-limited background passes, after ingest work so a
+    // long sample never delays discovery/classification of new transcripts.
+    for (const pass of this.dreamPasses) {
+      if (now - (this.dreamPassLastRun.get(pass.name) ?? 0) < pass.intervalMs) continue;
+      this.dreamPassLastRun.set(pass.name, now);
+      try {
+        await pass.run();
+      } catch (e) {
+        this.opts.logger(
+          `[scheduler] dream pass ${pass.name} failed: ${e instanceof Error ? e.message : String(e)}`,
         );
       }
     }
