@@ -1,5 +1,15 @@
 # nlm-memory CHANGELOG
 
+## 2026-11-09 - Dreaming passes shipped, precision-gated triage-only (T1607–T1629)
+
+**Changes:** Six offline scheduler passes landed behind `NLM_DREAM_*` flags (dry-run default): eval harness T1608, contradiction T1609, dedup T1610, promotion T1611, gated wiki spike T1612, settings UI+API T1613 (POST live). Judge fixes: direct-negation criterion + backstop tightening + evidence-side context filter (T1628). Contradiction→proposals bridge T1627 with 3 seed drafts staged uncommitted; `--labeled-by` since made required (T1632). Sandbox-cleanup fix on both dry-run scripts. Judge: gemma-4 12b QAT MTP oQ4e via MSM3 oMLX through LiteLLM proxy, UI-configurable. All waves TDD'd, Muse-reviewed, gate-green (load flakes rerun in isolation, never discounted on dream files).
+
+**Decisions:** Human-labeled 500-sample precision 3/6 = 50% vs 90% gate → auto-apply stays OFF, pass is triage-only; residual FP classes parked. Dedup is not a populate lever (simulated full-corpus apply changes bindings 0; T1629 killed) — bottleneck is the 97% subject miss rate. Promotion→session-close deferred for absent/sparse signal (T1631 backlog). #392 explicit-pull flip untouched; passes off the write path.
+
+**State:** Main holds d781a71 (judge fix), 8f1fde0 (backstop), 479eec1 (echo filter), c6703dc (ablation), 8bcd3f4 (ablation fixes), c2030186 + 82e3dec (bridge + gate fixes), e10dd48 (sandbox). Tasks T1607–T1614, T1627–T1629 done. Remaining: seed-draft adoption in the vault flow; NL-paraphrase wiki arm before any productization.
+
+**Next:** T1631 (promotion nightly → re-measure → integrate); populate-miss-rate project as separate scope.
+
 ## 2026-11-03 — Honor active Codex home during current-session normalization (T1456)
 
 Fixed pinned current-session lookup for isolated Codex client profiles: use the invoking CODEX_HOME sessions directory for this command while preserving registered daemon sources. Added real fixture discovery, exact-ID refusal, and registered-source fallback tests. The actual MetaZoo session normalizes with exact-session-id selection; no transcript classifier call is needed for verification.
@@ -76,13 +86,4 @@ Fixed pinned current-session lookup for isolated Codex client profiles: use the 
 
 **Next:** Independently label corpus cases and freeze acceptance thresholds before broader inference or automatic property selection. Review a backfill preview before applying it; repair previously incorrect supersession separately.
 
-## 2026-10-21 - Retrieval release published and active as 0.21.20 (T939)
-
-**Changes:** Published the reviewed T803/T806 retrieval work and T937 compact recall through GitHub/npm, then installed the SHA-512-verified 0.21.20 artifact in the managed runtime and restarted the daemon. Fixed a clean-runner test assumption caught by CI (0.21.18 stopped before npm; 0.21.19 passed). A live transcript canary then reproduced a TOON encoder/decoder mismatch for bracketed chat markers; 0.21.20 validates decodability and falls back to JSON under the same response budget. Added full Unicode page-reconstruction coverage. Generated bundle diffs were version-only.
-
-**Results:** Local build/typecheck/packed-plugin contract and 3,290 tests pass (three opt-in skips); final GitHub Release and PostgreSQL-backed CI both pass. Independent public-source reviews found no blocker; low CI-test leads were checked and rejected, formatter review informational only. All 37 live MCP assertions pass, and this conversation's existing connector returns compact hits/cursors. Schema is 43; corpus counts increased normally through activation. Full evidence and measurement limits: `docs/memory-retrieval-results.md`.
-
-**State:** npm latest and the active daemon are 0.21.20. Consistent pre-migration SQLite/config backup verified; original 0.21.17 and compatible 0.21.19 installations preserved for rollback. Provider configuration unchanged. Scientific promotion remains inconclusive as recorded in T806; no optional ranking/model feature was enabled.
-
-**Next:** Routine operation. Existing T810 hydration advisory and T527/T679 remain separate follow-ups.
 

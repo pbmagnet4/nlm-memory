@@ -6,6 +6,16 @@
 
 **State:** landed and deployed as 0.21.21-t1177.1. Parked: scan-once `statSource` unguarded (busy hermes DB delays that adapter's tick); drift-check timer still writes alert-state separately.
 
+## 2026-10-21 - Retrieval release published and active as 0.21.20 (T939)
+
+**Changes:** Published the reviewed T803/T806 retrieval work and T937 compact recall through GitHub/npm, then installed the SHA-512-verified 0.21.20 artifact in the managed runtime and restarted the daemon. Fixed a clean-runner test assumption caught by CI (0.21.18 stopped before npm; 0.21.19 passed). A live transcript canary then reproduced a TOON encoder/decoder mismatch for bracketed chat markers; 0.21.20 validates decodability and falls back to JSON under the same response budget. Added full Unicode page-reconstruction coverage. Generated bundle diffs were version-only.
+
+**Results:** Local build/typecheck/packed-plugin contract and 3,290 tests pass (three opt-in skips); final GitHub Release and PostgreSQL-backed CI both pass. Independent public-source reviews found no blocker; low CI-test leads were checked and rejected, formatter review informational only. All 37 live MCP assertions pass, and this conversation's existing connector returns compact hits/cursors. Schema is 43; corpus counts increased normally through activation. Full evidence and measurement limits: `docs/memory-retrieval-results.md`.
+
+**State:** npm latest and the active daemon are 0.21.20. Consistent pre-migration SQLite/config backup verified; original 0.21.17 and compatible 0.21.19 installations preserved for rollback. Provider configuration unchanged. Scientific promotion remains inconclusive as recorded in T806; no optional ranking/model feature was enabled.
+
+**Next:** Routine operation. Existing T810 hydration advisory and T527/T679 remain separate follow-ups.
+
 ## 2026-10-16 - Compact structured memory context and source expansion (T803)
 
 **Changes:** Added `recall_context` with current fact triples, source provenance, decisions/open questions, exact original passages, a bounded response, and targeted expansion references. Exact structured lookups skip session search and embeddings; default lanes preserve hybrid facts and keyword sessions without query-time generative calls. `get_session` now defaults to compact context and offers explicit versioned transcript pages. Retained semantic chunk positions, fixed lexical fact retrieval beyond the newest 500 rows (SQLite FTS5 / PG GIN), added a covering corroboration index, minified JSON, and regenerated hook guidance/bundles. No stored facts were rewritten or retired.
