@@ -29,6 +29,13 @@ import {
   type DedupPassSpec,
 } from "../../src/core/dream/dedup-pass.js";
 import { ScanScheduler } from "../../src/core/scheduler/scheduler.js";
+import {
+  getDreamSettings,
+  lastRuns,
+  reseedDreamSettings,
+  resetLastRuns,
+  updateDreamSettings,
+} from "../../src/core/dream/settings.js";
 import type { LLMClient } from "../../src/ports/llm-client.js";
 import type { Fact } from "../../src/shared/types.js";
 import { makeFact } from "../fixtures/facts.js";
@@ -259,40 +266,52 @@ describe("dream dedup pass", () => {
     });
   });
 
-  it("registerDedupPass is a no-op unless the pass env flag is set", () => {
-    const passes: DedupPassSpec[] = [];
-    const host = { registerDreamPass: (p: DedupPassSpec) => passes.push(p) };
-    registerDedupPass({
-      host,
-      sqliteDb: sessions.rawDb(),
-      factStore: facts,
-      env: {},
-    });
-    expect(passes).toHaveLength(0);
+  it("registerDedupPass registers a live pass: disabled it runs nothing, edits apply with no re-registration", async () => {
+    const settingsBefore = getDreamSettings();
+    try {
+      reseedDreamSettings({});
+      resetLastRuns();
+      const passes: DedupPassSpec[] = [];
+      const host = { registerDreamPass: (p: DedupPassSpec) => passes.push(p) };
+      registerDedupPass({
+        host,
+        sqliteDb: sessions.rawDb(),
+        factStore: facts,
+      });
+      expect(passes).toHaveLength(1);
+      expect(passes[0]!.name).toBe("dream-dedup");
 
-    registerDedupPass({
-      host,
-      sqliteDb: sessions.rawDb(),
-      factStore: facts,
-      env: { NLM_DREAM_DEDUP_PASS: "1" },
-    });
-    expect(passes).toHaveLength(1);
-    expect(passes[0]!.name).toBe("dream-dedup");
+      // Disabled: the run returns early — no proposals applied, no registry entry.
+      await passes[0]!.run();
+      expect(lastRuns()).toEqual({ contradiction: null, dedup: null });
+      expect(factState(dbPath, "d_lose")).toEqual({ present: true, supersededBy: null });
+
+      // Enabled after registration (the POST path): the same spec runs live,
+      // the cadence getter reschedules, and apply mode supersedes.
+      updateDreamSettings({ dedup: { enabled: true, applyMode: "apply", cadenceMs: 54321 } });
+      expect(passes[0]!.intervalMs).toBe(54321);
+      await passes[0]!.run();
+      expect(factState(dbPath, "d_lose")).toEqual({ present: true, supersededBy: "d_win" });
+      expect(lastRuns().dedup).not.toBeNull();
+    } finally {
+      updateDreamSettings(settingsBefore);
+      resetLastRuns();
+    }
   });
 
   it("scheduler wiring: off by default writes nothing; enabled runs dry-run by default, apply on request", async () => {
     const envKeys = [
       "NLM_INTEGRITY_CACHE",
       "NLM_SUPERSEDENCE_LOG",
-      "NLM_DREAM_DEDUP_PASS",
-      "NLM_DREAM_DEDUP_APPLY",
     ] as const;
     const envBackup: Record<string, string | undefined> = {};
     for (const k of envKeys) envBackup[k] = process.env[k];
+    const settingsBefore = getDreamSettings();
     try {
       // Default: no flags, the tick touches no facts.
       process.env["NLM_INTEGRITY_CACHE"] = join(tmp, "integrity-check.json");
       process.env["NLM_SUPERSEDENCE_LOG"] = join(tmp, "sched-supersedence-log.jsonl");
+      reseedDreamSettings({});
       const quiet = new ScanScheduler({
         store: sessions,
         adapters: [],
@@ -304,7 +323,7 @@ describe("dream dedup pass", () => {
       expect(factState(dbPath, "d_lose")).toEqual({ present: true, supersededBy: null });
 
       // Enabled for scheduling, apply still off: the pass reports, writes nothing.
-      process.env["NLM_DREAM_DEDUP_PASS"] = "1";
+      updateDreamSettings({ dedup: { enabled: true } });
       const lines: string[] = [];
       const scheduler = new ScanScheduler({
         store: sessions,
@@ -323,7 +342,7 @@ describe("dream dedup pass", () => {
 
       // Apply flagged on top of the pass flag: the scheduled run supersedes,
       // with the reason in the audit log.
-      process.env["NLM_DREAM_DEDUP_APPLY"] = "1";
+      updateDreamSettings({ dedup: { applyMode: "apply" } });
       const applyLines: string[] = [];
       const applying = new ScanScheduler({
         store: sessions,
@@ -345,6 +364,8 @@ describe("dream dedup pass", () => {
         if (envBackup[k] === undefined) delete process.env[k];
         else process.env[k] = envBackup[k]!;
       }
+      updateDreamSettings(settingsBefore);
+      resetLastRuns();
     }
   });
 });

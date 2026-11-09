@@ -44,9 +44,8 @@ import { judgeDreamFact, type DreamVerdict } from "./judge.js";
 import {
   DEFAULT_CONTRADICTION_SAMPLE_SIZE,
   DEFAULT_MAX_IN_FLIGHT,
-  dreamSettingsFromEnv,
+  getDreamSettings,
   recordLastRun,
-  type DreamSettings,
 } from "./settings.js";
 
 /** `source` stamped on the fact-supersedence audit entry. */
@@ -362,47 +361,28 @@ export interface ContradictionPassRegistration {
   readonly llm: LLMClient;
   readonly tenantId?: string;
   /**
-   * Env source used to seed the settings snapshot consulted at
-   * registration; default — the settings module resolves it from
-   * process.env through its own seed rules, this module never reads
-   * process.env itself. Injectable for tests.
+   * Explicit model override for the judge (tests); when absent the run
+   * closure uses the live dream model from the settings module, so
+   * POST /api/dreaming model edits apply with no restart.
    */
-  readonly env?: Readonly<Record<string, string | undefined>>;
   readonly model?: string;
   readonly logger?: (msg: string) => void;
 }
 
 /**
- * Resolve the settings snapshot this registration consults, through the
- * settings module's own seed rules — the single home of the NLM_DREAM_*
- * names, their parsing and their defaults (this module owns no env
- * parsing). The env source is re-read at registration exactly as the
- * pre-settings contract did, which the scheduler wiring relies on; hosts
- * that drive the settings module themselves pass no env and seed from
- * process.env the same way.
- */
-function resolvePassSettings(
-  reg: Pick<ContradictionPassRegistration, "env">,
-): DreamSettings {
-  return dreamSettingsFromEnv(reg.env ?? process.env);
-}
-
-/**
- * The single wiring entry point. Registers the pass when the settings
- * module says the contradiction pass is enabled (seeded from
- * NLM_DREAM_CONTRADICTION_PASS; the flag is read once, at registration);
- * otherwise a no-op. Cadence, sample size, in-flight cap and the dry-run/
- * apply mode all come from the same settings snapshot
- * (dream/settings.ts) — this module owns no env parsing or defaults.
+ * The single wiring entry point. Always registers when the backend is
+ * wired (the PG backend passes no sqlite handle and the pass self-skips);
+ * the run closure consults the live settings module on every tick, so
+ * POST /api/dreaming edits (enabled, cadence, sample, in-flight cap,
+ * apply mode, dream model) apply to the next scheduled run with no
+ * restart. The spec's intervalMs is a live getter over the same module,
+ * so cadence edits reschedule the pass too. A disabled pass registers
+ * but its run returns early without writing or recording anything.
  * Every completed run logs its one-line summary and records it in the
  * settings module's last-run registry. A pass failure is logged, never
  * thrown — dreaming must not break ingestion ticks.
  */
 export function registerContradictionPass(reg: ContradictionPassRegistration): void {
-  const settings = resolvePassSettings(reg);
-  const pass = settings.contradiction;
-  if (!pass.enabled) return;
-
   const log = reg.logger ?? ((msg: string) => console.error(msg));
   if (!reg.sqliteDb || !reg.factStore) {
     log("[dream] contradiction pass enabled but the PG backend or fact store is not wired — skipping");
@@ -410,24 +390,26 @@ export function registerContradictionPass(reg: ContradictionPassRegistration): v
   }
 
   const tenantId = reg.tenantId ?? DEFAULT_TEAM_ID;
-  const apply = pass.applyMode === "apply";
-  const sampleSize = pass.sampleSize;
-  const maxInFlight = pass.maxInFlight;
   const db: Database.Database = reg.sqliteDb;
 
   reg.host.registerDreamPass({
     name: "dream-contradiction",
-    intervalMs: pass.cadenceMs,
+    get intervalMs() {
+      return getDreamSettings().contradiction.cadenceMs;
+    },
     run: async () => {
+      const live = getDreamSettings();
+      if (!live.contradiction.enabled) return;
+      const apply = live.contradiction.applyMode === "apply";
       const report = await runContradictionPass({
         tenantId,
         facts: reg.factStore!,
         transcripts: reg.transcripts,
         llm: reg.llm,
-        ...(reg.model !== undefined ? { model: reg.model } : {}),
+        model: reg.model ?? live.model,
         apply,
-        sampleSize,
-        maxInFlight,
+        sampleSize: live.contradiction.sampleSize,
+        maxInFlight: live.contradiction.maxInFlight,
         sampleFacts: (limit) => Promise.resolve(sampleActiveFactsSqlite(db, tenantId, limit)),
         logger: log,
       });
