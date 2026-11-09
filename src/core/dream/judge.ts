@@ -199,7 +199,7 @@ function numbersRoughlyAgree(factText: string, evidenceQuote: string): boolean {
   const { contextNums, valueText } = splitFactValue(factText);
   const contextSet = new Set(contextNums);
   const factNums = sideCandidates(valueText, extractCountables(valueText)).filter((n) => !contextSet.has(n));
-  let evNums = sideCandidates(evidenceQuote, extractCountables(evidenceQuote));
+  let evNums = sideCandidates(evidenceQuote, extractCountables(evidenceQuote)).filter((n) => !contextSet.has(n));
   const distinct = evNums.filter((e) => !factNums.some((f) => f === e));
   if (distinct.length > 0 && distinct.length < evNums.length) evNums = distinct;
   return factNums.some((n) => evNums.some((m) => numbersAgree(n, m)));
