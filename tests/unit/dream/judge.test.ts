@@ -5,6 +5,7 @@ import {
   DreamJudgeError,
   DREAM_JUDGE_SYSTEM_PROMPT,
   buildDreamJudgeUserPrompt,
+  contradictedClaimStands,
   dreamModelFromEnv,
   judgeDreamFact,
 } from "@core/dream/judge.js";
@@ -127,6 +128,45 @@ describe("dream judge", () => {
     const judgement = await judgeDreamFact({ llm, env: {} }, "fact", "use Array<string> for lists");
     expect(judgement.verdict).toBe("contradicted");
     expect(judgement.evidenceQuote).toBe("use Array<string> for lists");
+  });
+
+  describe("direct-negation criterion (precision backstop)", () => {
+    it("component counts summing to the fact total are corroboration, never contradiction", () => {
+      expect(contradictedClaimStands("cleanup: 90 dirty files", "52 tracked + 37 untracked")).toBe(false);
+    });
+
+    it("a single count within rounding noise is corroboration", () => {
+      expect(contradictedClaimStands("cleanup: 90 dirty files", "89 dirty files")).toBe(false);
+      expect(contradictedClaimStands("coverage: 99 percent", "coverage is 100 percent")).toBe(false);
+    });
+
+    it("tool absence never contradicts API existence", () => {
+      expect(
+        contradictedClaimStands("views: REST endpoint POST views exists", "MCP tools lack view creation"),
+      ).toBe(false);
+    });
+
+    it("API absence never contradicts tool existence (reverse layer direction)", () => {
+      expect(
+        contradictedClaimStands("views tool: MCP client creates views", "no POST views endpoint exists"),
+      ).toBe(false);
+    });
+
+    it("a genuine counter-value still stands as contradicted", () => {
+      expect(contradictedClaimStands("fleet host: mac pro", "all prompts target the mini host")).toBe(true);
+      expect(contradictedClaimStands("deploy ships Tuesday", "actually we reverted the deploy")).toBe(true);
+    });
+
+    it("year-like numbers are not counts", () => {
+      expect(contradictedClaimStands("shipped in 2025", "shipped in 2026")).toBe(true);
+    });
+
+    it("prompt states the direct-negation, numeric-agreement, and layer rules", () => {
+      expect(DREAM_JUDGE_SYSTEM_PROMPT).toMatch(/DIRECT negation/);
+      expect(DREAM_JUDGE_SYSTEM_PROMPT).toMatch(/incompatible counter-value/);
+      expect(DREAM_JUDGE_SYSTEM_PROMPT).toMatch(/Approximate numeric agreement/);
+      expect(DREAM_JUDGE_SYSTEM_PROMPT).toMatch(/different layers, compatible claims/);
+    });
   });
 
   it("leaves im_start substrings and bare angle brackets in replies intact", async () => {

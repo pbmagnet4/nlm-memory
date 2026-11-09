@@ -23,6 +23,9 @@
  *  - A contradicted verdict retires only with a non-empty evidence quote
  *    that occurs in the judged excerpt; anything else is downgraded to
  *    unverifiable — a hallucinated contradiction must never retire a fact.
+ *  - The direct-negation backstop (`contradictedClaimStands`) downgrades a
+ *    contradicted verdict to unverifiable when the evidence merely agrees
+ *    numerically or answers on a different (tool vs API) layer.
  *  - A failed judge call (DreamJudgeError / transport) leaves the fact
  *    alone; sampling another day gets another shot. A failed audit write
  *    after a retire is reported as an error, not counted as superseded.
@@ -46,7 +49,7 @@ import type { FactStore } from "@ports/fact-store.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import { tenantClause } from "@core/tenancy/tenant-clause.js";
 import { appendFactSupersedenceOrThrow } from "@core/storage/supersedence-log.js";
-import { judgeDreamFact, type DreamVerdict } from "./judge.js";
+import { contradictedClaimStands, judgeDreamFact, type DreamVerdict } from "./judge.js";
 import {
   DEFAULT_CONTRADICTION_SAMPLE_SIZE,
   DEFAULT_MAX_IN_FLIGHT,
@@ -345,6 +348,23 @@ export async function runContradictionPass(
           quote === ""
             ? "contradicted verdict carried no evidence quote — downgraded to unverifiable"
             : "contradicted verdict evidence quote not found in the judged excerpt — downgraded to unverifiable",
+      });
+      return;
+    }
+
+    // Deterministic precision backstop (direct-negation criterion): approximate
+    // numeric agreement and cross-layer tool/API claims are compatible, never
+    // a contradiction. Downgraded like any other hallucinated contradiction.
+    if (!contradictedClaimStands(factJudgementText(fact), evidenceQuote)) {
+      findings.push({
+        ...base,
+        outcome: "unverifiable",
+        verdict: "unverifiable",
+        evidenceQuote,
+        model,
+        superseded: false,
+        error:
+          "contradicted verdict fails the direct-negation criterion (approximate numeric agreement or cross-layer tool/API claim) — downgraded to unverifiable",
       });
       return;
     }
