@@ -3,7 +3,8 @@
  *
  * The single mutable home for the dreaming lane's runtime settings: the
  * dream model and the per-pass policy (contradiction, dedup) — enabled,
- * cadenceMs, sampleSize, maxInFlight, applyMode. Values are seeded once
+ * cadenceMs, sampleSize, applyMode (plus maxInFlight on the contradiction
+ * pass, which runs the judge worker pool). Values are seeded once
  * from the existing NLM_DREAM_* env names the pass modules read at
  * registration (contradiction-pass.ts, dedup-pass.ts, judge.ts) and can
  * then be read/updated in memory; nothing here persists or touches the
@@ -24,7 +25,9 @@
 import { DEFAULT_DREAM_MODEL, DREAM_MODEL_ENV } from "./judge.js";
 
 /** Env names — the ones the pass modules already read, plus the two new
- *  cadence knobs and the dedup in-flight cap named after their siblings. */
+ *  cadence knobs named after their siblings. The dedup lane makes no LLM
+ *  calls, so it has no in-flight cap env (that knob lives only on the
+ *  contradiction pass that runs the judge worker pool). */
 export const DREAM_CONTRADICTION_PASS_ENV = "NLM_DREAM_CONTRADICTION_PASS";
 export const DREAM_CONTRADICTION_APPLY_ENV = "NLM_DREAM_CONTRADICTION_APPLY";
 export const DREAM_CONTRADICTION_SAMPLE_ENV = "NLM_DREAM_CONTRADICTION_SAMPLE";
@@ -34,7 +37,6 @@ export const DREAM_CONTRADICTION_CADENCE_ENV = "NLM_DREAM_CONTRADICTION_CADENCE_
 export const DREAM_DEDUP_PASS_ENV = "NLM_DREAM_DEDUP_PASS";
 export const DREAM_DEDUP_APPLY_ENV = "NLM_DREAM_DEDUP_APPLY";
 export const DREAM_DEDUP_SAMPLE_ENV = "NLM_DREAM_DEDUP_SAMPLE";
-export const DREAM_DEDUP_INFLIGHT_ENV = "NLM_DREAM_DEDUP_MAX_INFLIGHT";
 export const DREAM_DEDUP_CADENCE_ENV = "NLM_DREAM_DEDUP_CADENCE_MS";
 
 /** Defaults mirrored from the pass modules (each keeps its own copy). */
@@ -57,10 +59,20 @@ export interface DreamPassSettings {
   applyMode: DreamApplyMode;
 }
 
+/** Dedup pass policy: the dedup lane makes no LLM calls, so it has no
+ *  in-flight cap to tune — maxInFlight lives only on the contradiction
+ *  pass that runs the judge worker pool. */
+export interface DreamDedupPassSettings {
+  enabled: boolean;
+  cadenceMs: number;
+  sampleSize: number;
+  applyMode: DreamApplyMode;
+}
+
 export interface DreamSettings {
   model: string;
   contradiction: DreamPassSettings;
-  dedup: DreamPassSettings;
+  dedup: DreamDedupPassSettings;
 }
 
 /** A rejected update: unknown pass, unknown key, or a field of the wrong shape. */
@@ -94,19 +106,17 @@ export function dreamModelSettingFromEnv(env: EnvLike): string {
   return raw.length > 0 ? raw : DEFAULT_DREAM_MODEL;
 }
 
-function defaultPassSettings(env: EnvLike, opts: {
+function basePassSettings(env: EnvLike, opts: {
   enableEnv: string | undefined;
   applyEnv: string | undefined;
   sampleEnv: string | undefined;
-  inflightEnv: string | undefined;
   cadenceEnv: string | undefined;
   sampleDefault: number;
-}): DreamPassSettings {
+}): Omit<DreamPassSettings, "maxInFlight"> {
   return {
     enabled: flagEnabled(opts.enableEnv),
     cadenceMs: positiveInt(opts.cadenceEnv, DEFAULT_PASS_CADENCE_MS),
     sampleSize: positiveInt(opts.sampleEnv, opts.sampleDefault),
-    maxInFlight: positiveInt(opts.inflightEnv, DEFAULT_MAX_IN_FLIGHT),
     applyMode: applyModeFromEnv(opts.applyEnv),
   };
 }
@@ -115,19 +125,20 @@ function defaultPassSettings(env: EnvLike, opts: {
 export function dreamSettingsFromEnv(env: EnvLike): DreamSettings {
   return {
     model: dreamModelSettingFromEnv(env),
-    contradiction: defaultPassSettings(env, {
-      enableEnv: env[DREAM_CONTRADICTION_PASS_ENV],
-      applyEnv: env[DREAM_CONTRADICTION_APPLY_ENV],
-      sampleEnv: env[DREAM_CONTRADICTION_SAMPLE_ENV],
-      inflightEnv: env[DREAM_CONTRADICTION_INFLIGHT_ENV],
-      cadenceEnv: env[DREAM_CONTRADICTION_CADENCE_ENV],
-      sampleDefault: DEFAULT_CONTRADICTION_SAMPLE_SIZE,
-    }),
-    dedup: defaultPassSettings(env, {
+    contradiction: {
+      ...basePassSettings(env, {
+        enableEnv: env[DREAM_CONTRADICTION_PASS_ENV],
+        applyEnv: env[DREAM_CONTRADICTION_APPLY_ENV],
+        sampleEnv: env[DREAM_CONTRADICTION_SAMPLE_ENV],
+        cadenceEnv: env[DREAM_CONTRADICTION_CADENCE_ENV],
+        sampleDefault: DEFAULT_CONTRADICTION_SAMPLE_SIZE,
+      }),
+      maxInFlight: positiveInt(env[DREAM_CONTRADICTION_INFLIGHT_ENV], DEFAULT_MAX_IN_FLIGHT),
+    },
+    dedup: basePassSettings(env, {
       enableEnv: env[DREAM_DEDUP_PASS_ENV],
       applyEnv: env[DREAM_DEDUP_APPLY_ENV],
       sampleEnv: env[DREAM_DEDUP_SAMPLE_ENV],
-      inflightEnv: env[DREAM_DEDUP_INFLIGHT_ENV],
       cadenceEnv: env[DREAM_DEDUP_CADENCE_ENV],
       sampleDefault: DEFAULT_DEDUP_SAMPLE_SIZE,
     }),
@@ -157,13 +168,15 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-const PASS_FIELDS: readonly string[] = ["enabled", "cadenceMs", "sampleSize", "maxInFlight", "applyMode"];
+const PASS_FIELDS: readonly string[] = ["enabled", "cadenceMs", "sampleSize", "applyMode"];
+const INFLIGHT_FIELD = "maxInFlight";
 const APPLY_MODES: ReadonlySet<string> = new Set<DreamApplyMode>(["dry-run", "apply"]);
 
-function validatePass(name: DreamPassName, patch: unknown): Partial<DreamPassSettings> {
+function validatePass(name: DreamPassName, patch: unknown, opts: { allowInFlight: boolean }): Partial<DreamPassSettings> {
   if (!isPlainObject(patch)) throw new DreamSettingsError(`dream settings: ${name} must be an object, got ${JSON.stringify(patch)}`);
   for (const key of Object.keys(patch)) {
-    if (!PASS_FIELDS.includes(key)) throw new DreamSettingsError(`dream settings: unknown field "${key}" on pass "${name}"`);
+    const known = PASS_FIELDS.includes(key) || (opts.allowInFlight && key === INFLIGHT_FIELD);
+    if (!known) throw new DreamSettingsError(`dream settings: unknown field "${key}" on pass "${name}"`);
   }
   const out: Partial<DreamPassSettings> = {};
   if (patch.enabled !== undefined) {
@@ -189,7 +202,7 @@ function validatePass(name: DreamPassName, patch: unknown): Partial<DreamPassSet
 }
 
 /** Validate the whole patch before applying any of it (all-or-nothing). */
-function validatePatch(patch: unknown): { model?: string; contradiction?: Partial<DreamPassSettings>; dedup?: Partial<DreamPassSettings> } {
+function validatePatch(patch: unknown): { model?: string; contradiction?: Partial<DreamPassSettings>; dedup?: Partial<DreamDedupPassSettings> } {
   if (!isPlainObject(patch)) throw new DreamSettingsError(`dream settings: update patch must be an object, got ${JSON.stringify(patch)}`);
   for (const key of Object.keys(patch)) {
     if (key !== "model" && !(DREAM_PASS_NAMES as readonly string[]).includes(key)) {
@@ -203,8 +216,8 @@ function validatePatch(patch: unknown): { model?: string; contradiction?: Partia
     }
     out.model = patch.model.trim();
   }
-  if (patch.contradiction !== undefined) out.contradiction = validatePass("contradiction", patch.contradiction);
-  if (patch.dedup !== undefined) out.dedup = validatePass("dedup", patch.dedup);
+  if (patch.contradiction !== undefined) out.contradiction = validatePass("contradiction", patch.contradiction, { allowInFlight: true });
+  if (patch.dedup !== undefined) out.dedup = validatePass("dedup", patch.dedup, { allowInFlight: false });
   return out;
 }
 
@@ -239,8 +252,13 @@ export interface DreamLastRuns {
 
 const lastRunRegistry = new Map<DreamPassName, DreamRunRecord>();
 
+function copyRecord(record: DreamRunRecord): DreamRunRecord {
+  return { name: record.name, ranAt: record.ranAt, summary: { ...record.summary } };
+}
+
 /** Record (overwrite) the pass's last run. Throws on an unknown pass name
- *  or a non-object summary — this is where pass wiring reports completion. */
+ *  or a non-object summary — this is where pass wiring reports completion.
+ *  Returns a copy: mutating it cannot corrupt the registry. */
 export function recordLastRun(name: unknown, summary: Readonly<Record<string, unknown>>): DreamRunRecord {
   if (typeof name !== "string" || !(DREAM_PASS_NAMES as readonly string[]).includes(name)) {
     throw new DreamSettingsError(`dream settings: unknown pass "${String(name)}" in recordLastRun`);
@@ -248,14 +266,17 @@ export function recordLastRun(name: unknown, summary: Readonly<Record<string, un
   if (!isPlainObject(summary)) throw new DreamSettingsError(`dream settings: last-run summary for "${name}" must be an object`);
   const record: DreamRunRecord = { name: name as DreamPassName, ranAt: new Date().toISOString(), summary: { ...summary } };
   lastRunRegistry.set(record.name, record);
-  return record;
+  return copyRecord(record);
 }
 
-/** Snapshot of the registry — null for a pass that hasn't run since load/reset. */
+/** Snapshot of the registry — null for a pass that hasn't run since load/reset.
+ *  Every record is a copy: callers cannot mutate the registry through it. */
 export function lastRuns(): DreamLastRuns {
+  const contradiction = lastRunRegistry.get("contradiction");
+  const dedup = lastRunRegistry.get("dedup");
   return {
-    contradiction: lastRunRegistry.get("contradiction") ?? null,
-    dedup: lastRunRegistry.get("dedup") ?? null,
+    contradiction: contradiction ? copyRecord(contradiction) : null,
+    dedup: dedup ? copyRecord(dedup) : null,
   };
 }
 
