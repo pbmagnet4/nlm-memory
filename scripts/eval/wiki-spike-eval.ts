@@ -296,10 +296,15 @@ const isMain = (() => {
 })();
 
 if (isMain) {
+  const eqArg = process.argv.find((a) => a.startsWith("--out="));
   const outIdx = process.argv.indexOf("--out");
   const report = runWikiSpikeEval();
-  if (outIdx !== -1) {
-    const out = process.argv[outIdx + 1];
+  const out = eqArg
+    ? eqArg.slice("--out=".length)
+    : outIdx !== -1
+      ? process.argv[outIdx + 1]
+      : undefined;
+  if (out !== undefined) {
     if (!out || out.startsWith("--")) throw new Error("--out requires a path");
     writeFileSync(out, JSON.stringify(report, null, 2));
   }
