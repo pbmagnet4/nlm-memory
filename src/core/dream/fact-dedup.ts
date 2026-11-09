@@ -22,8 +22,12 @@
  *
  * Proposals are suggestions only; applying them (supersede loser → winner,
  * audit trail) is the applier's job, exactly like suggestMerges' report-only
- * contract. Chains are blocked: a fact that loses once leaves the
- * candidate pool, so no proposal ever points at an already-lost winner.
+ * contract. Chains are blocked by hub election: each merge-connected
+ * component elects one hub (highest corroboration, then newest, then
+ * smallest id), every directly-connected loser points at it, and members
+ * with no direct edge to the hub stay active — so no proposal ever points
+ * at an already-lost winner, and no merge is proposed without direct
+ * pairwise evidence.
  */
 
 /** The slice of a fact the dedup pass reads — same structural-subset style
@@ -75,8 +79,8 @@ function tokens(folded: string): ReadonlyArray<string> {
   return folded === "" ? [] : folded.split(" ");
 }
 
-function isNumericToken(t: string): boolean {
-  return /^\d+$/.test(t);
+function isNumberBearingToken(t: string): boolean {
+  return /\d/.test(t);
 }
 
 /** An active fact: not superseded, not retired, and all triple parts carry
@@ -124,8 +128,11 @@ function restateMatch(
   if (!containsTokenSpan(longer, shorter)) return null;
   // An added number on the longer side signals a different facet, not a
   // restatement: "windows server 2019" vs "windows server 2019 and 2022".
-  const shortNums = new Set(shorter.filter(isNumericToken));
-  if (longer.some((t) => isNumericToken(t) && !shortNums.has(t))) return null;
+  // Spec tokens count too ("16gb", "v2", "q3"): any added digit-bearing
+  // token blocks the merge, so "mac pro 16gb" never folds into
+  // "mac pro 16gb 512gb".
+  const shortNums = new Set(shorter.filter(isNumberBearingToken));
+  if (longer.some((t) => isNumberBearingToken(t) && !shortNums.has(t))) return null;
   return { shorter: shorter.join(" "), longer: longer.join(" ") };
 }
 
@@ -167,15 +174,28 @@ interface Candidate {
   readonly valueFolded: string;
 }
 
+interface MergeEdge {
+  readonly a: number;
+  readonly b: number;
+  readonly cls: FactMergeClass;
+  readonly shorter: string;
+  readonly longer: string;
+}
+
 /**
  * Propose merges from a flat list of facts.
  *
- * Groups by (subject, predicate) fold; within each group emits `exact`
- * proposals first, then `restatement` proposals among the survivors. A fact
- * that has lost once is excluded from every later pair (no chains, no
- * merging into a loser). Scan order and emission order are fully determined
- * by the group key and fact ids, so equal inputs always produce equal
- * output, independent of input order.
+ * Groups by (subject, predicate) fold; within each group collects every
+ * directly-merging pair first, elects one hub per merge-connected
+ * component (highest corroboration, then newest createdAt, then smallest
+ * id — the pickWinner order, so the hub beats every member pairwise), and
+ * points each directly-connected loser at the hub. A member with no direct
+ * edge to its hub stays active: merging it would invent evidence the pair
+ * never had. Each loser appears once and a hub never loses, so no proposal
+ * points at an already-lost winner. Emits `exact` proposals before
+ * `restatement` ones. Scan order and emission order are fully determined by
+ * the group key and fact ids, so equal inputs always produce equal output,
+ * independent of input order.
  */
 export function proposeFactMerges(
   facts: ReadonlyArray<FactDedupFact>,
@@ -193,7 +213,6 @@ export function proposeFactMerges(
   }
 
   const proposals: FactMergeProposal[] = [];
-  const lost = new Set<string>();
 
   const sortedKeys = [...groups.keys()].sort();
   for (const key of sortedKeys) {
@@ -202,39 +221,78 @@ export function proposeFactMerges(
     );
     const [subject, predicate] = key.split("\u0000");
 
-    for (const cls of ["exact", "restatement"] as const) {
-      for (let i = 0; i < members.length; i++) {
-        for (let j = i + 1; j < members.length; j++) {
-          const a = members[i]!;
-          const b = members[j]!;
-          if (lost.has(a.fact.id) || lost.has(b.fact.id)) continue;
-
-          let evidence: { shorter: string; longer: string } | null;
-          if (cls === "exact") {
-            evidence =
-              a.valueFolded === b.valueFolded
-                ? { shorter: a.valueFolded, longer: b.valueFolded }
-                : null;
-          } else {
-            evidence = restateMatch(a.valueFolded, b.valueFolded);
-          }
-          if (!evidence) continue;
-
-          const { winner, loser, factor } = pickWinner(a.fact, b.fact);
-          const evidenceText =
-            cls === "exact"
-              ? `equivalent values "${evidence.shorter}"`
-              : `restatement "${evidence.shorter}" ⊂ "${evidence.longer}"`;
-          proposals.push({
-            winnerId: winner.id,
-            loserId: loser.id,
-            cls,
-            reason:
-              `fact-dedup ${cls}: "${subject} ${predicate}" — ${evidenceText};` +
-              ` winner ${winner.id} over ${loser.id} by ${factor}`,
+    // Every directly-merging pair, collected before any winner is picked:
+    // a previous winner must never lose a later pair (no a→b→c chains).
+    const edges: MergeEdge[] = [];
+    for (let i = 0; i < members.length; i++) {
+      for (let j = i + 1; j < members.length; j++) {
+        const a = members[i]!;
+        const b = members[j]!;
+        if (a.valueFolded === b.valueFolded) {
+          edges.push({
+            a: i,
+            b: j,
+            cls: "exact",
+            shorter: a.valueFolded,
+            longer: b.valueFolded,
           });
-          lost.add(loser.id);
+        } else {
+          const match = restateMatch(a.valueFolded, b.valueFolded);
+          if (match) {
+            edges.push({ a: i, b: j, cls: "restatement", shorter: match.shorter, longer: match.longer });
+          }
         }
+      }
+    }
+
+    // Merge-connected components over member indexes (union-find).
+    const parent = members.map((_, idx) => idx);
+    const find = (x: number): number =>
+      parent[x] === x ? x : (parent[x] = find(parent[x]!));
+    for (const edge of edges) {
+      parent[find(edge.a)] = find(edge.b);
+    }
+    const hubs = new Map<number, number>();
+    for (let idx = 0; idx < members.length; idx++) {
+      const root = find(idx);
+      const current = hubs.get(root);
+      if (current === undefined) {
+        hubs.set(root, idx);
+      } else if (
+        pickWinner(members[idx]!.fact, members[current]!.fact).winner.id ===
+        members[idx]!.fact.id
+      ) {
+        hubs.set(root, idx);
+      }
+    }
+
+    // Direct edge between two members, if they merge pairwise.
+    const edgeBetween = (x: number, y: number): MergeEdge | null => {
+      const [lo, hi] = x < y ? [x, y] : [y, x];
+      return edges.find((e) => e.a === lo && e.b === hi) ?? null;
+    };
+
+    for (const cls of ["exact", "restatement"] as const) {
+      for (let idx = 0; idx < members.length; idx++) {
+        const hub = hubs.get(find(idx))!;
+        if (idx === hub) continue;
+        const edge = edgeBetween(idx, hub);
+        if (!edge || edge.cls !== cls) continue;
+        const loser = members[idx]!.fact;
+        const hubFact = members[hub]!.fact;
+        const { factor } = pickWinner(hubFact, loser);
+        const evidenceText =
+          cls === "exact"
+            ? `equivalent values "${edge.shorter}"`
+            : `restatement "${edge.shorter}" ⊂ "${edge.longer}"`;
+        proposals.push({
+          winnerId: hubFact.id,
+          loserId: loser.id,
+          cls,
+          reason:
+            `fact-dedup ${cls}: "${subject} ${predicate}" — ${evidenceText};` +
+            ` winner ${hubFact.id} over ${loser.id} by ${factor}`,
+        });
       }
     }
   }
