@@ -187,6 +187,18 @@ describe("dream judge", () => {
       expect(contradictedClaimStands("cleanup: 90 dirty files", "52 tracked + 37 untracked")).toBe(false);
     });
 
+    it("subject-context numbers never mask a genuine value conflict (T816 head hash)", () => {
+      expect(contradictedClaimStands("t816-build-head commit: e23d3f54", "Frozen clean T816 head: `aa5e8e68`")).toBe(true);
+    });
+
+    it("subject-context numbers still allow genuine value agreement to downgrade", () => {
+      expect(contradictedClaimStands("T816 cleanup: 90 dirty files", "89 files")).toBe(false);
+    });
+
+    it("a near-miss context number never masks a genuine value conflict", () => {
+      expect(contradictedClaimStands("T816 build cache: 100 entries", "T816 build cache holds 810 entries")).toBe(true);
+    });
+
     it("prompt states the direct-negation, numeric-agreement, and layer rules", () => {
       expect(DREAM_JUDGE_SYSTEM_PROMPT).toMatch(/DIRECT negation/);
       expect(DREAM_JUDGE_SYSTEM_PROMPT).toMatch(/incompatible counter-value/);

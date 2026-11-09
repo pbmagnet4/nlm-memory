@@ -176,13 +176,29 @@ function sideCandidates(text: string, nums: number[]): number[] {
   return [...nums, ...sums];
 }
 
+/** Split fact text into its subject/predicate context (before the first ":")
+ *  and its value (after it). `factJudgementText` builds
+ *  `${subject} ${predicate}: ${value}`, so numbers before the colon scope
+ *  the claim (task ids, sprint numbers) while numbers after it are the
+ *  claim's value under test. No colon means no separable context. */
+function splitFactValue(factText: string): { contextNums: number[]; valueText: string } {
+  const colon = factText.indexOf(":");
+  if (colon < 0) return { contextNums: [], valueText: factText };
+  return { contextNums: extractCountables(factText.slice(0, colon)), valueText: factText.slice(colon + 1) };
+}
+
 /** True when any fact/evidence number pair agrees within rounding noise —
  *  approximate numeric agreement, which is corroboration per the prompt.
- *  Evidence numbers exactly restating a fact number are ignored when the
- *  evidence also states a distinct number ("90 was wrong, it is 20 files"
- *  judges 90-vs-20, not the restated 90-vs-90). */
+ *  Only the fact's VALUE numbers count (plus "+"-run sums derived from the
+ *  value): numbers from the subject/predicate context never agree, so a
+ *  task id in the subject cannot mask a genuine value conflict. Evidence
+ *  numbers exactly restating a fact number are ignored when the evidence
+ *  also states a distinct number ("90 was wrong, it is 20 files" judges
+ *  90-vs-20, not the restated 90-vs-90). */
 function numbersRoughlyAgree(factText: string, evidenceQuote: string): boolean {
-  const factNums = sideCandidates(factText, extractCountables(factText));
+  const { contextNums, valueText } = splitFactValue(factText);
+  const contextSet = new Set(contextNums);
+  const factNums = sideCandidates(valueText, extractCountables(valueText)).filter((n) => !contextSet.has(n));
   let evNums = sideCandidates(evidenceQuote, extractCountables(evidenceQuote));
   const distinct = evNums.filter((e) => !factNums.some((f) => f === e));
   if (distinct.length > 0 && distinct.length < evNums.length) evNums = distinct;
