@@ -158,7 +158,33 @@ describe("dream judge", () => {
     });
 
     it("year-like numbers are not counts", () => {
-      expect(contradictedClaimStands("shipped in 2025", "shipped in 2026")).toBe(true);
+      expect(contradictedClaimStands("shipped in March 2025", "shipped in June 2026")).toBe(true);
+      expect(contradictedClaimStands("shipped on 2025-03-01", "shipped on 2026-03-01")).toBe(true);
+    });
+
+    it("a restated old value plus a distinct counter-value still stands", () => {
+      expect(contradictedClaimStands("cleanup: 90 dirty files", "90 was wrong, it is 20 files")).toBe(true);
+      expect(contradictedClaimStands("cleanup: 90 dirty files", "90 dirty files")).toBe(false);
+    });
+
+    it("small counts agree only on exact equality", () => {
+      expect(contradictedClaimStands("0 errors", "1 error")).toBe(true);
+      expect(contradictedClaimStands("1 retry", "2 retries")).toBe(true);
+      expect(contradictedClaimStands("0 errors", "0 errors")).toBe(false);
+    });
+
+    it("generic layer words no longer trigger the cross-layer downgrade", () => {
+      expect(contradictedClaimStands("REST service exists", "tools lack creation")).toBe(true);
+      expect(contradictedClaimStands("client creates views", "no POST views route exists")).toBe(true);
+    });
+
+    it("bare year-range counts are not years", () => {
+      expect(contradictedClaimStands("migrated 2000 rows", "migrated 2001 rows")).toBe(false);
+    });
+
+    it("only plus-joined runs sum, never every number in the text", () => {
+      expect(contradictedClaimStands("60 total files", "day 10: 20 users + 30 guests")).toBe(true);
+      expect(contradictedClaimStands("cleanup: 90 dirty files", "52 tracked + 37 untracked")).toBe(false);
     });
 
     it("prompt states the direct-negation, numeric-agreement, and layer rules", () => {

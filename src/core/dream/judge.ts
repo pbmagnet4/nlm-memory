@@ -110,21 +110,42 @@ export function buildDreamJudgeUserPrompt(factText: string, transcriptExcerpt: s
 }
 
 /** API-layer markers vs tool-layer markers for the cross-layer rule below.
- *  Deliberately narrow: ambiguous words ("view", "get") stay out so only an
- *  explicit layer term on each side triggers the downgrade. */
-const API_LAYER_RE = /\b(api|endpoint|rest|http|post|route)\b/i;
-const TOOL_LAYER_RE = /\b(mcp|tools?|sdk|integration|client)\b/i;
+ *  Deliberately narrow: only unambiguous markers count — generic words
+ *  ("rest", "post", "route", "client", "tool(s)", "integration", "view",
+ *  "get") stay out so only an explicit layer term on each side triggers
+ *  the downgrade. */
+const API_LAYER_RE = /\b(api|endpoint|http)\b/i;
+const TOOL_LAYER_RE = /\b(mcp|sdk)\b/i;
 
-/** Integers that look like years are never counts — skip them in agreement. */
-function isYearLike(n: number): boolean {
-  return Number.isInteger(n) && n >= 1800 && n <= 2200;
+const MONTH_NAME_RE = /\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b/i;
+/** ISO-ish date fragments (YYYY-MM, YYYY-MM-DD, YYYY/MM/DD): a 4-digit
+ *  number inside one is a year, not a count. */
+const ISO_DATE_RE = /\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?/g;
+
+/** Integers in year range are years only with date context: a month name
+ *  within ~12 chars, or participation in an ISO-ish date fragment.
+ *  Bare counts ("migrated 2000 rows") are never years. */
+function isYearLikeInContext(text: string, raw: string, index: number): boolean {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1800 || n > 2200) return false;
+  const window = text.slice(Math.max(0, index - 12), index + raw.length + 12);
+  if (MONTH_NAME_RE.test(window)) return true;
+  for (const m of text.matchAll(ISO_DATE_RE)) {
+    const start = m.index ?? 0;
+    if (index >= start && index < start + m[0].length) return true;
+  }
+  return false;
 }
 
 function extractCountables(text: string): number[] {
+  // Blank whole ISO fragments first: their month/day parts are not counts.
+  const scrubbed = text.replace(ISO_DATE_RE, (m) => " ".repeat(m.length));
   const out: number[] = [];
-  for (const m of text.matchAll(/-?\d+(?:\.\d+)?/g)) {
+  for (const m of scrubbed.matchAll(/-?\d+(?:\.\d+)?/g)) {
     const n = Number(m[0]);
-    if (Number.isFinite(n) && !isYearLike(n)) out.push(n);
+    if (!Number.isFinite(n)) continue;
+    if (isYearLikeInContext(scrubbed, m[0], m.index ?? 0)) continue;
+    out.push(n);
   }
   return out;
 }
@@ -134,19 +155,38 @@ function agreeTol(n: number): number {
   return Math.max(1, Math.abs(n) * 0.01);
 }
 
-/** Comparison candidates for one side: its numbers, plus their total when
- *  the text splits a count into components ("52 tracked + 37 untracked"). */
+/** Small counts (<=2) agree only on exact equality: the unit floor would
+ *  otherwise call 0-vs-1 or 1-vs-2 agreement. Tolerance applies above that. */
+function numbersAgree(n: number, m: number): boolean {
+  if (Math.abs(n) <= 2 && Math.abs(m) <= 2) return n === m;
+  return Math.abs(n - m) <= agreeTol(n);
+}
+
+/** Comparison candidates for one side: its numbers, plus the sum of each
+ *  "+"-joined run ("52 tracked + 37 untracked" adds 89) — never the sum of
+ *  all numbers in the text ("day 10: 20 users + 30 guests" adds only 50).
+ *  Numbers count as joined when only words/space sit between each number
+ *  and its "+", so "20 users + 30" runs but the unjoined "day 10" stays out. */
 function sideCandidates(text: string, nums: number[]): number[] {
-  if (nums.length >= 2 && text.includes("+")) return [...nums, nums.reduce((a, b) => a + b, 0)];
-  return nums;
+  const sums: number[] = [];
+  for (const m of text.matchAll(/(-?\d+(?:\.\d+)?(?:[^+\d]*\+[^+\d]*-?\d+(?:\.\d+)?)+)/g)) {
+    const parts = (m[1] ?? "").match(/-?\d+(?:\.\d+)?/g);
+    if (parts && parts.length >= 2) sums.push(parts.reduce((a, b) => a + Number(b), 0));
+  }
+  return [...nums, ...sums];
 }
 
 /** True when any fact/evidence number pair agrees within rounding noise —
- *  approximate numeric agreement, which is corroboration per the prompt. */
+ *  approximate numeric agreement, which is corroboration per the prompt.
+ *  Evidence numbers exactly restating a fact number are ignored when the
+ *  evidence also states a distinct number ("90 was wrong, it is 20 files"
+ *  judges 90-vs-20, not the restated 90-vs-90). */
 function numbersRoughlyAgree(factText: string, evidenceQuote: string): boolean {
   const factNums = sideCandidates(factText, extractCountables(factText));
-  const evNums = sideCandidates(evidenceQuote, extractCountables(evidenceQuote));
-  return factNums.some((n) => evNums.some((m) => Math.abs(n - m) <= agreeTol(n)));
+  let evNums = sideCandidates(evidenceQuote, extractCountables(evidenceQuote));
+  const distinct = evNums.filter((e) => !factNums.some((f) => f === e));
+  if (distinct.length > 0 && distinct.length < evNums.length) evNums = distinct;
+  return factNums.some((n) => evNums.some((m) => numbersAgree(n, m)));
 }
 
 function mentionsOnly(text: string, re: RegExp, other: RegExp): boolean {
