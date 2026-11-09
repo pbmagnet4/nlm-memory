@@ -27,7 +27,7 @@
  * registerPromotionPass().
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import type Database from "better-sqlite3";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import { tenantClause } from "@core/tenancy/tenant-clause.js";
@@ -44,6 +44,7 @@ import {
   findDemotions,
   isPromotionEligible,
   promotionReason,
+  promotionSetBytes,
   renderPromotionLine,
   scorePromotionCandidate,
   MAX_PROMOTION_BYTES,
@@ -70,9 +71,6 @@ export const DREAM_PROMOTE_WINDOW_DAYS_ENV = "NLM_DREAM_PROMOTE_WINDOW_DAYS";
 export const DEFAULT_PASS_INTERVAL_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_SAMPLE_SIZE = 200;
 export const DEFAULT_WINDOW_DAYS = 30;
-
-/** `source`-style stamp for promotion reasons. */
-export const PROMOTION_PASS_SOURCE = "dream-promotion-pass";
 
 /** Periodic background pass hosted by the scheduler (same shape as the
  *  contradiction/dedup passes; the scheduler stays pass-agnostic). */
@@ -120,13 +118,6 @@ export interface PromotionPassReport {
   readonly findings: ReadonlyArray<PromotionFinding>;
 }
 
-export interface PromotionRow {
-  readonly factId: string;
-  readonly promotedAt: string;
-  readonly score: number;
-  readonly demotedAt: string | null;
-}
-
 /** Pass-local promotion store over the SQLite handle. The table is
  *  pass-owned (migration 049); the PG backend never gets here (self-skip). */
 export class SqlitePromotionStore {
@@ -147,7 +138,7 @@ export class SqlitePromotionStore {
     this.db
       .prepare(
         `INSERT INTO fact_promotions (fact_id, tenant_id, promoted_at, score, reason, demoted_at, demote_reason)
-         VALUES (?, ?, datetime('now'), ?, ?, NULL, NULL)
+         VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?, ?, NULL, NULL)
          ON CONFLICT (fact_id) DO UPDATE SET
            tenant_id = excluded.tenant_id, score = excluded.score, reason = excluded.reason,
            demoted_at = NULL, demote_reason = NULL`,
@@ -159,7 +150,7 @@ export class SqlitePromotionStore {
     const tc = tenantClause(tenantId);
     this.db
       .prepare(
-        `UPDATE fact_promotions SET demoted_at = datetime('now'), demote_reason = ?
+        `UPDATE fact_promotions SET demoted_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), demote_reason = ?
          WHERE fact_id = ? AND demoted_at IS NULL AND ${tc.sql}`,
       )
       .run(reason, factId, tc.param);
@@ -182,26 +173,22 @@ function positiveInt(raw: string | undefined, fallback: number): number {
  * the same value recall's corroboration boost uses). Random draw capped at
  * `limit`, matching the contradiction/dedup samplers.
  */
-export function samplePromotionCandidatesSqlite(
+interface FactRow {
+  id: string; subject: string; predicate: string; value: string;
+  property_slug: string | null; confidence: number;
+  source_session_id: string; created_at: string;
+}
+
+/** Attach the corroboration counts the scoring core ranks by (distinct
+ *  source sessions per exact triple — the same value recall's
+ *  corroboration boost uses). Shared by the random sampler and the
+ *  by-id loader so both produce identically shaped candidates. */
+function enrichCandidates(
   db: Database.Database,
   tenantId: string,
-  limit: number,
+  rows: FactRow[],
 ): PromotionCandidate[] {
-  const tc = tenantClause(tenantId);
-  const rows = db
-    .prepare<[string, number], {
-      id: string; subject: string; predicate: string; value: string;
-      property_slug: string | null; confidence: number;
-      source_session_id: string; created_at: string;
-    }>(
-      `SELECT id, subject, predicate, value, property_slug, confidence,
-              source_session_id, created_at FROM facts
-       WHERE superseded_by IS NULL AND retired_at IS NULL AND ${tc.sql}
-       ORDER BY random() LIMIT ?`,
-    )
-    .all(tc.param, limit);
   if (rows.length === 0) return [];
-
   const ids = rows.map((r) => r.id);
   const ph = ids.map(() => "?").join(",");
   const f2tc = tenantClause(tenantId, "f2.tenant_id");
@@ -230,6 +217,64 @@ export function samplePromotionCandidatesSqlite(
     sourceSessionId: r.source_session_id,
     createdAt: r.created_at,
   }));
+}
+
+export function samplePromotionCandidatesSqlite(
+  db: Database.Database,
+  tenantId: string,
+  limit: number,
+): PromotionCandidate[] {
+  const tc = tenantClause(tenantId);
+  const rows = db
+    .prepare<[string, number], FactRow>(
+      `SELECT id, subject, predicate, value, property_slug, confidence,
+              source_session_id, created_at FROM facts
+       WHERE superseded_by IS NULL AND retired_at IS NULL AND ${tc.sql}
+       ORDER BY random() LIMIT ?`,
+    )
+    .all(tc.param, limit);
+  return enrichCandidates(db, tenantId, rows);
+}
+
+/** Full tenant-scoped active-fact id set (no sampling): the demotion
+ *  input. The random sample above is the nomination input; using it for
+ *  demotions too falsely retires promoted facts that simply were not
+ *  drawn once the table outgrows the sample. */
+export function listActiveFactIdsSqlite(
+  db: Database.Database,
+  tenantId: string,
+): string[] {
+  const tc = tenantClause(tenantId);
+  return db
+    .prepare<[string], { id: string }>(
+      `SELECT id FROM facts
+       WHERE superseded_by IS NULL AND retired_at IS NULL AND ${tc.sql}`,
+    )
+    .all(tc.param)
+    .map((r) => r.id);
+}
+
+/** Load candidates for explicit fact ids (promoted facts missing from
+ *  the sample): same active-set filter and enrichment as the sampler,
+ *  so cap competition scores every kept active on current signals with
+ *  its real rendered line. Ids that left the active set come back
+ *  absent — demotion, not the cap, owns those. */
+export function loadFactCandidatesSqlite(
+  db: Database.Database,
+  tenantId: string,
+  ids: ReadonlyArray<string>,
+): PromotionCandidate[] {
+  if (ids.length === 0) return [];
+  const tc = tenantClause(tenantId);
+  const ph = ids.map(() => "?").join(",");
+  const rows = db
+    .prepare<unknown[], FactRow>(
+      `SELECT id, subject, predicate, value, property_slug, confidence,
+              source_session_id, created_at FROM facts
+       WHERE id IN (${ph}) AND superseded_by IS NULL AND retired_at IS NULL AND ${tc.sql}`,
+    )
+    .all(...(ids as [string, ...string[]]), tc.param);
+  return enrichCandidates(db, tenantId, rows);
 }
 
 function readJsonl(path: string): Array<Record<string, unknown>> {
@@ -274,8 +319,11 @@ function parseHookFires(path: string, windowMs: number, now: number): HookFireRo
   return out;
 }
 
-function parseCitations(path: string, windowMs: number, now: number): Array<CitationRow & { ts: string | null }> {
-  const cutoff = now - windowMs;
+function parseCitations(
+  path: string,
+  opts: { readonly windowMs?: number; readonly now: number },
+): Array<CitationRow & { ts: string | null }> {
+  const cutoff = opts.windowMs === undefined ? -Infinity : opts.now - opts.windowMs;
   const out: Array<CitationRow & { ts: string | null }> = [];
   for (const r of readJsonl(path)) {
     const conv = (r["conversation_id"] ?? r["conversationId"]) as unknown;
@@ -312,7 +360,11 @@ export function loadPromotionTelemetry(
   const now = opts.now ?? Date.now();
   const windowMs = (opts.windowDays ?? DEFAULT_WINDOW_DAYS) * 24 * 60 * 60 * 1000;
   const fires = parseHookFires(opts.hookLogPath, windowMs, now);
-  const citeRows = parseCitations(opts.citationLogPath, windowMs, now);
+  const citeRows = parseCitations(opts.citationLogPath, { windowMs, now });
+  // Lifetime citations ignore the window: everCited must answer "cited at
+  // least once, ever" or the never-cited grace rule misfires on facts cited
+  // before the window (and the stale branch is shadowed for those rows).
+  const lifetimeCiteRows = parseCitations(opts.citationLogPath, { now });
 
   const factIds = new Set(candidates.map((c) => c.id));
   const bySession = new Map<string, string[]>();
@@ -338,16 +390,19 @@ export function loadPromotionTelemetry(
       credit(retrievalCounts, h.id);
     }
   }
+  const attribute = (id: string): string[] => {
+    if (factIds.has(id)) return [id];
+    return bySession.get(id) ?? [];
+  };
   const citationCounts = new Map<string, number>();
-  const everCited = new Set<string>();
   for (const c of citeRows) {
-    if (factIds.has(c.citedId)) {
-      citationCounts.set(c.citedId, (citationCounts.get(c.citedId) ?? 0) + 1);
-      everCited.add(c.citedId);
-      continue;
-    }
-    for (const fid of bySession.get(c.citedId) ?? []) {
+    for (const fid of attribute(c.citedId)) {
       citationCounts.set(fid, (citationCounts.get(fid) ?? 0) + 1);
+    }
+  }
+  const everCited = new Set<string>();
+  for (const c of lifetimeCiteRows) {
+    for (const fid of attribute(c.citedId)) {
       everCited.add(fid);
     }
   }
@@ -379,6 +434,15 @@ export interface PromotionPassOptions {
   readonly store: SqlitePromotionStore;
   /** Picks the facts to consider this run (the pass itself is stateless). */
   sampleCandidates(limit: number): Promise<ReadonlyArray<PromotionCandidate>>;
+  /** Full active-fact id set for demotion input. Defaults to the sampled
+   *  ids when omitted (tests); production wiring passes the tenant-scoped
+   *  facts query — the sample must never decide who left the active set. */
+  listActiveFactIds?: () => Promise<ReadonlyArray<string>>;
+  /** Loads candidates for explicit fact ids (promoted facts missing from
+   *  the sample) so cap competition scores real rendered lines. Without
+   *  it, sample-missing actives fall back to a placeholder line and their
+   *  stored score. */
+  loadFactCandidates?: (ids: ReadonlyArray<string>) => Promise<ReadonlyArray<PromotionCandidate>>;
   /** Telemetry loader override (tests); default reads the tenant log paths. */
   loadTelemetry?: (candidates: ReadonlyArray<PromotionCandidate>) => Promise<PromotionTelemetry>;
   /** false (report-only) unless explicitly true. */
@@ -417,8 +481,11 @@ export async function runPromotionPass(opts: PromotionPassOptions): Promise<Prom
 
   const eligible = candidates.filter((c) => isPromotionEligible(c, signals));
   const active = opts.store.listActive(tenantId);
-  const activeFactIds = new Set(candidates.map((c) => c.id));
-  const activeById = new Map(candidates.map((c) => [c.id, c]));
+  // Demotion input is the FULL active set, never the sample: a promoted
+  // fact that simply was not drawn must not read as "left the active set".
+  const activeFactIds = opts.listActiveFactIds
+    ? new Set(await opts.listActiveFactIds())
+    : new Set(candidates.map((c) => c.id));
   const standingById = new Map(active.map((p) => [p.factId, p]));
 
   // Nominees: eligible candidates not already promoted, greedy under the cap.
@@ -440,16 +507,34 @@ export async function runPromotionPass(opts: PromotionPassOptions): Promise<Prom
   const demotions = findDemotions(active, activeFactIds, signals, now);
   const demoteIds = new Set(demotions.map((d) => d.factId));
 
-  // Cap across kept actives + fresh nominees, scored uniformly.
+  // Cap across kept actives + fresh nominees, scored uniformly on CURRENT
+  // signals with real rendered lines: actives missing from the sample are
+  // resolved to full candidates first, so usedBytes measures what injection
+  // would actually carry and no stale stored score evicts a live nominee.
+  const missingActiveIds = active
+    .filter((p) => !demoteIds.has(p.factId))
+    .map((p) => p.factId)
+    .filter((id) => !candidates.some((c) => c.id === id));
+  let resolvedMissing: ReadonlyArray<PromotionCandidate> = [];
+  if (opts.loadFactCandidates && missingActiveIds.length > 0) {
+    try {
+      resolvedMissing = await opts.loadFactCandidates(missingActiveIds);
+    } catch {
+      resolvedMissing = [];
+    }
+  }
+  const candidateById = new Map(
+    [...candidates, ...resolvedMissing].map((c) => [c.id, c] as const),
+  );
   const capEntries: Array<{ factId: string; score: number; line: string }> = [];
   for (const p of active) {
     if (demoteIds.has(p.factId)) continue;
-    const c = activeById.get(p.factId);
-    capEntries.push({
-      factId: p.factId,
-      score: p.score,
-      line: c ? renderPromotionLine(c) : `- ${p.factId}`,
-    });
+    const c = candidateById.get(p.factId);
+    capEntries.push(
+      c
+        ? { factId: p.factId, score: scorePromotionCandidate(c, signals), line: renderPromotionLine(c) }
+        : { factId: p.factId, score: p.score, line: `- ${p.factId}` },
+    );
   }
   for (const n of scoredFresh) {
     capEntries.push({ factId: n.id, score: n.score, line: renderPromotionLine(n) });
@@ -461,11 +546,8 @@ export async function runPromotionPass(opts: PromotionPassOptions): Promise<Prom
   const findings: PromotionFinding[] = [];
   const toPromote = scoredFresh.filter((n) => keptIds.has(n.id));
 
-  let usedBytes = 0;
-  for (const id of kept) {
-    const entry = capEntries.find((e) => e.factId === id)!;
-    usedBytes += Buffer.byteLength(entry.line, "utf8");
-  }
+  const lineById = new Map(capEntries.map((e) => [e.factId, e.line] as const));
+  const usedBytes = promotionSetBytes(kept.map((id) => ({ line: lineById.get(id) ?? "" })));
 
   if (!apply) {
     for (const n of scoredFresh) {
@@ -594,6 +676,8 @@ export function registerPromotionPass(reg: PromotionPassRegistration): void {
         maxBytes,
         windowDays,
         sampleCandidates: (limit) => Promise.resolve(samplePromotionCandidatesSqlite(db, tenantId, limit)),
+        listActiveFactIds: () => Promise.resolve(listActiveFactIdsSqlite(db, tenantId)),
+        loadFactCandidates: (ids) => Promise.resolve(loadFactCandidatesSqlite(db, tenantId, ids)),
         logger: log,
       });
       const inj = report.injection?.tokensPerUsefulHit;
