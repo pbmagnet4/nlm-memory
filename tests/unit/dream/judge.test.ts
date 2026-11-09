@@ -108,4 +108,21 @@ describe("dream judge", () => {
     expect(calls[0]!.opts).toEqual({ enable_thinking: false, signal: controller.signal, maxTokens: 128 });
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it("strips a think block but keeps angle brackets in the verdict evidence", async () => {
+    const { llm } = stubLlm(
+      "<think>deliberating about Array<string> and im_start tokens</think>" +
+      VERDICT("contradicted", "use Array<string> for lists"),
+    );
+    const judgement = await judgeDreamFact({ llm, env: {} }, "fact", "use Array<string> for lists");
+    expect(judgement.verdict).toBe("contradicted");
+    expect(judgement.evidenceQuote).toBe("use Array<string> for lists");
+  });
+
+  it("leaves im_start substrings and bare angle brackets in replies intact", async () => {
+    const { llm } = stubLlm(VERDICT("still-true", "see im_start<span> docs"));
+    const judgement = await judgeDreamFact({ llm, env: {} }, "fact", "excerpt");
+    expect(judgement.verdict).toBe("still-true");
+    expect(judgement.evidenceQuote).toBe("see im_start<span> docs");
+  });
 });

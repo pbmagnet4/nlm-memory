@@ -236,10 +236,14 @@ export class OllamaClient implements LLMClient {
     }
   }
 
-  async complete(system: string, user: string, opts: { signal?: AbortSignal } = {}): Promise<string> {
+  async complete(system: string, user: string, opts: { signal?: AbortSignal; enable_thinking?: boolean } = {}): Promise<string> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.classifyTimeoutMs);
     opts.signal?.addEventListener("abort", () => controller.abort(), { once: true });
+    // Per-call enable_thinking wins; otherwise the construction-time think
+    // default governs (the dream lane passes false explicitly so it never
+    // burns thinking tokens even when classification tuning leaves it on).
+    const think = opts.enable_thinking !== undefined ? opts.enable_thinking : this.think;
     try {
       const res = await this.fetchImpl(`${this.baseUrl}/api/chat`, {
         method: "POST",
@@ -252,7 +256,7 @@ export class OllamaClient implements LLMClient {
           ],
           stream: false,
           options: { temperature: 0 },
-          ...(this.think !== undefined ? { think: this.think } : {}),
+          ...(think !== undefined ? { think } : {}),
         }),
         signal: controller.signal,
       });

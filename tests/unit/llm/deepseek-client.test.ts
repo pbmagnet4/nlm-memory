@@ -242,3 +242,46 @@ describe("DeepSeekClient gateway fallback", () => {
     );
   });
 });
+
+describe("DeepSeekClient.complete thinking switch", () => {
+  /** Fetch mock recording complete() bodies; replies with a plain string. */
+  function recordingComplete() {
+    const calls: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      calls.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return {
+        ok: true,
+        json: async () => ({ choices: [{ message: { content: "ok" } }] }),
+        text: async () => "",
+      } as unknown as Response;
+    }) as typeof fetch;
+    return { calls, fetchImpl };
+  }
+
+  const base = { apiKey: "local", baseUrl: "http://localhost:1234/v1", classifyModel: "m" };
+
+  it("merges chat_template_kwargs enable_thinking:false on per-call request", async () => {
+    const { calls, fetchImpl } = recordingComplete();
+    const client = new DeepSeekClient({ ...base, fetchImpl });
+    await expect(client.complete("sys", "user", { enable_thinking: false })).resolves.toBe("ok");
+    expect(calls[0]).toMatchObject({ chat_template_kwargs: { enable_thinking: false } });
+  });
+
+  it("sends no thinking switch when the call passes nothing", async () => {
+    const { calls, fetchImpl } = recordingComplete();
+    const client = new DeepSeekClient({ ...base, fetchImpl });
+    await client.complete("sys", "user");
+    expect(calls[0]).not.toHaveProperty("chat_template_kwargs");
+  });
+
+  it("per-call false preserves other construction-time template kwargs", async () => {
+    const { calls, fetchImpl } = recordingComplete();
+    const client = new DeepSeekClient({
+      ...base,
+      fetchImpl,
+      extraBody: { chat_template_kwargs: { other: 1 } },
+    });
+    await client.complete("sys", "user", { enable_thinking: false });
+    expect(calls[0]).toMatchObject({ chat_template_kwargs: { other: 1, enable_thinking: false } });
+  });
+});

@@ -78,28 +78,42 @@ export interface FactSupersedenceEntry {
 }
 
 /** Append a fact-level supersedence event to the shared audit JSONL.
- *  Entries carry `kind: "fact"` so the session-scoped reader skips them. */
+ *  Entries carry `kind: "fact"` so the session-scoped reader skips them.
+ *  Never raises — on failure emits one warning line to stderr (telemetry
+ *  path: the mutation itself already committed; only the audit row is
+ *  missing). Callers that must detect an audit failure (the dream
+ *  contradiction pass) use appendFactSupersedenceOrThrow instead. */
 export async function appendFactSupersedence(
   tenantId: string,
   entry: FactSupersedenceEntry,
   logPath: string = defaultLogPath(tenantId),
 ): Promise<void> {
   try {
-    await mkdir(dirname(logPath), { recursive: true });
-    const payload = {
-      ts: new Date().toISOString(),
-      kind: "fact",
-      fact_id: entry.factId,
-      ...(entry.reason !== undefined ? { reason: entry.reason } : {}),
-      ...(entry.source !== undefined ? { source: entry.source } : {}),
-    };
-    await appendFile(logPath, JSON.stringify(payload) + "\n", "utf8");
+    await appendFactSupersedenceOrThrow(tenantId, entry, logPath);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     process.stderr.write(
       `nlm-memory: failed to append fact-supersedence-log entry at ${logPath}: ${msg}\n`,
     );
   }
+}
+
+/** Throwing fact-supersedence append for callers whose report must reflect
+ *  an audit failure (the dream contradiction pass counts it as an error). */
+export async function appendFactSupersedenceOrThrow(
+  tenantId: string,
+  entry: FactSupersedenceEntry,
+  logPath: string = defaultLogPath(tenantId),
+): Promise<void> {
+  await mkdir(dirname(logPath), { recursive: true });
+  const payload = {
+    ts: new Date().toISOString(),
+    kind: "fact",
+    fact_id: entry.factId,
+    ...(entry.reason !== undefined ? { reason: entry.reason } : {}),
+    ...(entry.source !== undefined ? { source: entry.source } : {}),
+  };
+  await appendFile(logPath, JSON.stringify(payload) + "\n", "utf8");
 }
 
 export async function appendSupersedence(
