@@ -145,6 +145,21 @@ describe("OllamaClient.classify", () => {
   });
 });
 
+describe("OllamaClient.complete", () => {
+  it("sends the construction-time model by default and honors a per-call model override", async () => {
+    const bodies: unknown[] = [];
+    const fetchImpl = makeFetch(({ body }) => {
+      bodies.push(body);
+      return jsonResponse({ message: { content: "ok" } });
+    });
+    const client = new OllamaClient({ classifyModel: "qwen3.5:4b", fetchImpl });
+    await client.complete("sys", "user");
+    expect((bodies[0] as { model: string }).model).toBe("qwen3.5:4b");
+    await client.complete("sys", "user", { model: "gemma-4-12B" });
+    expect((bodies[1] as { model: string }).model).toBe("gemma-4-12B");
+  });
+});
+
 describe("OllamaClient.nameWorkstream", () => {
   const cands = [{ label: "NLM" }];
   it("returns the matched label", async () => {

@@ -266,7 +266,7 @@ export class DeepSeekClient implements LLMClient {
     }
   }
 
-  async complete(system: string, user: string, opts: { signal?: AbortSignal; maxTokens?: number } = {}): Promise<string> {
+  async complete(system: string, user: string, opts: { signal?: AbortSignal; maxTokens?: number; model?: string } = {}): Promise<string> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.classifyTimeoutMs);
     opts.signal?.addEventListener("abort", () => controller.abort(), { once: true });
@@ -275,7 +275,7 @@ export class DeepSeekClient implements LLMClient {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
         body: JSON.stringify({
-          model: this.classifyModel,
+          model: opts.model ?? this.classifyModel,
           messages: [
             { role: "system", content: system },
             { role: "user", content: user },

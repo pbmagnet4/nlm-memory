@@ -95,6 +95,21 @@ describe("DeepSeekClient — OpenAI-compatible request shaping", () => {
     expect(calls[0]!.body.max_tokens).toBe(16384);
   });
 
+  it("complete() sends the construction-time model by default and honors a per-call model override", async () => {
+    const { calls, fetchImpl } = recordingFetch();
+    const client = new DeepSeekClient({
+      apiKey: "local",
+      baseUrl: "http://h:1234/v1",
+      classifyModel: "deepseek-v4-flash",
+      responseFormat: "none",
+      fetchImpl,
+    });
+    await client.complete("sys", "user");
+    expect(calls[0]!.body.model).toBe("deepseek-v4-flash");
+    await client.complete("sys", "user", { model: "qwen-mini" });
+    expect(calls[1]!.body.model).toBe("qwen-mini");
+  });
+
   it("accepts an explicit apiKey so keyless local endpoints work without DEEPSEEK_API_KEY", () => {
     expect(
       () =>
