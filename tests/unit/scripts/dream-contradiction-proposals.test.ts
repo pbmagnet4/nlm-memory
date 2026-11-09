@@ -3,6 +3,9 @@
  * renderer (T1627). Synthetic findings only — no live corpus rows in
  * fixtures, no DB, no models.
  */
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   allowMatches,
@@ -12,6 +15,7 @@ import {
   queueFor,
   renderDraft,
   selectFindings,
+  writeDrafts,
   type ProposalFinding,
   type RunMeta,
 } from "../../../scripts/eval/dream-contradiction-proposals.js";
@@ -90,6 +94,25 @@ describe("allowMatches", () => {
     expect(allowMatches("fact_aaaa1111-2222", ["fact_bbbb2222"])).toBe(false);
     expect(allowMatches("fact_aaaa1111-2222", [])).toBe(false);
   });
+
+  it("throws on short, bare-prefix, or empty allow entries", () => {
+    const id = "fact_aaaa1111-0000-4000-8000-000000000000";
+    expect(() => allowMatches(id, ["fact_"])).toThrow();
+    expect(() => allowMatches(id, ["fact_aaa"])).toThrow();
+    expect(() => allowMatches(id, [""])).toThrow();
+  });
+
+  it("matches a valid 13-char prefix and an exact full id", () => {
+    const id = "fact_aaaa1111-0000-4000-8000-000000000000";
+    expect(allowMatches(id, ["fact_aaaa1111"])).toBe(true);
+    expect(allowMatches(id, [id])).toBe(true);
+  });
+
+  it("excludes non-matching ids under valid-length entries", () => {
+    expect(
+      allowMatches("fact_cccc3333-0000-4000-8000-000000000000", ["fact_aaaa1111"]),
+    ).toBe(false);
+  });
 });
 
 describe("queueFor", () => {
@@ -161,5 +184,45 @@ describe("selectFindings", () => {
 
   it("renders nothing when the allow list is empty", () => {
     expect(selectFindings({ findings: [finding()] }, [])).toEqual([]);
+  });
+});
+
+describe("writeDrafts", () => {
+  it("throws on same-path collisions before writing either file", () => {
+    const outDir = mkdtempSync(join(tmpdir(), "proposals-collision-"));
+    const rows = [
+      finding({ factId: "fact_aaaa1111-0000-4000-8000-000000000000" }),
+      finding({ factId: "fact_aaaa1111-1111-4000-8000-000000000000" }),
+    ];
+    expect(() => writeDrafts(rows, META, { outDir, labeledBy: "x" })).toThrow();
+    expect(existsSync(join(outDir, "Operations", "synthetic-widget--aaaa1111.md"))).toBe(
+      false,
+    );
+  });
+
+  it("skips existing files byte-identical and counts the skip", () => {
+    const outDir = mkdtempSync(join(tmpdir(), "proposals-skip-"));
+    const dir = join(outDir, "Operations");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "synthetic-widget--aaaa1111.md");
+    const sentinel = "human-edited draft — do not clobber\n";
+    writeFileSync(path, sentinel);
+    const result = writeDrafts([finding()], META, { outDir, labeledBy: "x" });
+    expect(result.written).toEqual([]);
+    expect(result.skipped).toEqual([path]);
+    expect(readFileSync(path, "utf-8")).toBe(sentinel);
+  });
+
+  it("writes fresh paths normally", () => {
+    const outDir = mkdtempSync(join(tmpdir(), "proposals-fresh-"));
+    const result = writeDrafts([finding()], META, {
+      outDir,
+      labeledBy: "Edward Chalupa (2026-11-09)",
+    });
+    expect(result.skipped).toEqual([]);
+    expect(result.written).toHaveLength(1);
+    const body = readFileSync(result.written[0]!, "utf-8");
+    expect(body).toContain("fact_aaaa1111-0000-4000-8000-000000000000");
+    expect(body).toContain("TP");
   });
 });
