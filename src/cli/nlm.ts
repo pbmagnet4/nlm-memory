@@ -109,7 +109,7 @@ import { buildWikiDriftEvent, buildWikiFailureEvent } from "../core/alerts/wiki-
 import { projectWiki } from "../core/wiki/project.js";
 import { FsWikiWriter } from "../core/adapters/fs-wiki-writer.js";
 import { JobSupervisor } from "../core/jobs/job-supervisor.js";
-import { startLoopLagMonitor, timeJob } from "../core/scheduler/loop-monitor.js";
+import { startLoopLagMonitor, timeJob, withActiveJob } from "../core/scheduler/loop-monitor.js";
 import { realClock, createJobSpawnChild } from "./reprocess-job-adapters.js";
 import { connectHermes, disconnectHermes, hermesConfigPath } from "../install/hermes.js";
 import { connectHermesAgent, disconnectHermesAgent, hermesAgentPluginDir } from "../install/hermes-agent.js";
@@ -666,10 +666,16 @@ program
     // minutes, plus one `[loop] <job> took ..` line whenever a single
     // synchronous slice inside a job crosses 250ms. NLM_LOOP_LOG=0 mutes both.
     const loopMonitor = startLoopLagMonitor({ logger: (msg) => console.error(msg) });
+    // T1757: every daemon job registers itself in the process-wide active-job
+    // set whether or not timing is on, so the `[loop] stall <ms>ms during: ..`
+    // line the lag monitor emits can name who was holding the loop. Muting the
+    // timing lines (NLM_LOOP_LOG=0) must not blind the attribution.
+    const loopLogMuted = process.env["NLM_LOOP_LOG"] === "0";
+    const loopLog = (msg: string) => console.error(msg);
     const timedJob = <T>(name: string, run: () => Promise<T> | T): Promise<T> =>
-      process.env["NLM_LOOP_LOG"] === "0"
-        ? Promise.resolve().then(run)
-        : timeJob(name, run, { logger: (msg) => console.error(msg) });
+      withActiveJob(name, () =>
+        loopLogMuted ? Promise.resolve().then(run) : timeJob(name, run, { logger: loopLog }),
+      );
     serve({ fetch: app.fetch, port: p, hostname: "127.0.0.1" }, (info) => {
       console.error(`nlm-memory http listening on http://localhost:${info.port}`);
       if (hasMcpToken) {
