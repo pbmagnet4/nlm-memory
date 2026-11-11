@@ -127,3 +127,72 @@ describe("ClassifierBox thinking tuning", () => {
     expect(set.bodies[0]?.["max_tokens"]).toBe(2048);
   });
 });
+
+/**
+ * T679 Part 4: a daemon with NLM_CLASSIFIER=openai (model litellm-classifier on a
+ * LiteLLM gateway) logged "LLM unreachable: deepseek", because the `openai`
+ * provider rides DeepSeekClient — a generic OpenAI-compatible transport — and that
+ * class named itself in every error. The label must be the configured provider, or
+ * the operator debugs the wrong lane.
+ */
+describe("ClassifierBox provider label in errors", () => {
+  const base = { model: "litellm-classifier", baseUrl: "http://gw/v1", apiKey: "k" } as const;
+
+  function statusFetch(status: number) {
+    return (async () => new Response("upstream unavailable", { status })) as unknown as typeof fetch;
+  }
+  const networkDownFetch = (async () => {
+    throw new TypeError("fetch failed");
+  }) as unknown as typeof fetch;
+
+  it("names the openai provider on an HTTP failure, not the transport class", async () => {
+    const box = new ClassifierBox({ provider: "openai", ...base, fetchImpl: statusFetch(503) });
+    const err = await box.classify("[user] hi").catch((e: unknown) => e);
+    expect(String(err)).toContain("LLM unreachable: openai (status 503");
+    expect(String(err)).not.toMatch(/deepseek/i);
+  });
+
+  it("names the openai provider on a network failure", async () => {
+    const box = new ClassifierBox({ provider: "openai", ...base, fetchImpl: networkDownFetch });
+    const err = await box.classify("[user] hi").catch((e: unknown) => e);
+    expect(String(err)).toContain("LLM unreachable: openai");
+    expect(String(err)).not.toMatch(/deepseek/i);
+  });
+
+  it("labels rewrite and complete with the openai provider too", async () => {
+    const box = new ClassifierBox({ provider: "openai", ...base, fetchImpl: statusFetch(502) });
+    await expect(box.rewriteForRecall("what did we decide"))
+      .rejects.toThrow(/LLM unreachable: openai-rewrite \(status 502/);
+    await expect(box.complete("sys", "user")).rejects.toThrow(/LLM unreachable: openai-complete/);
+  });
+
+  it("labels an unparseable response with the openai provider", async () => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ choices: [{ message: { content: "not json at all" } }] }), {
+        status: 200,
+      })) as unknown as typeof fetch;
+    const box = new ClassifierBox({ provider: "openai", ...base, fetchImpl });
+    await expect(box.classify("[user] hi")).rejects.toThrow(/openai returned non-JSON content/);
+  });
+
+  it("still says deepseek when the deepseek provider is the one configured", async () => {
+    vi.stubEnv("DEEPSEEK_API_KEY", "k");
+    const box = new ClassifierBox({
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      fetchImpl: statusFetch(503),
+    });
+    await expect(box.classify("[user] hi")).rejects.toThrow(/LLM unreachable: deepseek \(status 503/);
+    vi.unstubAllEnvs();
+  });
+
+  it("keeps the label after a runtime provider swap", async () => {
+    vi.stubEnv("DEEPSEEK_API_KEY", "k");
+    const box = new ClassifierBox({ provider: "openai", ...base, fetchImpl: statusFetch(503) });
+    box.swap("deepseek", "deepseek-v4-flash");
+    await expect(box.classify("[user] hi")).rejects.toThrow(/LLM unreachable: deepseek/);
+    box.swap("openai", "litellm-classifier");
+    await expect(box.classify("[user] hi")).rejects.toThrow(/LLM unreachable: openai/);
+    vi.unstubAllEnvs();
+  });
+});

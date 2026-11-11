@@ -139,12 +139,16 @@ export class ClassifierBox implements LLMClient {
         classifyModel: model,
         responseFormat: "none",
         classifyTimeoutMs,
+        // Name the provider that is actually configured. Without this the
+        // openai lane reports "LLM unreachable: deepseek" (its transport class's
+        // own name) and an operator debugging a LiteLLM gateway chases DeepSeek.
+        providerLabel: provider,
         ...maxTokens,
         ...(thinkingOff ? { extraBody: { chat_template_kwargs: { enable_thinking: false } } } : {}),
         ...fetchImpl,
       });
     }
     // deepseek cloud API has no thinking switch: nothing is sent for either mode.
-    return new DeepSeekClient({ classifyModel: model, classifyTimeoutMs, ...maxTokens, ...fetchImpl });
+    return new DeepSeekClient({ classifyModel: model, classifyTimeoutMs, providerLabel: provider, ...maxTokens, ...fetchImpl });
   }
 }
