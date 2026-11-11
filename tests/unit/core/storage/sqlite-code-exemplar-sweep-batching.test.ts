@@ -3,10 +3,11 @@
  * used to run their whole backlog through one `db.transaction`. better-sqlite3 is
  * synchronous, so that was one slice no HTTP request could interrupt, and it runs
  * on every scheduler tick whenever `NLM_CODE_EXEMPLARS_ENABLED=1`. The deletes are
- * now chunked with an event-loop yield between chunks; these tests pin the two
- * things that must survive that change: *which rows get deleted* (identical at any
- * chunk size, and the sweep guard still gets to refuse) and *that the loop actually
- * gets a turn*.
+ * now chunked with a yield between chunks; these tests pin the two things that must
+ * survive that change: *which rows get deleted* (identical at any chunk size, and
+ * the sweep guard still gets to refuse) and *that the chunk boundary is reached*
+ * (counted through the injected yield function — a timer would be a race, since a
+ * sweep this small finishes inside one millisecond).
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -14,7 +15,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteSessionStore } from "../../../../src/core/storage/sqlite-session-store.js";
-import { SqliteCodeExemplarStore } from "../../../../src/core/storage/sqlite-code-exemplar-store.js";
+import {
+  DEFAULT_EXEMPLAR_DELETE_CHUNK,
+  SqliteCodeExemplarStore,
+} from "../../../../src/core/storage/sqlite-code-exemplar-store.js";
 import { codeHash } from "../../../../src/core/exemplars/ingest-exemplar.js";
 import type { CodeExemplarInput } from "../../../../src/shared/types.js";
 
@@ -45,114 +49,117 @@ function input(n: number, overrides: Partial<CodeExemplarInput> = {}): CodeExemp
 
 let dir: string;
 let sessions: SqliteSessionStore;
-let store: SqliteCodeExemplarStore;
-let chunkEnv: string | undefined;
 
-beforeEach(async () => {
+beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "nlm-exemplar-sweep-"));
-  chunkEnv = process.env["NLM_EXEMPLAR_DELETE_CHUNK"];
   sessions = new SqliteSessionStore({ dbPath: join(dir, "t.sqlite"), migrationsDir: MIGRATIONS });
-  store = new SqliteCodeExemplarStore(sessions.rawDb());
 });
 
 afterEach(async () => {
-  if (chunkEnv === undefined) delete process.env["NLM_EXEMPLAR_DELETE_CHUNK"];
-  else process.env["NLM_EXEMPLAR_DELETE_CHUNK"] = chunkEnv;
   await sessions.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
-function remainingIds(): string[] {
-  return sessions
-    .rawDb()
-    .prepare<unknown[], { id: string }>("SELECT id FROM code_exemplars ORDER BY id")
-    .all()
-    .map((r) => r.id);
+/** Store wired with the given chunk size and a counter for the between-chunk yield. */
+function storeWith(opts: { chunk: number }): { store: SqliteCodeExemplarStore; yields: () => number } {
+  let yields = 0;
+  const store = new SqliteCodeExemplarStore(sessions.rawDb(), {
+    deleteChunkRows: opts.chunk,
+    yieldFn: () => {
+      yields += 1;
+      return Promise.resolve();
+    },
+  });
+  return { store, yields: () => yields };
 }
 
-/** Counts event-loop turns taken while `run` is in flight — the only observable
- *  proof that a batched sweep released the loop. */
-async function withTurnCounter<T>(run: () => Promise<T>): Promise<{ value: T; turns: number }> {
-  let turns = 0;
-  const timer = setInterval(() => {
-    turns += 1;
-  }, 0);
-  const value = await run();
-  clearInterval(timer);
-  return { value, turns };
+function rows(n: number, overrides: Partial<CodeExemplarInput> = {}): CodeExemplarInput[] {
+  return Array.from({ length: n }, (_, i) => input(i, overrides));
 }
 
-async function seed(rows: ReadonlyArray<CodeExemplarInput>): Promise<void> {
-  await store.insertMany(TENANT, rows);
+function remainingCount(): number {
+  return (
+    sessions.rawDb().prepare<[], { n: number }>("SELECT COUNT(*) AS n FROM code_exemplars").get()?.n ?? 0
+  );
 }
 
 describe("pruneReverted bounded deletes", () => {
-  it("deletes every reverted row across chunk boundaries and yields between chunks", async () => {
-    // 12 rows total: the sweep guard only binds at >= 10 rows, and 5/12 stays
-    // under its refusal share, so this is the allowed path.
-    const rows = [
-      ...Array.from({ length: 5 }, (_, i) => input(i, { survived: 0 })),
-      ...Array.from({ length: 7 }, (_, i) => input(i + 5, { survived: 1 })),
-    ];
-    await seed(rows);
-    const before = remainingIds();
-    expect(before).toHaveLength(12);
-    process.env["NLM_EXEMPLAR_DELETE_CHUNK"] = "2";
+  // 12 rows total: the sweep guard only binds at >= 10 rows, and touching 5 of 12
+  // stays under its refusal share, so this exercises the allowed path.
+  const seedMixed = async (store: SqliteCodeExemplarStore) => {
+    await store.insertMany(
+      TENANT,
+      Array.from({ length: 5 }, (_, i) => input(i, { survived: 0 })).concat(
+        Array.from({ length: 7 }, (_, i) => input(i + 5, { survived: 1 })),
+      ),
+    );
+  };
 
-    const { value: deleted, turns } = await withTurnCounter(() => store.pruneReverted(TENANT, SCOPE));
+  it("deletes every reverted row across chunk boundaries, yielding between chunks", async () => {
+    const { store, yields } = storeWith({ chunk: 2 });
+    await seedMixed(store);
+    expect(remainingCount()).toBe(12);
+
+    const deleted = await store.pruneReverted(TENANT, SCOPE);
 
     expect(deleted).toBe(5);
-    expect(remainingIds()).toHaveLength(7);
-    // 5 ids at 2 per chunk is 3 chunks, so at least two yields happened.
-    expect(turns).toBeGreaterThan(0);
+    expect(remainingCount()).toBe(7);
+    // 5 ids at 2 per chunk is 3 chunks, so 2 between-chunk yields.
+    expect(yields()).toBe(2);
   });
 
   it("deletes the same rows whatever the chunk size", async () => {
-    const rows = [
-      ...Array.from({ length: 5 }, (_, i) => input(i, { survived: 0 })),
-      ...Array.from({ length: 7 }, (_, i) => input(i + 5, { survived: 1 })),
-    ];
-    await seed(rows);
-    const withBigChunk = await store.pruneReverted(TENANT, SCOPE);
-    const afterBig = remainingIds();
+    const big = storeWith({ chunk: DEFAULT_EXEMPLAR_DELETE_CHUNK });
+    await seedMixed(big.store);
+    const deletedBig = await big.store.pruneReverted(TENANT, SCOPE);
+    const leftBig = remainingCount();
 
-    // Re-seed the reverted rows and sweep again with a chunk of one.
-    await seed(rows);
-    process.env["NLM_EXEMPLAR_DELETE_CHUNK"] = "1";
-    const withSmallChunk = await store.pruneReverted(TENANT, SCOPE);
+    const small = storeWith({ chunk: 1 });
+    await seedMixed(small.store);
+    const deletedSmall = await small.store.pruneReverted(TENANT, SCOPE);
 
-    expect(withSmallChunk).toBe(withBigChunk);
-    expect(remainingIds()).toEqual(afterBig);
+    expect(deletedSmall).toBe(deletedBig);
+    expect(remainingCount()).toBe(leftBig);
+    // One yield per extra chunk: 5 ids, 1 per chunk.
+    expect(small.yields()).toBe(4);
+    // A chunk size that covers the backlog never yields.
+    expect(big.yields()).toBe(0);
   });
 
-  it("returns 0 without touching the loop when nothing is reverted", async () => {
-    await seed(Array.from({ length: 3 }, (_, i) => input(i, { survived: 1 })));
-    process.env["NLM_EXEMPLAR_DELETE_CHUNK"] = "1";
-    const { value: deleted } = await withTurnCounter(() => store.pruneReverted(TENANT, SCOPE));
-    expect(deleted).toBe(0);
-    expect(remainingIds()).toHaveLength(3);
+  it("returns 0 without yielding when nothing is reverted", async () => {
+    const { store, yields } = storeWith({ chunk: 1 });
+    await store.insertMany(TENANT, rows(3, { survived: 1 }));
+    expect(await store.pruneReverted(TENANT, SCOPE)).toBe(0);
+    expect(yields()).toBe(0);
+    expect(remainingCount()).toBe(3);
   });
 
   it("still lets the sweep guard refuse the whole run", async () => {
     // 12 reverted of 12: 100% share, above the guard's 80% ceiling.
-    await seed(Array.from({ length: 12 }, (_, i) => input(i, { survived: 0 })));
-    process.env["NLM_EXEMPLAR_DELETE_CHUNK"] = "2";
-    const deleted = await store.pruneReverted(TENANT, SCOPE);
-    expect(deleted).toBe(0);
-    expect(remainingIds()).toHaveLength(12);
+    const { store, yields } = storeWith({ chunk: 2 });
+    await store.insertMany(TENANT, rows(12, { survived: 0 }));
+    expect(await store.pruneReverted(TENANT, SCOPE)).toBe(0);
+    expect(yields()).toBe(0);
+    expect(remainingCount()).toBe(12);
+  });
+
+  it("ignores a nonsense chunk size instead of looping forever", async () => {
+    const zero = new SqliteCodeExemplarStore(sessions.rawDb(), { deleteChunkRows: 0 });
+    await seedMixed(zero);
+    expect(await zero.pruneReverted(TENANT, SCOPE)).toBe(5);
   });
 });
 
 describe("applyBucketCap bounded deletes", () => {
   it("keeps the newest maxPerBucket per bucket and yields between chunks", async () => {
-    await seed(Array.from({ length: 12 }, (_, i) => input(i)));
-    process.env["NLM_EXEMPLAR_DELETE_CHUNK"] = "2";
+    const { store, yields } = storeWith({ chunk: 2 });
+    await store.insertMany(TENANT, rows(12));
 
-    const { value: deleted, turns } = await withTurnCounter(() =>
-      store.applyBucketCap(TENANT, SCOPE, 5),
-    );
+    const deleted = await store.applyBucketCap(TENANT, SCOPE, 5);
 
     expect(deleted).toBe(7);
+    // 7 doomed ids at 2 per chunk is 4 chunks, so 3 yields.
+    expect(yields()).toBe(3);
     const left = sessions
       .rawDb()
       .prepare<unknown[], { ts: string }>("SELECT ts FROM code_exemplars ORDER BY ts DESC")
@@ -163,14 +170,13 @@ describe("applyBucketCap bounded deletes", () => {
     expect(left).toEqual(
       Array.from({ length: 5 }, (_, i) => `2026-06-${String(12 - i).padStart(2, "0")}T12:00:00.000Z`),
     );
-    expect(turns).toBeGreaterThan(0);
   });
 
   it("deletes nothing when every bucket is already under the cap", async () => {
-    await seed(Array.from({ length: 3 }, (_, i) => input(i)));
-    process.env["NLM_EXEMPLAR_DELETE_CHUNK"] = "1";
-    const { value: deleted } = await withTurnCounter(() => store.applyBucketCap(TENANT, SCOPE, 50));
-    expect(deleted).toBe(0);
-    expect(remainingIds()).toHaveLength(3);
+    const { store, yields } = storeWith({ chunk: 1 });
+    await store.insertMany(TENANT, rows(3));
+    expect(await store.applyBucketCap(TENANT, SCOPE, 50)).toBe(0);
+    expect(yields()).toBe(0);
+    expect(remainingCount()).toBe(3);
   });
 });

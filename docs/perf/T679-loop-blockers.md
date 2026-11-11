@@ -147,7 +147,9 @@ counts into rowid windows is worth the churn.
   `code_exemplars_vec` virtual table **inside one `db.transaction`** — one slice,
   proportional to the backlog, on every tick when `NLM_CODE_EXEMPLARS_ENABLED=1`
   (which it is: it is in the boot banner). **Fixed (Part 3):** the deletes now run
-  in `DEFAULT_EXEMPLAR_DELETE_CHUNK` (200, `NLM_EXEMPLAR_DELETE_CHUNK`) chunks, one
+  in `DEFAULT_EXEMPLAR_DELETE_CHUNK` (200; the store's `deleteChunkRows`
+  construction option overrides it, which is also how the tests count chunk
+  boundaries) chunks, one
   transaction each, with `await yieldToEventLoop()` between them. The id list is
   still chosen up front and the sweep guard is still consulted once for the whole
   run, so the rows deleted are the same; the difference is that a crash mid-prune

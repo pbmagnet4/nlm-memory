@@ -190,16 +190,18 @@ describe("computeReDerivationRate equivalence with the pre-T679 implementation",
     expect(paced).toEqual(unpaced);
   });
 
-  it("gives up its slice periodically with the real yield function", async () => {
-    const { sessions } = randomFixture(3, 30);
-    const deps = depsOf(sessions, []);
-    let timerRan = 0;
-    const timer = setInterval(() => {
-      timerRan += 1;
-    }, 0);
-    await computeReDerivationRate(deps, 90, { yieldEveryPairs: 1 });
-    clearInterval(timer);
-    expect(timerRan).toBeGreaterThan(0);
+  it("yields between rows, not once for the whole corpus", async () => {
+    // The yield-count seam is the assertion; "did a timer happen to fire during a
+    // sub-millisecond job" would just be a race. The real yieldToEventLoop's own
+    // behaviour is pinned in tests/unit/core/util/yield-loop.test.ts.
+    const { sessions, edges } = randomFixture(3, 30);
+    let yields = 0;
+    const counting = async () => {
+      yields += 1;
+    };
+    const deps = depsOf(sessions, edges);
+    await computeReDerivationRate(deps, 90, { yieldEveryPairs: 1, yieldFn: counting });
+    expect(yields).toBeGreaterThan(1);
   });
 });
 

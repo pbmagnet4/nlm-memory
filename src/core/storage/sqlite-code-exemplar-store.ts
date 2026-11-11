@@ -72,15 +72,26 @@ export function exemplarId(parts: {
  *  backlog without ever owning the loop for a whole tick (T679). */
 export const DEFAULT_EXEMPLAR_DELETE_CHUNK = 200;
 
-function exemplarDeleteChunk(): number {
-  const raw = process.env["NLM_EXEMPLAR_DELETE_CHUNK"];
-  if (raw === undefined) return DEFAULT_EXEMPLAR_DELETE_CHUNK;
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_EXEMPLAR_DELETE_CHUNK;
+export interface ExemplarSweepOptions {
+  /** Exemplar ids per delete transaction. */
+  readonly deleteChunkRows?: number;
+  /** What to await between chunks. Defaults to one event-loop turn; a test can
+   *  count the boundary instead of racing a timer. */
+  readonly yieldFn?: () => Promise<void>;
 }
 
 export class SqliteCodeExemplarStore implements CodeExemplarStore {
-  constructor(private readonly db: Database.Database) {}
+  private readonly deleteChunkRows: number;
+  private readonly yieldBetweenChunks: () => Promise<void>;
+
+  constructor(
+    private readonly db: Database.Database,
+    opts: ExemplarSweepOptions = {},
+  ) {
+    const chunk = opts.deleteChunkRows ?? DEFAULT_EXEMPLAR_DELETE_CHUNK;
+    this.deleteChunkRows = Number.isInteger(chunk) && chunk > 0 ? chunk : DEFAULT_EXEMPLAR_DELETE_CHUNK;
+    this.yieldBetweenChunks = opts.yieldFn ?? yieldToEventLoop;
+  }
 
   async insert(tenantId: string, input: CodeExemplarInput): Promise<{ id: string; skipped: boolean }> {
     const id = exemplarId({
@@ -334,7 +345,7 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
     if (ids.length === 0) return 0;
     const del = this.db.prepare("DELETE FROM code_exemplars WHERE id = ?");
     const delVec = this.db.prepare("DELETE FROM code_exemplars_vec WHERE exemplar_id = ?");
-    const chunkSize = exemplarDeleteChunk();
+    const chunkSize = this.deleteChunkRows;
     const chunk = this.db.transaction((batch: ReadonlyArray<string>): number => {
       let n = 0;
       for (const id of batch) {
@@ -346,7 +357,7 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
     });
     let deleted = 0;
     for (let lo = 0; lo < ids.length; lo += chunkSize) {
-      if (lo > 0) await yieldToEventLoop();
+      if (lo > 0) await this.yieldBetweenChunks();
       deleted += chunk(ids.slice(lo, lo + chunkSize));
     }
     return deleted;
