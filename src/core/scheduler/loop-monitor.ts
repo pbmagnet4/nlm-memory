@@ -18,6 +18,9 @@
  *     classify call and blocks nothing in the meantime. The synchronous slice
  *     decides whether we log; the wall time is reported next to it.
  *
+ * The fix side of T679 uses `yieldToEventLoop` (`@core/util/yield-loop.js`) to
+ * hand the loop a turn between batches of the work described here.
+ *
  * Measurement, and why it is not just `monitorEventLoopDelay`:
  * `monitorEventLoopDelay`'s histogram is used for the percentiles, but its own
  * `max` was measured (node 22.22.3 / macOS, 2026-11-11) to report 15.2ms for a
@@ -50,17 +53,6 @@ export const DEFAULT_LAG_REPORT_INTERVAL_MS = 5 * 60_000;
 export const DEFAULT_PROBE_RESOLUTION_MS = 20;
 
 const NS_PER_MS = 1e6;
-
-/**
- * Hand the event loop one turn. Used between batches of synchronous SQLite
- * work so a waiting socket read (a prompt-recall hook's request, an in-flight
- * response) gets serviced instead of queueing behind the next batch. One
- * `setImmediate` is enough: everything already queued in the poll phase runs
- * before the continuation does.
- */
-export function yieldToEventLoop(): Promise<void> {
-  return new Promise<void>((resolve) => setImmediate(resolve));
-}
 
 function roundMs(value: number): number {
   return Math.round(value * 10) / 10;

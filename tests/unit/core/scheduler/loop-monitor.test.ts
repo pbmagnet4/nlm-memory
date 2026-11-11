@@ -14,7 +14,6 @@ import {
   startLoopLagMonitor,
   syncSliceProbe,
   timeJob,
-  yieldToEventLoop,
   type JobSample,
 } from "@core/scheduler/loop-monitor.js";
 
@@ -131,19 +130,6 @@ describe("timeJob", () => {
     expect(p.read()).toBe(0);
   });
 
-  it("yields one turn to the event loop", async () => {
-    const order: string[] = [];
-    const t = setTimeout(() => order.push("timer-must-not-run"), 0);
-    await yieldToEventLoop();
-    order.push("after-yield");
-    clearTimeout(t);
-    expect(order).toEqual(["after-yield"]);
-    await new Promise<void>((resolve) => setImmediate(() => {
-      order.push("immediate");
-      resolve();
-    }));
-    expect(order).toEqual(["after-yield", "immediate"]);
-  });
 });
 
 describe("startLoopLagMonitor", () => {
