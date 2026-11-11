@@ -26,6 +26,7 @@ import {
   dreamSettingsStoreAttached,
   flushedDreamSettingsWrite,
   getDreamSettings,
+  lastDreamSettingsWrite,
   loadStoredDreamSettings,
   reseedDreamSettings,
   updateDreamSettings,
@@ -246,10 +247,45 @@ describe("updateDreamSettings — write-through", () => {
     await expect(flushedDreamSettingsWrite()).resolves.toBeUndefined();
   });
 
+  it("each update carries its own write promise: first write fails, second succeeds", async () => {
+    let n = 0;
+    const flaky = {
+      load: () => Promise.resolve(null),
+      save: () => (++n === 1 ? Promise.reject(new Error("disk full")) : Promise.resolve()),
+    };
+    await loadStoredDreamSettings(flaky, { env: {}, logger: log });
+    // Two updates queued back to back, as two concurrent POSTs would do.
+    updateDreamSettings({ model: "first" });
+    const first = lastDreamSettingsWrite();
+    updateDreamSettings({ model: "second" });
+    const second = lastDreamSettingsWrite();
+    // The failure belongs to the update that queued it — and to nobody else.
+    await expect(first).rejects.toThrow(/disk full/);
+    await expect(second).resolves.toBeUndefined();
+  });
+
+  it("each update carries its own write promise: second write fails, first succeeds", async () => {
+    let n = 0;
+    const flaky = {
+      load: () => Promise.resolve(null),
+      save: () => (++n === 2 ? Promise.reject(new Error("disk full")) : Promise.resolve()),
+    };
+    await loadStoredDreamSettings(flaky, { env: {}, logger: log });
+    updateDreamSettings({ model: "first" });
+    const first = lastDreamSettingsWrite();
+    updateDreamSettings({ model: "second" });
+    const second = lastDreamSettingsWrite();
+    // The later failure does not travel back to the earlier request, and
+    // the global tail now reports the newer write's outcome.
+    await expect(first).resolves.toBeUndefined();
+    await expect(second).rejects.toThrow(/disk full/);
+  });
+
   it("with no store attached nothing is written and nothing throws", async () => {
     reseedDreamSettings({});
     expect(dreamSettingsStoreAttached()).toBe(false);
     expect(updateDreamSettings({ model: "memory-only" }).model).toBe("memory-only");
+    await expect(lastDreamSettingsWrite()).resolves.toBeUndefined();
     await expect(flushedDreamSettingsWrite()).resolves.toBeUndefined();
   });
 

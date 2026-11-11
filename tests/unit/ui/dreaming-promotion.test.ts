@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { promotionDraft, promotionEdit, type PromotionSettings } from "../../../src/ui/lib/dream-promotion.js";
+import { persistenceNote, promotionDraft, promotionEdit, type PromotionSettings } from "../../../src/ui/lib/dream-promotion.js";
 
 const current: PromotionSettings = {
   enabled: true,
@@ -33,5 +33,12 @@ describe("promotion pass card", () => {
       expect(e.invalid).toEqual(["minCorroboration"]);
       expect(e.patch).toEqual({});
     }
+  });
+
+  it("claims durability only when the daemon reports persistence", () => {
+    expect(persistenceNote(true)).toContain("survive restarts");
+    expect(persistenceNote(false)).toContain("memory only");
+    expect(persistenceNote(null)).toBeNull();
+    expect(persistenceNote(undefined)).toBeNull();
   });
 });

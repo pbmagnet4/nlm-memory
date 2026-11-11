@@ -358,6 +358,10 @@ function validatePatch(patch: unknown, gate: ContradictionApplyGate): {
  * one; it is a parameter rather than a module read so the passed branch is
  * testable without mutating module state. Every caller, the HTTP route
  * included, leaves it at the default.
+ *
+ * The write this queues is observable as `lastDreamSettingsWrite()`; a request
+ * reporting durability must read it synchronously here, not await the global
+ * `flushedDreamSettingsWrite()` tail.
  */
 export function updateDreamSettings(patch: unknown, gate: ContradictionApplyGate = CONTRADICTION_APPLY_GATE): DreamSettings {
   const valid = validatePatch(patch, gate);
@@ -379,8 +383,15 @@ export function updateDreamSettings(patch: unknown, gate: ContradictionApplyGate
 let store: DreamSettingsStore | null = null;
 /** The last write-through's outcome. The write itself is chained so two
  *  accepted updates cannot interleave a half-written document, and its
- *  rejection is kept here for the route to await and surface as a 500. */
+ *  rejection is kept here for the global flush helper. Per-request callers
+ *  (the POST route) await their own write instead — see
+ *  lastDreamSettingsWrite(). */
 let lastWrite: Promise<void> = Promise.resolve();
+/** The write queued by the most recent accepted update, whoever queued it.
+ *  Replaced on every update and on every attach, so a caller that reads it
+ *  synchronously after updateDreamSettings() holds *its* request's promise
+ *  even while a later update has already queued behind it. */
+let lastQueuedWrite: Promise<void> = Promise.resolve();
 
 /** Attach (or detach with null) the settings store. Binding does not write:
  *  a daemon that starts and never edits keeps a fresh database row-free, so
@@ -388,6 +399,7 @@ let lastWrite: Promise<void> = Promise.resolve();
 export function attachDreamSettingsStore(next: DreamSettingsStore | null): void {
   store = next;
   lastWrite = Promise.resolve();
+  lastQueuedWrite = Promise.resolve();
 }
 
 /** Whether a settings store is attached (the routes report the difference). */
@@ -396,21 +408,35 @@ export function dreamSettingsStoreAttached(): boolean {
 }
 
 /** Resolve when the most recent write-through settles; rejects if that write
- *  failed. Nothing is lost when nobody awaits it: the module already handles
- *  the rejection, so no unhandled rejection escapes from a CLI path. */
+ *  failed. A request must NOT use this to judge its own write: with two
+ *  concurrent updates this reports whichever one was queued last, so one
+ *  request can surface the other's failure (or its own success). It stays for
+ *  tests and CLI flush-on-exit style callers that just want the lane drained. */
 export async function flushedDreamSettingsWrite(): Promise<void> {
   await lastWrite;
 }
 
+/** The write-through queued by the most recent updateDreamSettings() call —
+ *  a resolved promise when that update wrote nothing (no store attached).
+ *  Read this synchronously after updateDreamSettings(); awaiting it reports
+ *  exactly this update's write, no matter what queues behind it. */
+export function lastDreamSettingsWrite(): Promise<void> {
+  return lastQueuedWrite;
+}
+
 function writeThrough(snapshot: DreamSettings): void {
-  if (!store) return;
+  if (!store) {
+    lastQueuedWrite = Promise.resolve();
+    return;
+  }
   const target = store;
   const write = Promise.resolve(lastWrite)
     .catch(() => undefined) // a previously surfaced failure does not block this write
     .then(() => target.save(snapshot));
   lastWrite = write;
+  lastQueuedWrite = write;
   // The tail never rejects, so the chain keeps going; the awaited rejection
-  // still reaches whoever calls flushedDreamSettingsWrite().
+  // still reaches whoever holds this write's promise.
   void write.catch(() => undefined);
 }
 

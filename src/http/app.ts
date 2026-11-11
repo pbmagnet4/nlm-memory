@@ -71,7 +71,7 @@ import {
   type ClassifierTuning,
 } from "@core/classifier/tuning.js";
 import { ClassifierBox, type ClassifierProvider } from "../llm/classifier-box.js";
-import { DreamSettingsError, dreamSettingsStoreAttached, flushedDreamSettingsWrite, getDreamSettings, lastRuns, updateDreamSettings } from "@core/dream/settings.js";
+import { DreamSettingsError, dreamSettingsStoreAttached, getDreamSettings, lastDreamSettingsWrite, lastRuns, updateDreamSettings } from "@core/dream/settings.js";
 import {
   SourceRegistry,
   PgSourceRegistry,
@@ -1599,16 +1599,20 @@ function registerDreamingRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
       return c.json({ error: "body must be a JSON object" }, 400);
     }
     let settings: ReturnType<typeof getDreamSettings>;
+    let write: Promise<void>;
     try {
       settings = updateDreamSettings(body);
+      // Captured synchronously: this is *this* request's write, so a second
+      // concurrent POST queueing behind it cannot swap the outcome we report.
+      write = lastDreamSettingsWrite();
     } catch (e) {
       if (e instanceof DreamSettingsError) return c.json({ error: e.message }, 400);
       throw e;
     }
     try {
       // The in-memory edit is already live for the next pass run; a store that
-      // refused the write is reported instead of lost silently.
-      await flushedDreamSettingsWrite();
+      // refused *this* request's write is reported instead of lost silently.
+      await write;
     } catch (e) {
       return c.json(
         {
