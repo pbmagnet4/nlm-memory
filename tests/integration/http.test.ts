@@ -1605,6 +1605,52 @@ describe("HTTP adapter: POST /api/classifier openai/openai-compatible swap", () 
     expect(classifier.provider).toBe("ollama");
   });
 
+  it("accepts an openai-kind swap on a daemon already running on openai with no swap baseUrl (T1708)", async () => {
+    // A daemon that resolved its own endpoint (Providers registry, or a
+    // hosted config that set no NLM_CLASSIFIER_BASE_URL) reports provider
+    // 'openai' with openAiSwapAvailable false — and GET /api/classifier/info
+    // already lists 'openai' in available_providers for exactly that state.
+    // POST used to refuse it: the page could see the provider it could not set.
+    const swapped: Array<[string, string]> = [];
+    const classifier = {
+      provider: "openai",
+      model: "google/gemma-4-26b-a4b-qat",
+      openAiSwapAvailable: false,
+      swap: (provider: string, model: string) => {
+        swapped.push([provider, model]);
+        classifier.model = model;
+      },
+    };
+    const app = createApp({ ...minimalDeps, classifier } as never);
+
+    const info = await app.request("/api/classifier/info");
+    expect(((await info.json()) as { available_providers: string[] }).available_providers).toContain("openai");
+
+    const res = await app.request("/api/classifier", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: "openai", model: "meta/muse-glimmer" }),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { provider: string; model: string }).model).toBe("meta/muse-glimmer");
+
+    // Same validation as the others: still a model required, and the
+    // 'openai-compatible' alias rides the same branch.
+    const noModel = await app.request("/api/classifier", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: "openai" }),
+    });
+    expect(noModel.status).toBe(400);
+    const alias = await app.request("/api/classifier", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: "openai-compatible", model: "meta/muse-glimmer-2" }),
+    });
+    expect(alias.status).toBe(200);
+    expect(swapped).toEqual([["openai", "meta/muse-glimmer"], ["openai", "meta/muse-glimmer-2"]]);
+  });
+
   it("reports openai_swap_available and includes 'openai' in available_providers once baseUrl is configured", async () => {
     const classifier = new ClassifierBox({
       provider: "openai",

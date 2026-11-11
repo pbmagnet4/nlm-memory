@@ -1682,7 +1682,14 @@ function registerClassifierRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     if (provider === "deepseek" && !process.env["DEEPSEEK_API_KEY"]) {
       return c.json({ error: "DEEPSEEK_API_KEY not set — cannot swap to deepseek" }, 400);
     }
-    if (isOpenAiKind && !deps.classifier.openAiSwapAvailable) {
+    // The endpoint must exist, which is either "a baseUrl was configured for a
+    // later swap" or "the daemon is already running on it" (T1708). The second
+    // case is what a daemon started with NLM_CLASSIFIER=openai on a baseUrl it
+    // resolved itself looks like, and GET /api/classifier/info already lists
+    // 'openai' for it — accepting only the first made POST refuse the provider
+    // the same deployment advertises, which is the bug.
+    const openAiEndpointExists = deps.classifier.openAiSwapAvailable || deps.classifier.provider === "openai";
+    if (isOpenAiKind && !openAiEndpointExists) {
       return c.json(
         {
           error:
