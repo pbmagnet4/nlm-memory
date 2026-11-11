@@ -260,6 +260,80 @@ describe("POST /api/dreaming with an attached settings store", () => {
     const res = await appWith(true).request("/api/dreaming");
     expect(((await res.json()) as { persistence: boolean }).persistence).toBe(false);
   });
+
+  it("two concurrent POSTs where the second write fails: first 200s, second 500s", async () => {
+    // Concurrency seam: the store keeps the first save pending until released,
+    // so request B applies (and queues its write) while A is still in flight.
+    // Under the old global-tail await, the request whose write settled last
+    // owned the tail both requests awaited.
+    let n = 0;
+    let releaseFirst: () => void = () => {};
+    const firstWrite = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    attachDreamSettingsStore({
+      load: () => Promise.resolve(null),
+      save: () => (++n === 1 ? firstWrite : Promise.reject(new Error("disk full"))),
+    });
+    const post = (model: string) =>
+      appWith(true).request("/api/dreaming", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model }),
+      });
+
+    const a = post("a-model");
+    await Promise.resolve();
+    const b = post("b-model");
+    await Promise.resolve();
+    releaseFirst(); // A's save lands; B's save starts — and fails.
+
+    const resA = await a;
+    expect(resA.status).toBe(200);
+    expect(((await resA.json()) as { settings: { model: string } }).settings.model).toBe("a-model");
+
+    const resB = await b;
+    expect(resB.status).toBe(500);
+    const bodyB = (await resB.json()) as { error: string; settings: { model: string } };
+    expect(bodyB.error).toMatch(/store write failed: disk full/);
+    expect(bodyB.settings.model).toBe("b-model");
+  });
+
+  it("two concurrent POSTs where the first write fails: that request 500s, the later one 200s", async () => {
+    // Concurrency seam: the store keeps the first save pending until released,
+    // so request B applies (and queues its write) while A is still in flight.
+    // Under the old global-tail await, A's handler — resumed while B's write
+    // was the tail — reported B's failure or hid its own.
+    let n = 0;
+    let failFirst: (e: Error) => void = () => {};
+    const firstWrite = new Promise<void>((_resolve, reject) => { failFirst = reject; });
+    attachDreamSettingsStore({
+      load: () => Promise.resolve(null),
+      save: () => (++n === 1 ? firstWrite : Promise.resolve()),
+    });
+    const post = (model: string) =>
+      appWith(true).request("/api/dreaming", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model }),
+      });
+
+    const a = post("a-model");
+    await Promise.resolve();
+    const b = post("b-model");
+    await Promise.resolve();
+    // queued behind A's pending save (deliberate microtask dance: B applies
+    // while A is still in flight); fail A's write only.
+    failFirst(new Error("disk full"));
+
+    const resA = await a;
+    expect(resA.status).toBe(500);
+    const bodyA = (await resA.json()) as { error: string; settings: { model: string } };
+    expect(bodyA.error).toMatch(/store write failed: disk full/);
+    expect(bodyA.settings.model).toBe("a-model");
+
+    const resB = await b;
+    expect(resB.status).toBe(200);
+    expect(((await resB.json()) as { settings: { model: string } }).settings.model).toBe("b-model");
+  });
 });
 
 /**
