@@ -113,6 +113,7 @@ import { connectHermes, disconnectHermes, hermesConfigPath } from "../install/he
 import { connectHermesAgent, disconnectHermesAgent, hermesAgentPluginDir } from "../install/hermes-agent.js";
 import { connectWindsurf, disconnectWindsurf } from "../install/windsurf.js";
 import { connectPi, connectPiMcp, disconnectPi, piSettingsPath } from "../install/pi.js";
+import { formatUpdateNotice } from "../install/update-notice.js";
 import { runSetup } from "../install/setup.js";
 import { runParity } from "./classify-parity.js";
 import { reembedCorpus } from "../core/embedding/embed-backfill.js";
@@ -669,12 +670,14 @@ program
       // Passive update notice. Fire-and-forget so a slow npm registry
       // round-trip can't delay the startup banner; surfaced only when
       // strictly behind. See src/core/update-check/check.ts for the
-      // local-first / no-telemetry contract this honors.
+      // local-first / no-telemetry contract this honors. The instruction
+      // itself depends on the layout the running bundle lives in — an
+      // npm `-g` install upgrades with npm, a NxtOS versioned install
+      // flips its `current` pointer and npm would install a copy nothing
+      // loads.
       void getUpdateStatus({ currentVersion: pkg.version }).then((status) => {
         if (status.behind && status.latest) {
-          console.error(
-            `  update: ${status.current} → ${status.latest} available (npm i -g nlm-memory@latest)`,
-          );
+          console.error(formatUpdateNotice(status.current, status.latest, __dirname));
         }
       });
     });
