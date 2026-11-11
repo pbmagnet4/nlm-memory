@@ -8,8 +8,8 @@
  *
  * Invariants (docs/supersedence.md — "preserve the trail, mark it
  * explicitly"):
- *  - Dry-run by default. Nothing is written unless `apply` is explicitly
- *    true (the scheduler wiring gates it behind NLM_DREAM_PROMOTE_APPLY).
+ *  - Dry-run by default. Nothing is written unless the settings module says
+ *    promotion.mode === "apply" (runtime switch: POST /api/dreaming).
  *  - A demoted promotion is never deleted. The row survives with demoted_at
  *    + demote_reason — the link explaining what was nominated and why it
  *    was withdrawn — the promotion analog of the contradiction pass's
@@ -21,9 +21,10 @@
  *  - A failed telemetry read yields empty signals (and a null injection
  *    snapshot), never a failed run; sampling another day gets another shot.
  *
- * Scheduler wiring: this module owns the policy (env flags, defaults, the
- * SQLite sampler + promotion store + telemetry readers); the scheduler is
- * a dumb host for periodic passes. The single entry point is
+ * Scheduler wiring: this module owns the sampler + promotion store +
+ * telemetry readers; the run policy (enable, dry-run/apply, sample, caps,
+ * window, corroboration floor) lives in dream/settings.ts, which the always-
+ * registered pass reads on every run. The single entry point is
  * registerPromotionPass().
  */
 
@@ -49,23 +50,25 @@ import {
   scorePromotionCandidate,
   MAX_PROMOTION_BYTES,
   MAX_PROMOTION_LINES,
+  MIN_CORROBORATION,
   type PromotionCandidate,
   type PromotionNominee,
   type PromotionSignals,
   type PromotionStanding,
 } from "./promotion.js";
+import { getDreamSettings, recordLastRun } from "./settings.js";
 
-/** Enable the scheduled wiring (registerPromotionPass). Off unless 1/true. */
-export const DREAM_PROMOTE_PASS_ENV = "NLM_DREAM_PROMOTE_PASS";
-/** Mutate (promote + demote) instead of report-only. Off unless 1/true. */
-export const DREAM_PROMOTE_APPLY_ENV = "NLM_DREAM_PROMOTE_APPLY";
-/** Facts considered per run. */
-export const DREAM_PROMOTE_SAMPLE_ENV = "NLM_DREAM_PROMOTE_SAMPLE";
-/** Cap overrides: lines and bytes of rendered promotion text. */
-export const DREAM_PROMOTE_MAX_LINES_ENV = "NLM_DREAM_PROMOTE_MAX_LINES";
-export const DREAM_PROMOTE_MAX_BYTES_ENV = "NLM_DREAM_PROMOTE_MAX_BYTES";
-/** Telemetry window (days) for retrieval/citation signals. */
-export const DREAM_PROMOTE_WINDOW_DAYS_ENV = "NLM_DREAM_PROMOTE_WINDOW_DAYS";
+/** The env names that seed the promotion settings — declared in
+ *  dream/settings.ts (the single seed) and re-exported here for the callers
+ *  that historically read them off this module. */
+export {
+  DREAM_PROMOTE_PASS_ENV,
+  DREAM_PROMOTE_APPLY_ENV,
+  DREAM_PROMOTE_SAMPLE_ENV,
+  DREAM_PROMOTE_MAX_LINES_ENV,
+  DREAM_PROMOTE_MAX_BYTES_ENV,
+  DREAM_PROMOTE_WINDOW_DAYS_ENV,
+} from "./settings.js";
 
 /** Once a day — the pass is a nightly sweep, not a per-tick cost. */
 export const DEFAULT_PASS_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -155,16 +158,6 @@ export class SqlitePromotionStore {
       )
       .run(reason, factId, tc.param);
   }
-}
-
-function flagEnabled(raw: string | undefined): boolean {
-  const v = (raw ?? "").trim().toLowerCase();
-  return v === "1" || v === "true";
-}
-
-function positiveInt(raw: string | undefined, fallback: number): number {
-  const n = Number.parseInt((raw ?? "").trim(), 10);
-  return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
 /**
@@ -451,6 +444,9 @@ export interface PromotionPassOptions {
   readonly maxLines?: number;
   readonly maxBytes?: number;
   readonly windowDays?: number;
+  /** Corroboration floor for eligibility; defaults to the scoring core's
+   *  MIN_CORROBORATION. */
+  readonly minCorroboration?: number;
   readonly now?: number;
   readonly logger?: (msg: string) => void;
 }
@@ -467,6 +463,7 @@ export async function runPromotionPass(opts: PromotionPassOptions): Promise<Prom
   const sampleSize = opts.sampleSize ?? DEFAULT_SAMPLE_SIZE;
   const maxLines = opts.maxLines ?? MAX_PROMOTION_LINES;
   const maxBytes = opts.maxBytes ?? MAX_PROMOTION_BYTES;
+  const minCorroboration = opts.minCorroboration ?? MIN_CORROBORATION;
   const now = opts.now ?? Date.now();
 
   const candidates = await opts.sampleCandidates(sampleSize);
@@ -479,7 +476,7 @@ export async function runPromotionPass(opts: PromotionPassOptions): Promise<Prom
       });
   const { signals } = telemetry;
 
-  const eligible = candidates.filter((c) => isPromotionEligible(c, signals));
+  const eligible = candidates.filter((c) => isPromotionEligible(c, signals, minCorroboration));
   const active = opts.store.listActive(tenantId);
   // Demotion input is the FULL active set, never the sample: a promoted
   // fact that simply was not drawn must not read as "left the active set".
@@ -632,34 +629,25 @@ export interface PromotionPassRegistration {
   /** SQLite handle for the sampler + promotion store; null on the PG backend (not wired yet). */
   readonly sqliteDb: Database.Database | null;
   readonly tenantId?: string;
-  /** Injectable for tests; default process.env. */
-  readonly env?: Readonly<Record<string, string | undefined>>;
   readonly logger?: (msg: string) => void;
 }
 
 /**
- * The single wiring entry point. If enabled by NLM_DREAM_PROMOTE_PASS,
- * registers the pass on the host; otherwise a no-op (the flag is read once,
- * at registration). Reads NLM_DREAM_PROMOTE_APPLY / _SAMPLE / _MAX_LINES /
- * _MAX_BYTES / _WINDOW_DAYS for run policy. A pass failure is logged, never
+ * The single wiring entry point. The pass always registers (when a SQLite
+ * backend exists) and its run closure reads the live dream settings on every
+ * run, so POST /api/dreaming (apply mode, sample, caps, window, corroboration
+ * floor) takes effect with no restart; a disabled pass returns early without
+ * reading, writing or recording anything. A pass failure is logged, never
  * thrown — dreaming must not break ingestion ticks.
  */
 export function registerPromotionPass(reg: PromotionPassRegistration): void {
-  const env = reg.env ?? process.env;
-  if (!flagEnabled(env[DREAM_PROMOTE_PASS_ENV])) return;
-
   const log = reg.logger ?? ((msg: string) => console.error(msg));
   if (!reg.sqliteDb) {
-    log("[dream] promotion pass enabled but the PG backend is not wired — skipping");
+    log("[dream] promotion pass not wired on the PG backend — skipping");
     return;
   }
 
   const tenantId = reg.tenantId ?? DEFAULT_TEAM_ID;
-  const apply = flagEnabled(env[DREAM_PROMOTE_APPLY_ENV]);
-  const sampleSize = positiveInt(env[DREAM_PROMOTE_SAMPLE_ENV], DEFAULT_SAMPLE_SIZE);
-  const maxLines = positiveInt(env[DREAM_PROMOTE_MAX_LINES_ENV], MAX_PROMOTION_LINES);
-  const maxBytes = positiveInt(env[DREAM_PROMOTE_MAX_BYTES_ENV], MAX_PROMOTION_BYTES);
-  const windowDays = positiveInt(env[DREAM_PROMOTE_WINDOW_DAYS_ENV], DEFAULT_WINDOW_DAYS);
   const db: Database.Database = reg.sqliteDb;
   const store = new SqlitePromotionStore(db);
 
@@ -667,27 +655,40 @@ export function registerPromotionPass(reg: PromotionPassRegistration): void {
     name: "dream-promotion",
     intervalMs: DEFAULT_PASS_INTERVAL_MS,
     run: async () => {
+      const live = getDreamSettings().promotion;
+      if (!live.enabled) return;
+      const apply = live.mode === "apply";
       const report = await runPromotionPass({
         tenantId,
         store,
         apply,
-        sampleSize,
-        maxLines,
-        maxBytes,
-        windowDays,
+        sampleSize: live.sampleSize,
+        maxLines: live.maxLines,
+        maxBytes: live.maxBytes,
+        windowDays: live.windowDays,
+        minCorroboration: live.minCorroboration,
         sampleCandidates: (limit) => Promise.resolve(samplePromotionCandidatesSqlite(db, tenantId, limit)),
         listActiveFactIds: () => Promise.resolve(listActiveFactIdsSqlite(db, tenantId)),
         loadFactCandidates: (ids) => Promise.resolve(loadFactCandidatesSqlite(db, tenantId, ids)),
         logger: log,
       });
       const inj = report.injection?.tokensPerUsefulHit;
-      log(
+      const summary =
         `[dream] promotion pass (${apply ? "apply" : "dry-run"}): sampled=${report.sampled}` +
-          ` eligible=${report.eligible} nominated=${report.nominated}` +
-          ` promoted=${report.promoted} demoted=${report.demoted}` +
-          ` used=${report.usedLines} lines/${report.usedBytes}B of ${report.capLines} lines/${report.capBytes}B` +
-          ` injection=${inj === null || inj === undefined ? "n/a" : Math.round(inj)} tokens/useful-hit`,
-      );
+        ` eligible=${report.eligible} nominated=${report.nominated}` +
+        ` promoted=${report.promoted} demoted=${report.demoted}` +
+        ` used=${report.usedLines} lines/${report.usedBytes}B of ${report.capLines} lines/${report.capBytes}B` +
+        ` injection=${inj === null || inj === undefined ? "n/a" : Math.round(inj)} tokens/useful-hit`;
+      log(summary);
+      recordLastRun("promotion", {
+        mode: apply ? "apply" : "dry-run",
+        summary,
+        sampled: report.sampled,
+        eligible: report.eligible,
+        nominated: report.nominated,
+        promoted: report.promoted,
+        demoted: report.demoted,
+      });
     },
   });
 }

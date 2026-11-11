@@ -44,6 +44,7 @@ import { SqliteStorage } from "../core/storage/sqlite-storage.js";
 import { SqliteSessionStore } from "../core/storage/sqlite-session-store.js";
 import { FactJudge, judgeModeFromEnv } from "../core/facts/write-judge.js";
 import { PgStorage } from "../core/storage/pg-storage.js";
+import { loadStoredDreamSettings } from "../core/dream/settings.js";
 import { applyPendingRestore, stageRestore } from "../core/storage/db-restore.js";
 import {
   applyRetirements,
@@ -374,6 +375,11 @@ async function buildStack() {
     if (restored.archivedTo) console.error(`  previous db archived at ${restored.archivedTo}`);
   }
   const storage = await buildStorage(dbPath());
+  // Dreaming lane settings (T1729): a stored row wins over the NLM_DREAM_*
+  // env seed, and the store stays attached so every accepted
+  // POST /api/dreaming writes the document back through this handle. A row
+  // the settings module refuses to read falls back to env inside the load.
+  await loadStoredDreamSettings(storage.dreamSettings, { logger: (msg) => console.error(msg) });
   const store = storage.sessions;
   // FactStore shares the SessionStore's connection so session+facts ingest
   // can commit in one transaction. Phase B.1 wires it in; no callers yet.

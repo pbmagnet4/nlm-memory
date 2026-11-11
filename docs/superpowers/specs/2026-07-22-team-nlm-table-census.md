@@ -32,6 +32,7 @@ Dispositions per program spec §2: **STAMP** = carries `tenant_id NOT NULL`; **D
 | adapter_state | NEUTRAL | local ingest cursor state; hosted ingest is webhook-push (spec §8) |
 | embedding_config | NEUTRAL | per-database embedder identity, not corpus content |
 | classifier_settings | NEUTRAL | daemon-wide classifier tuning (one row), not corpus content |
+| dream_settings | NEUTRAL | daemon-wide dreaming lane settings (T1729), one stored JSON document (one row) — the passes are one scheduler lane and POST /api/dreaming is LOCAL-hosted, so there is no per-tenant switch |
 | embedder_settings | NEUTRAL | daemon-wide embedder config, one row per lane (holds an API key), not corpus content |
 | schema_migrations | NEUTRAL | migration bookkeeping |
 | teams | NEUTRAL | the tenancy registry itself (created in Task 2) |

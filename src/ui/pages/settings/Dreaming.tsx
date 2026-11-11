@@ -9,9 +9,16 @@ import {
   type ProviderRow,
   type TestResult,
 } from "../../lib/registries.js";
+import {
+  promotionDraft,
+  promotionEdit,
+  type PromotionDraft,
+  type PromotionSettings,
+} from "../../lib/dream-promotion.js";
 
 type DreamApplyMode = "dry-run" | "apply";
-type DreamPassName = "contradiction" | "dedup";
+type DreamPassName = "contradiction" | "dedup" | "promotion";
+type CadencePassName = "contradiction" | "dedup";
 
 interface DreamPassSettings {
   enabled: boolean;
@@ -25,6 +32,7 @@ interface DreamSettings {
   model: string;
   contradiction: DreamPassSettings;
   dedup: DreamPassSettings;
+  promotion: PromotionSettings;
 }
 
 interface DreamRunRecord {
@@ -36,12 +44,15 @@ interface DreamRunRecord {
 interface DreamLastRuns {
   contradiction: DreamRunRecord | null;
   dedup: DreamRunRecord | null;
+  promotion?: DreamRunRecord | null;
 }
 
-const PASS_NAMES: readonly DreamPassName[] = ["contradiction", "dedup"];
+const CADENCE_PASS_NAMES: readonly CadencePassName[] = ["contradiction", "dedup"];
+const PASS_NAMES: readonly DreamPassName[] = ["contradiction", "dedup", "promotion"];
 const PASS_TITLE: Record<DreamPassName, string> = {
   contradiction: "Contradiction pass",
   dedup: "Dedup pass",
+  promotion: "Promotion pass",
 };
 
 /* Pass drafts hold raw control strings; a patch only carries fields the
@@ -105,32 +116,37 @@ export function SettingsDreamingPage() {
   const [busy, setBusy] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [passDrafts, setPassDrafts] = useState<Record<DreamPassName, PassDraft> | null>(null);
+  const [passDrafts, setPassDrafts] = useState<Record<CadencePassName, PassDraft> | null>(null);
+  const [promoDraft, setPromoDraft] = useState<PromotionDraft | null>(null);
+  const [persistence, setPersistence] = useState<boolean | null>(null);
   const [passBusy, setPassBusy] = useState(false);
   const [passMsg, setPassMsg] = useState<Record<DreamPassName, string | null>>({
     contradiction: null,
     dedup: null,
+    promotion: null,
   });
 
   const applyResult = useCallback((next: DreamSettings, runs: DreamLastRuns) => {
     setSettings(next);
     setLastRuns(runs);
     setPassDrafts({ contradiction: draftFromPass(next.contradiction), dedup: draftFromPass(next.dedup) });
+    setPromoDraft(promotionDraft(next.promotion));
   }, []);
 
   const load = useCallback(async () => {
     try {
       const [res, list] = await Promise.all([
         fetch("/api/dreaming").then(async (r) => {
-          const data = (await r.json()) as { settings?: DreamSettings; lastRuns?: DreamLastRuns; error?: string };
+          const data = (await r.json()) as { settings?: DreamSettings; lastRuns?: DreamLastRuns; persistence?: boolean; error?: string };
           if (!r.ok || !data.settings || !data.lastRuns) {
             throw new Error(data.error ?? `HTTP ${r.status}`);
           }
-          return { settings: data.settings, lastRuns: data.lastRuns };
+          return { settings: data.settings, lastRuns: data.lastRuns, persistence: data.persistence };
         }),
         fetchProviders(),
       ]);
       applyResult(res.settings, res.lastRuns);
+      setPersistence(res.persistence ?? null);
       setDraftModel(res.settings.model);
       setProviders(list);
       setError(null);
@@ -320,7 +336,13 @@ export function SettingsDreamingPage() {
             </>
           )}
 
-          {passDrafts && PASS_NAMES.map((name) => (
+          <p className="muted small">
+            {persistence === false
+              ? "Settings are held in memory only on this daemon and reset on restart."
+              : "Settings are saved on the daemon and survive restarts."}
+          </p>
+
+          {passDrafts && CADENCE_PASS_NAMES.map((name) => (
             <PassSection
               key={name}
               name={name}
@@ -332,6 +354,17 @@ export function SettingsDreamingPage() {
               onSave={(patch) => void savePass(name, patch)}
             />
           ))}
+
+          {promoDraft && (
+            <PromotionSection
+              current={settings.promotion}
+              draft={promoDraft}
+              busy={passBusy}
+              msg={passMsg.promotion}
+              onDraftChange={setPromoDraft}
+              onSave={(patch) => void savePass("promotion", patch)}
+            />
+          )}
 
           <h3 className="section-title">Last runs</h3>
           {!lastRuns ? (
@@ -371,7 +404,7 @@ export function SettingsDreamingPage() {
 }
 
 function PassSection(props: {
-  name: DreamPassName;
+  name: CadencePassName;
   current: DreamPassSettings;
   draft: PassDraft;
   busy: boolean;
@@ -444,6 +477,88 @@ function PassSection(props: {
       </div>
       <p className="muted small">
         Cadence and sample size apply on the pass&apos;s next scheduled run. Dry-run reports proposals without changing facts.
+      </p>
+    </>
+  );
+}
+
+const PROMOTION_INT_LABELS: ReadonlyArray<readonly [keyof PromotionDraft, string]> = [
+  ["sampleSize", "Sample size"],
+  ["windowDays", "Window (days)"],
+  ["maxLines", "Max lines"],
+  ["maxBytes", "Max bytes"],
+  ["minCorroboration", "Min corroboration"],
+];
+
+export function PromotionSection(props: {
+  current: PromotionSettings;
+  draft: PromotionDraft;
+  busy: boolean;
+  msg: string | null;
+  onDraftChange: (d: PromotionDraft) => void;
+  onSave: (patch: Record<string, boolean | number | string>) => void;
+}) {
+  const { current, draft, busy, msg, onDraftChange, onSave } = props;
+  const edit = promotionEdit(current, draft);
+  const dirty = Object.keys(edit.patch).length > 0;
+
+  return (
+    <>
+      <h3 className="section-title">{PASS_TITLE.promotion}</h3>
+      <div className="form-row">
+        <label className="form-label">Status</label>
+        <select
+          className="form-input form-input-inline"
+          value={draft.enabled}
+          onChange={(e) => onDraftChange({ ...draft, enabled: e.target.value })}
+          disabled={busy}
+        >
+          <option value="true">enabled</option>
+          <option value="false">disabled</option>
+        </select>
+        <label className="form-label">Mode</label>
+        <select
+          className="form-input form-input-inline"
+          value={draft.mode}
+          onChange={(e) => onDraftChange({ ...draft, mode: e.target.value })}
+          disabled={busy}
+        >
+          <option value="dry-run">dry-run</option>
+          <option value="apply">apply</option>
+        </select>
+      </div>
+      <div className="form-row">
+        {PROMOTION_INT_LABELS.map(([field, label]) => (
+          <span key={field}>
+            <label className="form-label">{label}</label>
+            <input
+              className="form-input form-input-inline"
+              type="number"
+              min={1}
+              step={1}
+              value={draft[field]}
+              onChange={(e) => onDraftChange({ ...draft, [field]: e.target.value })}
+              disabled={busy}
+            />
+          </span>
+        ))}
+      </div>
+      {edit.invalid.length > 0 && (
+        <p className="muted error small">All promotion numbers must be positive whole numbers (min corroboration at least 1).</p>
+      )}
+      <div className="form-row">
+        <button
+          type="button"
+          className="btn btn-accent"
+          onClick={() => onSave(edit.patch)}
+          disabled={!dirty || edit.invalid.length > 0 || busy}
+        >{busy ? "Saving…" : "Save promotion settings"}</button>
+        {msg && (
+          <span className={`small ${msg.startsWith("Error") ? "form-error" : "muted"}`}>{msg}</span>
+        )}
+      </div>
+      <p className="muted small">
+        Promotion runs nightly. Dry-run reports candidates without writing; min corroboration is the number of sessions that must agree before a fact is promoted.
       </p>
     </>
   );

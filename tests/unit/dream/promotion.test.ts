@@ -56,6 +56,17 @@ describe("promotion scoring core", () => {
       ).toBe(false);
     });
 
+    it("takes its corroboration floor from the caller, defaulting to MIN_CORROBORATION (T1729)", () => {
+      const retrieved = (id: string) => signals({ retrievalCounts: new Map([[id, 1]]) });
+      const c = candidate({ id: "corr2", corroborationCount: 2 });
+      // Default constant: two sessions clear the bar.
+      expect(isPromotionEligible(c, retrieved("corr2"))).toBe(true);
+      // A raised floor from the dream settings moves it.
+      expect(isPromotionEligible(c, retrieved("corr2"), 3)).toBe(false);
+      // A lowered floor admits a single-session fact.
+      expect(isPromotionEligible(candidate({ id: "loner", corroborationCount: 1 }), retrieved("loner"), 1)).toBe(true);
+    });
+
     it("refuses low-confidence and blank triples", () => {
       const retrieved = (id: string) => signals({ retrievalCounts: new Map([[id, 1]]) });
       const low = candidate({ id: "low", confidence: 0.2 });
