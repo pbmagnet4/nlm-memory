@@ -11,6 +11,7 @@ import {
 } from "../../lib/registries.js";
 import {
   promotionDraft,
+  persistenceNote,
   promotionEdit,
   type PromotionDraft,
   type PromotionSettings,
@@ -336,11 +337,7 @@ export function SettingsDreamingPage() {
             </>
           )}
 
-          <p className="muted small">
-            {persistence === false
-              ? "Settings are held in memory only on this daemon and reset on restart."
-              : "Settings are saved on the daemon and survive restarts."}
-          </p>
+          {persistenceNote(persistence) && <p className="muted small">{persistenceNote(persistence)}</p>}
 
           {passDrafts && CADENCE_PASS_NAMES.map((name) => (
             <PassSection
