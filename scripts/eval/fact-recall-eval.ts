@@ -128,16 +128,28 @@ async function paraphraseGold(
 
   const out: GoldQuery[] = [];
   let generated = 0;
+  let skipped = 0;
   for (const f of facts) {
     let query = cache.get(f.id);
     if (query === undefined) {
-      query = await generateQuestion(f);
+      try {
+        query = await generateQuestion(f);
+      } catch (e) {
+        // The lane's thinking models can return empty content for a specific
+        // prompt repeatedly; one dead fact must not abort the whole eval run.
+        // Drop it from the paraphrase gold (n shrinks; every cap arm loses
+        // the same fact, so the arm comparison stays paired).
+        skipped += 1;
+        console.error(`fact-recall-eval: paraphrase skipped for ${f.id}: ${(e as Error).message}`);
+        continue;
+      }
       appendFileSync(PARAPHRASE_CACHE, JSON.stringify({ factId: f.id, query }) + "\n");
       generated += 1;
     }
     out.push({ goldId: f.id, query, subject: f.subject, predicate: f.predicate });
   }
   if (generated > 0) console.error(`fact-recall-eval: generated ${generated} new paraphrase queries`);
+  if (skipped > 0) console.error(`fact-recall-eval: skipped ${skipped} facts the question writer could not answer`);
   return out;
 }
 
