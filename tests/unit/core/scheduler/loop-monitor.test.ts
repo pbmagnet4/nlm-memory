@@ -98,8 +98,8 @@ describe("timeJob", () => {
     });
     expect(lines).toHaveLength(1);
     // The head measurement is the block itself, so the slice lands on it.
-    expect(samples[0].syncSliceMs).toBeGreaterThanOrEqual(140);
-    expect(samples[0].syncSliceMs).toBeLessThan(400);
+    expect(samples[0]!.syncSliceMs).toBeGreaterThanOrEqual(140);
+    expect(samples[0]!.syncSliceMs).toBeLessThan(400);
   });
 
   it("measures blocking done after an await (the tail)", async () => {
