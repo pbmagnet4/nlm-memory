@@ -108,6 +108,7 @@ import { buildWikiDriftEvent, buildWikiFailureEvent } from "../core/alerts/wiki-
 import { projectWiki } from "../core/wiki/project.js";
 import { FsWikiWriter } from "../core/adapters/fs-wiki-writer.js";
 import { JobSupervisor } from "../core/jobs/job-supervisor.js";
+import { startLoopLagMonitor, timeJob } from "../core/scheduler/loop-monitor.js";
 import { realClock, createJobSpawnChild } from "./reprocess-job-adapters.js";
 import { connectHermes, disconnectHermes, hermesConfigPath } from "../install/hermes.js";
 import { connectHermesAgent, disconnectHermesAgent, hermesAgentPluginDir } from "../install/hermes-agent.js";
@@ -651,6 +652,17 @@ program
     });
 
     const p = port();
+    // T679 measurement. better-sqlite3 calls are synchronous, so any background
+    // job that scans without a LIMIT freezes every in-flight request for the
+    // whole duration — which is what a prompt-recall hook timeout looks like.
+    // These two hooks name the offender: a process-wide lag sample every 5
+    // minutes, plus one `[loop] <job> took ..` line whenever a single
+    // synchronous slice inside a job crosses 250ms. NLM_LOOP_LOG=0 mutes both.
+    const loopMonitor = startLoopLagMonitor({ logger: (msg) => console.error(msg) });
+    const timedJob = <T>(name: string, run: () => Promise<T> | T): Promise<T> =>
+      process.env["NLM_LOOP_LOG"] === "0"
+        ? Promise.resolve().then(run)
+        : timeJob(name, run, { logger: (msg) => console.error(msg) });
     serve({ fetch: app.fetch, port: p, hostname: "127.0.0.1" }, (info) => {
       console.error(`nlm-memory http listening on http://localhost:${info.port}`);
       if (hasMcpToken) {
@@ -693,11 +705,11 @@ program
             // Boot checkpoint can lose a race with readers — the interval retries.
           }
           const t = setInterval(() => {
-            try {
+            void timedJob("wal-checkpoint", () => {
               sqliteStore.checkpoint();
-            } catch {
+            }).catch(() => {
               // Checkpoint contention — the next tick retries.
-            }
+            });
           }, WAL_CHECKPOINT_INTERVAL_MS);
           t.unref();
           return t;
@@ -711,7 +723,7 @@ program
     const SIGNAL_PRUNE_INTERVAL_MS = 6 * 60 * 60_000;
     const signalPruneTimer = setInterval(() => {
       const cutoff = new Date(Date.now() - SIGNAL_RETENTION_DAYS * 86_400_000).toISOString();
-      void signals.pruneOlderThan(DEFAULT_TEAM_ID, cutoff).catch(() => { /* prune is best-effort */ });
+      void timedJob("signal-prune", () => signals.pruneOlderThan(DEFAULT_TEAM_ID, cutoff)).catch(() => { /* prune is best-effort */ });
     }, SIGNAL_PRUNE_INTERVAL_MS);
     signalPruneTimer.unref();
 
@@ -724,13 +736,15 @@ program
     let alertRound = 0;
     const alertHealthTimer = setInterval(() => {
       alertRound += 1;
-      void runAlertChecks([
-        () => checkEmbedderAndAlert(),
-        () => checkIngestLagAndAlert(() => ingestLag.get()),
-        ...(alertRound % ALERT_DRIFT_EVERY_N_ROUNDS === 0
-          ? [() => checkDriftAndAlert({ currentVersion: pkg.version })]
-          : []),
-      ]);
+      void timedJob("alert-health", () =>
+        runAlertChecks([
+          () => checkEmbedderAndAlert(),
+          () => checkIngestLagAndAlert(() => ingestLag.get()),
+          ...(alertRound % ALERT_DRIFT_EVERY_N_ROUNDS === 0
+            ? [() => checkDriftAndAlert({ currentVersion: pkg.version })]
+            : []),
+        ]),
+      );
     }, ALERT_CHECK_INTERVAL_MS);
     alertHealthTimer.unref();
 
@@ -797,9 +811,9 @@ program
         }
       };
 
-      const corpusMonitorTimer = setInterval(() => { void runCorpusMonitor(); }, CORPUS_MONITOR_INTERVAL_MS);
+      const corpusMonitorTimer = setInterval(() => { void timedJob("corpus-monitor", runCorpusMonitor); }, CORPUS_MONITOR_INTERVAL_MS);
       corpusMonitorTimer.unref();
-      setTimeout(() => { void runCorpusMonitor(); }, CORPUS_MONITOR_INITIAL_DELAY_MS).unref();
+      setTimeout(() => { void timedJob("corpus-monitor", runCorpusMonitor); }, CORPUS_MONITOR_INITIAL_DELAY_MS).unref();
 
       // Wiki projection: regenerate the generated markdown tree. SQLite only,
       // same as the corpus monitor. Idempotent, so a run with no corpus change
@@ -841,9 +855,9 @@ program
         };
 
         console.error(`  wiki: enabled, projecting to ${wikiTarget}`);
-        const wikiTimer = setInterval(() => { void runWikiProjection(); }, WIKI_INTERVAL_MS);
+        const wikiTimer = setInterval(() => { void timedJob("wiki-projection", runWikiProjection); }, WIKI_INTERVAL_MS);
         wikiTimer.unref();
-        setTimeout(() => { void runWikiProjection(); }, WIKI_INITIAL_DELAY_MS).unref();
+        setTimeout(() => { void timedJob("wiki-projection", runWikiProjection); }, WIKI_INITIAL_DELAY_MS).unref();
       }
     }
 
@@ -879,9 +893,9 @@ program
           console.error(`[exemplar-backfill] error: ${e instanceof Error ? e.message : String(e)}`);
         }
       };
-      const exemplarBackfillTimer = setInterval(() => { void runExemplarBackfill(); }, EXEMPLAR_BACKFILL_INTERVAL_MS);
+      const exemplarBackfillTimer = setInterval(() => { void timedJob("exemplar-backfill", runExemplarBackfill); }, EXEMPLAR_BACKFILL_INTERVAL_MS);
       exemplarBackfillTimer.unref();
-      setTimeout(() => { void runExemplarBackfill(); }, EXEMPLAR_BACKFILL_INITIAL_DELAY_MS).unref();
+      setTimeout(() => { void timedJob("exemplar-backfill", runExemplarBackfill); }, EXEMPLAR_BACKFILL_INITIAL_DELAY_MS).unref();
       console.error("  exemplar-backfill: enabled, repair sweep every 24h");
     }
 
@@ -910,8 +924,8 @@ program
           console.error(`[fact-embed-sweep] error: ${e instanceof Error ? e.message : String(e)}`);
         }
       };
-      setInterval(() => { void runFactEmbedSweep(); }, FACT_EMBED_SWEEP_INTERVAL_MS).unref();
-      setTimeout(() => { void runFactEmbedSweep(); }, FACT_EMBED_SWEEP_INITIAL_DELAY_MS).unref();
+      setInterval(() => { void timedJob("fact-embed-sweep", runFactEmbedSweep); }, FACT_EMBED_SWEEP_INTERVAL_MS).unref();
+      setTimeout(() => { void timedJob("fact-embed-sweep", runFactEmbedSweep); }, FACT_EMBED_SWEEP_INITIAL_DELAY_MS).unref();
       console.error("  fact-embed-sweep: enabled, retry sweep every 2m");
     }
 
@@ -931,8 +945,8 @@ program
           console.error(`[chunk-embed-sweep] error: ${e instanceof Error ? e.message : String(e)}`);
         }
       };
-      setInterval(() => { void runChunkEmbedSweep(); }, CHUNK_EMBED_SWEEP_INTERVAL_MS).unref();
-      setTimeout(() => { void runChunkEmbedSweep(); }, CHUNK_EMBED_SWEEP_INITIAL_DELAY_MS).unref();
+      setInterval(() => { void timedJob("chunk-embed-sweep", runChunkEmbedSweep); }, CHUNK_EMBED_SWEEP_INTERVAL_MS).unref();
+      setTimeout(() => { void timedJob("chunk-embed-sweep", runChunkEmbedSweep); }, CHUNK_EMBED_SWEEP_INITIAL_DELAY_MS).unref();
       console.error("  chunk-embed-sweep: enabled, retry sweep every 2m");
     }
 
@@ -971,6 +985,7 @@ program
         );
         const shutdown = async () => {
           if (checkpointTimer) clearInterval(checkpointTimer);
+          loopMonitor.stop();
           scheduler.stop();
           memoSweep.stop();
           // Reaps an active reprocess child instead of leaving it orphaned
