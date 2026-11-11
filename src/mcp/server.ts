@@ -829,9 +829,11 @@ the user wants context, reasoning, or the full discussion.
 
 Returns matching Fact records ordered by relevance. Each hit carries a
 \`corroborationCount\` — the number of distinct sessions across the full
-history that asserted the same (subject, predicate, value). Highly
-corroborated facts are boosted in scoring (log-scale, capped) so an
-"uses DuckDB" asserted across 10 sessions outranks a one-off mention.
+history that asserted the same (subject, predicate, value) — reported on the
+hit as context only. Ranking by corroboration is off by default: repeated
+assertions do not change scoring. Set \`NLM_FACT_CORROBORATION_BOOST_CAP\` >1
+to opt back into a log-scale capped boost (see
+docs/eval/T527-corroboration-cap.md for why the default changed).
 Superseded facts are excluded by default; call get_fact_history to walk
 the chain of how a value evolved ("when did X flip from Fastify to Hono?").
 
