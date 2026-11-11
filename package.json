@@ -65,6 +65,7 @@
     "eval:signals": "tsx scripts/eval/signals-eval.ts",
     "eval:classifier": "tsx scripts/eval/classifier-eval.ts",
     "eval:fact-recall": "tsx scripts/eval/fact-recall-eval.ts",
+    "eval:dream": "tsx scripts/eval/dream-eval.ts",
     "eval:recall-impact-replay": "tsx scripts/eval/recall-impact-replay.ts",
     "eval:code-exemplar": "tsx scripts/eval/code-exemplar-eval.ts",
     "eval:reranker": "tsx scripts/eval/reranker-ablation.ts",
@@ -77,6 +78,11 @@
     "eval:fact-judge-replay": "tsx scripts/eval/fact-judge-replay.ts",
     "eval:fact-judge-label": "tsx scripts/eval/fact-judge-label.ts",
     "eval:fact-class-replay": "tsx scripts/eval/fact-class-replay.ts",
+    "eval:property-holdout-freeze": "tsx scripts/eval/property-holdout-freeze.ts",
+    "eval:property-holdout-draw": "tsx scripts/eval/property-holdout-draw.ts",
+    "eval:property-holdout-label": "tsx scripts/eval/property-holdout-label.ts",
+    "eval:property-holdout-l2": "tsx scripts/eval/property-holdout-l2.ts",
+    "eval:property-holdout-score": "tsx scripts/eval/property-holdout-score.ts",
     "demo:memory": "tsx scripts/demo/project-memory.ts"
   },
   "dependencies": {

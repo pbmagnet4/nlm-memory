@@ -114,20 +114,14 @@ export class HermesAdapter implements TranscriptAdapter {
   }
 
   async parseSession(path: string): Promise<SessionChunk | null> {
+    const raw = await fs.readFile(path, "utf8");
     let data: Record<string, unknown>;
     try {
-      const raw = await fs.readFile(path, "utf8");
       data = JSON.parse(raw) as Record<string, unknown>;
     } catch {
-      return null;
+      return null; // malformed content, not an I/O error: nothing to classify until it changes
     }
-
-    let totalBytes = 0;
-    try {
-      totalBytes = (await fs.stat(path)).size;
-    } catch {
-      return null;
-    }
+    const totalBytes = (await fs.stat(path)).size;
 
     let msgs: unknown[];
     let sessionId: string;

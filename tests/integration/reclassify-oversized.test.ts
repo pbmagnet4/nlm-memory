@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
-import { reclassifyOversized } from "../../src/core/ingest/reclassify-oversized.js";
+import { reclassifyOversized, selectAdapterSources } from "../../src/core/ingest/reclassify-oversized.js";
 import type { ClassifyResult, EmbedResult, LLMClient } from "../../src/ports/llm-client.js";
 import type { SessionChunk, TranscriptAdapter } from "../../src/ports/transcript-adapter.js";
 
@@ -376,5 +376,96 @@ describe("reclassifyOversized", () => {
     expect(sess!.classifierProvider).toBe("ollama");
     expect(sess!.classifierModel).toBe("qwen3:4b-instruct");
     expect(sess!.classifierConfidence).toBeCloseTo(0.88);
+  });
+
+  describe("per-adapter reingest (onlyChanged)", () => {
+    const result: ClassifyResult = {
+      label: "Refactor auth",
+      summary: "s",
+      entities: ["AuthModule"],
+      decisions: ["split into two files"],
+      open: [],
+      confidence: 0.9,
+      facts: [],
+    };
+
+    function chunkWith(id: string, text: string): SessionChunk {
+      return {
+        id, runtime: "claude-code", runtimeSessionId: id, sourcePath: srcPath,
+        startedAt: "2026-04-14T00:00:00.000Z", endedAt: "2026-04-14T01:00:00.000Z",
+        durationMin: 60, turnCount: 2, byteRange: [0, text.length], projectDir: "/p",
+        gitBranch: "main", text, label: "raw",
+      };
+    }
+
+    function setup(chunk: SessionChunk | null) {
+      const storage = SqliteStorage.create({ dbPath, migrationsDir: MIGRATIONS });
+      const db = storage.rawDb();
+      const classifier = {
+        ...fakeClassifier(result),
+        classify: async () => result,
+      } as LLMClient;
+      const adapter = { ...fakeAdapter(chunk as SessionChunk), parseSession: async () => chunk } as TranscriptAdapter;
+      const run = (dryRun: boolean) =>
+        reclassifyOversized(
+          { db, store: storage.sessions, factStore: storage.facts, embedder: fakeClassifier(result), classifier, adapters: [adapter] },
+          "team_local",
+          { select: selectAdapterSources("claude-code"), onlyChanged: true, dryRun, classifyTimeoutMs: 1234 },
+        );
+      return { storage, db, run };
+    }
+
+    it("re-ingests a source recorded as empty, replacing nothing-to-capture state, and a second run is a no-op", async () => {
+      const chunk = chunkWith("cc_empty1", "[user] Help me refactor\n[assistant] Done.");
+      const { storage, db, run } = setup(chunk);
+      db.prepare(
+        `INSERT INTO adapter_state (adapter_name, source_path, last_offset, file_size, session_id, failure_count)
+         VALUES ('claude-code', ?, 0, 99, NULL, 0)`,
+      ).run(srcPath);
+
+      const dry = await run(true);
+      expect(dry).toMatchObject({ attempted: 1, wouldChange: 1, unchanged: 0, missingFile: 0, ingested: 0 });
+      expect(await storage.sessions.getById("team_local", "cc_empty1")).toBeNull();
+
+      const first = await run(false);
+      expect(first.ingested).toBe(1);
+      const sess = await storage.sessions.getById("team_local", "cc_empty1");
+      expect(sess?.body).toContain("[user] Help me refactor");
+
+      const second = await run(false);
+      expect(second).toMatchObject({ attempted: 1, ingested: 0, unchanged: 1 });
+    });
+
+    it("replaces a stored body that differs, dropping entities of the old classification", async () => {
+      const chunk = chunkWith("cc_old1", "[user] real text\n[assistant] answer");
+      const { storage, db, run } = setup(chunk);
+      await storage.sessions.insertSession("team_local", {
+        id: "cc_old1", runtime: "claude-code", runtimeSessionId: "cc_old1",
+        startedAt: chunk.startedAt, endedAt: chunk.endedAt, durationMin: 60,
+        label: "old", summary: "old", body: "[tool_use: shell]", status: "closed",
+        transcriptKind: "claude-code-jsonl", transcriptPath: srcPath, transcriptOffset: null,
+        transcriptLength: 17, entities: ["StaleEntity"], decisions: [], openQuestions: [], scope: null,
+      }, fakeClassifier(result));
+      db.prepare(
+        `INSERT INTO adapter_state (adapter_name, source_path, last_offset, file_size, session_id, failure_count)
+         VALUES ('claude-code', ?, 0, 99, 'cc_old1', 0)`,
+      ).run(srcPath);
+
+      const out = await run(false);
+      expect(out.ingested).toBe(1);
+      const sess = await storage.sessions.getById("team_local", "cc_old1");
+      expect(sess?.body).toContain("[user] real text");
+      const ents = db.prepare("SELECT entity_canonical FROM session_entities WHERE session_id = ?").all("cc_old1");
+      expect(ents).toEqual([{ entity_canonical: "AuthModule" }]);
+    });
+
+    it("counts a source whose parse is null as unchanged", async () => {
+      const nullSetup = setup(null);
+      nullSetup.db.prepare(
+        `INSERT INTO adapter_state (adapter_name, source_path, last_offset, file_size, session_id, failure_count)
+         VALUES ('claude-code', ?, 0, 99, NULL, 0)`,
+      ).run(srcPath);
+      expect(await nullSetup.run(true)).toMatchObject({ attempted: 1, unchanged: 1, wouldChange: 0, missingFile: 0 });
+    });
   });
 });

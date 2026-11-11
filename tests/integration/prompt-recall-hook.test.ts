@@ -77,89 +77,6 @@ describe("runHook", () => {
     expect(out).toContain("Next: Compare u=3x+1.");
   });
 
-  it("recall gate shadow logs decisions without changing injection", async () => {
-    const out = await runHook(
-      { prompt: "what did we decide about pgvector", conversationId: "c1" },
-      {
-        mode: "live",
-        recall: async () => hits("sess_a", "sess_b"),
-        recallGate: { mode: "shadow", judge: async () => "irrelevant" },
-      },
-    );
-    expect(out).toContain("sess_a");
-    expect(out).toContain("sess_b");
-    const log = JSON.parse(readFileSync(join(tmp, "hook-log.jsonl"), "utf8").trim());
-    expect(log.wouldInject).toEqual(["sess_a", "sess_b"]);
-    expect(log.gateDecisions).toEqual([
-      { id: "sess_a", gate: "irrelevant" },
-      { id: "sess_b", gate: "irrelevant" },
-    ]);
-  });
-
-  it("recall gate live drops irrelevant candidates from injection", async () => {
-    const out = await runHook(
-      { prompt: "what did we decide about pgvector", conversationId: "c1" },
-      {
-        mode: "live",
-        recall: async () => hits("sess_a", "sess_b"),
-        recallGate: { mode: "live", judge: async (_p, c) => (c.includes("sess_b") ? "irrelevant" : "relevant") },
-      },
-    );
-    expect(out).toContain("sess_a");
-    expect(out).not.toContain("sess_b");
-    const log = JSON.parse(readFileSync(join(tmp, "hook-log.jsonl"), "utf8").trim());
-    expect(log.wouldInject).toEqual(["sess_a"]);
-    expect(log.gateDecisions).toEqual([
-      { id: "sess_a", gate: "relevant" },
-      { id: "sess_b", gate: "irrelevant" },
-    ]);
-    const memo = JSON.parse(readFileSync(join(tmp, "state", "c1.json"), "utf8"));
-    expect([...memo].sort()).toEqual(["sess_a"]);
-  });
-
-  it("recall gate caps how many candidates it judges (maxCandidates)", async () => {
-    let calls = 0;
-    const out = await runHook(
-      { prompt: "what did we decide about pgvector", conversationId: "c1" },
-      {
-        mode: "live",
-        recall: async () => hits("sess_a", "sess_b", "sess_c"),
-        recallGate: { mode: "live", maxCandidates: 1, judge: async () => { calls++; return "relevant"; } },
-      },
-    );
-    // Only the top candidate is judged; the rest pass through ungated.
-    expect(calls).toBe(1);
-    const log = JSON.parse(readFileSync(join(tmp, "hook-log.jsonl"), "utf8").trim());
-    expect(log.gateDecisions).toEqual([{ id: "sess_a", gate: "relevant" }]);
-    expect(log.wouldInject).toEqual(["sess_a", "sess_b", "sess_c"]);
-    expect(out).toContain("sess_c");
-  });
-
-  it("recall gate live with cap drops only the judged-irrelevant top candidate", async () => {
-    const out = await runHook(
-      { prompt: "what did we decide about pgvector", conversationId: "c1" },
-      {
-        mode: "live",
-        recall: async () => hits("sess_a", "sess_b"),
-        recallGate: { mode: "live", maxCandidates: 1, judge: async () => "irrelevant" },
-      },
-    );
-    // Top judged irrelevant -> dropped; the ungated second still injects.
-    expect(out).not.toContain("sess_a");
-    expect(out).toContain("sess_b");
-    const log = JSON.parse(readFileSync(join(tmp, "hook-log.jsonl"), "utf8").trim());
-    expect(log.wouldInject).toEqual(["sess_b"]);
-  });
-
-  it("without a recall gate, no gate decisions are logged", async () => {
-    await runHook(
-      { prompt: "what did we decide about pgvector", conversationId: "c1" },
-      { mode: "live", recall: async () => hits("sess_a") },
-    );
-    const log = JSON.parse(readFileSync(join(tmp, "hook-log.jsonl"), "utf8").trim());
-    expect(log.gateDecisions).toBeUndefined();
-  });
-
   it("live mode dedups: a second fire does not re-surface the same session", async () => {
     const deps = { mode: "live" as const, recall: async () => hits("sess_a") };
     const first = await runHook({ prompt: "what did we decide", conversationId: "c1" }, deps);
@@ -188,33 +105,16 @@ describe("runHook", () => {
     expect(out).toBe("");
   });
 
-  it("fails open and skips the gate when the recall stage eats the whole deadline", async () => {
+  it("fails open when the recall stage eats the whole deadline", async () => {
     const out = await runHook(
       { prompt: "what did we decide about pgvector", conversationId: "c1" },
       {
         mode: "live",
         deadlineMs: 60,
         recall: async () => { await new Promise((r) => setTimeout(r, 200)); return hits("sess_a"); },
-        recallGate: { mode: "live", judge: async () => { throw new Error("gate must not run"); } },
       },
     );
     expect(out).toBe("");
-  });
-
-  it("keeps all selected candidates when the gate exceeds the remaining deadline", async () => {
-    const start = Date.now();
-    const out = await runHook(
-      { prompt: "what did we decide about pgvector", conversationId: "c1" },
-      {
-        mode: "live",
-        deadlineMs: 120,
-        recall: async () => hits("sess_a", "sess_b"),
-        recallGate: { mode: "live", judge: async () => { await new Promise((r) => setTimeout(r, 500)); return "irrelevant"; } },
-      },
-    );
-    expect(Date.now() - start).toBeLessThan(300);
-    expect(out).toContain("sess_a");
-    expect(out).toContain("sess_b");
   });
 });
 

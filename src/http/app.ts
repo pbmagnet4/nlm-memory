@@ -60,7 +60,18 @@ import type { LearnerStore } from "@ports/learner-store.js";
 import type { RecallHit } from "@shared/types.js";
 import { pickRelatedConcepts } from "@core/recall/related-concepts.js";
 import { buildDataset } from "@core/dataset/build-dataset.js";
+import type { ClassifierSettingsStore, ClassifierSettingsUpdate } from "@ports/classifier-settings-store.js";
+import {
+  MAX_TOKENS_RANGE,
+  NO_STORED_SETTINGS,
+  TIMEOUT_MS_RANGE,
+  isIntInRange,
+  isThinking,
+  resolveClassifierTuning,
+  type ClassifierTuning,
+} from "@core/classifier/tuning.js";
 import { ClassifierBox, type ClassifierProvider } from "../llm/classifier-box.js";
+import { DreamSettingsError, getDreamSettings, lastRuns, updateDreamSettings } from "@core/dream/settings.js";
 import {
   SourceRegistry,
   PgSourceRegistry,
@@ -117,6 +128,7 @@ import { warmupSnapshot } from "@core/health/warmup-state.js";
 import { laneHealthSnapshot } from "@core/health/embedding-lane-state.js";
 import { inflightSnapshot } from "@core/health/embed-inflight.js";
 import { factEmbedSnapshot } from "@core/health/fact-embed-state.js";
+import type { IngestLagMonitor } from "@core/health/ingest-lag.js";
 import { corpusSnapshot } from "@core/health/corpus-state.js";
 import { DEFAULT_NLM_PORT } from "../shared/net.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
@@ -125,6 +137,13 @@ import { isHostedMode } from "@core/tenancy/hosted-mode.js";
 import { resolveTeamByToken } from "@core/tenancy/team-auth.js";
 import type { TeamTokenStorePort } from "@core/tenancy/team-token-store.js";
 import type { JobSupervisor, JobSnapshot } from "@core/jobs/job-supervisor.js";
+import {
+  getEmbedderSettings,
+  parseLanePatch,
+  saveEmbedderSettings,
+  testEmbedder,
+  type EmbedderSettingsDeps,
+} from "@core/embedding/embedder-settings-service.js";
 
 const HERMES_RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 
@@ -147,6 +166,8 @@ export interface HttpDeps {
   readonly dbPath?: string;
   /** Mutable classifier — read by /api/classifier/info, swapped by POST /api/classifier. */
   readonly classifier?: ClassifierBox;
+  /** Persisted classifier tuning — written by PUT /api/classifier/settings. */
+  readonly classifierSettings?: ClassifierSettingsStore;
   /** Sources registry — exposes /api/sources CRUD for the desktop UI. */
   readonly sources?: SourceRegistry | PgSourceRegistry;
   /** Providers registry — exposes /api/providers CRUD for the desktop UI. */
@@ -158,8 +179,8 @@ export interface HttpDeps {
   };
   /** Wire to enable POST /api/ingest. When omitted, push ingest is disabled. */
   readonly ingest?: IngestDeps;
-  /** Static embedder info — embeddings are always Ollama in this build (DeepSeek has no /embed). */
-  readonly embedderInfo?: { provider: string; model: string; dims: number };
+  /** Embedder settings, live boxes and rebuild job: enables /api/embedder/*. */
+  readonly embedder?: EmbedderSettingsDeps;
   /** Directory containing the built UI (dist/ui). When set, /ui/* serves the SPA. */
   readonly uiDist?: string;
   /**
@@ -196,6 +217,16 @@ export interface HttpDeps {
    * would otherwise require real spawnChild/clock ports).
    */
   readonly jobSupervisor?: Pick<JobSupervisor, "start" | "stop" | "snapshot">;
+  /** Wire to enable GET /api/health/ingest. */
+  readonly ingestLag?: IngestLagMonitor;
+  /**
+   * Wire to enable the GET/POST /api/dreaming control-plane pair. The
+   * settings themselves are the process-global in-memory registry
+   * (core/dream/settings.ts) the dream passes consult; the flag only gates
+   * the surface — when omitted both routes 503, same pattern as the
+   * classifier/embedder wiring gates above.
+   */
+  readonly dreaming?: boolean;
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -422,6 +453,8 @@ export function createApp(deps: HttpDeps): Hono<AppEnv> {
   registerDataManagementRoutes(app, deps);
   registerActionRoutes(app, deps);
   registerClassifierRoutes(app, deps);
+  registerDreamingRoutes(app, deps);
+  registerEmbedderRoutes(app, deps);
   registerSourceRoutes(app, deps);
   registerIngestRoute(app, deps);
   registerProviderRoutes(app, deps);
@@ -596,7 +629,17 @@ const HOSTED_GATED_ROUTES: ReadonlyArray<{ method: string; path: string; disposi
   { method: "GET", path: "/api/data/backup", disposition: "LOCAL" },
   { method: "POST", path: "/api/data/restore", disposition: "LOCAL" },
   { method: "GET", path: "/api/data/stats", disposition: "LOCAL" },
+  { method: "GET", path: "/api/health/ingest", disposition: "LOCAL" },
   { method: "POST", path: "/api/classifier", disposition: "LOCAL" },
+  { method: "PUT", path: "/api/classifier/settings", disposition: "LOCAL" },
+  // Process-global dreaming lane (the scheduler's background passes) — a
+  // single-operator knob with no per-tenant meaning, same LOCAL class as
+  // the classifier settings entries above.
+  { method: "GET", path: "/api/dreaming", disposition: "LOCAL" },
+  { method: "POST", path: "/api/dreaming", disposition: "LOCAL" },
+  { method: "GET", path: "/api/embedder/settings", disposition: "LOCAL" },
+  { method: "PUT", path: "/api/embedder/settings", disposition: "LOCAL" },
+  { method: "POST", path: "/api/embedder/test", disposition: "LOCAL" },
   // Single-operator process supervision — starting/stopping the daemon's
   // own reprocess child has no per-tenant meaning, same LOCAL class as the
   // classifier swap above.
@@ -724,7 +767,14 @@ function registerHealthRoute(app: Hono<AppEnv>, deps: HttpDeps): void {
     // not to distinguish "never run" from a five-field block of zeros.
     const jobSnap: JobSnapshot | null = deps.jobSupervisor ? deps.jobSupervisor.snapshot() : null;
     const job = jobSnap && jobSnap.state !== "idle" ? jobSnap : null;
-    return c.json({ status: "ok", service: "nlm-memory", version: pkg.version, warmup: warmupSnapshot(), embedding: laneHealthSnapshot(), embedInflight: inflightSnapshot(), factEmbeddings: factEmbedSnapshot(), corpus, update, job });
+    const embedJobSnap: JobSnapshot | null = deps.embedder ? deps.embedder.jobs.snapshot() : null;
+    const embedJob = embedJobSnap && embedJobSnap.state !== "idle" ? embedJobSnap : null;
+    return c.json({ status: "ok", service: "nlm-memory", version: pkg.version, warmup: warmupSnapshot(), embedding: laneHealthSnapshot(), embedInflight: inflightSnapshot(), factEmbeddings: factEmbedSnapshot(), corpus, update, job, embedJob });
+  });
+
+  app.get("/api/health/ingest", async (c) => {
+    if (!deps.ingestLag) return c.json({ error: "ingest lag monitor not wired" }, 503);
+    return c.json(await deps.ingestLag.get());
   });
 
   // Passive update poll for the UI. Same daily-cached check the CLI
@@ -1470,6 +1520,92 @@ function registerActionRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   });
 }
 
+function tuningJson(t: ClassifierTuning) {
+  return { thinking: t.thinking, timeout_ms: t.timeoutMs, max_tokens: t.maxTokens };
+}
+
+/** Validates a PUT /api/classifier/settings body; returns the update or an error message. */
+function parseSettingsBody(body: unknown): ClassifierSettingsUpdate | string {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return "body must be a JSON object";
+  const b = body as Record<string, unknown>;
+  const update: { thinking?: "off" | "on" | null; timeoutMs?: number | null; maxTokens?: number | null } = {};
+  if (b["thinking"] !== undefined) {
+    if (b["thinking"] !== null && !isThinking(b["thinking"])) return "thinking must be \"off\", \"on\" or null";
+    update.thinking = b["thinking"];
+  }
+  if (b["timeout_ms"] !== undefined) {
+    if (b["timeout_ms"] !== null && !isIntInRange(b["timeout_ms"], TIMEOUT_MS_RANGE)) {
+      return `timeout_ms must be an integer ${TIMEOUT_MS_RANGE.min}..${TIMEOUT_MS_RANGE.max} or null`;
+    }
+    update.timeoutMs = b["timeout_ms"];
+  }
+  if (b["max_tokens"] !== undefined) {
+    if (b["max_tokens"] !== null && !isIntInRange(b["max_tokens"], MAX_TOKENS_RANGE)) {
+      return `max_tokens must be an integer ${MAX_TOKENS_RANGE.min}..${MAX_TOKENS_RANGE.max} or null`;
+    }
+    update.maxTokens = b["max_tokens"];
+  }
+  return update;
+}
+
+function registerEmbedderRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
+  const embedder = deps.embedder;
+  app.get("/api/embedder/settings", async (c) => {
+    if (!embedder) return c.json({ error: "embedder settings not wired in this deployment" }, 503);
+    return c.json(await getEmbedderSettings(embedder));
+  });
+
+  app.post("/api/embedder/test", async (c) => {
+    if (!embedder) return c.json({ error: "embedder settings not wired in this deployment" }, 503);
+    const patch = parseLanePatch(await c.req.json().catch(() => null));
+    if (typeof patch === "string") return c.json({ error: patch }, 400);
+    return c.json(await testEmbedder(embedder, patch));
+  });
+
+  app.put("/api/embedder/settings", async (c) => {
+    if (!embedder) return c.json({ error: "embedder settings not wired in this deployment" }, 503);
+    const patch = parseLanePatch(await c.req.json().catch(() => null));
+    if (typeof patch === "string") return c.json({ error: patch }, 400);
+    try {
+      const result = await saveEmbedderSettings(embedder, patch);
+      return c.json(result.body, result.status);
+    } catch (e) {
+      // Settings are persisted and applied before the rebuild job starts, so
+      // the only throw left is the job's own spawn failure.
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    }
+  });
+}
+
+// ── Dreaming lane control plane ───────────────────────────────────────────
+// GET returns the current settings snapshot plus the last-run registry the
+// pass registrations write into; POST patches the runtime settings through
+// updateDreamSettings (validated all-or-nothing there — an unknown pass,
+// unknown field or bad shape is a 400 and changes nothing). Process-global
+// by design (the dream passes are one scheduler-lane knobs), hence the
+// LOCAL hosted disposition next to the classifier entries.
+function registerDreamingRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
+  app.get("/api/dreaming", (c) => {
+    if (!deps.dreaming) return c.json({ error: "dreaming settings not wired in this deployment" }, 503);
+    return c.json({ settings: getDreamSettings(), lastRuns: lastRuns() });
+  });
+
+  app.post("/api/dreaming", async (c) => {
+    if (!deps.dreaming) return c.json({ error: "dreaming settings not wired in this deployment" }, 503);
+    const body = await c.req.json().catch(() => null);
+    if (body === null || typeof body !== "object" || Array.isArray(body)) {
+      return c.json({ error: "body must be a JSON object" }, 400);
+    }
+    try {
+      const settings = updateDreamSettings(body);
+      return c.json({ ok: true, settings, lastRuns: lastRuns() });
+    } catch (e) {
+      if (e instanceof DreamSettingsError) return c.json({ error: e.message }, 400);
+      throw e;
+    }
+  });
+}
+
 function registerClassifierRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   app.get("/api/classifier/info", (c) => {
     const provider = deps.classifier?.provider ?? "ollama";
@@ -1478,7 +1614,7 @@ function registerClassifierRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     return c.json({
       provider,
       model,
-      available_providers: openAiSwapAvailable
+      available_providers: openAiSwapAvailable || provider === "openai"
         ? (["deepseek", "ollama", "openai"] as const)
         : (["deepseek", "ollama"] as const),
       openai_swap_available: openAiSwapAvailable,
@@ -1491,8 +1627,19 @@ function registerClassifierRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
         deepseek: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat"],
         ollama: ["qwen3.5:4b", "qwen3:4b-instruct-2507-q4_K_M", "qwen2.5:3b-instruct", "llama3.2:3b", "mistral:7b"],
       },
-      embedder: deps.embedderInfo ?? { provider: "ollama", model: "nomic-embed-text", dims: 768 },
+      tuning: tuningJson(deps.classifier?.tuning ?? resolveClassifierTuning(NO_STORED_SETTINGS, process.env)),
     });
+  });
+
+  app.put("/api/classifier/settings", async (c) => {
+    if (!deps.classifier || !deps.classifierSettings) {
+      return c.json({ error: "classifier settings require classifier box and settings store" }, 503);
+    }
+    const update = parseSettingsBody(await c.req.json().catch(() => null));
+    if (typeof update === "string") return c.json({ error: update }, 400);
+    const stored = await deps.classifierSettings.update(update);
+    deps.classifier.retune(resolveClassifierTuning(stored, process.env));
+    return c.json({ tuning: tuningJson(deps.classifier.tuning) });
   });
 
   app.post("/api/classifier", async (c) => {

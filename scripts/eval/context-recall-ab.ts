@@ -10,7 +10,7 @@
  *
  * Same corpus, same judge, same response — the only variable is the query, so
  * the delta isolates the augmentation effect. Judge is the artifact-not-self
- * call (default qwen3.5:4b; --model to drive a bigger run through DS4 Flash).
+ * call (default NLM_CLASSIFIER_MODEL; --model to drive a bigger run through DS4 Flash).
  *
  * Recall runs IN-PROCESS through the production keyword pipeline
  * (extractRecallQuery -> RecallService mode=keyword), the exact path the flag
@@ -20,7 +20,7 @@
  * idempotent migrations on open), so treat it as disposable.
  *
  * Run: npx tsx scripts/eval/context-recall-ab.ts [--limit=16] [--days=45]
- *        [--model=qwen3.5:4b] [--db=<sqlite path>] [--verbose] [--json=<out>]
+ *        [--model=<tag>] [--db=<sqlite path>] [--verbose] [--json=<out>]
  */
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -32,7 +32,7 @@ import { RecallService } from "../../src/core/recall/recall-service.js";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { DEFAULT_TEAM_ID } from "../../src/core/tenancy/default-team.js";
 import type { LLMClient } from "../../src/ports/llm-client.js";
-import { judgeUsefulness, USEFULNESS_MODEL, type Verdict } from "./lib/usefulness-judge.js";
+import { judgeUsefulness, usefulnessModel, type Verdict } from "./lib/usefulness-judge.js";
 
 interface Args {
   limit: number;
@@ -51,7 +51,7 @@ function parseArgs(argv: string[]): Args {
   return {
     limit: Number.parseInt(get("limit") ?? "16", 10),
     days: Number.parseInt(get("days") ?? "45", 10),
-    model: get("model") ?? USEFULNESS_MODEL,
+    model: usefulnessModel(get("model")),
     ollamaUrl: get("ollama") ?? process.env["OLLAMA_URL"] ?? "http://localhost:11434",
     db: get("db") ?? join(homedir(), ".nlm", "canonical.sqlite"),
     verbose: argv.includes("--verbose"),

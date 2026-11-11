@@ -145,11 +145,65 @@ describe("OllamaClient.classify", () => {
   });
 });
 
+describe("OllamaClient.complete", () => {
+  it("sends the construction-time model by default and honors a per-call model override", async () => {
+    const bodies: unknown[] = [];
+    const fetchImpl = makeFetch(({ body }) => {
+      bodies.push(body);
+      return jsonResponse({ message: { content: "ok" } });
+    });
+    const client = new OllamaClient({ classifyModel: "qwen3.5:4b", fetchImpl });
+    await client.complete("sys", "user");
+    expect((bodies[0] as { model: string }).model).toBe("qwen3.5:4b");
+    await client.complete("sys", "user", { model: "gemma-4-12B" });
+    expect((bodies[1] as { model: string }).model).toBe("gemma-4-12B");
+  });
+});
+
 describe("OllamaClient.nameWorkstream", () => {
   const cands = [{ label: "NLM" }];
   it("returns the matched label", async () => {
     const fetchImpl = (async () => new Response(JSON.stringify({ message: { content: "NLM" } }), { status: 200 })) as unknown as typeof fetch;
     const c = new OllamaClient({ baseUrl: "http://x", classifyModel: "qwen3:4b-instruct", fetchImpl });
     expect(await c.nameWorkstream("nlm-memory work\nsummary", cands)).toBe("NLM");
+  });
+});
+
+describe("OllamaClient.complete thinking switch", () => {
+  function captureFetch() {
+    const seen: Array<Record<string, unknown>> = [];
+    const fetchImpl = makeFetch(({ body }) => {
+      seen.push(body as Record<string, unknown>);
+      return jsonResponse({ message: { content: "ok" } });
+    });
+    return { seen, fetchImpl };
+  }
+
+  it("maps per-call enable_thinking:false onto the think field", async () => {
+    const { seen, fetchImpl } = captureFetch();
+    const client = new OllamaClient({ fetchImpl });
+    await expect(client.complete("sys", "user", { enable_thinking: false })).resolves.toBe("ok");
+    expect(seen[0]).toMatchObject({ think: false });
+  });
+
+  it("construction-time think:false still applies when the call passes nothing", async () => {
+    const { seen, fetchImpl } = captureFetch();
+    const client = new OllamaClient({ fetchImpl, think: false });
+    await client.complete("sys", "user");
+    expect(seen[0]).toMatchObject({ think: false });
+  });
+
+  it("per-call enable_thinking overrides construction-time think", async () => {
+    const { seen, fetchImpl } = captureFetch();
+    const client = new OllamaClient({ fetchImpl, think: false });
+    await client.complete("sys", "user", { enable_thinking: true });
+    expect(seen[0]).toMatchObject({ think: true });
+  });
+
+  it("omits think when neither construction nor call sets it", async () => {
+    const { seen, fetchImpl } = captureFetch();
+    const client = new OllamaClient({ fetchImpl });
+    await client.complete("sys", "user");
+    expect(seen[0]).not.toHaveProperty("think");
   });
 });

@@ -13,4 +13,5 @@ export interface ChildHandle {
   kill(): void;
 }
 
-export type SpawnChild = (args: string[]) => ChildHandle;
+/** `env` is merged over the daemon's environment for the child (may hold secrets). */
+export type SpawnChild = (args: string[], env?: Record<string, string>) => ChildHandle;

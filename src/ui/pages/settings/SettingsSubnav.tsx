@@ -5,6 +5,8 @@ const ITEMS = [
   { to: "/settings/sources",    label: "Sources" },
   { to: "/settings/providers",  label: "Providers" },
   { to: "/settings/classifier", label: "Classifier" },
+  { to: "/settings/dreaming",   label: "Dreaming" },
+  { to: "/settings/embedder",   label: "Embedder" },
   { to: "/settings/labels",     label: "Topics" },
   { to: "/settings/data",       label: "Data" },
   { to: "/settings/views",      label: "Views" },

@@ -8,6 +8,8 @@ import type { PropertyStore } from "./property-store.js";
  * See docs/plans/2026-05-30-factstore-storage-port.md.
  */
 
+import type { ClassifierSettingsStore } from "./classifier-settings-store.js";
+import type { EmbedderSettingsStore } from "./embedder-settings-store.js";
 import type { CodeExemplarStore } from "./code-exemplar-store.js";
 import type { EntityStore } from "./entity-store.js";
 import type { FactStore } from "./fact-store.js";
@@ -35,6 +37,9 @@ export interface Storage {
   readonly sources: SourceRegistryPort;
   /** LLM-provider registry (ollama/deepseek/openai/…). */
   readonly providers: ProviderRegistryPort;
+  /** Daemon-wide classifier tuning (thinking, timeout, max tokens). */
+  readonly classifierSettings: ClassifierSettingsStore;
+  readonly embedderSettings: EmbedderSettingsStore;
   /** Bearer-token -> team resolution (the tenancy registry itself). */
   readonly teamTokens: TeamTokenStorePort;
 

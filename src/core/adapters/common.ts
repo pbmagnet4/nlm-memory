@@ -6,6 +6,8 @@
  * with the adapter.
  */
 
+import type Database from "better-sqlite3";
+
 export function normalizeTimestamp(ts: unknown): string {
   if (ts === null || ts === undefined || ts === "" || ts === 0) return "";
   if (typeof ts === "string") return ts;
@@ -51,4 +53,19 @@ export function durationMinutes(startedAt: string, endedAt: string): number {
   } catch {
     return 0;
   }
+}
+
+/**
+ * For a catch that turns a bad record into "nothing to ingest": malformed JSON
+ * is a property of the source and stays a null session, but any other error
+ * (EACCES, EBUSY, SQLITE_BUSY, a half-written file) is transient and is
+ * rethrown so scanOnce leaves the source unrecorded and retries it next pass.
+ */
+/** A VS Code state DB with no ItemTable has no chat data; readable, not a read error. */
+export function hasItemTable(db: Database.Database): boolean {
+  return db.prepare<[], { name: string }>(`SELECT name FROM sqlite_master WHERE type='table' AND name='ItemTable'`).get() !== undefined;
+}
+
+export function skipMalformedRecord(err: unknown): void {
+  if (!(err instanceof SyntaxError)) throw err;
 }

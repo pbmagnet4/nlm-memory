@@ -36,7 +36,7 @@ import type {
   SessionChunk,
   TranscriptAdapter,
 } from "@ports/transcript-adapter.js";
-import { durationMinutes, normalizeTimestamp, safeSessionId } from "./common.js";
+import { durationMinutes, normalizeTimestamp, safeSessionId, skipMalformedRecord, hasItemTable } from "./common.js";
 
 export interface CursorAdapterOptions {
   readonly dbPath?: string;
@@ -270,7 +270,8 @@ function parseWorkspaceComposer(
       endedAt,
       label,
     );
-  } catch {
+  } catch (err) {
+    skipMalformedRecord(err);
     return null;
   }
 }
@@ -310,7 +311,8 @@ function parseWorkspaceChatTab(
       endedAt,
       label,
     );
-  } catch {
+  } catch (err) {
+    skipMalformedRecord(err);
     return null;
   }
 }
@@ -449,8 +451,6 @@ export class CursorAdapter implements TranscriptAdapter {
         endedAt,
         label,
       );
-    } catch {
-      return null;
     } finally {
       db?.close();
     }
@@ -461,9 +461,10 @@ export class CursorAdapter implements TranscriptAdapter {
       let db: Database.Database | undefined;
       try {
         db = new Database(wsDbPath, { readonly: true });
+        if (!hasItemTable(db)) continue;
         const chunk = parseWorkspaceComposer(db, composerId, wsDbPath);
         if (chunk) return chunk;
-      } catch { /* next */ } finally {
+      } finally {
         db?.close();
       }
     }
@@ -475,9 +476,10 @@ export class CursorAdapter implements TranscriptAdapter {
       let db: Database.Database | undefined;
       try {
         db = new Database(wsDbPath, { readonly: true });
+        if (!hasItemTable(db)) continue;
         const chunk = parseWorkspaceChatTab(db, tabId, wsDbPath);
         if (chunk) return chunk;
-      } catch { /* next */ } finally {
+      } finally {
         db?.close();
       }
     }

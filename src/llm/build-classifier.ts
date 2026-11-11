@@ -1,7 +1,10 @@
 /**
  * Shared classifier factory used by the CLI daemon and backfill scripts.
  * Reads NLM_CLASSIFIER / NLM_CLASSIFIER_MODEL / NLM_CLASSIFIER_BASE_URL /
- * NLM_CLASSIFIER_API_KEY / NLM_CLASSIFIER_MAX_TOKENS / NLM_OLLAMA_URL.
+ * NLM_CLASSIFIER_FALLBACK_URL / NLM_CLASSIFIER_API_KEY / NLM_OLLAMA_URL,
+ * plus the tuning env vars resolved by
+ * resolveClassifierTuning (NLM_CLASSIFIER_THINKING / _TIMEOUT_MS / _MAX_TOKENS);
+ * persisted settings, when passed, take precedence over env.
  *
  * autoloadEnv() runs FIRST (unconditionally) so standalone scripts (backfill)
  * read the configured provider from ~/.nlm/.env before the branch decision.
@@ -10,19 +13,24 @@
  *
  * Production model: qwen3.5:4b as of 2026-06-12 (NLM task #320). Scored 74.4%
  * decision-precision vs qwen3:4b-instruct-2507-q4_K_M's 58.7% in the 2026-06-11
- * eval. Requires think:false (handled by ClassifierBox via
- * classifierNeedsThinkDisabled) to stay within the 180s classify timeout.
+ * eval. Thinking defaults to off (the tuning default) to stay within the
+ * classify timeout.
  * Ollama is the default to keep the daemon local-first and key-free; DeepSeek
  * is available via NLM_CLASSIFIER=deepseek for users who prioritize speed.
  * The openai provider routes classification at any OpenAI-compatible endpoint
  * (local or cloud) via NLM_CLASSIFIER_BASE_URL (+ optional NLM_CLASSIFIER_API_KEY),
  * so the heavy classify lane can run off-box instead of taxing local Ollama.
+ * An optional NLM_CLASSIFIER_FALLBACK_URL names a second base for the same
+ * endpoint (e.g. a Tailscale fallback beside a LAN primary); classify retries
+ * once against it on network errors and HTTP 5xx from the primary.
  */
 
 import { autoloadEnv } from "./env-autoload.js";
+import { NO_STORED_SETTINGS, resolveClassifierTuning } from "@core/classifier/tuning.js";
+import type { StoredClassifierSettings } from "@ports/classifier-settings-store.js";
 import { ClassifierBox, type ClassifierProvider } from "./classifier-box.js";
 
-export function buildClassifier(): ClassifierBox {
+export function buildClassifier(stored: StoredClassifierSettings = NO_STORED_SETTINGS): ClassifierBox {
   autoloadEnv();
   const provider = ((process.env["NLM_CLASSIFIER"] ?? "ollama").toLowerCase() as ClassifierProvider);
   const modelDefault =
@@ -34,13 +42,14 @@ export function buildClassifier(): ClassifierBox {
         "e.g. qwen3.5-4b-mlx.",
     );
   }
-  const maxTokensRaw = Number.parseInt(process.env["NLM_CLASSIFIER_MAX_TOKENS"] ?? "", 10);
+  const tuning = resolveClassifierTuning(stored, process.env, (msg) => console.error(`nlm: ${msg}`));
   return new ClassifierBox({
     provider,
     model,
     ollamaUrl: process.env["NLM_OLLAMA_URL"] ?? "http://localhost:11434",
     ...(process.env["NLM_CLASSIFIER_BASE_URL"] ? { baseUrl: process.env["NLM_CLASSIFIER_BASE_URL"] } : {}),
+    ...(process.env["NLM_CLASSIFIER_FALLBACK_URL"] ? { fallbackBaseUrl: process.env["NLM_CLASSIFIER_FALLBACK_URL"] } : {}),
     ...(process.env["NLM_CLASSIFIER_API_KEY"] ? { apiKey: process.env["NLM_CLASSIFIER_API_KEY"] } : {}),
-    ...(Number.isFinite(maxTokensRaw) && maxTokensRaw > 0 ? { maxTokens: maxTokensRaw } : {}),
+    tuning,
   });
 }

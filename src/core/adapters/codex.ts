@@ -5,12 +5,13 @@
  * one session containing a `session_meta` header line plus a stream of
  * `event_msg`, `response_item`, `turn_context`, and `token_count` events.
  *
- * Conversation extraction prefers `event_msg` payloads (`user_message`,
- * `agent_message`) over `response_item.message` payloads, because Codex
- * stuffs AGENTS.md and permission preambles into a synthetic
- * `response_item.message` with role=user on session start. Pulling the
- * conversation from `event_msg` sidesteps that envelope entirely without
- * needing a regex strip.
+ * Conversation extraction reads `event_msg` payloads, never
+ * `response_item.message`, because Codex stuffs AGENTS.md and permission
+ * preambles into a synthetic `response_item.message` with role=user on
+ * session start. Two shapes carry the real text: `user_message` /
+ * `agent_message` (codex 0.148.0 only) and `item_completed` with a
+ * `UserMessage` / `AgentMessage` item (every other version). A rollout has
+ * one shape or the other, never both.
  *
  * Tool surface: `response_item.function_call` / `custom_tool_call` →
  * `[tool_use: <name>]`. `response_item.function_call_output` /
@@ -19,7 +20,7 @@
  * are intentionally dropped — they are noise for recall purposes.
  *
  * Format reference: verified against Edward's ~/.codex/sessions on
- * 2026-05-30 (codex 0.134.0).
+ * 2026-10-28 (codex 0.118 through 0.165).
  */
 
 import { promises as fs } from "node:fs";
@@ -94,12 +95,7 @@ export class CodexAdapter implements TranscriptAdapter {
     let runtimeSessionId = "";
     let totalBytes = 0;
 
-    let raw: string;
-    try {
-      raw = await fs.readFile(path, "utf8");
-    } catch {
-      return null;
-    }
+    const raw = await fs.readFile(path, "utf8");
 
     for (const line of raw.split("\n")) {
       totalBytes += Buffer.byteLength(line, "utf8") + 1;
@@ -218,6 +214,16 @@ function extractTurn(
       if (!text.trim()) return null;
       return { role: "assistant", text, timestamp: outerTs };
     }
+    if (pType === "item_completed") {
+      const item = payload["item"];
+      if (typeof item !== "object" || item === null) return null;
+      const { type, phase, content } = item as Record<string, unknown>;
+      if (type !== "UserMessage" && type !== "AgentMessage") return null;
+      if (type === "AgentMessage" && phase && phase !== "final_answer") return null;
+      const text = joinText(content);
+      if (!text) return null;
+      return { role: type === "UserMessage" ? "user" : "assistant", text, timestamp: outerTs };
+    }
     return null;
   }
 
@@ -243,6 +249,19 @@ function extractTurn(
   }
 
   return null;
+}
+
+/** Joins the text parts of an `item_completed` message's content array. */
+function joinText(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => {
+      const text = (part as Record<string, unknown> | null)?.["text"];
+      return typeof text === "string" ? text : "";
+    })
+    .filter((t) => t.length > 0)
+    .join("\n")
+    .trim();
 }
 
 function provisionalLabel(turns: ReadonlyArray<Turn>): string {

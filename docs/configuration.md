@@ -21,9 +21,11 @@
 | `NLM_CLASSIFIER_MODEL` | `qwen3.5:4b` | Model id for the chosen provider. `qwen3.5:4b` (Q4_K_M, 4.7B) is the recommended local default. For measured tier expectations, see [docs/classifier-tiers.md](classifier-tiers.md). |
 | `NLM_OLLAMA_URL` | `http://localhost:11434` | Override Ollama endpoint |
 | `NLM_CODE_EXEMPLARS_ENABLED` | — | Set to `1` to enable the code-exemplar lane (capture from code-bearing signals + the `recall_code` tool/routes). Off by default. |
-| `NLM_CODE_EMBED_MODEL` | `hf.co/awhiteside/CodeRankEmbed-Q8_0-GGUF` | Ollama model for code-exemplar embeddings (768-dim). Only used when the exemplar lane is enabled. |
+| `NLM_EMBED_API_KEY` | — | API key for the `openai` embedder provider, both lanes. Environment only: Settings → Embedder never accepts or stores a key (a key stored by an older version is still read until you clear it there). Inject it from your secret manager at launch. |
+| `NLM_CODE_EMBED_MODEL` | `hf.co/awhiteside/CodeRankEmbed-Q8_0-GGUF` | Ollama model for code-exemplar embeddings (768-dim). Only used when the exemplar lane is enabled. Switching it from Settings → Embedder rebuilds the code vectors. |
 | `NLM_PROPERTY_ASSOCIATIONS` | off | Opt into property-aware unresolved-fact isolation and repository-origin session associations; prerelease 0.21.21-rc.1. |
-| `NLM_PROPERTY_INFERENCE` | off | Experimental automatic fact/entity inference; keep off pending evaluation. |
+| `NLM_PROPERTY_INFERENCE` | off | Experimental automatic fact owner attribution only; keep off (the conservative candidate proposes too few owners to evaluate). |
+| `NLM_SESSION_PROPERTY_INFERENCE` | off | Experimental entity-name session references (ingestion and backfill); keep off until the session-lane evaluation passes. Requires `NLM_PROPERTY_ASSOCIATIONS=1`. |
 | `NLM_ADAPTERS` | all | Comma-separated allowlist of adapters to enable |
 | `DEEPSEEK_API_KEY` | — | Required only when classifier=deepseek |
 | `NLM_DISABLE_UPDATE_CHECK` | — | Set to `1` to disable the daily npm-registry update check |

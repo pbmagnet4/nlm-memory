@@ -21,15 +21,18 @@ new Command().argument("<database>").argument("<catalog>").option("--tenant <id>
         id: string; kind: Fact["kind"]; subject: string; predicate: string; value: string; source_session_id: string; source_quote: string | null; created_at: string; confidence: number;
       }>(`SELECT f.id, f.kind, f.subject, f.predicate, f.value, f.source_session_id, f.source_quote, f.created_at, f.confidence, ${anchors}
         FROM facts f JOIN sessions s ON s.id = f.source_session_id WHERE ${ft.sql} AND ${st.sql} AND f.superseded_by IS NULL AND f.retired_at IS NULL`).all(ft.param, st.param);
-      const proposed = attributeFacts(rows.map((r) => ({ id: r.id, kind: r.kind, subject: r.subject, predicate: r.predicate, value: r.value,
+      const bodies = new Map(db.prepare<[string], { id: string; body: string | null }>(`SELECT id, body FROM sessions WHERE ${tenantClause(options.tenant).sql}`).all(options.tenant).map((s) => [s.id, s.body]));
+      const bySession = new Map<string, Fact[]>();
+      for (const r of rows) bySession.set(r.source_session_id, [...(bySession.get(r.source_session_id) ?? []), { id: r.id, kind: r.kind, subject: r.subject, predicate: r.predicate, value: r.value,
         sourceSessionId: r.source_session_id, sourceQuote: r.source_quote, createdAt: r.created_at, confidence: r.confidence, supersededBy: null,
-        sourceAnchor: anchorFromRow(r, r.source_quote) })), catalog, []);
+        sourceAnchor: anchorFromRow(r, r.source_quote) }]);
+      const proposed = [...bySession].flatMap(([sessionId, facts]) => attributeFacts(facts, catalog, [], true, null, bodies.get(sessionId) ?? null));
       const bySource: Record<string, number> = {}; const byProperty: Record<string, number> = {};
       for (const f of proposed) if (f.property?.slug) { bySource[f.property.source] = (bySource[f.property.source] ?? 0) + 1; byProperty[f.property.slug] = (byProperty[f.property.slug] ?? 0) + 1; }
       const entities = db.prepare<[string], { session_id: string; entity_canonical: string }>(`SELECT session_id, entity_canonical FROM session_entities WHERE ${tenantClause(options.tenant).sql}`).all(options.tenant);
       const groups = new Map<string, string[]>();
       for (const e of entities) groups.set(e.session_id, [...(groups.get(e.session_id) ?? []), e.entity_canonical]);
-      const references = [...groups.values()].map((names) => sessionPropertyReferences(names, catalog));
+      const references = [...groups].map(([sessionId, names]) => sessionPropertyReferences(names, catalog, bodies.get(sessionId) ?? null));
       const totalSessions = db.prepare<[string], { n: number }>(`SELECT count(*) AS n FROM sessions WHERE ${tenantClause(options.tenant).sql}`).get(options.tenant)!.n;
       console.log(JSON.stringify({ evaluatedAt: new Date().toISOString(), readonly: true, catalogSize: catalog.length,
         activeFacts: proposed.length, proposedFactAssociations: proposed.filter((f) => f.property?.slug).length,

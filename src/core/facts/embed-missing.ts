@@ -5,6 +5,7 @@
  */
 
 import type Database from "better-sqlite3";
+import type { Pool } from "pg";
 
 /** Alarm above this share of active facts (E1 acceptance: under 0.5%). */
 export const MISSING_SHARE_ALARM = 0.005;
@@ -26,6 +27,22 @@ export function computeFactEmbedStats(db: Database.Database): FactEmbedStats {
   const pending = one(
     `SELECT COUNT(*) AS n FROM fact_embed_pending p JOIN facts f ON f.id = p.fact_id WHERE ${MISSING}`,
   );
+  return { active, missing, pending, missingShare: active === 0 ? 0 : missing / active };
+}
+
+/** Postgres counterpart of computeFactEmbedStats: missing means no fact_embeddings row. */
+export async function computeFactEmbedStatsOnPg(pool: Pool): Promise<FactEmbedStats> {
+  const res = await pool.query<{ active: string; missing: string; pending: string }>(
+    `SELECT COUNT(*) AS active,
+            COUNT(*) FILTER (WHERE e.fact_id IS NULL) AS missing,
+            COUNT(*) FILTER (WHERE e.fact_id IS NULL AND p.fact_id IS NOT NULL) AS pending
+     FROM facts f
+     LEFT JOIN fact_embeddings e ON e.fact_id = f.id
+     LEFT JOIN fact_embed_pending p ON p.fact_id = f.id
+     WHERE ${ACTIVE}`,
+  );
+  const row = res.rows[0]!;
+  const [active, missing, pending] = [Number(row.active), Number(row.missing), Number(row.pending)];
   return { active, missing, pending, missingShare: active === 0 ? 0 : missing / active };
 }
 

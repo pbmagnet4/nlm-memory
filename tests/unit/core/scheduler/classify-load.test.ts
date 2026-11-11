@@ -5,6 +5,8 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ScanScheduler } from "../../../../src/core/scheduler/scheduler.js";
 import { SqliteStorage } from "../../../../src/core/storage/sqlite-storage.js";
+import { ClassifierBox } from "../../../../src/llm/classifier-box.js";
+import { resolveClassifierTuning, NO_STORED_SETTINGS } from "../../../../src/core/classifier/tuning.js";
 import { LLMUnreachableError, ClassifierSchemaError } from "../../../../src/ports/llm-client.js";
 import type { LLMClient } from "../../../../src/ports/llm-client.js";
 import type { SessionChunk, TranscriptAdapter } from "../../../../src/ports/transcript-adapter.js";
@@ -12,7 +14,10 @@ import type { SessionChunk, TranscriptAdapter } from "../../../../src/ports/tran
 const MIGRATIONS_DIR = resolve(__dirname, "../../../../migrations");
 const OK = { label: "l", summary: "s", entities: [], decisions: [], open: [], confidence: 0.9, facts: [] };
 
-async function setup(failures: Array<() => Error> = []) {
+async function setup(
+  failures: Array<() => Error> = [],
+  wiring: (classifier: LLMClient) => Partial<ConstructorParameters<typeof ScanScheduler>[0]> = () => ({}),
+) {
   const tmp = mkdtempSync(join(tmpdir(), "nlm-load-"));
   const storage = SqliteStorage.create({ dbPath: join(tmp, "c.sqlite"), migrationsDir: MIGRATIONS_DIR });
   await storage.init();
@@ -47,7 +52,7 @@ async function setup(failures: Array<() => Error> = []) {
   const logs: string[] = [];
   const scheduler = new ScanScheduler({
     store: storage.sessions, adapters: [adapter], classifier, embedder: null,
-    idleMinutes: 0, logger: (m: string) => logs.push(m),
+    idleMinutes: 0, logger: (m: string) => logs.push(m), ...wiring(classifier),
   });
   return {
     storage, scheduler, calls, logs, path, age,
@@ -124,6 +129,48 @@ describe("transient failure backoff", () => {
     const s = await setup([bad]);
     await s.scheduler.tick();
     expect(s.state()?.failure_count).toBe(1);
+    await s.storage.close();
+  });
+});
+
+describe("classify timeout follows the classifier box", () => {
+  it("applies a retuned timeout on the next classify call without rebuilding the scheduler", async () => {
+    const box = new ClassifierBox({ provider: "ollama", model: "m" });
+    let seenSignal: AbortSignal | undefined;
+    // retune rebuilds the inner client, so the fake goes in after each retune.
+    // It classifies in 150ms unless aborted first.
+    const installFake = () => { (box as unknown as { inner: LLMClient }).inner = {
+      embed: async () => { throw new Error("no embed"); },
+      classify: (_t, o) => new Promise((resolveOk, reject) => {
+        seenSignal = o?.signal;
+        const timer = setTimeout(() => resolveOk(OK), 150);
+        o?.signal?.addEventListener("abort", () => { clearTimeout(timer); reject(new LLMUnreachableError("ollama", "aborted")); });
+      }),
+      rewriteForRecall: async () => { throw new Error("no"); },
+      nameWorkstream: async () => null,
+    }; };
+    const tuned = (timeoutMs: number) => {
+      const base = resolveClassifierTuning(NO_STORED_SETTINGS, {});
+      return { ...base, timeoutMs: { value: timeoutMs, source: "setting" as const } };
+    };
+    const s = await setup([], () => ({ classifier: box, classifyTimeoutMs: () => box.timeoutMs }));
+
+    box.retune(tuned(20));
+    installFake();
+    const slow = await s.scheduler.tick();
+    expect(seenSignal?.aborted).toBe(true);
+    expect(slow.inserted).toBe(0);
+
+    box.retune(tuned(5_000));
+    installFake();
+    s.age();
+    // The failed attempt put the source on a 30s backoff; step past it.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 31_000);
+    const ok = await s.scheduler.tick();
+    vi.useRealTimers();
+    expect(seenSignal?.aborted).toBe(false);
+    expect(ok.inserted).toBe(1);
     await s.storage.close();
   });
 });

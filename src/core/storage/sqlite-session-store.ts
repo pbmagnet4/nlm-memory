@@ -49,6 +49,7 @@ import { runMigrations } from "./migrate.js";
 import { SqliteFactStore } from "./sqlite-fact-store.js";
 import { tokenize } from "@core/recall/tokenize.js";
 import { chunkSessionText } from "@core/embedding/chunk-body.js";
+import { MAX_CHUNK_EMBED_ATTEMPTS, type ChunkRef } from "@core/embedding/chunk-retry.js";
 import { storedBatchWinners } from "./fact-batch.js";
 import type { FactJudge } from "@core/facts/write-judge.js";
 import { tenantClause } from "@core/tenancy/tenant-clause.js";
@@ -568,6 +569,7 @@ export class SqliteSessionStore implements SessionStore {
           // Per-chunk embedder failure must not roll the ingest back or
           // abort subsequent chunks.
           recordEmbedFailure("chunk");
+          this.markChunkEmbedPending(record.id, chunkIdx, String(err));
           process.stderr.write(`[nlm] embedding chunk failed session=${record.id} chunk=${chunkIdx}: ${String(err)}\n`);
         }
       }
@@ -581,25 +583,40 @@ export class SqliteSessionStore implements SessionStore {
 
   private deleteSessionChunks(sessionId: string): void {
     const db = this.db;
-    const rows = db
-      .prepare<[string], { chunk_id: number }>(
-        "SELECT chunk_id FROM session_chunk_map WHERE session_id = ?",
-      )
-      .all(sessionId);
-    if (rows.length === 0) return;
-    const placeholders = rows.map(() => "?").join(",");
-    const ids = rows.map((r) => r.chunk_id);
-    db.prepare(
-      `DELETE FROM session_embedding_chunks WHERE chunk_id IN (${placeholders})`,
-    ).run(...ids);
-    db.prepare("DELETE FROM session_chunk_map WHERE session_id = ?").run(sessionId);
+    db.transaction(() => {
+      const rows = db
+        .prepare<[string], { chunk_id: number }>(
+          "SELECT chunk_id FROM session_chunk_map WHERE session_id = ?",
+        )
+        .all(sessionId);
+      if (rows.length > 0) {
+        const placeholders = rows.map(() => "?").join(",");
+        db.prepare(
+          `DELETE FROM session_embedding_chunks WHERE chunk_id IN (${placeholders})`,
+        ).run(...rows.map((r) => r.chunk_id));
+        db.prepare("DELETE FROM session_chunk_map WHERE session_id = ?").run(sessionId);
+      }
+      // A re-ingest re-attempts every chunk, so earlier failures are moot.
+      db.prepare("DELETE FROM chunk_embed_pending WHERE session_id = ?").run(sessionId);
+    })();
   }
 
-  private insertChunkEmbedding(
+  /**
+   * Write a chunk's vector and its map row as one unit: a failure between the
+   * two rolls the vector back instead of leaving a map-less orphan (I7b-1).
+   * Clears the chunk's retry record.
+   *
+   * With `ifTextIs` (the retry sweep) the write applies only while the chunk is
+   * still pending and still has that text, so a re-ingest during the embed
+   * cannot be overwritten by a vector of the old text. Returns false when the
+   * write was dropped.
+   */
+  insertChunkEmbedding(
     sessionId: string,
     chunkIdx: number,
     vector: Float32Array,
-  ): void {
+    ifTextIs?: string,
+  ): boolean {
     const db = this.db;
     const blob = Buffer.from(
       vector.buffer,
@@ -609,15 +626,87 @@ export class SqliteSessionStore implements SessionStore {
     // vec0 enforces strict integer typing on aux columns; better-sqlite3 binds
     // JS numbers as FLOAT, so cast chunk_idx via BigInt to bind as INTEGER.
     const idxInt = BigInt(chunkIdx);
-    const info = db
-      .prepare(
-        "INSERT INTO session_embedding_chunks (embedding, session_id, chunk_idx) VALUES (?, ?, ?)",
+    return db.transaction((): boolean => {
+      if (ifTextIs !== undefined) {
+        const pending = db
+          .prepare("SELECT 1 FROM chunk_embed_pending WHERE session_id = ? AND chunk_idx = ?")
+          .get(sessionId, chunkIdx);
+        if (!pending || this.chunkText(sessionId, chunkIdx) !== ifTextIs) return false;
+      }
+      // A concurrent re-ingest may have mapped this chunk while the vector was
+      // being computed; a second vector would be a stale duplicate.
+      const mapped = db
+        .prepare("SELECT 1 FROM session_chunk_map WHERE session_id = ? AND chunk_idx = ?")
+        .get(sessionId, chunkIdx);
+      if (!mapped) {
+        const info = db
+          .prepare(
+            "INSERT INTO session_embedding_chunks (embedding, session_id, chunk_idx) VALUES (?, ?, ?)",
+          )
+          .run(blob, sessionId, idxInt);
+        db.prepare(
+          "INSERT INTO session_chunk_map (chunk_id, session_id, chunk_idx) VALUES (?, ?, ?)",
+        ).run(Number(info.lastInsertRowid), sessionId, chunkIdx);
+      }
+      db.prepare("DELETE FROM chunk_embed_pending WHERE session_id = ? AND chunk_idx = ?").run(
+        sessionId,
+        chunkIdx,
+      );
+      return true;
+    })();
+  }
+
+  /**
+   * Record that a chunk's vector could not be computed so the sweep retries it
+   * with exponential backoff (1 min doubling to a 6 h cap). A chunk at
+   * MAX_CHUNK_EMBED_ATTEMPTS stays here for `nlm doctor` to report.
+   */
+  markChunkEmbedPending(sessionId: string, chunkIdx: number, error: string, now: Date = new Date()): void {
+    const prior = this.db
+      .prepare<[string, number], { attempts: number }>(
+        "SELECT attempts FROM chunk_embed_pending WHERE session_id = ? AND chunk_idx = ?",
       )
-      .run(blob, sessionId, idxInt);
-    const chunkId = Number(info.lastInsertRowid);
-    db.prepare(
-      "INSERT INTO session_chunk_map (chunk_id, session_id, chunk_idx) VALUES (?, ?, ?)",
-    ).run(chunkId, sessionId, chunkIdx);
+      .get(sessionId, chunkIdx)?.attempts ?? 0;
+    const attempts = prior + 1;
+    const delayMs = Math.min(60_000 * 2 ** (attempts - 1), 6 * 3_600_000);
+    this.db
+      .prepare(
+        `INSERT INTO chunk_embed_pending (session_id, chunk_idx, attempts, last_error, next_attempt_at)
+         SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM sessions WHERE id = ?)
+         ON CONFLICT(session_id, chunk_idx) DO UPDATE SET
+           attempts = excluded.attempts, last_error = excluded.last_error,
+           next_attempt_at = excluded.next_attempt_at`,
+      )
+      .run(sessionId, chunkIdx, attempts, error.slice(0, 300), new Date(now.getTime() + delayMs).toISOString(), sessionId);
+  }
+
+  /** Pending chunks whose backoff elapsed, under the attempt cap, still unmapped. Oldest first. */
+  listChunksDueForEmbedding(limit: number, now: Date = new Date()): ReadonlyArray<ChunkRef> {
+    return this.db
+      .prepare<[number, string, number], { session_id: string; chunk_idx: number }>(
+        `SELECT p.session_id, p.chunk_idx FROM chunk_embed_pending p
+         WHERE p.attempts < ? AND p.next_attempt_at <= ?
+           AND NOT EXISTS (SELECT 1 FROM session_chunk_map m
+                           WHERE m.session_id = p.session_id AND m.chunk_idx = p.chunk_idx)
+         ORDER BY p.next_attempt_at LIMIT ?`,
+      )
+      .all(MAX_CHUNK_EMBED_ATTEMPTS, now.toISOString(), limit)
+      .map((r) => ({ sessionId: r.session_id, chunkIdx: r.chunk_idx }));
+  }
+
+  /** The text of one chunk of a session as ingest would chunk it now; null when it no longer exists. */
+  chunkText(sessionId: string, chunkIdx: number): string | null {
+    const row = this.db
+      .prepare<[string], { label: string | null; summary: string | null; body: string | null }>(
+        "SELECT label, summary, body FROM sessions WHERE id = ?",
+      )
+      .get(sessionId);
+    if (!row) return null;
+    return chunkSessionText(row)[chunkIdx] || null;
+  }
+
+  clearChunkEmbedPending(sessionId: string, chunkIdx: number): void {
+    this.db.prepare("DELETE FROM chunk_embed_pending WHERE session_id = ? AND chunk_idx = ?").run(sessionId, chunkIdx);
   }
 
   /**

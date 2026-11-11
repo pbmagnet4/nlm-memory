@@ -8,6 +8,7 @@ describe.skipIf(!url)("PostgreSQL property memory", () => {
   const pgUrl = usePgTestSchema(url, import.meta.url);
   runPropertyMemoryContract({
     async setup() { const s = PgStorage.create({ connectionString: pgUrl(), migrationsDir: resolve("migrations/pg") }); await s.init(); await s.pgPool().query("TRUNCATE facts, sessions, memory_properties, property_overrides CASCADE"); return s; },
+    async sql(s, sql, params = []) { let n = 0; return (await (s as PgStorage).pgPool().query(sql.replace(/\?/g, () => `$${++n}`), params)).rows; },
     async close(s) { await s.close(); },
     async attributeSession(s, tenantId, record) { const storage = s as PgStorage; await storage.properties.attributeSession(tenantId, record); },
   async maintain(s, sessionId, facts, embedder) { const storage = s as PgStorage; await storage.sessions.insertFactsForSession("team_local", sessionId, storage.facts, facts, embedder); },

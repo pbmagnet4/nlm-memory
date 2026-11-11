@@ -1,0 +1,25 @@
+# Scaffolded by `nxtos-hygiene landing-gate scaffold` from the landing-gate profiles.
+# nlm-memory: product/full owes test, typecheck, build; this repo offers test, typecheck, build.
+# Edit freely: `nxtos-hygiene landing-gate audit` checks it still meets the profile.
+# 2026-11-08 (dreaming wave 1): added ci workflow reference for release-gate
+# plus a security audit section. Steps otherwise unchanged from the scaffold.
+version: 1
+
+ci:
+  workflow: CI
+  check_name: test
+
+commands:
+  preflight:
+  # The landing checkout keeps no node_modules to lend the gate; install from
+  # the lockfile first (8s from the npm cache; `prepare` also builds).
+  - npm ci --prefer-offline --no-audit --no-fund
+  - npm --prefix . test
+  - npm --prefix . run typecheck
+  - npm --prefix . run build
+  changed:
+  - glob: '**/*.{ts,tsx,js,jsx,mjs,svelte,astro,vue}'
+    run: npm --prefix . test
+
+security:
+  - npm audit --audit-level=high

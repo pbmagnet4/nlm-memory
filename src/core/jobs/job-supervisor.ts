@@ -106,7 +106,7 @@ export type JobState =
   | "stopped";
 
 export interface JobSnapshot {
-  readonly name: "reprocess";
+  readonly name: string;
   readonly state: JobState;
   readonly processed: number;
   readonly total: number;
@@ -118,7 +118,7 @@ export interface JobSnapshot {
 }
 
 interface JobSupervisorEventBase {
-  readonly job: "reprocess";
+  readonly job: string;
   readonly processed: number;
   readonly total: number;
   readonly restarts: number;
@@ -132,6 +132,8 @@ export type JobSupervisorEvent =
   | ({ readonly kind: "spawn_failed" } & JobSupervisorEventBase);
 
 export interface JobSupervisorOptions {
+  /** Job label reported in snapshots, events and the already-active error. */
+  readonly job: string;
   readonly spawnChild: SpawnChild;
   readonly clock: Clock;
   /** Alert-firing port. Never let a throwing consumer crash the supervisor. */
@@ -163,6 +165,7 @@ function stallMinutesFromEnv(): number {
 }
 
 export class JobSupervisor {
+  private readonly job: string;
   private readonly spawnChildFn: SpawnChild;
   private readonly clock: Clock;
   private readonly onEventCb: (event: JobSupervisorEvent) => void;
@@ -172,6 +175,7 @@ export class JobSupervisor {
 
   private state: JobState = "idle";
   private args: string[] = [];
+  private env: Record<string, string> | undefined;
   private child: ChildHandle | null = null;
   private processed = 0;
   private total = 0;
@@ -183,6 +187,7 @@ export class JobSupervisor {
   private stopRequested = false;
 
   constructor(opts: JobSupervisorOptions) {
+    this.job = opts.job;
     this.spawnChildFn = opts.spawnChild;
     this.clock = opts.clock;
     this.onEventCb = opts.onEvent ?? (() => {});
@@ -194,12 +199,14 @@ export class JobSupervisor {
     this.clock.setInterval(() => this.checkStall(), stallCheckIntervalMs);
   }
 
-  /** Starts a new run. Refuses (throws) if a run is already active. */
-  start(args: string[]): void {
+  /** Starts a new run. Refuses (throws) if a run is already active. `env` is
+   *  extra child environment (may hold secrets: never logged or snapshotted). */
+  start(args: string[], env?: Record<string, string>): void {
     if (this.state === "running" || this.state === "stalled") {
-      throw new Error("reprocess job already active");
+      throw new Error(`${this.job} job already active`);
     }
     this.args = args;
+    this.env = env;
     this.processed = 0;
     this.total = 0;
     this.restarts = 0;
@@ -216,7 +223,7 @@ export class JobSupervisor {
       this.state = "exhausted";
       this.emitEvent({
         kind: "spawn_failed",
-        job: "reprocess",
+        job: this.job,
         processed: this.processed,
         total: this.total,
         restarts: this.restarts,
@@ -243,7 +250,7 @@ export class JobSupervisor {
 
   snapshot(): JobSnapshot {
     return {
-      name: "reprocess",
+      name: this.job,
       state: this.state,
       processed: this.processed,
       total: this.total,
@@ -255,7 +262,7 @@ export class JobSupervisor {
   }
 
   private spawnAndWire(): void {
-    const child = this.spawnChildFn(this.args);
+    const child = this.spawnChildFn(this.args, this.env);
     this.child = child;
     // Identity-guard every callback against `this.child`: a killed-but-not-yet-
     // exited child (stop(), or a respawn racing a slow exit/line delivery) can
@@ -314,7 +321,7 @@ export class JobSupervisor {
       this.state = "exhausted";
       this.emitEvent({
         kind: "exhausted",
-        job: "reprocess",
+        job: this.job,
         processed: this.processed,
         total: this.total,
         restarts: this.restarts,
@@ -336,7 +343,7 @@ export class JobSupervisor {
       );
       this.emitEvent({
         kind: "spawn_failed",
-        job: "reprocess",
+        job: this.job,
         processed: this.processed,
         total: this.total,
         restarts: this.restarts,
@@ -362,7 +369,7 @@ export class JobSupervisor {
       this.state = "stalled";
       this.emitEvent({
         kind: "stalled",
-        job: "reprocess",
+        job: this.job,
         processed: this.processed,
         total: this.total,
         restarts: this.restarts,

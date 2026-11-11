@@ -108,12 +108,7 @@ export class JsonlGenericAdapter implements TranscriptAdapter {
   }
 
   async parseSession(filePath: string): Promise<SessionChunk | null> {
-    let raw: string;
-    try {
-      raw = await fs.readFile(filePath, "utf8");
-    } catch {
-      return null;
-    }
+    const raw = await fs.readFile(filePath, "utf8");
     const lines = raw.split("\n").filter((l) => l.trim().length > 0);
     if (lines.length === 0) return null;
 

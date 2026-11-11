@@ -31,10 +31,14 @@ Dispositions per program spec §2: **STAMP** = carries `tenant_id NOT NULL`; **D
 | actions | DERIVE | via target session/entity rows; operator-overlay log |
 | adapter_state | NEUTRAL | local ingest cursor state; hosted ingest is webhook-push (spec §8) |
 | embedding_config | NEUTRAL | per-database embedder identity, not corpus content |
+| classifier_settings | NEUTRAL | daemon-wide classifier tuning (one row), not corpus content |
+| embedder_settings | NEUTRAL | daemon-wide embedder config, one row per lane (holds an API key), not corpus content |
 | schema_migrations | NEUTRAL | migration bookkeeping |
 | teams | NEUTRAL | the tenancy registry itself (created in Task 2) |
 | team_tokens | NEUTRAL | credential registry, keyed by team_id FK (created in Task 2) |
 | fact_embed_pending | DERIVE | via facts.id (ON DELETE CASCADE); retry bookkeeping for dropped fact vectors |
+| chunk_embed_pending | DERIVE | via sessions.id (ON DELETE CASCADE); retry bookkeeping for dropped session chunk vectors |
+| fact_promotions | STAMP | dream-pass nomination set (T1611); tenant-scoped like facts |
 | learners | STAMP | learner-evidence corpus (spec 2026-10-06) |
 | enrollments | STAMP | learner-evidence corpus (spec 2026-10-06) |
 | learning_events | STAMP | learner-evidence corpus (spec 2026-10-06) |

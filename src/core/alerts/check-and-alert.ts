@@ -11,6 +11,8 @@ import { warmupSnapshot } from "../health/warmup-state.js";
 import { readAlertState, writeAlertState, defaultAlertStatePath } from "./alert-state.js";
 import { evaluateDriftTransition } from "./drift-transition.js";
 import { evaluateEmbedderTransition } from "./embedder-transition.js";
+import { evaluateIngestLagTransition } from "./ingest-lag-transition.js";
+import type { IngestLagReport } from "../health/ingest-lag.js";
 import { fireAlert } from "./fire-alert.js";
 
 export interface CheckDriftDeps {
@@ -69,4 +71,33 @@ export async function checkEmbedderAndAlert(deps: CheckEmbedderDeps = {}): Promi
     });
   }
   await writeAlertState(statePath, { ...state, embedderCold: result.next });
+}
+
+/** Evaluates + fires the ingest-lag enter/recover transition from the monitor's report. */
+export async function checkIngestLagAndAlert(
+  getReport: () => Promise<IngestLagReport>,
+  deps: CheckEmbedderDeps = {},
+): Promise<void> {
+  const now = deps.now ?? (() => new Date());
+  const statePath = deps.statePath ?? defaultAlertStatePath();
+  const state = await readAlertState(statePath);
+
+  const report = await getReport();
+  const result = evaluateIngestLagTransition(state.ingestLag, report.lagging, report.summary, now());
+  if (result.event) {
+    await fireAlert(result.event, {
+      now,
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    });
+  }
+  await writeAlertState(statePath, { ...state, ingestLag: result.next });
+}
+
+/** Runs the checks one after another: each read-modify-writes alert-state.json,
+ *  so overlapping checks would overwrite each other's state. A failed check
+ *  never blocks the daemon or the checks after it. */
+export async function runAlertChecks(checks: ReadonlyArray<() => Promise<void>>): Promise<void> {
+  for (const check of checks) {
+    await check().catch(() => {});
+  }
 }

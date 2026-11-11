@@ -8,7 +8,7 @@
  * db snapshot, and judges with the locked usefulness judge.
  *
  * Run: npx tsx scripts/eval/pull-usefulness.ts [--days=0] [--limit=60]
- *        [--db=<sqlite path>] [--model=qwen3.5:4b] [--ollama=<url>]
+ *        [--db=<sqlite path>] [--model=<tag>] [--ollama=<url>]
  *        [--tool=code] [--judge-api=openai] [--judge-base=<url>]
  *        [--judge-model=<model>] [--judge-key=<token>]
  *        [--verbose] [--json=<out>]
@@ -17,7 +17,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { judgeUsefulness, USEFULNESS_MODEL, type Verdict } from "./lib/usefulness-judge.js";
+import { judgeUsefulness, usefulnessModel, type Verdict } from "./lib/usefulness-judge.js";
 import { PROBE_EXACT_QUERIES } from "../../src/core/telemetry/probe-filter.js";
 
 // Pre-registered strip set (2026-07-03 baseline, locked before results).
@@ -61,7 +61,7 @@ function parseArgs(argv: string[]): Args {
     days: Number.parseInt(get("days") ?? "0", 10),
     limit: Number.parseInt(get("limit") ?? "60", 10),
     db: get("db") ?? join(homedir(), ".nlm", "canonical.sqlite"),
-    model: get("model") ?? USEFULNESS_MODEL,
+    model: usefulnessModel(get("model")),
     ollamaUrl: get("ollama") ?? process.env["OLLAMA_URL"] ?? "http://localhost:11434",
     tool: get("tool") ?? null,
     judgeApi: (get("judge-api") ?? "ollama") as "ollama" | "openai",

@@ -10,7 +10,7 @@
  * Run: npx tsx scripts/eval/magnet-usefulness.ts [--threshold=10] [--n=25] [--days=60]
  */
 import { topicalWordCount } from "../../src/hook/recent-context.js";
-import { judgeUsefulness, USEFULNESS_MODEL, type Verdict } from "./lib/usefulness-judge.js";
+import { judgeUsefulness, usefulnessModel, type Verdict } from "./lib/usefulness-judge.js";
 import { readInjectFires, responseFor, evenStride, openSessionContext, type Fire } from "./lib/transcript.js";
 
 const get = (k: string) => { const h = process.argv.find((a) => a.startsWith(`--${k}=`)); return h ? h.slice(k.length + 3) : undefined; };
@@ -35,7 +35,7 @@ async function scoreGroup(pool: Fire[], name: string): Promise<void> {
     if (scored >= N) break;
     const response = responseFor(f.cid, f.prompt); if (!response) continue;
     const context = ctx.get(f.injId); if (!context) continue;
-    counts[await judgeUsefulness(URL, USEFULNESS_MODEL, { prompt: f.prompt, context, response })] += 1;
+    counts[await judgeUsefulness(URL, usefulnessModel(), { prompt: f.prompt, context, response })] += 1;
     scored += 1;
     if (topicalWordCount(f.prompt) < 3) thin += 1;
   }

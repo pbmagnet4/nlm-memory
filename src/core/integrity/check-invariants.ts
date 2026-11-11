@@ -32,6 +32,7 @@ import {
   missingFactEmbeddingSamples,
 } from "@core/facts/embed-missing.js";
 import { EVENT_CLASS_PREDICATES } from "@core/facts/fact-classes.js";
+import { collapses, newestFact } from "@core/storage/fact-batch.js";
 
 export interface Violation {
   readonly id: string;
@@ -110,7 +111,7 @@ const SQL_I4_MISSING_TO = `
   LIMIT 6
 `;
 
-// One row per conflicting (subject, predicate) group — the count is the number
+// One row per conflicting (tenant, subject, predicate) group — the count is the number
 // of conflicts to resolve, not the number of facts involved. MIN(id) keeps the
 // projection aggregate-only so PostgreSQL's GROUP BY strictness accepts it.
 // Multi-valued predicates are excluded here; they are counted by SQL_I5A_MULTI_VALUED.
@@ -119,7 +120,7 @@ const SQL_I5_DUPLICATE_FACTS = `
   FROM facts
   WHERE superseded_by IS NULL AND retired_at IS NULL
     AND predicate NOT IN (${MV_IN})
-  GROUP BY subject, predicate
+  GROUP BY tenant_id, property_slug, subject, predicate
   HAVING COUNT(*) > 1
   LIMIT 6
 `;
@@ -302,7 +303,7 @@ export function listActiveFactConflictGroups(db: Database.Database): Array<{ sub
     .prepare<[], { subject: string; predicate: string }>(
       `SELECT subject, predicate FROM facts
        WHERE superseded_by IS NULL AND retired_at IS NULL AND predicate NOT IN (${MV_IN})
-       GROUP BY subject, predicate HAVING COUNT(*) > 1`,
+       GROUP BY tenant_id, property_slug, subject, predicate HAVING COUNT(*) > 1`,
     )
     .all();
 }
@@ -632,12 +633,143 @@ export async function runCheapChecksOnPg(pool: Pool): Promise<ReadonlyArray<Viol
 
 // ─── --fix: mechanically safe repairs ────────────────────────────────────────
 
+// I5a repair candidates: active, unattributed, non-operator facts outside the
+// multi-valued and event-class predicates. These are the groups the property
+// associations regression left conflicting; an operator-unassigned fact is a
+// deliberate decision and is never touched.
+const SQL_I5A_REPAIR_CANDIDATES = `
+  SELECT id, tenant_id, subject, predicate
+  FROM facts
+  WHERE superseded_by IS NULL AND retired_at IS NULL
+    AND property_slug IS NULL
+    AND (property_source IS NULL OR property_source <> 'operator')
+    AND predicate NOT IN (${MV_IN})
+  ORDER BY tenant_id, subject, predicate, created_at, id
+`;
+
+interface RepairCandidate { readonly id: string; readonly tenant_id: string; readonly subject: string; readonly predicate: string }
+
+export interface ConflictRepair {
+  readonly tenantId: string;
+  readonly subject: string;
+  readonly predicate: string;
+  readonly keptId: string;
+  readonly supersededIds: ReadonlyArray<string>;
+}
+
+/** Candidates arrive ordered oldest-first within each group; the newest is kept. */
+function planConflictRepairs(rows: ReadonlyArray<RepairCandidate>): ConflictRepair[] {
+  const groups = new Map<string, RepairCandidate[]>();
+  for (const row of rows) {
+    const key = JSON.stringify([row.tenant_id, row.subject, row.predicate]);
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+  return [...groups.values()].filter((g) => g.length > 1).map((g) => ({
+    tenantId: g[0]!.tenant_id,
+    subject: g[0]!.subject,
+    predicate: g[0]!.predicate,
+    keptId: g[g.length - 1]!.id,
+    supersededIds: g.slice(0, -1).map((r) => r.id),
+  }));
+}
+
+export function planConflictRepairsOnSqlite(db: Database.Database): ConflictRepair[] {
+  return planConflictRepairs(db.prepare<[], RepairCandidate>(SQL_I5A_REPAIR_CANDIDATES).all());
+}
+
+export async function planConflictRepairsOnPg(pool: Pool): Promise<ConflictRepair[]> {
+  return planConflictRepairs((await pool.query<RepairCandidate>(SQL_I5A_REPAIR_CANDIDATES)).rows);
+}
+
+// I5b repair candidates: every dangling fact (superseded_by names no fact) plus
+// the active facts sharing its (tenant, slug, subject, predicate) key.
+const SQL_I5B_REPAIR_CANDIDATES = `
+  SELECT f.id, f.tenant_id, f.subject, f.predicate, f.property_slug, f.property_source, f.created_at,
+         CASE WHEN f.superseded_by IS NULL THEN 0 ELSE 1 END AS dangling
+  FROM facts f
+  WHERE f.retired_at IS NULL
+    AND (f.superseded_by IS NULL OR NOT EXISTS (SELECT 1 FROM facts p WHERE p.id = f.superseded_by))
+    AND EXISTS (
+      SELECT 1 FROM facts d
+      WHERE d.superseded_by IS NOT NULL AND d.retired_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM facts p WHERE p.id = d.superseded_by)
+        AND d.tenant_id = f.tenant_id AND d.subject = f.subject AND d.predicate = f.predicate
+        AND COALESCE(d.property_slug, '') = COALESCE(f.property_slug, ''))
+  ORDER BY f.tenant_id, f.subject, f.predicate, f.id
+`;
+
+interface DanglingCandidate extends RepairCandidate {
+  readonly property_slug: string | null;
+  readonly property_source: string | null;
+  readonly created_at: string | Date;
+  readonly dangling: number;
+}
+
+export interface DanglingRepair {
+  readonly factId: string;
+  readonly tenantId: string;
+  readonly subject: string;
+  readonly predicate: string;
+  /** The fact it is now superseded by, or null when it is the newest and returns to active. */
+  readonly supersededBy: string | null;
+  /** Older active facts of the same key superseded because this one returns to active. */
+  readonly alsoSuperseded: ReadonlyArray<string>;
+}
+
+/**
+ * A dangling pointer is re-evaluated like an ingest collapse: among the key's
+ * facts the newest stays active and the others sit under it. Parallel
+ * (multi-valued) and operator-unassigned facts only return to active.
+ */
+function planDanglingRepairs(rows: ReadonlyArray<DanglingCandidate>): DanglingRepair[] {
+  const groups = new Map<string, DanglingCandidate[]>();
+  for (const row of rows) {
+    const key = JSON.stringify([row.tenant_id, row.property_slug, row.subject, row.predicate]);
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+  const repairs: DanglingRepair[] = [];
+  for (const group of groups.values()) {
+    const head = group[0]!;
+    const base = { tenantId: head.tenant_id, subject: head.subject, predicate: head.predicate };
+    const unassigned = (r: DanglingCandidate): boolean => r.property_slug === null && r.property_source === "operator";
+    const members = group.filter((r) => !unassigned(r));
+    const collapsible = !MULTI_VALUED_PREDICATES.has(head.predicate) && collapses(head.predicate, head.property_slug, null);
+    const winner = collapsible && members.length > 0 ? newestFact(members) : undefined;
+    for (const d of group.filter((r) => r.dangling === 1)) {
+      const isWinner = winner === undefined || unassigned(d) || d.id === winner.id;
+      repairs.push({
+        ...base,
+        factId: d.id,
+        supersededBy: isWinner ? null : winner.id,
+        alsoSuperseded: winner !== undefined && d.id === winner.id ? members.filter((r) => r.dangling === 0).map((r) => r.id) : [],
+      });
+    }
+  }
+  return repairs;
+}
+
+export function planDanglingRepairsOnSqlite(db: Database.Database): DanglingRepair[] {
+  return planDanglingRepairs(db.prepare<[], DanglingCandidate>(SQL_I5B_REPAIR_CANDIDATES).all());
+}
+
+export async function planDanglingRepairsOnPg(pool: Pool): Promise<DanglingRepair[]> {
+  return planDanglingRepairs((await pool.query<DanglingCandidate>(SQL_I5B_REPAIR_CANDIDATES)).rows);
+}
+
 export interface FixReport {
   readonly deletedSelfLoops: number;
   readonly restoredToClosed: number;
   readonly deletedGhostEmbeddings: number;
+  /** Dangling superseded_by pointers re-evaluated (I5b). */
+  readonly repairedDangling: ReadonlyArray<DanglingRepair>;
+  /** I5a groups collapsed under their newest fact. */
+  readonly supersededConflicts: ReadonlyArray<ConflictRepair>;
   /** Set when the sweep guard refused the ghost-embedding deletion (I7). */
   readonly ghostGuardRefusal?: string;
+  /** chunk_ids of map-less chunk vectors deleted (I7b-1). */
+  readonly deletedOrphanChunkIds: ReadonlyArray<number>;
+  /** Set when the sweep guard refused the orphan-chunk deletion (I7b-1). */
+  readonly orphanChunkGuardRefusal?: string;
 }
 
 export interface FixGuardOptions {
@@ -694,11 +826,69 @@ export function applyFixOnSqlite(db: Database.Database, guard: FixGuardOptions =
     }
   }
 
+  // I7b-1 fix: vec0 vectors with no map row can never be reached by recall.
+  const orphanChunkIds = db
+    .prepare<[], { bad_id: number }>(`
+      SELECT r.rowid AS bad_id
+      FROM session_embedding_chunks_rowids r
+      LEFT JOIN session_chunk_map m ON m.chunk_id = r.rowid
+      WHERE m.chunk_id IS NULL
+    `)
+    .all()
+    .map((r) => r.bad_id);
+  const chunkTotal = (db.prepare("SELECT COUNT(*) AS n FROM session_embedding_chunks_rowids").get() as { n: number }).n;
+  const orphanDecision = guardSweep({
+    sweep: "doctor-fix-orphan-chunks",
+    actor: "cli:doctor --fix",
+    targetTotal: chunkTotal,
+    touching: orphanChunkIds.length,
+    override: guard.overrideGuard,
+    auditPath: guard.auditPath,
+  });
+  const deletedOrphanChunkIds: number[] = [];
+  if (orphanDecision.mode === "applied") {
+    const delChunk = db.prepare("DELETE FROM session_embedding_chunks WHERE chunk_id = ?");
+    db.transaction(() => {
+      for (const id of orphanChunkIds) {
+        if (delChunk.run(id).changes > 0) deletedOrphanChunkIds.push(id);
+      }
+    })();
+  }
+
+  const supersededConflicts = planConflictRepairsOnSqlite(db);
+  const supersede = db.prepare("UPDATE facts SET superseded_by = ? WHERE id = ?");
+  const dropEmbedding = db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ?");
+  db.transaction(() => {
+    for (const repair of supersededConflicts) {
+      for (const id of repair.supersededIds) {
+        supersede.run(repair.keptId, id);
+        dropEmbedding.run(id);
+      }
+    }
+  })();
+
+  const repairedDangling = planDanglingRepairsOnSqlite(db);
+  const setSupersededBy = db.prepare("UPDATE facts SET superseded_by = ? WHERE id = ?");
+  db.transaction(() => {
+    for (const repair of repairedDangling) {
+      setSupersededBy.run(repair.supersededBy, repair.factId);
+      if (repair.supersededBy !== null) dropEmbedding.run(repair.factId);
+      for (const id of repair.alsoSuperseded) {
+        setSupersededBy.run(repair.factId, id);
+        dropEmbedding.run(id);
+      }
+    }
+  })();
+
   return {
     deletedSelfLoops: deleteResult.changes,
     restoredToClosed: updateSuperseded.changes + updateReplaced.changes,
     deletedGhostEmbeddings,
+    deletedOrphanChunkIds,
+    supersededConflicts,
+    repairedDangling,
     ...(ghostDecision.mode === "refused" ? { ghostGuardRefusal: ghostDecision.reason } : {}),
+    ...(orphanDecision.mode === "refused" ? { orphanChunkGuardRefusal: orphanDecision.reason } : {}),
   };
 }
 
@@ -731,9 +921,32 @@ export async function applyFixOnPg(pool: Pool): Promise<FixReport> {
     )
   `);
 
+  const orphanChunks = await pool.query<{ chunk_id: number }>(`
+    DELETE FROM session_embedding_chunks
+    WHERE chunk_id NOT IN (SELECT chunk_id FROM session_chunk_map)
+    RETURNING chunk_id
+  `);
+
+  const supersededConflicts = await planConflictRepairsOnPg(pool);
+  for (const repair of supersededConflicts) {
+    await pool.query("UPDATE facts SET superseded_by = $1 WHERE id = ANY($2)", [repair.keptId, repair.supersededIds]);
+    await pool.query("DELETE FROM fact_embeddings WHERE fact_id = ANY($1)", [repair.supersededIds]);
+  }
+
+  const repairedDangling = await planDanglingRepairsOnPg(pool);
+  for (const repair of repairedDangling) {
+    await pool.query("UPDATE facts SET superseded_by = $1 WHERE id = $2", [repair.supersededBy, repair.factId]);
+    const dropped = repair.supersededBy === null ? [...repair.alsoSuperseded] : [repair.factId];
+    if (repair.alsoSuperseded.length > 0) await pool.query("UPDATE facts SET superseded_by = $1 WHERE id = ANY($2)", [repair.factId, repair.alsoSuperseded]);
+    await pool.query("DELETE FROM fact_embeddings WHERE fact_id = ANY($1)", [dropped]);
+  }
+
   return {
     deletedSelfLoops: deleteResult.rowCount ?? 0,
     restoredToClosed: (updateSuperseded.rowCount ?? 0) + (updateReplaced.rowCount ?? 0),
     deletedGhostEmbeddings: ghostEmbResult.rowCount ?? 0,
+    deletedOrphanChunkIds: orphanChunks.rows.map((r) => r.chunk_id),
+    supersededConflicts,
+    repairedDangling,
   };
 }

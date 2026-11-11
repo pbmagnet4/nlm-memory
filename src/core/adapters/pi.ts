@@ -91,12 +91,7 @@ export class PiAdapter implements TranscriptAdapter {
   }
 
   async parseSession(path: string): Promise<SessionChunk | null> {
-    let raw: string;
-    try {
-      raw = await fs.readFile(path, "utf8");
-    } catch {
-      return null;
-    }
+    const raw = await fs.readFile(path, "utf8");
 
     const turns: Turn[] = [];
     const signals: unknown[] = [];

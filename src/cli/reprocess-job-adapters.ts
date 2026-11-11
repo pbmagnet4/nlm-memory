@@ -20,7 +20,9 @@ export const realClock: Clock = {
   },
 };
 
-export interface ReprocessSpawnOptions {
+export interface JobSpawnOptions {
+  /** The `nlm` subcommand the job runs, e.g. "reprocess" or "embed-backfill". */
+  readonly subcommand: string;
   /** process.execPath — the node binary running this daemon. */
   readonly execPath: string;
   /** This file's own on-disk path (dist/cli/nlm.js), i.e. `__filename`
@@ -31,7 +33,7 @@ export interface ReprocessSpawnOptions {
 }
 
 /**
- * Spawns `node <nlm.js> reprocess -v <args>` and line-buffers stdout+stderr
+ * Spawns `node <nlm.js> <subcommand> -v <args>` and line-buffers stdout+stderr
  * into a single onLine stream (reprocess's -v progress lines go to stderr
  * per the `reprocess` command's own onProgress wiring in nlm.ts; combining
  * both means JobSupervisor never needs to care which fd a future output
@@ -42,10 +44,11 @@ export interface ReprocessSpawnOptions {
  * metacharacters is just one literal argv element to the child, nothing it
  * can escape into.
  */
-export function createReprocessSpawnChild(opts: ReprocessSpawnOptions): SpawnChild {
-  return (args: string[]): ChildHandle => {
-    const child = spawn(opts.execPath, [opts.nlmScriptPath, "reprocess", "-v", ...args], {
+export function createJobSpawnChild(opts: JobSpawnOptions): SpawnChild {
+  return (args: string[], env?: Record<string, string>): ChildHandle => {
+    const child = spawn(opts.execPath, [opts.nlmScriptPath, opts.subcommand, "-v", ...args], {
       stdio: ["ignore", "pipe", "pipe"],
+      ...(env ? { env: { ...process.env, ...env } } : {}),
     });
 
     let lineCb: ((line: string) => void) | null = null;

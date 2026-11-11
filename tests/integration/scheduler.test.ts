@@ -15,6 +15,7 @@ import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import { ClaudeCodeAdapter } from "../../src/core/adapters/claude-code.js";
 import { ScanScheduler } from "../../src/core/scheduler/scheduler.js";
 import { MAX_CLASSIFY_FAILURES } from "../../src/core/scheduler/scan-once.js";
+import { classifyOutcomesSnapshot, resetClassifyOutcomes } from "../../src/core/health/classify-outcomes.js";
 import { StubClassifier, StubEmbedder } from "../fixtures/llm-stubs.js";
 
 const MIGRATIONS_DIR = resolve(__dirname, "../../migrations");
@@ -71,7 +72,9 @@ describe("ScanScheduler.tick", () => {
       logger: () => {},
     });
 
+    resetClassifyOutcomes();
     const report = await scheduler.tick();
+    expect(classifyOutcomesSnapshot()).toMatchObject({ successes1h: 1, errors1h: 0, timeouts1h: 0 });
     expect(report.chunksSeen).toBe(1);
     expect(report.inserted).toBe(1);
     expect(report.skippedLowConfidence).toBe(0);
@@ -358,8 +361,10 @@ describe("ScanScheduler.tick", () => {
       store, adapters: [adapter], classifier, embedder: null,
       logger: (m) => messages.push(m),
     });
+    resetClassifyOutcomes();
     const report = await scheduler.tick();
     expect(report.classifyFailures).toBe(1);
+    expect(classifyOutcomesSnapshot()).toMatchObject({ successes1h: 0, errors1h: 1 });
     expect(report.inserted).toBe(0);
     expect(messages.some((m) => m.includes("classifier"))).toBe(true);
   });

@@ -10,7 +10,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { checkDriftAndAlert, checkEmbedderAndAlert } from "../../../../src/core/alerts/check-and-alert.js";
+import { checkDriftAndAlert, checkEmbedderAndAlert, checkIngestLagAndAlert, runAlertChecks } from "../../../../src/core/alerts/check-and-alert.js";
+import type { IngestLagReport } from "../../../../src/core/health/ingest-lag.js";
 import { markWarm, resetWarmupState } from "../../../../src/core/health/warmup-state.js";
 import type { AlertState } from "../../../../src/core/alerts/alert-state.js";
 
@@ -143,5 +144,85 @@ describe("checkEmbedderAndAlert", () => {
     await checkEmbedderAndAlert({ fetchImpl, statePath });
 
     expect(posts).toBe(0);
+  });
+});
+
+describe("checkIngestLagAndAlert", () => {
+  const report = (lagging: boolean): IngestLagReport => ({
+    adapters: {},
+    last_success_at: null,
+    last_progress_at: null,
+    timeouts_1h: 0,
+    errors_1h: 0,
+    lagging,
+    summary: "412 pending, oldest 3d, 0 ok/1h",
+  });
+
+  it("posts nlm.health.ingest_lagging on the second lagging check and persists state", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "nlm-alert-"));
+    const statePath = join(tmp, "alert-state.json");
+    process.env["NLM_ALERT_WEBHOOK"] = "https://example.test/hook";
+    const bodies: Array<{ type: string; data: { current: string; latest: string } }> = [];
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(init?.body as string));
+      return new Response(null, { status: 200 });
+    }) as typeof fetch;
+    try {
+      await checkIngestLagAndAlert(async () => report(true), { statePath, fetchImpl });
+      expect(bodies).toHaveLength(0);
+      await checkIngestLagAndAlert(async () => report(true), { statePath, fetchImpl });
+      expect(bodies).toHaveLength(1);
+      expect(bodies[0]?.type).toBe("nlm.health.ingest_lagging");
+      expect(bodies[0]?.data).toMatchObject({ current: "412 pending, oldest 3d, 0 ok/1h", latest: "caught up" });
+      await checkIngestLagAndAlert(async () => report(false), { statePath, fetchImpl });
+      expect(bodies).toHaveLength(2);
+      expect(bodies[1]?.data.current).toBe("caught up");
+    } finally {
+      delete process.env["NLM_ALERT_WEBHOOK"];
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("runAlertChecks", () => {
+  const laggingReport = async (): Promise<IngestLagReport> => {
+    await new Promise((r) => setTimeout(r, 20));
+    return { adapters: {}, last_success_at: null, last_progress_at: null, timeouts_1h: 0, errors_1h: 0, lagging: true, summary: "s" };
+  };
+
+  it("drift, embedder and ingest-lag states all survive one round", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "nlm-alert-"));
+    const statePath = join(tmp, "alert-state.json");
+    const fetchImpl = (async () => new Response(JSON.stringify({ version: "0.9.9" }), { status: 200 })) as typeof fetch;
+    resetWarmupState();
+    try {
+      await runAlertChecks([
+        () => checkEmbedderAndAlert({ statePath }),
+        () => checkIngestLagAndAlert(laggingReport, { statePath }),
+        () => checkDriftAndAlert({ currentVersion: "0.5.0", fetchImpl, statePath, updateCheckDeps: { cachePath: join(tmp, "update-check.json") } }),
+      ]);
+      const persisted = JSON.parse(readFileSync(statePath, "utf8")) as AlertState;
+      expect(persisted.embedderCold.notReadyStreak).toBe(1);
+      expect(persisted.ingestLag.laggingStreak).toBe(1);
+      expect(persisted.drift.behindSince).not.toBeNull();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("a failing check does not stop the checks after it", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "nlm-alert-"));
+    const statePath = join(tmp, "alert-state.json");
+    resetWarmupState();
+    try {
+      await runAlertChecks([
+        () => checkIngestLagAndAlert(async () => { throw new Error("lag monitor down"); }, { statePath }),
+        () => checkEmbedderAndAlert({ statePath }),
+      ]);
+      const persisted = JSON.parse(readFileSync(statePath, "utf8")) as AlertState;
+      expect(persisted.embedderCold.notReadyStreak).toBe(1);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
