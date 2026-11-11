@@ -58,11 +58,13 @@ function setup(opts: Harness) {
     getByIds: vi.fn(async () => {
       const round = metadataRound++;
       if (opts.hiddenMetadataRounds?.includes(round)) return [];
-      return [sessionRow({ body: "", bodyVersion: metadata[Math.min(round, metadata.length - 1)] })];
+      const version = metadata[Math.min(round, metadata.length - 1)];
+      return [sessionRow({ body: "", bodyVersion: version ?? null })];
     }),
     getById: vi.fn(async () => {
       const round = readRound++;
       const next = bodies[Math.min(round, bodies.length - 1)];
+      if (!next) throw new Error("harness: no body fixture configured");
       return sessionRow({ body: next.body, bodyVersion: next.bodyVersion });
     }),
     resolveSuccessors: vi.fn(async () => new Map<string, string>()),
