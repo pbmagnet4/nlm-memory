@@ -18,6 +18,9 @@
  *  - update() validates the whole patch before applying any of it: an
  *    unknown pass name or a bad shape throws DreamSettingsError and leaves
  *    the current values untouched.
+ *  - Turning the contradiction pass to apply needs its precision gate
+ *    (CONTRADICTION_APPLY_GATE) to have passed; env seeding stays the
+ *    operator's own opt-in and is not gated.
  *  - get/lastRuns return snapshots; callers cannot mutate the registry or
  *    the current settings through the returned objects.
  */
@@ -82,6 +85,25 @@ export class DreamSettingsError extends Error {
     this.name = "DreamSettingsError";
   }
 }
+
+/** The precision gate standing between the settings surface and the
+ *  contradiction pass writing anything (T1641).
+ *
+ *  Wiring GET/POST /api/dreaming opened a runtime switch into apply mode,
+ *  which retires facts, so the switch is refused until the pass has proven it
+ *  only contradicts facts that really are wrong. Env seeding is deliberately
+ *  *not* gated: a deployment that sets NLM_DREAM_CONTRADICTION_APPLY opted in
+ *  at boot, on purpose, and re-seeding on restart is its own path. */
+export interface ContradictionApplyGate {
+  readonly passed: boolean;
+  /** What the gate was judged on — quoted verbatim into the refusal. */
+  readonly evidence: string;
+}
+
+export const CONTRADICTION_APPLY_GATE = {
+  passed: false,
+  evidence: "T1609 relabel precision 0/6 (2026-11-09)",
+} as const;
 
 type EnvLike = Readonly<Record<string, string | undefined>>;
 
@@ -202,7 +224,7 @@ function validatePass(name: DreamPassName, patch: unknown, opts: { allowInFlight
 }
 
 /** Validate the whole patch before applying any of it (all-or-nothing). */
-function validatePatch(patch: unknown): { model?: string; contradiction?: Partial<DreamPassSettings>; dedup?: Partial<DreamDedupPassSettings> } {
+function validatePatch(patch: unknown, gate: ContradictionApplyGate): { model?: string; contradiction?: Partial<DreamPassSettings>; dedup?: Partial<DreamDedupPassSettings> } {
   if (!isPlainObject(patch)) throw new DreamSettingsError(`dream settings: update patch must be an object, got ${JSON.stringify(patch)}`);
   for (const key of Object.keys(patch)) {
     if (key !== "model" && !(DREAM_PASS_NAMES as readonly string[]).includes(key)) {
@@ -218,6 +240,9 @@ function validatePatch(patch: unknown): { model?: string; contradiction?: Partia
   }
   if (patch.contradiction !== undefined) out.contradiction = validatePass("contradiction", patch.contradiction, { allowInFlight: true });
   if (patch.dedup !== undefined) out.dedup = validatePass("dedup", patch.dedup, { allowInFlight: false });
+  if (out.contradiction?.applyMode === "apply" && !gate.passed) {
+    throw new DreamSettingsError(`dream settings: contradiction applyMode "apply" is refused until the precision gate passes (${gate.evidence}) — use "dry-run"`);
+  }
   return out;
 }
 
@@ -225,9 +250,14 @@ function validatePatch(patch: unknown): { model?: string; contradiction?: Partia
  * Apply a partial update to the current settings: `{ model?, contradiction?, dedup? }`
  * with partial pass patches. Throws DreamSettingsError (leaving current
  * unchanged) on an unknown pass/field or a bad shape; returns the new snapshot.
+ *
+ * `gate` is the contradiction apply precision gate, defaulting to the recorded
+ * one; it is a parameter rather than a module read so the passed branch is
+ * testable without mutating module state. Every caller, the HTTP route
+ * included, leaves it at the default.
  */
-export function updateDreamSettings(patch: unknown): DreamSettings {
-  const valid = validatePatch(patch);
+export function updateDreamSettings(patch: unknown, gate: ContradictionApplyGate = CONTRADICTION_APPLY_GATE): DreamSettings {
+  const valid = validatePatch(patch, gate);
   if (valid.model !== undefined) current.model = valid.model;
   if (valid.contradiction) Object.assign(current.contradiction, valid.contradiction);
   if (valid.dedup) Object.assign(current.dedup, valid.dedup);

@@ -594,6 +594,12 @@ program
       // the /api/exemplar + /api/recall-code routes at request time.
       exemplarStore: storage.exemplars,
       codeEmbedder: codeEmb,
+      // Dreaming control plane (GET/POST /api/dreaming): the daemon owns the
+      // one process-global dream-settings module the passes read, so it is
+      // always wired — without it the Dreaming settings page 503s. The risky
+      // switch behind it (contradiction apply mode) is refused inside the
+      // settings module until that pass's precision gate passes.
+      dreaming: true,
       ...(existsSync(UI_DIST) ? { uiDist: UI_DIST } : {}),
       // Wire POST /mcp only when NLM_MCP_TOKEN is present. Absent = route never
       // mounts, zero attack surface. Present = token-gated Streamable-HTTP MCP
