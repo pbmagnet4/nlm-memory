@@ -10,8 +10,10 @@
  */
 
 import { beforeEach, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { createApp } from "../../../src/http/app.js";
 import {
+  CONTRADICTION_APPLY_GATE,
   DEFAULT_CONTRADICTION_SAMPLE_SIZE,
   DEFAULT_DEDUP_SAMPLE_SIZE,
   DEFAULT_MAX_IN_FLIGHT,
@@ -128,6 +130,20 @@ describe("POST /api/dreaming", () => {
     expect(malformed.status).toBe(400);
   });
 
+  it("400s a contradiction apply patch while the precision gate has not passed", async () => {
+    const before = getDreamSettings();
+    const res = await appWith(true).request("/api/dreaming", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ contradiction: { applyMode: "apply" } }),
+    });
+    expect(res.status).toBe(400);
+    const error = ((await res.json()) as { error: string }).error;
+    expect(error).toMatch(/precision gate/);
+    expect(error).toContain(CONTRADICTION_APPLY_GATE.evidence);
+    expect(getDreamSettings()).toEqual(before);
+  });
+
   it("503s when the surface is not wired, without touching the settings", async () => {
     const before = getDreamSettings();
     const res = await appWith().request("/api/dreaming", {
@@ -137,5 +153,33 @@ describe("POST /api/dreaming", () => {
     });
     expect(res.status).toBe(503);
     expect(getDreamSettings()).toEqual(before);
+  });
+});
+
+/**
+ * T1641 — the daemon itself must wire the surface, otherwise the Dreaming
+ * settings page 503s in the field even though the routes exist. nlm.ts builds
+ * the createApp deps inline inside the `start` action, so the smallest seam
+ * that proves the wiring without binding a socket or building the storage
+ * stack is the deps literal itself: read the flag the daemon passes, then
+ * build an app with it and expect 200. (Same source-scan seam already used by
+ * tests/unit/core/mcp-no-ambient-attribution.test.ts.)
+ */
+function daemonDreamingFlag(): boolean {
+  const src = readFileSync(new URL("../../../src/cli/nlm.ts", import.meta.url), "utf8");
+  const start = src.indexOf("const app = createApp(");
+  expect(start, "nlm.ts must build the daemon app through createApp").toBeGreaterThan(-1);
+  const deps = src.slice(start, src.indexOf("\n    });", start));
+  const flag = /\bdreaming:\s*(true|false)\b/.exec(deps);
+  expect(flag, "the daemon's createApp deps must carry the dreaming flag").not.toBeNull();
+  return flag![1] === "true";
+}
+
+describe("daemon app wiring", () => {
+  it("passes dreaming: true, and an app built with the daemon's flag answers GET 200", async () => {
+    const wired = daemonDreamingFlag();
+    expect(wired).toBe(true);
+    const res = await appWith(wired).request("/api/dreaming");
+    expect(res.status).toBe(200);
   });
 });

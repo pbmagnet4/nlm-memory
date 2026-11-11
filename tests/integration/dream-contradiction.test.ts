@@ -426,7 +426,7 @@ describe("dream contradiction pass", () => {
   it("registerContradictionPass registers a live pass: disabled it runs nothing, edits apply with no re-registration", async () => {
     const settingsBefore = getDreamSettings();
     try {
-      reseedDreamSettings({});
+      reseedDreamSettings({ NLM_DREAM_CONTRADICTION_APPLY: "1" });
       resetLastRuns();
       const passes: DreamPassSpec[] = [];
       const host = { registerDreamPass: (p: DreamPassSpec) => passes.push(p) };
@@ -446,10 +446,13 @@ describe("dream contradiction pass", () => {
       expect(calls).toHaveLength(0);
       expect(lastRuns()).toEqual({ contradiction: null, dedup: null });
 
-      // Enabled after registration (the POST path): the same spec runs live,
-      // the cadence getter reschedules, and apply mode retires.
+      // Enabled after registration (the POST path): the same spec runs live
+      // and the cadence getter reschedules. Apply mode comes from the env
+      // seed above — the settings module refuses it while the T1609 precision
+      // gate has not passed (T1641), and the retire below proves the pass
+      // still honours a mode the deployment opted into at boot.
       await facts.insertMany(DEFAULT_TEAM_ID, [factText({ id: "f_live" })]);
-      updateDreamSettings({ contradiction: { enabled: true, applyMode: "apply", cadenceMs: 12345 } });
+      updateDreamSettings({ contradiction: { enabled: true, cadenceMs: 12345 } });
       expect(passes[0]!.intervalMs).toBe(12345);
       await passes[0]!.run();
       expect(calls).toHaveLength(1);

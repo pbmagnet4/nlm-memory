@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { DEFAULT_DREAM_MODEL } from "@core/dream/judge.js";
 import {
+  CONTRADICTION_APPLY_GATE,
   DEFAULT_CONTRADICTION_SAMPLE_SIZE,
   DEFAULT_DEDUP_SAMPLE_SIZE,
   DEFAULT_MAX_IN_FLIGHT,
@@ -111,11 +112,11 @@ describe("dream settings — env seeding", () => {
 
 describe("dream settings — update validation", () => {
   it("merges partial patches and returns the new snapshot", () => {
-    const next = updateDreamSettings({ model: "new-model", contradiction: { applyMode: "apply" } });
+    const next = updateDreamSettings({ model: "new-model", dedup: { applyMode: "apply" } });
     expect(next.model).toBe("new-model");
-    expect(next.contradiction.applyMode).toBe("apply");
-    expect(next.contradiction.sampleSize).toBe(DEFAULT_CONTRADICTION_SAMPLE_SIZE);
-    expect(next.dedup).toEqual(getDreamSettings().dedup);
+    expect(next.dedup.applyMode).toBe("apply");
+    expect(next.dedup.sampleSize).toBe(DEFAULT_DEDUP_SAMPLE_SIZE);
+    expect(next.contradiction).toEqual(getDreamSettings().contradiction);
   });
 
   it("trims the model value", () => {
@@ -154,6 +155,62 @@ describe("dream settings — update validation", () => {
     const before = getDreamSettings();
     expect(() => updateDreamSettings({ model: "ok-but", dedup: { sampleSize: -1 } })).toThrow(DreamSettingsError);
     expect(getDreamSettings()).toEqual(before);
+  });
+});
+
+describe("dream settings — contradiction apply gate (T1641)", () => {
+  /** A gate that has passed, for the one case the live gate cannot express:
+   *  the refusal is the gate's state, not a hard-coded ban. */
+  const PASSED = { passed: true, evidence: "T1609 relabel precision 12/12 (2026-11-10)" };
+
+  it("records the live gate as not passed, with its evidence", () => {
+    expect(CONTRADICTION_APPLY_GATE.passed).toBe(false);
+    expect(CONTRADICTION_APPLY_GATE.evidence).toMatch(/precision/);
+  });
+
+  it("refuses contradiction applyMode \"apply\" while the gate has not passed", () => {
+    expect(() => updateDreamSettings({ contradiction: { applyMode: "apply" } })).toThrow(DreamSettingsError);
+    let message = "";
+    try {
+      updateDreamSettings({ contradiction: { applyMode: "apply" } });
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toMatch(/precision gate/);
+    expect(message).toContain(CONTRADICTION_APPLY_GATE.evidence);
+    expect(getDreamSettings().contradiction.applyMode).toBe("dry-run");
+  });
+
+  it("refuses it as all-or-nothing: nothing else in the patch sticks", () => {
+    const before = getDreamSettings();
+    expect(() =>
+      updateDreamSettings({
+        model: "should-not-stick",
+        dedup: { enabled: true },
+        contradiction: { enabled: true, sampleSize: 5, applyMode: "apply" },
+      }),
+    ).toThrow(DreamSettingsError);
+    expect(getDreamSettings()).toEqual(before);
+  });
+
+  it("accepts \"dry-run\" and an untouched applyMode", () => {
+    expect(updateDreamSettings({ contradiction: { applyMode: "dry-run" } }).contradiction.applyMode).toBe("dry-run");
+    expect(updateDreamSettings({ contradiction: { enabled: true } }).contradiction.applyMode).toBe("dry-run");
+  });
+
+  it("leaves dedup apply ungated: this gate is the contradiction pass's precision only", () => {
+    expect(updateDreamSettings({ dedup: { applyMode: "apply" } }).dedup.applyMode).toBe("apply");
+  });
+
+  it("accepts contradiction apply once the gate has passed (injected gate)", () => {
+    expect(updateDreamSettings({ contradiction: { applyMode: "apply" } }, PASSED).contradiction.applyMode).toBe("apply");
+  });
+
+  it("env seeding stays the operator's own switch: reseed is not gated", () => {
+    const seeded = reseedDreamSettings({ NLM_DREAM_CONTRADICTION_APPLY: "1" });
+    expect(seeded.contradiction.applyMode).toBe("apply");
+    // A patch that does not touch applyMode must not trip the gate either.
+    expect(updateDreamSettings({ contradiction: { enabled: true } }).contradiction.applyMode).toBe("apply");
   });
 });
 
