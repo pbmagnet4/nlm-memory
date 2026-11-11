@@ -64,3 +64,11 @@ export function promotionEdit(current: PromotionSettings, d: PromotionDraft): Pr
   }
   return { patch, invalid };
 }
+
+/** Persistence note: durability is claimed only when the daemon says so;
+ *  an unknown state (not loaded yet, or a daemon that omits the field) shows nothing. */
+export function persistenceNote(persistence: boolean | null | undefined): string | null {
+  if (persistence === true) return "Settings are saved on the daemon and survive restarts.";
+  if (persistence === false) return "Settings are held in memory only on this daemon and reset on restart.";
+  return null;
+}
