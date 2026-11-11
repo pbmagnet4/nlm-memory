@@ -283,7 +283,7 @@ describe("dream dedup pass", () => {
 
       // Disabled: the run returns early — no proposals applied, no registry entry.
       await passes[0]!.run();
-      expect(lastRuns()).toEqual({ contradiction: null, dedup: null });
+      expect(lastRuns()).toEqual({ contradiction: null, dedup: null, promotion: null });
       expect(factState(dbPath, "d_lose")).toEqual({ present: true, supersededBy: null });
 
       // Enabled after registration (the POST path): the same spec runs live,

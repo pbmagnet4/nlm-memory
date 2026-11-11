@@ -9,8 +9,9 @@
  *    out — rows kept with demoted_at + demote_reason, never deleted;
  *  - the injection ledger (injectionCostPerUsefulHit over the telemetry
  *    window) is measured on every run for run-over-run before/after;
- *  - the pass is disabled by default: registered only behind
- *    NLM_DREAM_PROMOTE_PASS, report-only unless NLM_DREAM_PROMOTE_APPLY.
+ *  - the pass is disabled by default but always registered: the enable flag
+ *    and the dry-run/apply switch are dream settings (POST /api/dreaming),
+ *    read live on every run (T1729).
  */
 
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -18,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
+import { lastRuns, reseedDreamSettings, resetLastRuns, updateDreamSettings } from "../../src/core/dream/settings.js";
 import type { SqliteFactStore } from "../../src/core/storage/sqlite-fact-store.js";
 import type { IngestRecord, SqliteSessionStore } from "../../src/core/storage/sqlite-session-store.js";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
@@ -187,6 +189,16 @@ describe("dream promotion pass", () => {
     }
   });
 
+  it("minCorroboration from the settings widens the eligibility floor for the run (T1729)", async () => {
+    // The S1-sourced loner (corroboration 1) carries a live signal through its
+    // source session, so a floor of 1 admits it beside the two corroborated
+    // facts the default floor (2) already allows. The S2 twins stay out:
+    // corroboration alone is not a signal.
+    const report = await runPromotionPass(runOpts({ apply: true, maxLines: 10, minCorroboration: 1 }));
+    expect(report).toMatchObject({ apply: true, nominated: 3, promoted: 3 });
+    expect(promotionRows(dbPath).map((r) => r.fact_id)).toEqual(["f_keep_1", "f_loner", "f_other_1"]);
+  });
+
   it("demotion keeps the row as a link, never deletes it", async () => {
     // Promote a stale fact, then backdate it past the stale horizon with no signals.
     const stale = (await runOpts().sampleCandidates(10)).find((c) => c.id === "f_other_1")!;
@@ -248,24 +260,72 @@ describe("dream promotion pass", () => {
     expect(promotionRows(dbPath)).toEqual([]);
   });
 
-  it("registerPromotionPass is a no-op unless the pass env flag is set", () => {
+  it("registerPromotionPass always registers the pass; a disabled run is a no-op", async () => {
     const passes: PromotionPassSpec[] = [];
     const host = { registerDreamPass: (p: PromotionPassSpec) => passes.push(p) };
-    registerPromotionPass({ host, sqliteDb: sessions.rawDb(), env: {} });
-    expect(passes).toHaveLength(0);
-
-    registerPromotionPass({ host, sqliteDb: sessions.rawDb(), env: { NLM_DREAM_PROMOTE_PASS: "1" } });
+    registerPromotionPass({ host, sqliteDb: sessions.rawDb(), logger: () => {} });
     expect(passes).toHaveLength(1);
     expect(passes[0]!.name).toBe("dream-promotion");
+
+    // Disabled (the default): the run returns before it samples anything —
+    // no rows written, no run recorded.
+    reseedDreamSettings({});
+    resetLastRuns();
+    await passes[0]!.run();
+    expect(promotionRows(dbPath)).toEqual([]);
+    expect(lastRuns().promotion).toBeNull();
+
+    // The PG backend passes no handle, so nothing registers there either.
+    const pgPasses: PromotionPassSpec[] = [];
+    registerPromotionPass({ host: { registerDreamPass: (p: PromotionPassSpec) => pgPasses.push(p) }, sqliteDb: null, logger: () => {} });
+    expect(pgPasses).toHaveLength(0);
   });
 
-  it("scheduler wiring: off by default writes nothing; enabled runs dry-run by default, apply on request", async () => {
-    const envKeys = ["NLM_INTEGRITY_CACHE", "NLM_SUPERSEDENCE_LOG", "NLM_DREAM_PROMOTE_PASS", "NLM_DREAM_PROMOTE_APPLY", "NLM_DREAM_PROMOTE_WINDOW_DAYS"] as const;
+  it("the settings switch takes effect on the next run without a restart (T1729)", async () => {
+    const passes: PromotionPassSpec[] = [];
+    const host = { registerDreamPass: (p: PromotionPassSpec) => passes.push(p) };
+    registerPromotionPass({ host, sqliteDb: sessions.rawDb(), logger: () => {} });
+    const run = () => passes[0]!.run();
+    const hookLog = process.env["NLM_HOOK_LOG"];
+    const citationLog = process.env["NLM_CITATION_LOG"];
+    try {
+      // Fixture telemetry predates the default 30-day window relative to
+      // wall-clock now, so widen it; enabling goes through the settings the
+      // run closure reads.
+      process.env["NLM_HOOK_LOG"] = telemetry.hookLogPath;
+      process.env["NLM_CITATION_LOG"] = telemetry.citationLogPath;
+      reseedDreamSettings({ NLM_DREAM_PROMOTE_PASS: "1", NLM_DREAM_PROMOTE_WINDOW_DAYS: "10000" });
+      resetLastRuns();
+
+      await run();
+      expect(promotionRows(dbPath)).toEqual([]);
+      expect(lastRuns().promotion).toMatchObject({ name: "promotion", summary: { mode: "dry-run" } });
+
+      // Flip the switch on the live settings — the already-registered run
+      // closure picks it up on its next run.
+      updateDreamSettings({ promotion: { mode: "apply" } });
+      await run();
+      expect(promotionRows(dbPath).length).toBeGreaterThan(0);
+      expect(lastRuns().promotion).toMatchObject({ summary: { mode: "apply" } });
+    } finally {
+      if (hookLog === undefined) delete process.env["NLM_HOOK_LOG"]; else process.env["NLM_HOOK_LOG"] = hookLog;
+      if (citationLog === undefined) delete process.env["NLM_CITATION_LOG"]; else process.env["NLM_CITATION_LOG"] = citationLog;
+      reseedDreamSettings({});
+      resetLastRuns();
+    }
+  });
+
+  it("scheduler wiring: off by default writes nothing; the live settings drive dry-run and apply", async () => {
+    const envKeys = ["NLM_INTEGRITY_CACHE", "NLM_SUPERSEDENCE_LOG"] as const;
     const envBackup: Record<string, string | undefined> = {};
     for (const k of envKeys) envBackup[k] = process.env[k];
+    const telemetryKeys = ["NLM_HOOK_LOG", "NLM_CITATION_LOG"] as const;
+    const telemetryBackup: Record<string, string | undefined> = {};
+    for (const k of telemetryKeys) telemetryBackup[k] = process.env[k];
     try {
       process.env["NLM_INTEGRITY_CACHE"] = join(tmp, "integrity-check.json");
       process.env["NLM_SUPERSEDENCE_LOG"] = join(tmp, "sched-supersedence-log.jsonl");
+      reseedDreamSettings({});
       const quiet = new ScanScheduler({
         store: sessions,
         adapters: [],
@@ -276,8 +336,10 @@ describe("dream promotion pass", () => {
       await quiet.tick();
       expect(promotionRows(dbPath)).toEqual([]);
 
-      // Enabled without APPLY: dry-run only, still nothing written.
-      process.env["NLM_DREAM_PROMOTE_PASS"] = "1";
+      // Enabled without apply: dry-run only, still nothing written.
+      updateDreamSettings({ promotion: { enabled: true, windowDays: 10000 } });
+      process.env["NLM_HOOK_LOG"] = telemetry.hookLogPath;
+      process.env["NLM_CITATION_LOG"] = telemetry.citationLogPath;
       const dry = new ScanScheduler({
         store: sessions,
         adapters: [],
@@ -288,13 +350,8 @@ describe("dream promotion pass", () => {
       await dry.tick();
       expect(promotionRows(dbPath)).toEqual([]);
 
-      // Apply mode writes through the scheduler path. The fixture telemetry
-      // is older than the default 30-day window relative to wall-clock now,
-      // so widen the window to bring it into scope.
-      process.env["NLM_DREAM_PROMOTE_APPLY"] = "1";
-      process.env["NLM_DREAM_PROMOTE_WINDOW_DAYS"] = "10000";
-      process.env["NLM_HOOK_LOG"] = telemetry.hookLogPath;
-      process.env["NLM_CITATION_LOG"] = telemetry.citationLogPath;
+      // Apply mode writes through the scheduler path.
+      updateDreamSettings({ promotion: { mode: "apply" } });
       const applied = new ScanScheduler({
         store: sessions,
         adapters: [],
@@ -309,8 +366,11 @@ describe("dream promotion pass", () => {
         if (envBackup[k] === undefined) delete process.env[k];
         else process.env[k] = envBackup[k];
       }
-      delete process.env["NLM_HOOK_LOG"];
-      delete process.env["NLM_CITATION_LOG"];
+      for (const k of telemetryKeys) {
+        if (telemetryBackup[k] === undefined) delete process.env[k];
+        else process.env[k] = telemetryBackup[k];
+      }
+      reseedDreamSettings({});
     }
   });
 

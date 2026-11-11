@@ -1,14 +1,16 @@
 /**
- * Dreaming settings model (T1613).
+ * Dreaming settings model (T1613, T1729).
  *
  * The single mutable home for the dreaming lane's runtime settings: the
- * dream model and the per-pass policy (contradiction, dedup) — enabled,
- * cadenceMs, sampleSize, applyMode (plus maxInFlight on the contradiction
- * pass, which runs the judge worker pool). Values are seeded once
- * from the existing NLM_DREAM_* env names the pass modules read at
- * registration (contradiction-pass.ts, dedup-pass.ts, judge.ts) and can
- * then be read/updated in memory; nothing here persists or touches the
- * network, and no hostnames, IPs or URLs live in this module.
+ * dream model and the per-pass policy (contradiction, dedup, promotion).
+ * The contradiction/dedup entries carry enabled, cadenceMs, sampleSize and
+ * applyMode (plus maxInFlight on the contradiction pass, which runs the
+ * judge worker pool); the promotion entry (T1729) carries enabled, mode,
+ * sampleSize, windowDays, maxLines, maxBytes and minCorroboration. Values
+ * are seeded once from the existing NLM_DREAM_* env names the pass modules
+ * read at registration (contradiction-pass.ts, dedup-pass.ts, judge.ts,
+ * promotion-pass.ts) and can then be read/updated in memory; nothing here
+ * touches the network, and no hostnames, IPs or URLs live in this module.
  *
  * Invariants:
  *  - Env is the seed, not the source of truth after load: update() mutates
@@ -26,6 +28,7 @@
  */
 
 import { DEFAULT_DREAM_MODEL, DREAM_MODEL_ENV } from "./judge.js";
+import { MAX_PROMOTION_BYTES, MAX_PROMOTION_LINES, MIN_CORROBORATION } from "./promotion.js";
 
 /** Env names — the ones the pass modules already read, plus the two new
  *  cadence knobs named after their siblings. The dedup lane makes no LLM
@@ -42,15 +45,30 @@ export const DREAM_DEDUP_APPLY_ENV = "NLM_DREAM_DEDUP_APPLY";
 export const DREAM_DEDUP_SAMPLE_ENV = "NLM_DREAM_DEDUP_SAMPLE";
 export const DREAM_DEDUP_CADENCE_ENV = "NLM_DREAM_DEDUP_CADENCE_MS";
 
+/** Promotion pass env names (T1729). These are the names the pass module has
+ *  always read; they live here now because the settings module is the single
+ *  seed, and promotion-pass.ts re-exports them from here. There is no env
+ *  name for the corroboration floor — MIN_CORROBORATION is the constant, the
+ *  settings value only overrides it at runtime. */
+export const DREAM_PROMOTE_PASS_ENV = "NLM_DREAM_PROMOTE_PASS";
+export const DREAM_PROMOTE_APPLY_ENV = "NLM_DREAM_PROMOTE_APPLY";
+export const DREAM_PROMOTE_SAMPLE_ENV = "NLM_DREAM_PROMOTE_SAMPLE";
+export const DREAM_PROMOTE_MAX_LINES_ENV = "NLM_DREAM_PROMOTE_MAX_LINES";
+export const DREAM_PROMOTE_MAX_BYTES_ENV = "NLM_DREAM_PROMOTE_MAX_BYTES";
+export const DREAM_PROMOTE_WINDOW_DAYS_ENV = "NLM_DREAM_PROMOTE_WINDOW_DAYS";
+
 /** Defaults mirrored from the pass modules (each keeps its own copy). */
 export const DEFAULT_PASS_CADENCE_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_CONTRADICTION_SAMPLE_SIZE = 20;
 export const DEFAULT_DEDUP_SAMPLE_SIZE = 200;
 /** oMLX serves 4 concurrent requests; more in-flight just queues at the gateway. */
 export const DEFAULT_MAX_IN_FLIGHT = 4;
+/** Mirrored from promotion-pass.ts (each keeps its own copy). */
+export const DEFAULT_PROMOTION_SAMPLE_SIZE = 200;
+export const DEFAULT_PROMOTION_WINDOW_DAYS = 30;
 
-export type DreamPassName = "contradiction" | "dedup";
-export const DREAM_PASS_NAMES: readonly DreamPassName[] = ["contradiction", "dedup"];
+export type DreamPassName = "contradiction" | "dedup" | "promotion";
+export const DREAM_PASS_NAMES: readonly DreamPassName[] = ["contradiction", "dedup", "promotion"];
 
 export type DreamApplyMode = "dry-run" | "apply";
 
@@ -72,10 +90,26 @@ export interface DreamDedupPassSettings {
   applyMode: DreamApplyMode;
 }
 
+/** Promotion pass policy (T1729). `mode` rather than `applyMode`: dry-run and
+ *  apply are the pass's own vocabulary, and the field set is its own shape —
+ *  no cadence (the nightly interval is a constant), no in-flight cap (no LLM
+ *  lane). The line/byte caps and the corroboration floor live here too, so
+ *  one POST retunes a whole run. */
+export interface DreamPromotionPassSettings {
+  enabled: boolean;
+  mode: DreamApplyMode;
+  sampleSize: number;
+  windowDays: number;
+  maxLines: number;
+  maxBytes: number;
+  minCorroboration: number;
+}
+
 export interface DreamSettings {
   model: string;
   contradiction: DreamPassSettings;
   dedup: DreamDedupPassSettings;
+  promotion: DreamPromotionPassSettings;
 }
 
 /** A rejected update: unknown pass, unknown key, or a field of the wrong shape. */
@@ -164,11 +198,25 @@ export function dreamSettingsFromEnv(env: EnvLike): DreamSettings {
       cadenceEnv: env[DREAM_DEDUP_CADENCE_ENV],
       sampleDefault: DEFAULT_DEDUP_SAMPLE_SIZE,
     }),
+    promotion: {
+      enabled: flagEnabled(env[DREAM_PROMOTE_PASS_ENV]),
+      mode: applyModeFromEnv(env[DREAM_PROMOTE_APPLY_ENV]),
+      sampleSize: positiveInt(env[DREAM_PROMOTE_SAMPLE_ENV], DEFAULT_PROMOTION_SAMPLE_SIZE),
+      windowDays: positiveInt(env[DREAM_PROMOTE_WINDOW_DAYS_ENV], DEFAULT_PROMOTION_WINDOW_DAYS),
+      maxLines: positiveInt(env[DREAM_PROMOTE_MAX_LINES_ENV], MAX_PROMOTION_LINES),
+      maxBytes: positiveInt(env[DREAM_PROMOTE_MAX_BYTES_ENV], MAX_PROMOTION_BYTES),
+      minCorroboration: MIN_CORROBORATION,
+    },
   };
 }
 
 function copySettings(s: DreamSettings): DreamSettings {
-  return { model: s.model, contradiction: { ...s.contradiction }, dedup: { ...s.dedup } };
+  return {
+    model: s.model,
+    contradiction: { ...s.contradiction },
+    dedup: { ...s.dedup },
+    promotion: { ...s.promotion },
+  };
 }
 
 /** Current values, seeded from the process env at module load. */
@@ -193,6 +241,10 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 const PASS_FIELDS: readonly string[] = ["enabled", "cadenceMs", "sampleSize", "applyMode"];
 const INFLIGHT_FIELD = "maxInFlight";
 const APPLY_MODES: ReadonlySet<string> = new Set<DreamApplyMode>(["dry-run", "apply"]);
+/** Promotion-pass patch fields (T1729) — its own shape, hence its own list. */
+const PROMOTION_FIELDS: readonly string[] = [
+  "enabled", "mode", "sampleSize", "windowDays", "maxLines", "maxBytes", "minCorroboration",
+];
 
 function validatePass(name: DreamPassName, patch: unknown, opts: { allowInFlight: boolean }): Partial<DreamPassSettings> {
   if (!isPlainObject(patch)) throw new DreamSettingsError(`dream settings: ${name} must be an object, got ${JSON.stringify(patch)}`);
@@ -223,15 +275,57 @@ function validatePass(name: DreamPassName, patch: unknown, opts: { allowInFlight
   return out;
 }
 
+/** Validate a promotion-pass patch: `mode` (not `applyMode`) plus the run
+ *  knobs. Integer fields must be whole and positive (`minCorroboration`
+ *  included — a 0 corroboration floor would let single-session facts into the
+ *  injection set, which is exactly what the floor exists to stop). */
+function validatePromotionPass(patch: unknown): Partial<DreamPromotionPassSettings> {
+  if (!isPlainObject(patch)) throw new DreamSettingsError(`dream settings: promotion must be an object, got ${JSON.stringify(patch)}`);
+  for (const key of Object.keys(patch)) {
+    if (!PROMOTION_FIELDS.includes(key)) throw new DreamSettingsError(`dream settings: unknown field "${key}" on pass "promotion"`);
+  }
+  const out: Partial<DreamPromotionPassSettings> = {};
+  if (patch.enabled !== undefined) {
+    if (typeof patch.enabled !== "boolean") throw new DreamSettingsError("dream settings: promotion.enabled must be a boolean");
+    out.enabled = patch.enabled;
+  }
+  if (patch.mode !== undefined) {
+    if (typeof patch.mode !== "string" || !APPLY_MODES.has(patch.mode)) {
+      throw new DreamSettingsError('dream settings: promotion.mode must be "dry-run" or "apply"');
+    }
+    out.mode = patch.mode as DreamApplyMode;
+  }
+  for (const field of ["sampleSize", "windowDays", "maxLines", "maxBytes", "minCorroboration"] as const) {
+    if (patch[field] !== undefined) {
+      const n = patch[field];
+      if (typeof n !== "number" || !Number.isInteger(n) || n <= 0) {
+        throw new DreamSettingsError(`dream settings: promotion.${field} must be a positive integer`);
+      }
+      out[field] = n;
+    }
+  }
+  return out;
+}
+
 /** Validate the whole patch before applying any of it (all-or-nothing). */
-function validatePatch(patch: unknown, gate: ContradictionApplyGate): { model?: string; contradiction?: Partial<DreamPassSettings>; dedup?: Partial<DreamDedupPassSettings> } {
+function validatePatch(patch: unknown, gate: ContradictionApplyGate): {
+  model?: string;
+  contradiction?: Partial<DreamPassSettings>;
+  dedup?: Partial<DreamDedupPassSettings>;
+  promotion?: Partial<DreamPromotionPassSettings>;
+} {
   if (!isPlainObject(patch)) throw new DreamSettingsError(`dream settings: update patch must be an object, got ${JSON.stringify(patch)}`);
   for (const key of Object.keys(patch)) {
     if (key !== "model" && !(DREAM_PASS_NAMES as readonly string[]).includes(key)) {
       throw new DreamSettingsError(`dream settings: unknown pass or setting "${key}"`);
     }
   }
-  const out: { model?: string; contradiction?: Partial<DreamPassSettings>; dedup?: Partial<DreamPassSettings> } = {};
+  const out: {
+    model?: string;
+    contradiction?: Partial<DreamPassSettings>;
+    dedup?: Partial<DreamDedupPassSettings>;
+    promotion?: Partial<DreamPromotionPassSettings>;
+  } = {};
   if (patch.model !== undefined) {
     if (typeof patch.model !== "string" || patch.model.trim().length === 0) {
       throw new DreamSettingsError("dream settings: model must be a non-blank string");
@@ -240,6 +334,7 @@ function validatePatch(patch: unknown, gate: ContradictionApplyGate): { model?: 
   }
   if (patch.contradiction !== undefined) out.contradiction = validatePass("contradiction", patch.contradiction, { allowInFlight: true });
   if (patch.dedup !== undefined) out.dedup = validatePass("dedup", patch.dedup, { allowInFlight: false });
+  if (patch.promotion !== undefined) out.promotion = validatePromotionPass(patch.promotion);
   if (out.contradiction?.applyMode === "apply" && !gate.passed) {
     throw new DreamSettingsError(`dream settings: contradiction applyMode "apply" is refused until the precision gate passes (${gate.evidence}) — use "dry-run"`);
   }
@@ -261,6 +356,7 @@ export function updateDreamSettings(patch: unknown, gate: ContradictionApplyGate
   if (valid.model !== undefined) current.model = valid.model;
   if (valid.contradiction) Object.assign(current.contradiction, valid.contradiction);
   if (valid.dedup) Object.assign(current.dedup, valid.dedup);
+  if (valid.promotion) Object.assign(current.promotion, valid.promotion);
   return copySettings(current);
 }
 
@@ -278,6 +374,7 @@ export interface DreamRunRecord {
 export interface DreamLastRuns {
   readonly contradiction: DreamRunRecord | null;
   readonly dedup: DreamRunRecord | null;
+  readonly promotion: DreamRunRecord | null;
 }
 
 const lastRunRegistry = new Map<DreamPassName, DreamRunRecord>();
@@ -304,9 +401,11 @@ export function recordLastRun(name: unknown, summary: Readonly<Record<string, un
 export function lastRuns(): DreamLastRuns {
   const contradiction = lastRunRegistry.get("contradiction");
   const dedup = lastRunRegistry.get("dedup");
+  const promotion = lastRunRegistry.get("promotion");
   return {
     contradiction: contradiction ? copyRecord(contradiction) : null,
     dedup: dedup ? copyRecord(dedup) : null,
+    promotion: promotion ? copyRecord(promotion) : null,
   };
 }
 

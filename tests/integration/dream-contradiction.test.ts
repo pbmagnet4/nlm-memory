@@ -444,7 +444,7 @@ describe("dream contradiction pass", () => {
       // Disabled: the run returns early — no judge call, no registry entry.
       await passes[0]!.run();
       expect(calls).toHaveLength(0);
-      expect(lastRuns()).toEqual({ contradiction: null, dedup: null });
+      expect(lastRuns()).toEqual({ contradiction: null, dedup: null, promotion: null });
 
       // Enabled after registration (the POST path): the same spec runs live
       // and the cadence getter reschedules. Apply mode comes from the env

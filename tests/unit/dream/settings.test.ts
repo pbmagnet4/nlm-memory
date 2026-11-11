@@ -1,11 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { DEFAULT_DREAM_MODEL } from "@core/dream/judge.js";
+import { MAX_PROMOTION_BYTES, MAX_PROMOTION_LINES, MIN_CORROBORATION } from "@core/dream/promotion.js";
 import {
   CONTRADICTION_APPLY_GATE,
   DEFAULT_CONTRADICTION_SAMPLE_SIZE,
   DEFAULT_DEDUP_SAMPLE_SIZE,
   DEFAULT_MAX_IN_FLIGHT,
   DEFAULT_PASS_CADENCE_MS,
+  DEFAULT_PROMOTION_SAMPLE_SIZE,
+  DEFAULT_PROMOTION_WINDOW_DAYS,
   DreamSettingsError,
   dreamSettingsFromEnv,
   getDreamSettings,
@@ -39,6 +42,18 @@ describe("dream settings — defaults", () => {
       cadenceMs: DEFAULT_PASS_CADENCE_MS,
       sampleSize: DEFAULT_DEDUP_SAMPLE_SIZE,
       applyMode: "dry-run",
+    });
+    // T1729: the promotion pass is part of the model too, seeded from the
+    // defaults the pass module used before (its caps and corroboration floor
+    // are the scoring core's constants).
+    expect(s.promotion).toEqual({
+      enabled: false,
+      mode: "dry-run",
+      sampleSize: DEFAULT_PROMOTION_SAMPLE_SIZE,
+      windowDays: DEFAULT_PROMOTION_WINDOW_DAYS,
+      maxLines: MAX_PROMOTION_LINES,
+      maxBytes: MAX_PROMOTION_BYTES,
+      minCorroboration: MIN_CORROBORATION,
     });
   });
 
@@ -101,6 +116,45 @@ describe("dream settings — env seeding", () => {
     expect(bad.dedup.cadenceMs).toBe(DEFAULT_PASS_CADENCE_MS);
   });
 
+  it("promotion seeds from the env names the pass used to read itself", () => {
+    const seeded = dreamSettingsFromEnv({
+      NLM_DREAM_PROMOTE_PASS: "1",
+      NLM_DREAM_PROMOTE_APPLY: "true",
+      NLM_DREAM_PROMOTE_SAMPLE: "25",
+      NLM_DREAM_PROMOTE_WINDOW_DAYS: "7",
+      NLM_DREAM_PROMOTE_MAX_LINES: "40",
+      NLM_DREAM_PROMOTE_MAX_BYTES: "4096",
+    });
+    expect(seeded.promotion).toEqual({
+      enabled: true,
+      mode: "apply",
+      sampleSize: 25,
+      windowDays: 7,
+      maxLines: 40,
+      maxBytes: 4096,
+      minCorroboration: MIN_CORROBORATION,
+    });
+
+    // Blank/invalid values fall back, same rule as every other knob. No env
+    // name moves the corroboration floor — that is a runtime setting only.
+    const bad = dreamSettingsFromEnv({
+      NLM_DREAM_PROMOTE_PASS: "yes",
+      NLM_DREAM_PROMOTE_APPLY: "maybe",
+      NLM_DREAM_PROMOTE_SAMPLE: "0",
+      NLM_DREAM_PROMOTE_WINDOW_DAYS: "-1",
+      NLM_DREAM_PROMOTE_MAX_LINES: "abc",
+      NLM_DREAM_PROMOTE_MAX_BYTES: "",
+    });
+    expect(bad.promotion).toMatchObject({
+      enabled: false,
+      mode: "dry-run",
+      sampleSize: DEFAULT_PROMOTION_SAMPLE_SIZE,
+      windowDays: DEFAULT_PROMOTION_WINDOW_DAYS,
+      maxLines: MAX_PROMOTION_LINES,
+      maxBytes: MAX_PROMOTION_BYTES,
+    });
+  });
+
   it("reseed replaces current values wholesale from the env source", () => {
     updateDreamSettings({ model: "temp-model", dedup: { enabled: true } });
     const reseeded = reseedDreamSettings({ NLM_DREAM_MODEL: "from-env", NLM_DREAM_DEDUP_PASS: "1" });
@@ -130,6 +184,32 @@ describe("dream settings — update validation", () => {
 
   it("rejects an unknown field on a pass", () => {
     expect(() => updateDreamSettings({ dedup: { interval: 5 } })).toThrow(/unknown field "interval" on pass "dedup"/);
+  });
+
+  it("promotion patches merge and apply (T1729)", () => {
+    const next = updateDreamSettings({ promotion: { enabled: true, mode: "apply", minCorroboration: 3 } });
+    expect(next.promotion).toMatchObject({ enabled: true, mode: "apply", minCorroboration: 3 });
+    // Untouched knobs keep their seeded values.
+    expect(next.promotion.sampleSize).toBe(DEFAULT_PROMOTION_SAMPLE_SIZE);
+    expect(getDreamSettings().promotion.minCorroboration).toBe(3);
+  });
+
+  it("promotion validation rejects a bad mode, a non-positive or fractional integer, and unknown fields", () => {
+    const before = getDreamSettings();
+    expect(() => updateDreamSettings({ promotion: { mode: "on" } })).toThrow(/promotion.mode must be "dry-run" or "apply"/);
+    expect(() => updateDreamSettings({ promotion: { enabled: "yes" } })).toThrow(/promotion.enabled must be a boolean/);
+    for (const patch of [
+      { promotion: { minCorroboration: 0 } },
+      { promotion: { minCorroboration: 1.5 } },
+      { promotion: { minCorroboration: "2" } },
+      { promotion: { windowDays: -3 } },
+      { promotion: { maxBytes: 0 } },
+      { promotion: { cadenceMs: 5 } },
+      { promotion: "on" },
+    ]) {
+      expect(() => updateDreamSettings(patch)).toThrow(DreamSettingsError);
+    }
+    expect(getDreamSettings()).toEqual(before);
   });
 
   it("rejects maxInFlight on dedup: the dedup lane runs no judge pool", () => {
@@ -202,6 +282,10 @@ describe("dream settings — contradiction apply gate (T1641)", () => {
     expect(updateDreamSettings({ dedup: { applyMode: "apply" } }).dedup.applyMode).toBe("apply");
   });
 
+  it("leaves promotion apply ungated: this gate is the contradiction pass's precision only", () => {
+    expect(updateDreamSettings({ promotion: { mode: "apply" } }).promotion.mode).toBe("apply");
+  });
+
   it("accepts contradiction apply once the gate has passed (injected gate)", () => {
     expect(updateDreamSettings({ contradiction: { applyMode: "apply" } }, PASSED).contradiction.applyMode).toBe("apply");
   });
@@ -216,7 +300,7 @@ describe("dream settings — contradiction apply gate (T1641)", () => {
 
 describe("dream settings — last-run registry", () => {
   it("empty until a pass records, one record per pass, latest wins", () => {
-    expect(lastRuns()).toEqual({ contradiction: null, dedup: null });
+    expect(lastRuns()).toEqual({ contradiction: null, dedup: null, promotion: null });
 
     recordLastRun("contradiction", { sampled: 20, superseded: 1 });
     recordLastRun("dedup", { proposals: 3 });
@@ -245,13 +329,18 @@ describe("dream settings — last-run registry", () => {
     expect(() => recordLastRun("reflexion", {})).toThrow(/unknown pass/);
     expect(() => recordLastRun("dedup", null as unknown as Record<string, unknown>)).toThrow(/must be an object/);
     expect(() => recordLastRun("dedup", [] as unknown as Record<string, unknown>)).toThrow(DreamSettingsError);
-    expect(lastRuns()).toEqual({ contradiction: null, dedup: null });
+    expect(lastRuns()).toEqual({ contradiction: null, dedup: null, promotion: null });
   });
 
   it("reset clears the registry", () => {
     recordLastRun("dedup", { ok: true });
     resetLastRuns();
-    expect(lastRuns()).toEqual({ contradiction: null, dedup: null });
+    expect(lastRuns()).toEqual({ contradiction: null, dedup: null, promotion: null });
+  });
+
+  it("promotion records its run like its siblings", () => {
+    recordLastRun("promotion", { mode: "dry-run", sampled: 5 });
+    expect(lastRuns().promotion).toMatchObject({ name: "promotion", summary: { mode: "dry-run", sampled: 5 } });
   });
 
   it("hands out copies: mutating a returned record cannot corrupt the registry", () => {

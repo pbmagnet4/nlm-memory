@@ -10,8 +10,10 @@
  * evidence-backed suggestion set.
  *
  * Value model — a fact is worth injecting when it is:
- *  - corroborated: asserted across >= MIN_CORROBORATION distinct sessions
- *    (the same bar related-facts.ts demands before a fact counts as "known");
+ *  - corroborated: asserted across >= minCorroboration distinct sessions
+ *    (MIN_CORROBORATION by default — the same bar related-facts.ts demands
+ *    before a fact counts as "known", and the bar the dream settings lower
+ *    may move);
  *  - recently retrieved: its id — or its source session's id — showed up in
  *    recent hook fires (the agent keeps pulling it);
  *  - cited: the agent actually referenced it (citation log).
@@ -42,7 +44,6 @@
 
 export const MIN_CORROBORATION = 2;
 export const MIN_CONFIDENCE = 0.7;
-
 /** Hard cap on the injected promotion set: 200 lines / 25KB. */
 export const MAX_PROMOTION_LINES = 200;
 export const MAX_PROMOTION_BYTES = 25 * 1024;
@@ -130,11 +131,17 @@ function tripleBlank(c: PromotionCandidate): boolean {
 
 /** Corroborated AND (retrieved OR cited in the window). Confidence and
  *  corroboration floors mirror related-facts.ts so the dream lane cannot
- *  nominate what live recall would refuse to inject. */
-export function isPromotionEligible(c: PromotionCandidate, signals: PromotionSignals): boolean {
+ *  nominate what live recall would refuse to inject. The corroboration floor
+ *  is the dream setting's to raise or lower (T1729); MIN_CORROBORATION is the
+ *  default it falls back to. */
+export function isPromotionEligible(
+  c: PromotionCandidate,
+  signals: PromotionSignals,
+  minCorroboration: number = MIN_CORROBORATION,
+): boolean {
   if (tripleBlank(c)) return false;
   if (c.confidence < MIN_CONFIDENCE) return false;
-  if (c.corroborationCount < MIN_CORROBORATION) return false;
+  if (c.corroborationCount < minCorroboration) return false;
   return countIn(signals.retrievalCounts, c.id) > 0 || countIn(signals.citationCounts, c.id) > 0;
 }
 

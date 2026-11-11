@@ -18,12 +18,15 @@ import {
   DEFAULT_DEDUP_SAMPLE_SIZE,
   DEFAULT_MAX_IN_FLIGHT,
   DEFAULT_PASS_CADENCE_MS,
+  DEFAULT_PROMOTION_SAMPLE_SIZE,
+  DEFAULT_PROMOTION_WINDOW_DAYS,
   getDreamSettings,
   reseedDreamSettings,
   resetLastRuns,
   updateDreamSettings,
 } from "../../../src/core/dream/settings.js";
 import { DEFAULT_DREAM_MODEL } from "../../../src/core/dream/judge.js";
+import { MAX_PROMOTION_BYTES, MAX_PROMOTION_LINES, MIN_CORROBORATION } from "../../../src/core/dream/promotion.js";
 
 function appWith(dreaming?: boolean) {
   return createApp({
@@ -59,8 +62,17 @@ describe("GET /api/dreaming", () => {
         sampleSize: DEFAULT_DEDUP_SAMPLE_SIZE,
         applyMode: "dry-run",
       },
+      promotion: {
+        enabled: false,
+        mode: "dry-run",
+        sampleSize: DEFAULT_PROMOTION_SAMPLE_SIZE,
+        windowDays: DEFAULT_PROMOTION_WINDOW_DAYS,
+        maxLines: MAX_PROMOTION_LINES,
+        maxBytes: MAX_PROMOTION_BYTES,
+        minCorroboration: MIN_CORROBORATION,
+      },
     });
-    expect(body.lastRuns).toEqual({ contradiction: null, dedup: null });
+    expect(body.lastRuns).toEqual({ contradiction: null, dedup: null, promotion: null });
   });
 
   it("503s when the surface is not wired", async () => {
@@ -141,6 +153,36 @@ describe("POST /api/dreaming", () => {
     const error = ((await res.json()) as { error: string }).error;
     expect(error).toMatch(/precision gate/);
     expect(error).toContain(CONTRADICTION_APPLY_GATE.evidence);
+    expect(getDreamSettings()).toEqual(before);
+  });
+
+  it("applies a promotion patch (T1729) — the pass switch, its mode and its knobs", async () => {
+    const res = await appWith(true).request("/api/dreaming", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ promotion: { enabled: true, mode: "apply", minCorroboration: 3, maxLines: 50 } }),
+    });
+    expect(res.status).toBe(200);
+    // Unlike the contradiction pass, promotion apply is not precision-gated.
+    expect(getDreamSettings().promotion).toMatchObject({
+      enabled: true,
+      mode: "apply",
+      minCorroboration: 3,
+      maxLines: 50,
+      sampleSize: DEFAULT_PROMOTION_SAMPLE_SIZE,
+      windowDays: DEFAULT_PROMOTION_WINDOW_DAYS,
+    });
+  });
+
+  it("400s a bad promotion patch and changes nothing", async () => {
+    const before = getDreamSettings();
+    const res = await appWith(true).request("/api/dreaming", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "should-not-stick", promotion: { minCorroboration: 0 } }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/promotion.minCorroboration must be a positive integer/);
     expect(getDreamSettings()).toEqual(before);
   });
 

@@ -259,11 +259,11 @@ export class ScanScheduler {
       logger: this.opts.logger,
     });
 
-    // T1611 promotion dream pass. Same policy-in-the-module split: it
-    // registers only when NLM_DREAM_PROMOTE_PASS is set and stays
-    // report-only unless NLM_DREAM_PROMOTE_APPLY is set too. Deterministic
-    // scoring over hook/citation telemetry, no LLM lane. The PG backend
-    // passes no sqlite handle and the pass self-skips.
+    // T1611 promotion dream pass. Same live-settings split as its siblings:
+    // it always registers and its run closure reads the live settings, so
+    // POST /api/dreaming edits — enabling the pass included — apply with no
+    // restart. Deterministic scoring over hook/citation telemetry, no LLM
+    // lane. The PG backend passes no sqlite handle and the pass self-skips.
     registerPromotionPass({
       host: this,
       sqliteDb: opts.store instanceof PgSessionStore ? null : opts.store.rawDb(),
