@@ -127,3 +127,35 @@ Read-outs:
 Conclusion: there is no usage evidence that corroboration predicts
 usefulness — only the ranking damage measured above. The count remains worth
 *reporting* on hits (it is context for the caller), just not worth ranking on.
+
+## Part 3 — decision: default cap 2.0 → 1.0
+
+Applying the pre-set rule (change only if something wins by ≥ 3 pts hybrid
+R@1 without lowering cited-fact rank):
+
+- **cap=1 maximizes hybrid R@1** in both gold arms: 84.0% vs 27.3% (topic,
+  +56.7 pts) and 65.3% vs 22.7% (paraphrase, +42.6 pts) over the default.
+  Every intermediate cap is worse than cap=1 on every metric; partial caps
+  (1.25/1.5) still cost 5–47 pts because the count=2 factor is already
+  1.301×.
+- **Cited-fact rank cannot be lowered**: there is no fact-level citation
+  telemetry at all (Part 2), and only 1.3% of the pool was ever eligible for
+  a boost. No protection is lost by turning the boost off.
+- No additive-boost arm was scored by the evaluator, and none is needed: the
+  best case for any positive boost is a signal that shows no usage advantage.
+
+Changed `DEFAULT_BOOST_CAP` in `src/core/recall-facts/fact-recall-service.ts`
+from 2.0 to 1.0 with a comment citing this doc; `NLM_FACT_CORROBORATION_BOOST_CAP`
+still re-enables any cap ≥ 1 (e.g. `2.0`) without a code change, and
+`corroborationCount` keeps flowing on every hit. `docs/configuration.md` and
+the unit tests in `tests/unit/core/recall-facts/fact-corroboration.test.ts`
+updated to pin the new default (boost off, counts reported) and keep the
+boost mechanics under explicit cap-2 opt-in.
+
+Caveats: single corpus snapshot (2026-11-11), one embedder config, sampled
+pool of 11,175 facts. Anomaly left as observed, not explained: semantic-only
+R@1 on topic gold (59.3% at cap=1) trails paraphrase gold (78.0%) — opposite
+the evaluator docstring's expectation that exact-topic queries favour the
+semantic leg; worth a look in a follow-up, but the hybrid arm (the production
+default) is strong in both arms. The hook-injection corroboration gate
+(`NLM_HOOK_FACT_MIN_CORROBORATION`) is a separate mechanism and untouched.
