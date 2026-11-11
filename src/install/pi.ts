@@ -160,6 +160,29 @@ function canonicalOrResolved(path: string): string {
 }
 
 /**
+ * Root of the NxtOS versioned install layout containing `path`, else null.
+ *
+ * NxtOS unpacks an app to `<root>/versions/<version>/...` and keeps a
+ * `current` symlink pointing at the version it is running, so anything inside
+ * that tree — the pi extension dir, the CLI's own `dist/` — can be re-expressed
+ * through `current`, and upgrades land by flipping the pointer instead of
+ * re-installing. Dev checkouts and plain npm installs match nothing. A stray
+ * `versions/` segment (e.g. `~/.nvm/versions/node/<v>`) is rejected because it
+ * has no sibling `current` pointer.
+ */
+export function nxtOSInstallRoot(path: string): string | null {
+  const parts = resolve(path).split(sep);
+  // `i >= 1` keeps a non-empty root; `i <= len-3` requires `<version>/<at
+  // least one more segment>` after `versions`.
+  for (let i = parts.length - 3; i >= 1; i--) {
+    if (parts[i] !== "versions") continue;
+    const root = parts.slice(0, i).join(sep) || sep;
+    if (existsSync(join(root, "current"))) return root;
+  }
+  return null;
+}
+
+/**
  * Floating equivalent of a version-pinned install path:
  * `<root>/versions/<v>/app/nlm` → `<root>/current/app/nlm` when that
  * symlink exists, so the wiring survives upgrades instead of pinning the
@@ -170,20 +193,14 @@ function canonicalOrResolved(path: string): string {
 function floatPluginDir(pluginDir: string): string {
   const resolved = resolve(pluginDir);
   const parts = resolved.split(sep);
-  if (
+  const pinnedAtAppNlm =
     parts.length >= 5 &&
     parts[parts.length - 4] === "versions" &&
     parts[parts.length - 2] === "app" &&
-    parts[parts.length - 1] === "nlm"
-  ) {
-    // Rejoin from segments rather than splicing the string: the leading
-    // "" segment of an absolute path must survive, or join() returns a
-    // relative path that existsSync can never find.
-    const root = parts.slice(0, parts.length - 4).join(sep) || sep;
-    const floating = join(root, "current", "app", "nlm");
-    if (existsSync(floating)) return floating;
-  }
-  return resolved;
+    parts[parts.length - 1] === "nlm";
+  const root = pinnedAtAppNlm ? nxtOSInstallRoot(resolved) : null;
+  if (!root) return resolved;
+  return join(root, "current", "app", "nlm");
 }
 
 /** True when the directory is an nlm-memory pi extension root. */
