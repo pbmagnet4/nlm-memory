@@ -24,6 +24,7 @@ import type { CodeExemplarSearchFilter, CodeExemplarStore, ExemplarVerdictPatch,
 import type { CodeExemplar, CodeExemplarHit, CodeExemplarInput, CodeExemplarOutcome } from "@shared/types.js";
 import { tenantClause } from "@core/tenancy/tenant-clause.js";
 import { guardSweep } from "@core/util/sweep-guard.js";
+import { yieldToEventLoop } from "@core/util/yield-loop.js";
 
 
 type ExemplarRow = {
@@ -65,8 +66,32 @@ export function exemplarId(parts: {
     .slice(0, 16);
 }
 
+/** Exemplar ids deleted per transaction (and per event-loop yield) by the two
+ *  bulk sweeps. 200 deletes — two statements each, one ordinary row plus one
+ *  vec0 row — stay near a millisecond per chunk, so the sweep can work any size
+ *  backlog without ever owning the loop for a whole tick (T679). */
+export const DEFAULT_EXEMPLAR_DELETE_CHUNK = 200;
+
+export interface ExemplarSweepOptions {
+  /** Exemplar ids per delete transaction. */
+  readonly deleteChunkRows?: number;
+  /** What to await between chunks. Defaults to one event-loop turn; a test can
+   *  count the boundary instead of racing a timer. */
+  readonly yieldFn?: () => Promise<void>;
+}
+
 export class SqliteCodeExemplarStore implements CodeExemplarStore {
-  constructor(private readonly db: Database.Database) {}
+  private readonly deleteChunkRows: number;
+  private readonly yieldBetweenChunks: () => Promise<void>;
+
+  constructor(
+    private readonly db: Database.Database,
+    opts: ExemplarSweepOptions = {},
+  ) {
+    const chunk = opts.deleteChunkRows ?? DEFAULT_EXEMPLAR_DELETE_CHUNK;
+    this.deleteChunkRows = Number.isInteger(chunk) && chunk > 0 ? chunk : DEFAULT_EXEMPLAR_DELETE_CHUNK;
+    this.yieldBetweenChunks = opts.yieldFn ?? yieldToEventLoop;
+  }
 
   async insert(tenantId: string, input: CodeExemplarInput): Promise<{ id: string; skipped: boolean }> {
     const id = exemplarId({
@@ -262,10 +287,8 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
       )
       .all(installScope, bucketTc.param);
 
-    let deleted = 0;
-    const delStmt = this.db.prepare("DELETE FROM code_exemplars WHERE id = ?");
-    const txn = this.db.transaction(() => {
-      const doomed: string[] = [];
+    const doomed = this.db.transaction((): string[] => {
+      const doomedIds: string[] = [];
       for (const bucket of buckets) {
         const outcomeList = bucket.outcome_class === "positive" ? ["pass", "fix"] : ["fail", "exhausted"];
         const placeholders = outcomeList.map(() => "?").join(",");
@@ -288,17 +311,12 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
           .all(...params)
           .map((r) => r.id);
 
-        doomed.push(...allIds.slice(maxPerBucket));
+        doomedIds.push(...allIds.slice(maxPerBucket));
       }
-      if (!this.sweepAllowed("exemplar-bucket-cap", tenantId, doomed.length)) return;
-      for (const id of doomed) {
-        delStmt.run(id);
-        this.db.prepare("DELETE FROM code_exemplars_vec WHERE exemplar_id = ?").run(id);
-        deleted++;
-      }
-    });
-    txn();
-    return deleted;
+      if (!this.sweepAllowed("exemplar-bucket-cap", tenantId, doomedIds.length)) return [];
+      return doomedIds;
+    })();
+    return this.deleteExemplarIds(doomed);
   }
 
   async pruneReverted(tenantId: string, installScope: string): Promise<number> {
@@ -310,16 +328,38 @@ export class SqliteCodeExemplarStore implements CodeExemplarStore {
       )
       .all(installScope, tc.param)
       .map((r) => r.id);
-    let deleted = 0;
-    const txn = this.db.transaction(() => {
-      if (!this.sweepAllowed("exemplar-prune-reverted", tenantId, ids.length)) return;
-      for (const id of ids) {
-        this.db.prepare("DELETE FROM code_exemplars WHERE id = ?").run(id);
-        this.db.prepare("DELETE FROM code_exemplars_vec WHERE exemplar_id = ?").run(id);
-        deleted++;
+    if (!this.sweepAllowed("exemplar-prune-reverted", tenantId, ids.length)) return 0;
+    return this.deleteExemplarIds(ids);
+  }
+
+  /**
+   * Delete exemplar ids and their vec rows in bounded transactions, yielding to
+   * the event loop between chunks (T679). Both caller sweeps used to run their
+   * whole backlog in one `db.transaction`, which on a synchronous driver is one
+   * slice no HTTP request can get a word into — and they run on every scheduler
+   * tick. The id list is still chosen up front, so the rows deleted are the same;
+   * only the atomicity changes, and a partial prune is self-completing: the next
+   * tick re-selects whatever is still `survived = 0` / still over the cap.
+   */
+  private async deleteExemplarIds(ids: ReadonlyArray<string>): Promise<number> {
+    if (ids.length === 0) return 0;
+    const del = this.db.prepare("DELETE FROM code_exemplars WHERE id = ?");
+    const delVec = this.db.prepare("DELETE FROM code_exemplars_vec WHERE exemplar_id = ?");
+    const chunkSize = this.deleteChunkRows;
+    const chunk = this.db.transaction((batch: ReadonlyArray<string>): number => {
+      let n = 0;
+      for (const id of batch) {
+        del.run(id);
+        delVec.run(id);
+        n++;
       }
+      return n;
     });
-    txn();
+    let deleted = 0;
+    for (let lo = 0; lo < ids.length; lo += chunkSize) {
+      if (lo > 0) await this.yieldBetweenChunks();
+      deleted += chunk(ids.slice(lo, lo + chunkSize));
+    }
     return deleted;
   }
 

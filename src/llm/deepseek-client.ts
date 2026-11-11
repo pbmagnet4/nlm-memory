@@ -16,6 +16,11 @@
  * for unparseable / shape-wrong output. Reads DEEPSEEK_API_KEY at construct
  * time unless an explicit key is passed.
  *
+ * Despite the name this is a generic OpenAI-compatible chat client: ClassifierBox
+ * routes its `openai` provider (LM Studio, LiteLLM, vLLM) through it, which is why
+ * every error label comes from `providerLabel` rather than the class name — see
+ * DeepSeekClientOptions.providerLabel.
+ *
  * Embedding is not supported by DeepSeek's API — `embed()` throws. Wire a
  * separate embedder (OllamaClient) for semantic recall.
  */
@@ -73,6 +78,15 @@ export interface DeepSeekClientOptions {
   /** Extra top-level fields merged into every chat request body (e.g.
    *  `chat_template_kwargs` to switch thinking off on an OpenAI-compatible gateway). */
   readonly extraBody?: Readonly<Record<string, unknown>>;
+  /**
+   * Provider name to put in error messages. This client is a generic
+   * OpenAI-compatible transport, and `ClassifierBox` routes its `openai` provider
+   * (LM Studio / LiteLLM / vLLM) through it, so without this the operator running
+   * `NLM_CLASSIFIER=openai` reads "LLM unreachable: deepseek" for an endpoint that
+   * has nothing to do with DeepSeek and goes looking at the wrong lane. Defaults to
+   * "deepseek", which is what the DeepSeek cloud path is.
+   */
+  readonly providerLabel?: string;
 }
 
 interface ChatResponse {
@@ -106,6 +120,7 @@ export class DeepSeekClient implements LLMClient {
   private readonly responseFormat: "json_object" | "none";
   private readonly classifyMaxTokens: number;
   private readonly extraBody: Readonly<Record<string, unknown>>;
+  private readonly label: string;
 
   constructor(opts: DeepSeekClientOptions = {}) {
     const key = opts.apiKey ?? process.env["DEEPSEEK_API_KEY"];
@@ -125,6 +140,13 @@ export class DeepSeekClient implements LLMClient {
     this.responseFormat = opts.responseFormat ?? "json_object";
     this.classifyMaxTokens = opts.classifyMaxTokens ?? DEFAULT_CLASSIFY_MAX_TOKENS;
     this.extraBody = opts.extraBody ?? {};
+    this.label = opts.providerLabel ?? "deepseek";
+  }
+
+  /** `classify` / `rewrite` / `complete` flavours of the provider label, so a
+   *  failure names both the endpoint and which call failed. */
+  private labelled(suffix: "" | "-rewrite" | "-complete"): string {
+    return `${this.label}${suffix}`;
   }
 
   /** Spread into a chat request body: `{type:"json_object"}` or nothing. */
@@ -172,7 +194,7 @@ export class DeepSeekClient implements LLMClient {
       }
     } catch (e) {
       if (e instanceof LLMUnreachableError || e instanceof ClassifierSchemaError) throw e;
-      throw new LLMUnreachableError("deepseek", e);
+      throw new LLMUnreachableError(this.labelled(""), e);
     } finally {
       clearTimeout(timer);
     }
@@ -213,15 +235,15 @@ export class DeepSeekClient implements LLMClient {
       });
       if (!res.ok) {
         throw new LLMUnreachableError(
-          "deepseek",
+          this.labelled(""),
           `status ${res.status}: ${await res.text().catch(() => "")}`,
         );
       }
       const data = (await res.json()) as ChatResponse;
-      return parseClassifierContent(data.choices?.[0]?.message?.content ?? "", "deepseek");
+      return parseClassifierContent(data.choices?.[0]?.message?.content ?? "", this.label);
     } catch (e) {
       if (e instanceof LLMUnreachableError || e instanceof ClassifierSchemaError) throw e;
-      throw new LLMUnreachableError("deepseek", e);
+      throw new LLMUnreachableError(this.labelled(""), e);
     }
   }
 
@@ -251,16 +273,16 @@ export class DeepSeekClient implements LLMClient {
       });
       if (!res.ok) {
         throw new LLMUnreachableError(
-          "deepseek-rewrite",
+          this.labelled("-rewrite"),
           `status ${res.status}: ${await res.text().catch(() => "")}`,
         );
       }
       const data = (await res.json()) as ChatResponse;
       const rawContent = data.choices?.[0]?.message?.content?.trim() ?? "";
-      return parseRewriteJson(rawContent, "deepseek");
+      return parseRewriteJson(rawContent, this.label);
     } catch (e) {
       if (e instanceof LLMUnreachableError) throw e;
-      throw new LLMUnreachableError("deepseek-rewrite", e);
+      throw new LLMUnreachableError(this.labelled("-rewrite"), e);
     } finally {
       clearTimeout(timer);
     }
@@ -302,13 +324,13 @@ export class DeepSeekClient implements LLMClient {
         signal: controller.signal,
       });
       if (!res.ok) {
-        throw new LLMUnreachableError("deepseek-complete", `status ${res.status}: ${await res.text().catch(() => "")}`);
+        throw new LLMUnreachableError(this.labelled("-complete"), `status ${res.status}: ${await res.text().catch(() => "")}`);
       }
       const data = (await res.json()) as ChatResponse;
       return data.choices?.[0]?.message?.content ?? "";
     } catch (e) {
       if (e instanceof LLMUnreachableError) throw e;
-      throw new LLMUnreachableError("deepseek-complete", e);
+      throw new LLMUnreachableError(this.labelled("-complete"), e);
     } finally {
       clearTimeout(timer);
     }

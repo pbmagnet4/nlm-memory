@@ -1,4 +1,5 @@
 import { statSync } from "node:fs";
+import { yieldToEventLoop } from "@core/util/yield-loop.js";
 
 export interface CorpusStats {
   readonly dbBytes: number;
@@ -85,7 +86,7 @@ export function sqliteCorpusStatsDeps(db: SqliteLike, dbPath: string): CorpusSta
           .get(lo, lo + CHUNK_ROWS) as { bodyBytes: number; cappedBodies: number };
         bodyBytes += row.bodyBytes;
         cappedBodies += row.cappedBodies;
-        await new Promise<void>((resolveYield) => setImmediate(resolveYield));
+        await yieldToEventLoop();
       }
       return { bodyBytes, cappedBodies };
     },

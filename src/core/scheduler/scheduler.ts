@@ -51,6 +51,8 @@ import { isTransientLLMError } from "@core/classifier/transient-error.js";
 import { appendShadowLine, gatedClassification, type GateVerdict, type IngestGateMode } from "@core/classifier/ingest-gate.js";
 import { recordClassifyFailure, recordClassifySuccess, recordIngestProgress } from "@core/health/classify-outcomes.js";
 import { TimeoutError } from "@core/util/with-timeout.js";
+import { timeJob, DEFAULT_SYNC_SLICE_THRESHOLD_MS as DEFAULT_LOOP_THRESHOLD_MS } from "./loop-monitor.js";
+import { yieldToEventLoop } from "@core/util/yield-loop.js";
 import { bindSessionToWorkstream } from "@core/workstream/bind.js";
 import { parseWorkTopics, aliasToLabelMap } from "@core/workstream/work-topics.js";
 import { deriveScope } from "@core/scope/derive-scope.js";
@@ -165,6 +167,9 @@ export interface SchedulerOptions {
   readonly idleMinutes?: number;
   /** Defaults to console.error. Set to a noop in tests. */
   readonly logger?: (msg: string) => void;
+  /** Synchronous-slice length at which a scheduler job logs a `[loop] .. took`
+   *  line (see loop-monitor.ts). Default 250ms. */
+  readonly loopThresholdMs?: number;
 }
 
 export interface IngestGate {
@@ -208,6 +213,9 @@ export class ScanScheduler {
   /** Sources whose last attempt hit an infrastructure error; retried after `until` with doubling delay. */
   private readonly deferrals = new Map<string, { until: number; delayMs: number }>();
   private timer: NodeJS.Timeout | null = null;
+  /** Set by start(); when false the tick wrapper skips timing so a stopped
+   *  scheduler's manual tick() calls (tests, `nlm scan --once`) stay quiet. */
+  private timingEnabled = false;
 
   constructor(opts: SchedulerOptions) {
     this.opts = {
@@ -229,6 +237,7 @@ export class ScanScheduler {
       confidenceFloor: opts.confidenceFloor ?? DEFAULT_CONFIDENCE_FLOOR,
       idleMinutes: opts.idleMinutes ?? DEFAULT_IDLE_MINUTES,
       logger: opts.logger ?? ((msg) => console.error(msg)),
+      loopThresholdMs: opts.loopThresholdMs ?? DEFAULT_LOOP_THRESHOLD_MS,
     };
     this.aliasToLabel = loadAliasToLabel();
 
@@ -300,11 +309,13 @@ export class ScanScheduler {
   start(): void {
     if (!this.stopped) return;
     this.stopped = false;
+    this.timingEnabled = process.env["NLM_LOOP_LOG"] !== "0";
     this.scheduleNext(0);
   }
 
   stop(): void {
     this.stopped = true;
+    this.timingEnabled = false;
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
@@ -318,7 +329,19 @@ export class ScanScheduler {
     }, delayMs);
   }
 
-  async tick(): Promise<TickReport> {
+  /** Timed entry point. The tick is the scheduler's biggest single unit of
+   *  synchronous SQLite work (scanOnce discovery, insertSession, adapter_state
+   *  writes) so it gets its own `[loop]` line. See loop-monitor.ts for why a
+   *  *sync slice* rather than wall time is the trigger. */
+  tick(): Promise<TickReport> {
+    if (!this.timingEnabled) return this.runTick();
+    return timeJob("scheduler-tick", () => this.runTick(), {
+      logger: this.opts.logger,
+      thresholdMs: this.opts.loopThresholdMs,
+    });
+  }
+
+  private async runTick(): Promise<TickReport> {
     let inserted = 0;
     let skippedLowConfidence = 0;
     let gatedSkips = 0;
@@ -335,7 +358,7 @@ export class ScanScheduler {
     const sqliteDb = store instanceof PgSessionStore ? null : store.rawDb();
     if (!_pgPool && shouldRunIntegrityCheck(now)) {
       try {
-        const violations = runCheapChecksOnSqlite(sqliteDb!);
+        const violations = await this.timeSync("integrity-check", () => runCheapChecksOnSqlite(sqliteDb!));
         markIntegrityCheckRan(now);
         for (const v of violations) {
           this.opts.logger(`[integrity] FAIL ${v.id} count=${v.count} ${v.description}  run \`nlm doctor\` to inspect or \`nlm doctor --fix\` to repair`);
@@ -596,7 +619,14 @@ export class ScanScheduler {
     for (const pass of this.dreamPasses) {
       if (now - (this.dreamPassLastRun.get(pass.name) ?? 0) < pass.intervalMs) continue;
       try {
-        await pass.run();
+        if (this.timingEnabled) {
+          await timeJob(`dream-pass:${pass.name}`, () => pass.run(), {
+            logger: this.opts.logger,
+            thresholdMs: this.opts.loopThresholdMs,
+          });
+        } else {
+          await pass.run();
+        }
         // Stamp only on success: a throwing pass must retry on the next tick
         // instead of consuming its whole interval slot.
         this.dreamPassLastRun.set(pass.name, Date.now());
@@ -608,6 +638,18 @@ export class ScanScheduler {
     }
 
     return { inserted, gatedSkips, skippedLowConfidence, classifyFailures, storageFailures, chunksSeen, deferred };
+  }
+
+  /** Run a synchronous SQLite unit under the loop monitor, yielding to the
+   *  event loop first so an already-queued HTTP request gets a slice before the
+   *  block starts. A no-op wrapper when timing is off. */
+  private async timeSync<T>(name: string, fn: () => T): Promise<T> {
+    if (!this.timingEnabled) return fn();
+    await yieldToEventLoop();
+    return timeJob(name, fn, {
+      logger: this.opts.logger,
+      thresholdMs: this.opts.loopThresholdMs,
+    });
   }
 
   private async drainSignals(chunk: { id: string; signals?: ReadonlyArray<unknown> }, scope: string | null): Promise<void> {
