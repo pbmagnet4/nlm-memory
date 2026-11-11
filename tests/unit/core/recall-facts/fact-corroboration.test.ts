@@ -1,8 +1,10 @@
 /**
  * Spec G part 1: fact corroboration boost. Proves that FactRecallService
  * applies the log-scale boost from store.corroborationCounts and re-orders
- * hits accordingly. Also confirms that when the store throws or the env
- * disables the boost, behavior gracefully falls back.
+ * hits accordingly when the boost is opted into via the cap env var. Since
+ * T527 the default cap is 1.0 — boost off, counts still reported (see
+ * docs/eval/T527-corroboration-cap.md) — and a capped or throwing store falls
+ * back gracefully.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -116,7 +118,8 @@ describe("fact corroboration boost (Spec G.1)", () => {
     delete process.env["NLM_FACT_CORROBORATION_BOOST_CAP"];
   });
 
-  it("a more-corroborated fact ranks ahead of a less-corroborated equal-score fact", async () => {
+  it("a more-corroborated fact ranks ahead of a less-corroborated equal-score fact (opt-in cap 2)", async () => {
+    process.env["NLM_FACT_CORROBORATION_BOOST_CAP"] = "2";
     const facts = [
       makeFact({ id: "weak", subject: "beacon", predicate: "uses", value: "postgres" }),
       makeFact({ id: "strong", subject: "beacon", predicate: "uses", value: "duckdb" }),
@@ -138,7 +141,8 @@ describe("fact corroboration boost (Spec G.1)", () => {
     expect(result.results[1]!.corroborationCount).toBe(1);
   });
 
-  it("the boost is log-scale and capped (1 corroboration = 1.0×, 10 = 2.0×)", async () => {
+  it("the boost is log-scale and capped at the env cap (default 1 corroboration = 1.0×, 10 = 2.0× at cap 2)", async () => {
+    process.env["NLM_FACT_CORROBORATION_BOOST_CAP"] = "2";
     const facts = [
       makeFact({ id: "f1", subject: "x", predicate: "y", value: "v1" }),
       makeFact({ id: "f2", subject: "x", predicate: "y", value: "v2" }),
@@ -152,9 +156,29 @@ describe("fact corroboration boost (Spec G.1)", () => {
     );
     const svc = new FactRecallService({ factStore: store, llm: new StubLLM() });
     const result = await svc.search("team_local", { subject: "x", mode: "keyword" });
-    // Cap is 2.0; even with a million corroborations, score boost is bounded
+    // Env cap 2.0; even with a million corroborations, the score boost is bounded
     expect(result.results[0]!.id).toBe("f2");
     expect(result.results[1]!.id).toBe("f1");
+  });
+
+  it("no env set = T527 default: no re-ordering and no factor, counts still reported", async () => {
+    const facts = [
+      makeFact({ id: "first", subject: "x", predicate: "y", value: "v1" }),
+      makeFact({ id: "second", subject: "x", predicate: "y", value: "v2" }),
+    ];
+    const store = new ScriptedFactStore(
+      facts,
+      new Map([
+        ["x y v1", 1],
+        ["x y v2", 100],
+      ]),
+    );
+    const svc = new FactRecallService({ factStore: store, llm: new StubLLM() });
+    const result = await svc.search("team_local", { subject: "x", mode: "keyword" });
+    // DEFAULT_BOOST_CAP = 1.0 (T527): factor 1.0 and no count tie-break, so
+    // native order (created_at DESC, same timestamps -> insert order) holds.
+    expect(result.results.map((r) => r.id)).toEqual(["first", "second"]);
+    expect(result.results[1]!.corroborationCount).toBe(100);
   });
 
   it("custom boost cap via NLM_FACT_CORROBORATION_BOOST_CAP=1 disables the boost", async () => {

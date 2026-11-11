@@ -48,7 +48,14 @@ const MAX_LIMIT = 100;
 export const DEFAULT_FACT_MIN_CONFIDENCE = 0.6;
 const STORAGE_FETCH_CAP = 500;
 const SEMANTIC_OVERFETCH = 3;
-const DEFAULT_BOOST_CAP = 2.0;
+// T527 re-measurement (docs/eval/T527-corroboration-cap.md): on the current
+// stack (embeddinggemma-2-oQ8e + BM25/RRF) the multiplicative boost costs
+// hybrid natural-language R@1 badly — 22.7% at the old cap 2.0 vs 65.3% at
+// cap=1 (n=300 paraphrase gold; topic gold 27.3% vs 84.0%) — while citation
+// telemetry shows corroborated facts are NOT more cited (cited-rate 3.4% →
+// 0% as count rises; 98.7% of the recall pool is count-1 anyway). Default is
+// therefore boost-off; set NLM_FACT_CORROBORATION_BOOST_CAP>1 to opt back in.
+const DEFAULT_BOOST_CAP = 1.0;
 
 function readBoostCap(): number {
   const raw = process.env["NLM_FACT_CORROBORATION_BOOST_CAP"];
@@ -218,8 +225,9 @@ export class FactRecallService {
    * Fetch corroboration counts for the candidate hits and apply a log-scale
    * boost to matchScore. Sessions that asserted the same (subject, predicate,
    * value) get a multiplicative bonus capped at NLM_FACT_CORROBORATION_BOOST_CAP
-   * (default 2.0). Set the env var to 1.0 to disable the boost while still
-   * returning the count on each hit.
+   * (default 1.0 = boost off since T527 — see DEFAULT_BOOST_CAP and
+   * docs/eval/T527-corroboration-cap.md). Any value ≥ 1 re-enables the boost
+   * while the count is always returned on each hit.
    *
    * Failure mode: any DB error reverts to returning the raw hits unchanged.
    * The boost is a quality improvement, not a correctness contract.
