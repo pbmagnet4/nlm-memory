@@ -131,7 +131,7 @@ Not changed in this task: at 0 missing embeddings the sweep is currently doing
 `[loop] fact-embed-sweep took` line, or its absence) decides whether bounding those
 counts into rowid windows is worth the churn.
 
-### 4. Scheduler tick — every 30 min plus at boot (`src/core/scheduler/scheduler.ts`)
+### 4. Scheduler tick — every 30 min plus at boot (`src/core/scheduler/scheduler.ts`) — sweeps fixed
 
 - **`runCheapChecksOnSqlite` — `src/core/integrity/check-invariants.ts`**, called at
   `scheduler.ts:360`. Every check is `SELECT … FROM <table> WHERE NOT EXISTS (…)`,
@@ -140,14 +140,21 @@ counts into rowid windows is worth the churn.
   measured are cheap because they exit early (`NOT EXISTS … LIMIT 6` 0.05 ms), but
   the aggregate checks have no such exit. Once per 24 h via the cache file, inside
   a serving tick. Now timed as `integrity-check`.
-- **`pruneReverted` — `src/core/storage/sqlite-code-exemplar-store.ts:304-324`**,
-  `scheduler.ts:598`: collects *every* non-survived exemplar id for the scope, then
-  deletes them one by one from `code_exemplars` and the `code_exemplars_vec`
-  virtual table inside a single `db.transaction(...)` — one slice, proportional to
-  the backlog, every tick when `NLM_CODE_EXEMPLARS_ENABLED=1`.
-- **`applyBucketCap` — same file `:254-302`**, `scheduler.ts:608`: same shape
-  (`SELECT DISTINCT repo, lang …` for the scope, then per-bucket deletes in one
-  transaction).
+- **`pruneReverted` — `src/core/storage/sqlite-code-exemplar-store.ts`**,
+  `scheduler.ts:598`, and **`applyBucketCap`** — `scheduler.ts:608`: both collected
+  their whole backlog (every non-survived id for the scope, or every over-cap id
+  per bucket) and then deleted it row by row from `code_exemplars` plus the
+  `code_exemplars_vec` virtual table **inside one `db.transaction`** — one slice,
+  proportional to the backlog, on every tick when `NLM_CODE_EXEMPLARS_ENABLED=1`
+  (which it is: it is in the boot banner). **Fixed (Part 3):** the deletes now run
+  in `DEFAULT_EXEMPLAR_DELETE_CHUNK` (200, `NLM_EXEMPLAR_DELETE_CHUNK`) chunks, one
+  transaction each, with `await yieldToEventLoop()` between them. The id list is
+  still chosen up front and the sweep guard is still consulted once for the whole
+  run, so the rows deleted are the same; the difference is that a crash mid-prune
+  leaves a partial prune the next tick completes, instead of a rolled-back one.
+  `tests/unit/core/storage/sqlite-code-exemplar-sweep-batching.test.ts` asserts the
+  same rows go at any chunk size, that the guard can still refuse everything, and
+  that the loop gets a turn.
 - `scanOnce` (`src/core/scheduler/scan-once.ts:112-115`) loads all `adapter_state`
   rows per adapter — bounded by tracked source files, far smaller than the above.
 - `insertSession` writes row, FTS rows, entity links, markers and vec embedding in
@@ -193,10 +200,11 @@ not on this list.
 
 ## What is left
 
-The 13.9-second slice that explained the timeout rate is gone. The next things this
-file says to fix, in order, once `grep '\[loop\]' ~/.nlm/daemon.err` confirms them:
-the exemplar `pruneReverted` / `applyBucketCap` transactions (chunk the id list and
-yield between chunks), the fact-embed counts and due-list anti-join (rowid windows,
-`NOT EXISTS` probe instead of `NOT IN`), the dream samplers' `ORDER BY random()`
-(random rowid start + `ORDER BY rowid LIMIT 1` per draw), and promotion's whole-file
-hook-log parse (read the tail, filter by timestamp while streaming).
+The 13.9-second slice that explained the timeout rate is gone, and the per-tick
+exemplar sweeps no longer hold the loop for a backlog-sized transaction. The next
+things this file says to fix, in order, once `grep '\[loop\]' ~/.nlm/daemon.err`
+confirms them: the fact-embed counts and due-list anti-join (rowid windows, `NOT
+EXISTS` probe instead of `NOT IN`), the integrity sweep's aggregate checks (one
+check per slice), the dream samplers' `ORDER BY random()` (random rowid start +
+`ORDER BY rowid LIMIT 1` per draw), and promotion's whole-file hook-log parse (read
+the tail, filter by timestamp while streaming).
