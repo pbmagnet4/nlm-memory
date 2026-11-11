@@ -82,3 +82,48 @@ sit densely in that band (see interpretation).
   keyword alone everywhere (topic 84 vs 76; paraphrase 65.3 vs 18), so the
   semantic leg and RRF are earning their keep once the boost stops stacking
   on top.
+
+## Part 2 — are corroborated facts actually more cited?
+
+The premise cannot be measured directly: **there are no cite tables in the
+canonical database and fact-citation telemetry is empty.** Fact-level citation
+would land in the citation log via `cite_session`, the Stop-hook detector
+(tool-use/prose substring scan over surfaced ids), or `get_fact_history`
+follow-ups — none produced a single fact id. Concretely, joined against the
+copy:
+
+- `~/.nlm/fact_query_log.jsonl`: 35,997 recall_facts calls, 195,361 returned-id
+  occurrences, **3,288 distinct facts surfaced** — but only 97 lines carry a
+  `conversation_id` (75 distinct conversations).
+- `~/.nlm/citation-log.jsonl` (all history + the 2026-08-18 rotation): 262
+  lines, 197 distinct cited ids, **zero `fact_*`-shaped citations** — every
+  citation resolves to a session (cc_*/muse/pi/codex/…). 16 of the 75
+  fact-query conversations have any citation, all session-level.
+- Hook useful-hit scan (`useful-hit-log.jsonl`, 176 rows): zero fact ids in
+  any returned set.
+
+So the closest computable use proxies, bucketed by corroboration count
+(COUNT(DISTINCT source_session_id) over the same (subject, predicate, value,
+property) — exactly what `applyCorroboration` multiplies by), over the
+11,175-fact recall pool in the copy:
+
+| corroboration bucket | facts | % of pool | surfaced by recall_facts | source session later cited | both | max count |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 | 11,033 | 98.7% | 307 (2.8%) | 373 (3.4%) | 23 | 1 |
+| 2 | 93 | 0.83% | 9 (9.7%) | 2 (2.2%) | 1 | 2 |
+| 3+ | 49 | 0.44% | 1 (2.0%) | 0 (0.0%) | 0 | 49 |
+
+Read-outs:
+
+1. The boost is aiming at 1.3% of the pool. Whatever it does, it cannot help
+   the other 98.7% — it can only demote them.
+2. Corroborated facts are **not** more cited on either proxy: cited-source
+   rate falls 3.4% → 2.2% → 0% as corroboration rises (small n in the 2/3+
+   rows, but directionally flat-to-negative, never positive).
+3. Of the 24 surfaced facts whose source session was later cited, 23 carry
+   corroboration count 1 — the signal "this fact is corroborated" adds
+ nothing to the observed use signal.
+
+Conclusion: there is no usage evidence that corroboration predicts
+usefulness — only the ranking damage measured above. The count remains worth
+*reporting* on hits (it is context for the caller), just not worth ranking on.
