@@ -74,6 +74,16 @@ export async function recallContext(tenantId: string, input: ContextRequest, dep
   let sessionsExecuted = false;
   let modeUnavailable: string | undefined;
   const reasons: string[] = [];
+  /**
+   * Bodies this request has already read, stamped with the version of the body
+   * it holds. `getByIds` deliberately omits the body column and hands back
+   * `body: ""`, so hydration is tracked here rather than inferred from an empty
+   * string — a legacy session whose body really is empty still counts as read,
+   * a metadata placeholder never does. Hybrid recall publishes twice (lexical
+   * progress, then the final merge) and both publishes routinely carry the same
+   * quoted fact, so the same ~48KB body was being SELECTed once per publish.
+   */
+  const hydrated = new Map<string, { readonly body: string; readonly bodyVersion: string }>();
   const hydrate = async (factHits: readonly FactHit[], sessionHits: readonly RecallHit[]) => {
     const ids = [...new Set([...factHits.map((f) => f.sourceSessionId), ...sessionHits.map((s) => s.id)])];
     if (!ids.length) return [];
@@ -84,13 +94,31 @@ export async function recallContext(tenantId: string, input: ContextRequest, dep
       const fullIds = new Set([...sessionHits.map((s) => s.id), ...factHits
         .filter((f) => f.sourceQuote && !hasCurrentSourceAssessment(f.sourceAnchor, currentVersions.get(f.sourceSessionId)))
         .map((f) => f.sourceSessionId)]);
-      const full = await Promise.all([...fullIds].map((id) => deps.store.getById(tenantId, id)));
+      const reads = [...fullIds].filter((id) => {
+        const cached = hydrated.get(id);
+        const version = currentVersions.get(id);
+        return !cached || version !== cached.bodyVersion;
+      });
+      const full = await Promise.all(reads.map((id) => deps.store.getById(tenantId, id)));
       budget.check();
+      for (const s of full) {
+        // Store what was actually read, not what the metadata row claimed a
+        // moment earlier — a re-ingest between the two reads is exactly the
+        // case the version check has to catch on the next publish.
+        if (s && s.bodyVersion) hydrated.set(s.id, { body: s.body, bodyVersion: s.bodyVersion });
+      }
       const successors = await deps.store.resolveSuccessors(tenantId, ids);
       const byId = new Map(full.filter((s) => s !== null).map((s) => [s.id, s]));
       return metadata.map((s) => {
         const prior = sourceMap.get(s.id);
-        const source = byId.get(s.id) ?? (prior && prior.bodyVersion === s.bodyVersion ? { ...s, body: prior.body } : s);
+        const cached = hydrated.get(s.id);
+        // Reuse needs a version the fresh, tenant-scoped metadata row repeats.
+        // A body that changed under us, a legacy row with no version, and a row
+        // this tenant no longer owns (so it never reaches `metadata`, whose
+        // version reads `undefined`) all fall through to a real read.
+        const source = byId.get(s.id)
+          ?? (cached && s.bodyVersion && cached.bodyVersion === s.bodyVersion ? { ...s, body: cached.body } : undefined)
+          ?? (prior && prior.bodyVersion === s.bodyVersion ? { ...s, body: prior.body } : s);
         return { ...source, supersededBy: successors.get(s.id) ?? null };
       });
     });
