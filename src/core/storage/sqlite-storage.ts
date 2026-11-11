@@ -24,6 +24,7 @@ import { SqliteSignalStore } from "./sqlite-signal-store.js";
 import { SqliteWorkstreamStore } from "./sqlite-workstream-store.js";
 import { SourceRegistry } from "@core/sources/source-registry.js";
 import { SqliteClassifierSettingsStore } from "./sqlite-classifier-settings.js";
+import { SqliteDreamSettingsStore } from "./sqlite-dream-settings.js";
 import { SqliteEmbedderSettingsStore } from "./sqlite-embedder-settings.js";
 import { ProviderRegistry } from "@core/providers/provider-registry.js";
 import { TeamTokenStore } from "@core/tenancy/team-token-store.js";
@@ -46,6 +47,8 @@ export class SqliteStorage implements Storage {
   readonly sources: SourceRegistry;
   readonly providers: ProviderRegistry;
   readonly classifierSettings: SqliteClassifierSettingsStore;
+  /** Daemon-wide dreaming lane settings (T1729), one stored JSON document. */
+  readonly dreamSettings: SqliteDreamSettingsStore;
   readonly embedderSettings: SqliteEmbedderSettingsStore;
   readonly teamTokens: TeamTokenStore;
 
@@ -76,6 +79,8 @@ export class SqliteStorage implements Storage {
     this.sources = sources;
     this.providers = providers;
     this.classifierSettings = classifierSettings;
+    // Same one-row-per-daemon pattern, over the same connection.
+    this.dreamSettings = new SqliteDreamSettingsStore(sessions.rawDb());
     this.embedderSettings = embedderSettings;
     this.teamTokens = teamTokens;
   }

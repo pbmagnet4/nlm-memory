@@ -71,7 +71,7 @@ import {
   type ClassifierTuning,
 } from "@core/classifier/tuning.js";
 import { ClassifierBox, type ClassifierProvider } from "../llm/classifier-box.js";
-import { DreamSettingsError, getDreamSettings, lastRuns, updateDreamSettings } from "@core/dream/settings.js";
+import { DreamSettingsError, dreamSettingsStoreAttached, flushedDreamSettingsWrite, getDreamSettings, lastRuns, updateDreamSettings } from "@core/dream/settings.js";
 import {
   SourceRegistry,
   PgSourceRegistry,
@@ -1578,16 +1578,18 @@ function registerEmbedderRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
 }
 
 // ── Dreaming lane control plane ───────────────────────────────────────────
-// GET returns the current settings snapshot plus the last-run registry the
-// pass registrations write into; POST patches the runtime settings through
-// updateDreamSettings (validated all-or-nothing there — an unknown pass,
-// unknown field or bad shape is a 400 and changes nothing). Process-global
-// by design (the dream passes are one scheduler-lane knobs), hence the
-// LOCAL hosted disposition next to the classifier entries.
+// GET returns the current settings snapshot (plus `persistence`, whether a
+// settings store is attached, so the page can say whether an edit survives a
+// restart) and the last-run registry the pass registrations write into; POST
+// patches the runtime settings through updateDreamSettings (validated all-or-
+// nothing there — an unknown pass, unknown field or bad shape is a 400 and
+// changes nothing) and writes the new document through to the store (T1729).
+// Process-global by design (the dream passes are one scheduler lane), hence
+// the LOCAL hosted disposition next to the classifier entries.
 function registerDreamingRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
   app.get("/api/dreaming", (c) => {
     if (!deps.dreaming) return c.json({ error: "dreaming settings not wired in this deployment" }, 503);
-    return c.json({ settings: getDreamSettings(), lastRuns: lastRuns() });
+    return c.json({ settings: getDreamSettings(), lastRuns: lastRuns(), persistence: dreamSettingsStoreAttached() });
   });
 
   app.post("/api/dreaming", async (c) => {
@@ -1596,13 +1598,27 @@ function registerDreamingRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     if (body === null || typeof body !== "object" || Array.isArray(body)) {
       return c.json({ error: "body must be a JSON object" }, 400);
     }
+    let settings: ReturnType<typeof getDreamSettings>;
     try {
-      const settings = updateDreamSettings(body);
-      return c.json({ ok: true, settings, lastRuns: lastRuns() });
+      settings = updateDreamSettings(body);
     } catch (e) {
       if (e instanceof DreamSettingsError) return c.json({ error: e.message }, 400);
       throw e;
     }
+    try {
+      // The in-memory edit is already live for the next pass run; a store that
+      // refused the write is reported instead of lost silently.
+      await flushedDreamSettingsWrite();
+    } catch (e) {
+      return c.json(
+        {
+          error: `settings applied in memory but the store write failed: ${e instanceof Error ? e.message : String(e)}`,
+          settings,
+        },
+        500,
+      );
+    }
+    return c.json({ ok: true, settings, lastRuns: lastRuns() });
   });
 }
 

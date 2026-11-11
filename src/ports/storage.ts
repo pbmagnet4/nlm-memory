@@ -9,6 +9,7 @@ import type { PropertyStore } from "./property-store.js";
  */
 
 import type { ClassifierSettingsStore } from "./classifier-settings-store.js";
+import type { DreamSettingsStore } from "./dream-settings-store.js";
 import type { EmbedderSettingsStore } from "./embedder-settings-store.js";
 import type { CodeExemplarStore } from "./code-exemplar-store.js";
 import type { EntityStore } from "./entity-store.js";
@@ -39,6 +40,8 @@ export interface Storage {
   readonly providers: ProviderRegistryPort;
   /** Daemon-wide classifier tuning (thinking, timeout, max tokens). */
   readonly classifierSettings: ClassifierSettingsStore;
+  /** Daemon-wide dreaming lane settings (T1729): one stored JSON document. */
+  readonly dreamSettings: DreamSettingsStore;
   readonly embedderSettings: EmbedderSettingsStore;
   /** Bearer-token -> team resolution (the tenancy registry itself). */
   readonly teamTokens: TeamTokenStorePort;

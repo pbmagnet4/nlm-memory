@@ -22,6 +22,7 @@ import { PgWorkstreamStore } from "./pg-workstream-store.js";
 import { PgEmbeddingConfigStore } from "./pg-embedding-config.js";
 import { PgSourceRegistry } from "@core/sources/source-registry.js";
 import { PgClassifierSettingsStore } from "./pg-classifier-settings.js";
+import { PgDreamSettingsStore } from "./pg-dream-settings.js";
 import { PgEmbedderSettingsStore } from "./pg-embedder-settings.js";
 import { PgProviderRegistry } from "@core/providers/provider-registry.js";
 import { PgTeamTokenStore } from "@core/tenancy/team-token-store.js";
@@ -44,6 +45,8 @@ export class PgStorage implements Storage {
   readonly sources: PgSourceRegistry;
   readonly providers: PgProviderRegistry;
   readonly classifierSettings: PgClassifierSettingsStore;
+  /** Daemon-wide dreaming lane settings (T1729), one stored JSON document. */
+  readonly dreamSettings: PgDreamSettingsStore;
   readonly embedderSettings: PgEmbedderSettingsStore;
   readonly teamTokens: PgTeamTokenStore;
   private readonly _pool: Pool;
@@ -64,6 +67,7 @@ export class PgStorage implements Storage {
     this.sources = new PgSourceRegistry(pool);
     this.providers = new PgProviderRegistry(pool);
     this.classifierSettings = new PgClassifierSettingsStore(pool);
+    this.dreamSettings = new PgDreamSettingsStore(pool);
     this.embedderSettings = new PgEmbedderSettingsStore(pool);
     this.teamTokens = new PgTeamTokenStore(pool);
   }

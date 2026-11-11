@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { createApp } from "../../../src/http/app.js";
 import {
+  attachDreamSettingsStore,
   CONTRADICTION_APPLY_GATE,
   DEFAULT_CONTRADICTION_SAMPLE_SIZE,
   DEFAULT_DEDUP_SAMPLE_SIZE,
@@ -39,6 +40,7 @@ function appWith(dreaming?: boolean) {
 beforeEach(() => {
   reseedDreamSettings({});
   resetLastRuns();
+  attachDreamSettingsStore(null);
 });
 
 describe("GET /api/dreaming", () => {
@@ -195,6 +197,68 @@ describe("POST /api/dreaming", () => {
     });
     expect(res.status).toBe(503);
     expect(getDreamSettings()).toEqual(before);
+  });
+});
+
+/**
+ * T1729 — the store behind the route. GET reports whether writes persist, and
+ * POST writes the whole document through the attached store; a store that
+ * refuses the write answers 500 rather than pretending the edit is durable.
+ */
+describe("POST /api/dreaming with an attached settings store", () => {
+  it("reports persistence and writes the accepted document through", async () => {
+    const saved: unknown[] = [];
+    attachDreamSettingsStore({ load: () => Promise.resolve(null), save: (doc) => { saved.push(doc); return Promise.resolve(); } });
+
+    const info = await appWith(true).request("/api/dreaming");
+    expect(((await info.json()) as { persistence: boolean }).persistence).toBe(true);
+
+    const res = await appWith(true).request("/api/dreaming", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "durable", promotion: { enabled: true } }),
+    });
+    expect(res.status).toBe(200);
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({ model: "durable", promotion: { enabled: true } });
+  });
+
+  it("500s when the store rejects the write, and says the edit is memory-only", async () => {
+    attachDreamSettingsStore({
+      load: () => Promise.resolve(null),
+      save: () => Promise.reject(new Error("disk full")),
+    });
+    const res = await appWith(true).request("/api/dreaming", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "not-durable" }),
+    });
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string; settings: { model: string } };
+    expect(body.error).toMatch(/store write failed: disk full/);
+    // The pass lane did get the value — the 500 is about durability only.
+    expect(body.settings.model).toBe("not-durable");
+    expect(getDreamSettings().model).toBe("not-durable");
+  });
+
+  it("400s before any write: a rejected patch never reaches the store", async () => {
+    let writes = 0;
+    attachDreamSettingsStore({
+      load: () => Promise.resolve(null),
+      save: () => { writes += 1; return Promise.resolve(); },
+    });
+    const res = await appWith(true).request("/api/dreaming", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ promotion: { minCorroboration: 0 } }),
+    });
+    expect(res.status).toBe(400);
+    expect(writes).toBe(0);
+  });
+
+  it("reports persistence false on an in-memory deployment", async () => {
+    const res = await appWith(true).request("/api/dreaming");
+    expect(((await res.json()) as { persistence: boolean }).persistence).toBe(false);
   });
 });
 

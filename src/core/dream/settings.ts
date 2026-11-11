@@ -14,7 +14,12 @@
  *
  * Invariants:
  *  - Env is the seed, not the source of truth after load: update() mutates
- *    the in-memory current values; the env is only re-read by reseed().
+ *    the in-memory current values; the env is only re-read by reseed() and by
+ *    the attach-at-startup fallback.
+ *  - With a store attached (attachDreamSettingsStore, T1729) the stored row is
+ *    the source of truth at startup and every accepted update writes through,
+ *    so a Dreaming page edit survives a restart. Env is the fallback for a
+ *    fresh install and for a row this module refuses to read.
  *  - Every parse falls back to the pass defaults on a blank/invalid env
  *    value, same rule as the pass modules' positiveInt/flagEnabled.
  *  - update() validates the whole patch before applying any of it: an
@@ -22,13 +27,16 @@
  *    the current values untouched.
  *  - Turning the contradiction pass to apply needs its precision gate
  *    (CONTRADICTION_APPLY_GATE) to have passed; env seeding stays the
- *    operator's own opt-in and is not gated.
+ *    operator's own opt-in and is not gated. The stored row is read through
+ *    the same gate: a row claiming contradiction apply does not smuggle apply
+ *    past it on the next boot.
  *  - get/lastRuns return snapshots; callers cannot mutate the registry or
  *    the current settings through the returned objects.
  */
 
 import { DEFAULT_DREAM_MODEL, DREAM_MODEL_ENV } from "./judge.js";
 import { MAX_PROMOTION_BYTES, MAX_PROMOTION_LINES, MIN_CORROBORATION } from "./promotion.js";
+import type { DreamSettingsStore } from "@ports/dream-settings-store.js";
 
 /** Env names — the ones the pass modules already read, plus the two new
  *  cadence knobs named after their siblings. The dedup lane makes no LLM
@@ -357,7 +365,143 @@ export function updateDreamSettings(patch: unknown, gate: ContradictionApplyGate
   if (valid.contradiction) Object.assign(current.contradiction, valid.contradiction);
   if (valid.dedup) Object.assign(current.dedup, valid.dedup);
   if (valid.promotion) Object.assign(current.promotion, valid.promotion);
-  return copySettings(current);
+  const snapshot = copySettings(current);
+  writeThrough(snapshot);
+  return snapshot;
+}
+
+/* ------------------------------------------------------------------ */
+/* Persistence (T1729) — one stored document, written through.          */
+/* ------------------------------------------------------------------ */
+
+/** The store the daemon attaches at startup (see attachDreamSettingsStore).
+ *  Null = in-memory only, the pre-T1729 behavior the unit tests run on. */
+let store: DreamSettingsStore | null = null;
+/** The last write-through's outcome. The write itself is chained so two
+ *  accepted updates cannot interleave a half-written document, and its
+ *  rejection is kept here for the route to await and surface as a 500. */
+let lastWrite: Promise<void> = Promise.resolve();
+
+/** Attach (or detach with null) the settings store. Binding does not write:
+ *  a daemon that starts and never edits keeps a fresh database row-free, so
+ *  "nothing stored" and "env only" stay distinguishable. */
+export function attachDreamSettingsStore(next: DreamSettingsStore | null): void {
+  store = next;
+  lastWrite = Promise.resolve();
+}
+
+/** Whether a settings store is attached (the routes report the difference). */
+export function dreamSettingsStoreAttached(): boolean {
+  return store !== null;
+}
+
+/** Resolve when the most recent write-through settles; rejects if that write
+ *  failed. Nothing is lost when nobody awaits it: the module already handles
+ *  the rejection, so no unhandled rejection escapes from a CLI path. */
+export async function flushedDreamSettingsWrite(): Promise<void> {
+  await lastWrite;
+}
+
+function writeThrough(snapshot: DreamSettings): void {
+  if (!store) return;
+  const target = store;
+  const write = Promise.resolve(lastWrite)
+    .catch(() => undefined) // a previously surfaced failure does not block this write
+    .then(() => target.save(snapshot));
+  lastWrite = write;
+  // The tail never rejects, so the chain keeps going; the awaited rejection
+  // still reaches whoever calls flushedDreamSettingsWrite().
+  void write.catch(() => undefined);
+}
+
+/**
+ * Resolve the live settings from a stored document, over the env seed: a
+ * stored value wins, anything the document omits falls back to env, then to
+ * the built-in defaults (so a row written by an older build keeps loading).
+ *
+ * `clampedApply` reports the one thing the gate refuses to read through: a row
+ * whose contradiction applyMode says "apply" while the precision gate has not
+ * passed and env did not ask for apply on this run. Env seeding is the
+ * operator's own opt-in, so an env apply stays untouched — same rule the live
+ * update path enforces, applied to what is on disk.
+ */
+export function dreamSettingsFromStored(
+  stored: unknown,
+  env: EnvLike = process.env,
+  gate: ContradictionApplyGate = CONTRADICTION_APPLY_GATE,
+): { settings: DreamSettings; clampedApply: boolean } {
+  const settings = dreamSettingsFromEnv(env);
+  if (stored === null || stored === undefined) return { settings, clampedApply: false };
+  if (!isPlainObject(stored)) {
+    throw new DreamSettingsError(`dream settings: stored document must be an object, got ${JSON.stringify(stored)}`);
+  }
+  for (const key of Object.keys(stored)) {
+    if (key !== "model" && !(DREAM_PASS_NAMES as readonly string[]).includes(key)) {
+      throw new DreamSettingsError(`dream settings: unknown pass or setting "${key}" in the stored document`);
+    }
+  }
+  if (stored.model !== undefined) {
+    if (typeof stored.model !== "string" || stored.model.trim().length === 0) {
+      throw new DreamSettingsError("dream settings: model must be a non-blank string");
+    }
+    settings.model = stored.model.trim();
+  }
+  if (stored.contradiction !== undefined) {
+    Object.assign(settings.contradiction, validatePass("contradiction", stored.contradiction, { allowInFlight: true }));
+  }
+  if (stored.dedup !== undefined) {
+    Object.assign(settings.dedup, validatePass("dedup", stored.dedup, { allowInFlight: false }));
+  }
+  if (stored.promotion !== undefined) {
+    Object.assign(settings.promotion, validatePromotionPass(stored.promotion));
+  }
+  const clampedApply =
+    settings.contradiction.applyMode === "apply"
+    && !gate.passed
+    && !flagEnabled(env[DREAM_CONTRADICTION_APPLY_ENV])
+    && isPlainObject(stored.contradiction)
+    && stored.contradiction.applyMode === "apply";
+  if (clampedApply) settings.contradiction.applyMode = "dry-run";
+  return { settings, clampedApply };
+}
+
+/**
+ * Startup seam: attach the store and read the stored document into the live
+ * settings, so later updates write through. Load order is stored row, else
+ * env. A row this module cannot read (unparseable, unknown keys, bad shapes)
+ * is logged and skipped rather than taking the daemon down — the env seed runs
+ * instead, and the next accepted update repairs the row.
+ */
+export async function loadStoredDreamSettings(
+  settingsStore: DreamSettingsStore,
+  opts: {
+    readonly env?: EnvLike;
+    readonly gate?: ContradictionApplyGate;
+    readonly logger?: (msg: string) => void;
+  } = {},
+): Promise<DreamSettings> {
+  const env = opts.env ?? process.env;
+  const log = opts.logger ?? ((msg: string) => console.error(msg));
+  const gate = opts.gate ?? CONTRADICTION_APPLY_GATE;
+  attachDreamSettingsStore(settingsStore);
+  let stored: unknown;
+  try {
+    stored = await settingsStore.load();
+  } catch (e) {
+    log(`[dream] stored settings unreadable (${e instanceof Error ? e.message : String(e)}) — using the env seed`);
+    return reseedDreamSettings(env);
+  }
+  try {
+    const { settings, clampedApply } = dreamSettingsFromStored(stored, env, gate);
+    current = settings;
+    if (clampedApply) {
+      log(`[dream] stored contradiction applyMode "apply" refused while the precision gate has not passed (${gate.evidence}) — running dry-run`);
+    }
+    return copySettings(current);
+  } catch (e) {
+    log(`[dream] stored settings invalid (${e instanceof Error ? e.message : String(e)}) — using the env seed`);
+    return reseedDreamSettings(env);
+  }
 }
 
 /* ------------------------------------------------------------------ */
