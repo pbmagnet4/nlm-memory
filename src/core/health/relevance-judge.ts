@@ -51,9 +51,15 @@ export const RELEVANCE_WINDOW_MS = 24 * 60 * 60_000;
 /** Sampled hook records per night. The eval's cost table puts ~60 prompts at a
  *  few minutes of flash serially; a hook day is a few hundred records. */
 export const RELEVANCE_SAMPLE_DEFAULT = 60;
-/** The `same`-phrasing threshold fitted on the eval's tune split (flash). Held
- *  fixed night to night so the number stays comparable — the eval's whole
- *  tune/holdout discipline rests on not re-fitting it. */
+/** The `same`-phrasing threshold fitted on the eval's tune split, on flash at 8
+ *  memories per call. Held fixed night to night so the number stays comparable —
+ *  the eval's whole tune/holdout discipline rests on not re-fitting it.
+ *
+ *  It travels with the model and the chunk size, and neither is pinned here:
+ *  NLM_CLEF_MODEL defaults to the base model, whose own fit is 1.47, and the
+ *  scale moves measurably at 4 or 1 per call. So a deployment that changes
+ *  either re-fits the threshold; what this default buys is comparability with
+ *  the eval's own numbers, which is the point of a trend line's first nights. */
 export const RELEVANCE_THRESHOLD_DEFAULT = 1.43;
 export const RELEVANCE_PHRASING_DEFAULT = "same" as const;
 /** Memories per Clef call. 29 memories x 3 questions came back HTTP 413 in the
