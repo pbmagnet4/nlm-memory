@@ -44,7 +44,7 @@ import type {
 import { PgSessionStore } from "@core/storage/pg-session-store.js";
 import type { PgFactStore } from "@core/storage/pg-fact-store.js";
 import type { Fact, Signal } from "@shared/types.js";
-import { MAX_CLASSIFY_FAILURES, recordClassified, recordClassifiedPg, recordFailed, recordFailedPg, recordSkipped, recordSkippedPg, scanOnce, scanOncePg } from "./scan-once.js";
+import { MAX_CLASSIFY_FAILURES, recordClassified, recordClassifiedPg, recordFailed, recordFailedPg, recordSkipped, recordSkippedPg, scanOnce, scanOncePg, type ScanPacing } from "./scan-once.js";
 import { runCheapChecksOnSqlite } from "@core/integrity/check-invariants.js";
 import { classifyAdaptive } from "@core/classifier/hierarchical-classify.js";
 import { isTransientLLMError } from "@core/classifier/transient-error.js";
@@ -387,8 +387,8 @@ export class ScanScheduler {
       let results;
       try {
         results = _pgPool
-          ? await scanOncePg(adapter, this.opts.idleMinutes, _pgPool, Date.now(), this.opts.logger)
-          : await scanOnce(adapter, this.opts.idleMinutes, sqliteDb!, Date.now(), this.opts.logger);
+          ? await scanOncePg(adapter, this.opts.idleMinutes, _pgPool, Date.now(), this.opts.logger, this.scanPacing)
+          : await scanOnce(adapter, this.opts.idleMinutes, sqliteDb!, Date.now(), this.opts.logger, this.scanPacing);
       } catch (e) {
         this.opts.logger(
           `[scheduler] scanOnce error for ${adapter.name}: ${e instanceof Error ? e.message : String(e)}`,
@@ -653,6 +653,15 @@ export class ScanScheduler {
     if (!this.timingEnabled) return this.timed(name, fn);
     await yieldToEventLoop();
     return this.timed(name, fn);
+  }
+
+  /** Pacing for the per-source scan loops (T1757). The yields are always on —
+   *  they are the fix, not the measurement — while the `[loop] sync scan:..`
+   *  lines follow the same `NLM_LOOP_LOG` switch as every other loop line. */
+  private get scanPacing(): ScanPacing {
+    return this.timingEnabled
+      ? { loopLogger: this.opts.logger, loopThresholdMs: this.opts.loopThresholdMs }
+      : {};
   }
 
   private async drainSignals(chunk: { id: string; signals?: ReadonlyArray<unknown> }, scope: string | null): Promise<void> {
