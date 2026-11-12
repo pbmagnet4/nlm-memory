@@ -125,7 +125,7 @@ import { runParity } from "./classify-parity.js";
 import { reembedCorpus } from "../core/embedding/embed-backfill.js";
 import { reembedCorpusPg } from "../core/embedding/pg-embed-backfill.js";
 import { backfillExemplarEmbeddingsPg } from "../core/exemplars/pg-embed-backfill.js";
-import { backfillExemplarEmbeddings } from "../core/exemplars/embed-backfill.js";
+import { backfillExemplarEmbeddings, type ExemplarBackfillReport } from "../core/exemplars/embed-backfill.js";
 import { backfillFactEmbeddings } from "../core/facts/embed-backfill.js";
 import { MAX_CHUNK_EMBED_ATTEMPTS, stuckChunksOnPg, stuckChunksOnSqlite, sweepChunkEmbeddings, type StuckChunk } from "../core/embedding/chunk-retry.js";
 import { runFactEmbedTick } from "../core/facts/embed-sweep-tick.js";
@@ -275,6 +275,35 @@ export async function persistReDerivationPairs(
   writeFileSync(tmpPath, JSON.stringify(report.pairs), "utf8");
   renameSync(tmpPath, pairsPath);
   return report;
+}
+
+/**
+ * One daemon pass of the exemplar embed-backfill (T1772 review): the sweep
+ * opens the live store read-write (a vector upsert per missing row, plus
+ * the rebuild path), so it asks the disk guard before touching it — the
+ * same contract as the db-backup, fact-embed-sweep and chunk-embed-sweep
+ * ticks; without the gate a tripped volume takes this sweep's writes
+ * straight into SQLITE_FULL, the exact failure the guard exists to
+ * prevent. Exported with the gate inside the tick so the pairing is
+ * testable; `backfill` is the live-store sweep, injected so the gate is
+ * provably ahead of any write. Errors stay one log line — a daemon timer
+ * must never crash on a pass.
+ */
+export async function runExemplarBackfillTick(deps: {
+  diskGuard: { shouldSkip(job: string): Promise<boolean> };
+  backfill: () => Promise<Pick<ExemplarBackfillReport, "total" | "succeeded" | "failed">>;
+  logger?: (msg: string) => void;
+}): Promise<void> {
+  const log = deps.logger ?? ((m: string) => console.error(m));
+  if (await deps.diskGuard.shouldSkip("exemplar-backfill")) return;
+  try {
+    const report = await deps.backfill();
+    if (report.succeeded > 0 || report.failed > 0) {
+      log(`[exemplar-backfill] ${report.succeeded}/${report.total} repaired (${report.failed} failed)`);
+    }
+  } catch (e) {
+    log(`[exemplar-backfill] error: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 function loadTopicProvider(): TopicProvider {
@@ -923,32 +952,29 @@ program
     // corpus monitor above — discovery reads code_exemplars_vec directly via
     // dbPath(). Daily cadence: the drop is a rare cold-embedder race, not a
     // steady leak, so this just keeps recall_code from silently degrading
-    // between operator-run `nlm embed-backfill --exemplars` passes.
+    // between operator-run `nlm embed-backfill --exemplars` passes. The sweep
+    // writes to the live store, so the tick asks the disk guard first (T1772).
     if (!(storage instanceof PgStorage) && process.env["NLM_CODE_EXEMPLARS_ENABLED"] === "1") {
       const EXEMPLAR_BACKFILL_INTERVAL_MS = 24 * 60 * 60 * 1000;
       const EXEMPLAR_BACKFILL_INITIAL_DELAY_MS = 120 * 1000;
-      const runExemplarBackfill = async () => {
-        try {
-          // Re-resolved per tick: a Settings save swaps codeEmb live, so boot-time lanes.code goes stale.
-          const code = laneValues(resolveEmbedderLane("code", await storage.embedderSettings.get("code"), process.env));
-          const report = await backfillExemplarEmbeddings({
-            tenantId: DEFAULT_TEAM_ID,
-            dbPath: dbPath(),
-            embedder: codeEmb,
-            store: storage.exemplars,
-            provider: code.provider,
-            model: code.model,
-            onStale: "skip",
-          });
-          if (report.succeeded > 0 || report.failed > 0) {
-            console.error(
-              `[exemplar-backfill] ${report.succeeded}/${report.total} repaired (${report.failed} failed)`,
-            );
-          }
-        } catch (e) {
-          console.error(`[exemplar-backfill] error: ${e instanceof Error ? e.message : String(e)}`);
-        }
-      };
+      const runExemplarBackfill = () =>
+        runExemplarBackfillTick({
+          diskGuard,
+          backfill: async () => {
+            // Re-resolved per tick: a Settings save swaps codeEmb live, so boot-time lanes.code goes stale.
+            const code = laneValues(resolveEmbedderLane("code", await storage.embedderSettings.get("code"), process.env));
+            return backfillExemplarEmbeddings({
+              tenantId: DEFAULT_TEAM_ID,
+              dbPath: dbPath(),
+              embedder: codeEmb,
+              store: storage.exemplars,
+              provider: code.provider,
+              model: code.model,
+              onStale: "skip",
+            });
+          },
+          logger: (m) => console.error(m),
+        });
       const exemplarBackfillTimer = setInterval(() => { void timedJob("exemplar-backfill", runExemplarBackfill); }, EXEMPLAR_BACKFILL_INTERVAL_MS);
       exemplarBackfillTimer.unref();
       setTimeout(() => { void timedJob("exemplar-backfill", runExemplarBackfill); }, EXEMPLAR_BACKFILL_INITIAL_DELAY_MS).unref();
