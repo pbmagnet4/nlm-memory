@@ -15,23 +15,25 @@ const params = (over: Partial<HubnessParams> = {}): HubnessParams => ({
 });
 
 describe("hubPenalty", () => {
-  it("is a no-op at alpha 0 or count 0", () => {
+  it("is a no-op at alpha 0 or a spread below HUB_MIN_PROMPTS", () => {
     expect(hubPenalty(0.9, 100, 0)).toBe(0.9);
     expect(hubPenalty(0.9, 0, 0.5)).toBe(0.9);
+    // one prompt re-fired forty times is repetition, not hubness
+    expect(hubPenalty(0.9, 1, 0.5)).toBe(0.9);
   });
 
   it("divides by 1 + alpha * ln(1 + count)", () => {
     expect(hubPenalty(0.99, 100, 0.5)).toBeCloseTo(0.99 / (1 + 0.5 * Math.log(101)), 10);
   });
 
-  it("damps monotonically: more injections, lower score; mild for tiny counts", () => {
-    const s1 = hubPenalty(1, 1, 0.5);
+  it("damps monotonically: wider prompt spread, lower score; mild at the arm point", () => {
+    const s2 = hubPenalty(1, 2, 0.5);
     const s30 = hubPenalty(1, 30, 0.5);
     const s100 = hubPenalty(1, 100, 0.5);
-    expect(s1).toBeGreaterThan(s30);
+    expect(s2).toBeGreaterThan(s30);
     expect(s30).toBeGreaterThan(s100);
-    // a doubly-injected memory is barely touched (log damping)
-    expect(s1).toBeGreaterThan(0.7);
+    // the arm point barely moves a score (log damping)
+    expect(s2).toBeGreaterThan(0.6);
   });
 });
 

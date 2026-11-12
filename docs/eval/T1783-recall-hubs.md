@@ -2,7 +2,8 @@
 
 Measured 2026-11-12 (window: hook-log entries since 2026-10-15). Read-only pass over
 `~/.nlm/hook-log.jsonl` and `state/t1782/eval-set.jsonl` (228 judge-labelled
-prompt×memory pairs, 0–3, from the same traffic). No source changes in this part.
+prompt×memory pairs, 0–3, from the same traffic). Parts 2–3 (shipped mechanism + replay
+verdict) appended below; source changes ride with the Part 3 commit.
 
 ## What the log says
 
@@ -115,3 +116,91 @@ BM25 plateau ceiling; every prompt whose vocabulary overlaps that plateau re-inj
 same trio, and neither the per-fire relative floor nor the per-conversation memo can
 break the cycle. Nothing scores "this memory has been injected 40 times in two weeks" —
 which is exactly the missing signal Part 2 adds.
+
+## Part 2 — shipped mechanism
+
+`src/core/hook/hubness.ts`, wired in `runHook` (`src/hook/prompt-recall-hook.ts`) between
+the recall fetch and `selectHits`, gated by `NLM_HOOK_HUB_DAMP` (shipped **default ON**,
+see Part 3):
+
+- **Hubness penalty** — `score / (1 + alpha * ln(1 + spread))` with `alpha = 0.5`
+  (`NLM_HOOK_HUB_ALPHA`) and `spread` = distinct prompt previews the id was injected into
+  over the last 14 days (`HUB_WINDOW_DAYS`). Spread comes from `countRecentInjectionPrompts`
+  (`src/core/recall/hook-recall-log.ts`), a synchronous tail-capped scan of the hook's own
+  `wouldInject` records — no new store, no daemon round-trip; the 4 MB cap can only
+  under-count, which only weakens the penalty. The penalty **arms at spread 2**
+  (`HUB_MIN_PROMPTS`): a session re-surfaced forty times into one recurring automation
+  prompt has spread 1 and is untouched — that repetition is legitimate recall, and the
+  Part 3 replay showed penalizing it is what would have cost relevant injections.
+- **Lexical overlap guard** — a hit below `NLM_HOOK_LEX_FLOOR` (raw BM25 scale) whose
+  label+summary share ZERO non-stopword content terms with the prompt is dropped
+  (stopwords = the `query-extract` list, now shared). Shipped **disabled by default**
+  (`DEFAULT_LEX_FLOOR = 0`): it measured *exactly* inert across all 110 replayed prompts
+  (guard-arm rows are row-identical to base below) — a same-domain corpus shares some
+  content term with almost every prompt — so it stays as an opt-in safety net, unit-tested.
+
+Both steps are fail-open and monotone-safe: bad env collapses to defaults, a missing
+counts file disables the penalty, and the guard never fires on content-word-free prompts.
+Tests: `tests/unit/hook/hubness.test.ts`, `tests/unit/recall/hook-recall-count.test.ts`,
+five `runHook` cases appended to `tests/integration/prompt-recall-hook.test.ts`.
+
+## Part 3 — offline replay and the default-ON decision
+
+Harness: `scripts/eval/t1783-hub-replay.ts`. The **real production chain**
+(`extractRecallQuery -> RecallService mode=keyword -> selectHits`, plus `applyHubness` for
+armed arms) runs in-process against a **copy** of `canonical.sqlite` (`.eval/`, disposable)
+— never the live daemon. All 110 distinct eval-set prompts. Penalty counts are causal per
+fire: hook-log injections in [t − 14 d, t), fixture fires excluded. Candidates that
+started *after* the fire are dropped (`bornFilter`) — since October the corpus grew and a
+november session could not have been injected in an october fire; without this the
+baseline reproduces only 29 % of the original injections and drift, not the fix, decides
+the top-3. With it: 41 %. Candidate pool widened to 20 (vs the live 5) purely for labeled
+statistical power; the selection chain (caps, floors) is unchanged.
+
+Precision@≤3 counts only replayed injections that carry an eval label (relevant = ≥2);
+`relKeep` = relevant injections kept vs the relevant pairs the original fires actually
+injected (80). Hub columns: fires where a named hub (session-pinning, classifier-fix,
+Plan J, LinkedIn) / a measured top-10 hub enters the injected set, and total hub
+injections.
+
+| arm | micro P@≤3 | macro P@≤3 | inj | labeled | rel | relKeep | named-hub fires | top-10 hub fires | hub inj |
+|---|---|---|---|---|---|---|---|---|---|
+| base | 46.6 % | 46.4 % | 288 | 73 | 34 | 42.5 % | 4 | 7 | 8 |
+| penalty, raw counts, α=0.5 | 50.9 % | 48.1 % | 288 | 55 | 28 (−17.6 %) | 35.0 % | 2 | 6 | 6 |
+| penalty, raw counts, α=0.3 | 51.8 % | 49.2 % | 288 | 56 | 29 (−14.7 %) | 36.3 % | 2 | 6 | 6 |
+| penalty, distinct prompts¹, α=0.5 | 52.6 % | 50.4 % | 288 | 57 | 30 (−11.8 %) | 37.5 % | 2 | 6 | 6 |
+| penalty, distinct prompts¹, α=0.2 | 50.8 % | 48.3 % | 289 | 61 | 31 (−8.8 %) | 38.8 % | 2 | 6 | 6 |
+| guard only (floor 2.0) | 46.6 % | 46.4 % | 288 | 73 | 34 | 42.5 % | 4 | 7 | 8 |
+| **shipped: distinct + arm-at-2, α=0.5** | **47.8 %** | **47.5 %** | 288 | 69 | **33 (−2.9 %)** | 41.3 % | **2** | **5** | **6** |
+| shipped config at α=0.3 | 47.1 % | 46.5 % | 288 | 68 | 32 (−5.9 %) | 40.0 % | 2 | 5 | 6 |
+
+¹ without the arm-at-2 exemption (every repeat counted).
+
+Readings:
+
+- Raw-count penalties buy precision (+2.6…+5.2 pp) by cutting **15–18 %** of relevant
+  injections — they punish the repeat-automation fires where re-injection was often the
+  *right* answer (rank-1 hub's mean label was 3.00). That variant fails the guardrail.
+- Hubness is cross-prompt breadth, not frequency: switching to distinct-prompt counts and
+  arming at spread ≥ 2 keeps the named-hub suppression halved (4 → 2 fires, top-10 hub
+  injections 8 → 6) while relevant falls from 34 to 33 (−2.9 %), inside the 5 % guardrail.
+  Precision improves +1.2 pp micro / +1.1 pp macro. (Pre-exemption distinct rows above
+  show what the exemption rescued: same hub suppression, 2–4 more relevant kept.)
+- The lexical guard removed **zero** hits across all 110 prompts at floor 2.0 — kept as
+  tested, opt-in, default off.
+
+**Decision — default ON** (`NLM_HOOK_HUB_DAMP` default true, α=0.5, guard floor 0): meets
+both pre-registered conditions (precision up, relevant −2.9 % ≤ 5 %) on 110 prompts /
+69 labeled replayed injections. Sample size keeps the margin thin — treat the hub columns
+(halved named-hub fires), not the 1.2 pp, as the load-bearing win; re-run the harness
+after the corpus accumulates live damped traffic.
+
+Caveats: BM25 scores recompute against the drifted November corpus (summaries
+regenerated, idf shifted), so base-arm overlap with the original injections is 41 %, and
+some of the 12 unlabeled-at-base injections the fix promotes are simply sessions the
+eval never judged; `startedAt <= fire-time` filtering mitigates but cannot fully undo
+corpus drift. Replay is hook-path only (`mode=keyword`), matching production.
+
+Repro: `npx tsx scripts/eval/t1783-hub-replay.ts --db=.eval/canonical.sqlite --recall=20
+--hubness=distinct --alpha=0.5 --json=out.json` (DB copy: `cp ~/.nlm/canonical.sqlite*`;
+the harness opens the copy read-write for idempotent migrations and never the live file).

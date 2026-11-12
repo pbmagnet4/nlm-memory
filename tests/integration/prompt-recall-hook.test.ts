@@ -278,8 +278,8 @@ describe("hub damping (T1783)", () => {
 
   it("reads injection counts from the hook-log tail when deps omit them", async () => {
     process.env["NLM_HOOK_LEX_FLOOR"] = "0"; // isolate the penalty
-    // Three prior fires surfaced "hub" — countRecentInjections must see them
-    // without any deps injection.
+    // Three prior fires surfaced "hub" on three DISTINCT prompts —
+    // countRecentInjectionPrompts must see spread 3 without any deps injection.
     appendPriorFires(join(tmp, "hook-log.jsonl"), ["hub", "hub", "hub"], ["other"]);
     const plateau = [
       hitWithLabel("hub", 0.99, "git merge pipeline work"),
@@ -289,16 +289,17 @@ describe("hub damping (T1783)", () => {
       { prompt: "rebase the feature branch onto main", conversationId: "later" },
       { mode: "shadow", recall: async () => plateau },
     );
-    // count 3 -> 0.99 / (1 + 0.5 * ln 4) = ~0.59 -> demoted below fresh_a, and
+    // spread 3 -> 0.99 / (1 + 0.5 * ln 4) = ~0.59 -> demoted below fresh_a, and
     // below the relative floor for a 2-hit fire (median 0.9 * 0.9 = 0.81).
     expect(injectedFromLog(tmp)).toEqual(["fresh_a"]);
   });
 });
 
 function appendPriorFires(path: string, hubPrior: string[], otherPrior: string[]): void {
+  // Distinct promptPreviews per fire so the spread (distinct prompts) rises.
   const lines = hubPrior
-    .map((id) => JSON.stringify({ ts: new Date().toISOString(), conversationId: "old", wouldInject: [id] }))
-    .concat(otherPrior.map((id) => JSON.stringify({ ts: new Date().toISOString(), conversationId: "old2", wouldInject: [id] })))
+    .map((id, i) => JSON.stringify({ ts: new Date().toISOString(), conversationId: "old", promptPreview: `prior prompt ${i}`, wouldInject: [id] }))
+    .concat(otherPrior.map((id) => JSON.stringify({ ts: new Date().toISOString(), conversationId: "old2", promptPreview: "other prior", wouldInject: [id] })))
     .join("\n");
   appendFileSync(path, `${lines}\n`, "utf8");
 }

@@ -15,11 +15,15 @@
  * This module supplies the missing signal as two pure, independently-gated
  * steps applied to the fetched hits BEFORE selectHits:
  *
- *   1. Hubness penalty — down-weight a candidate by its injection frequency
- *      over the recent window:  score / (1 + alpha * ln(1 + count)).
- *      Log-damped: a memory injected twice is barely touched (ln 3 ≈ 1.1);
- *      one injected 100 times is divided by ~1 + 3 * alpha. Count 0 is a
- *      no-op, so un-injected candidates keep exact scores.
+ *   1. Hubness penalty — down-weight a candidate by how many DISTINCT
+ *      prompts it was injected into over the recent window:
+ *      score / (1 + alpha * ln(1 + spread)), armed only from
+ *      HUB_MIN_PROMPTS distinct prompts up. Log-damped: two prompts barely
+ *      touch a score (ln 3 ≈ 1.1); fifteen divide it by ~1 + 2.7 * alpha.
+ *      A session re-surfaced forty times into ONE recurring automation
+ *      prompt has spread 1 and is untouched — repetition there is legitimate
+ *      recall, not hubness, and the replay (docs/eval/T1783-recall-hubs.md)
+ *      showed penalizing it is what would have cost relevant injections.
  *   2. Lexical overlap guard — a candidate whose label+summary shares ZERO
  *      non-stopword terms with the prompt AND scores below the floor is
  *      dropped outright. FTS5 matched it through low-idf `body` vocabulary
@@ -41,13 +45,20 @@ import type { RecallHitInput } from "./select.js";
 /** Injection-frequency window the hook counts (days). */
 export const HUB_WINDOW_DAYS = 14;
 
+/**
+ * Distinct-prompt injections a candidate needs before the penalty arms.
+ * Below this, frequency carries no hubness evidence (see the one-prompt
+ * exemption in the header).
+ */
+export const HUB_MIN_PROMPTS = 2;
+
 /** Content-word length floor, mirroring query-extract's MIN_WORD_LEN. */
 const MIN_TERM_LEN = 3;
 
 export interface HubnessParams {
   /** Raw prompt text (the guard's lexical counterpart to the hits). */
   readonly prompt: string;
-  /** id -> injection count over HUB_WINDOW_DAYS (missing = 0). */
+  /** id -> distinct prompts it was injected into over HUB_WINDOW_DAYS (missing = 0). */
   readonly injectionCounts: ReadonlyMap<string, number>;
   /** Penalty weight; <= 0 disables the penalty. */
   readonly alpha: number;
@@ -63,9 +74,13 @@ function contentTerms(text: string | null | undefined): ReadonlySet<string> {
   return out;
 }
 
-/** One candidate's damped score: score / (1 + alpha * ln(1 + count)). */
+/**
+ * One candidate's damped score: score / (1 + alpha * ln(1 + spread)), where
+ * spread is distinct prompt injections in the window. No-op while the spread
+ * is below HUB_MIN_PROMPTS or alpha <= 0.
+ */
 export function hubPenalty(score: number, injections: number, alpha: number): number {
-  if (!(alpha > 0) || !(injections > 0)) return score;
+  if (!(alpha > 0) || !(injections >= HUB_MIN_PROMPTS)) return score;
   return score / (1 + alpha * Math.log1p(injections));
 }
 

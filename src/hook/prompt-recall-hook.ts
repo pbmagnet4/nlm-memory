@@ -15,7 +15,7 @@ import { recentConversationContext, topicalWordCount } from "./recent-context.js
 import { appendHookLog } from "@core/hook/hook-log.js";
 import { loadSurfaced, recordSurfaced } from "@core/hook/memo.js";
 import { applyHubness, HUB_WINDOW_DAYS } from "@core/hook/hubness.js";
-import { countRecentInjections } from "@core/recall/hook-recall-log.js";
+import { countRecentInjectionPrompts } from "@core/recall/hook-recall-log.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import { formatPointerBlock, type PointerConcept, type PointerExemplar, type PointerFact } from "@core/hook/pointer-block.js";
 import { selectHits, type RecallHitInput } from "@core/hook/select.js";
@@ -47,12 +47,21 @@ const relativeFloor = () => parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR
 // Part 3 of the T1783 eval (docs/eval/T1783-recall-hubs.md) set the shipped
 // default for NLM_HOOK_HUB_DAMP from the replayed precision.
 //   NLM_HOOK_HUB_DAMP=off|0  disables both steps below (pre-T1783 behavior).
-//   NLM_HOOK_HUB_ALPHA       penalty weight in score/(1+alpha*ln(1+count)).
+//   NLM_HOOK_HUB_ALPHA       penalty weight in score/(1+alpha*ln(1+spread));
+//                            spread = distinct prompts injected into over
+//                            HUB_WINDOW_DAYS, armed from 2 up (a recurring
+//                            single prompt re-firing recall is not hubness).
 //   NLM_HOOK_LEX_FLOOR       a hit below this raw score with ZERO shared
 //                            content terms with the prompt is dropped.
-const DEFAULT_HUB_DAMP = false; // Part 3 revises once the replay has a verdict
+// Replay posture (T1783 Part 3, tables in docs/eval/T1783-recall-hubs.md):
+// the penalty ships on at alpha 0.5 (+1.2pp precision-at<=3 micro / +1.1pp
+// macro, named-hub fires 4 -> 2, relevant injections -2.9% — inside the 5%
+// guardrail). The guard measured EXACTLY inert on 110 real prompts (a
+// same-domain corpus shares some content term with almost every prompt), so
+// it ships disabled at floor 0 — set NLM_HOOK_LEX_FLOOR>0 to arm it.
+const DEFAULT_HUB_DAMP = true;
 const DEFAULT_HUB_ALPHA = 0.5;
-const DEFAULT_LEX_FLOOR = 2.0;
+const DEFAULT_LEX_FLOOR = 0;
 
 /** "off"/"0" disables, anything else enables, unset falls back to default. */
 export function parseHubDampEnabled(raw: string | undefined, fallback: boolean): boolean {
@@ -172,9 +181,9 @@ export interface RunHookDeps {
   /** Wall-clock deadline for the recall stage. Defaults to NLM_HOOK_DEADLINE_MS (6000ms; must exceed the recall HTTP timeout, see #396). */
   readonly deadlineMs?: number;
   /**
-   * id -> injections over the recent window for hub damping. Omitted in
-   * production: runHook then reads it from the hook-log tail itself. Tests
-   * supply it directly.
+   * id -> distinct prompts it was injected into over the recent window,
+   * feeding the hubness penalty. Omitted in production: runHook then reads
+   * it from the hook-log tail itself. Tests supply it directly.
    */
   readonly injectionCounts?: ReadonlyMap<string, number>;
 }
@@ -226,13 +235,13 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
   }
   // Hub damping (T1783): score recent over-injection down before selectHits,
   // and drop plateau-tie hits with no lexical contact with the prompt. When
-  // disabled this is exactly the pre-T1783 path. countRecentInjections is
+  // disabled this is exactly the pre-T1783 path. countRecentInjectionPrompts is
   // fail-open, and it plus applyHubness only ever remove or reorder.
   const hits = hubDampEnabled()
     ? applyHubness(fetched.hits, {
         prompt: input.prompt,
         injectionCounts:
-          deps.injectionCounts ?? countRecentInjections(HUB_WINDOW_DAYS),
+          deps.injectionCounts ?? countRecentInjectionPrompts(HUB_WINDOW_DAYS),
         alpha: hubAlpha(),
         lexicalFloor: hubLexicalFloor(),
       })
