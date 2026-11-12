@@ -96,7 +96,9 @@ async function collect(): Promise<void> {
 }
 
 /** A bare token (a hash, "missing", a date) is the free rule the gate must beat. */
-const freeRule = (s: string): number => (/[A-Za-z]{4}/.test(s) && s.trim().split(/\s+/).length >= 3 ? 1 : 0);
+function freeRule(s: string): number {
+  return /[A-Za-z]{4}/.test(s) && s.trim().split(/\s+/).length >= 3 ? 1 : 0;
+}
 
 function rows(): ScoredRow[] {
   const out: ScoredRow[] = [];
