@@ -16,14 +16,14 @@ function statFor({ bsize = 4096, blocks = 1_000_000, free }: { bsize?: number; b
 }
 
 describe("diskThresholds", () => {
-  it("defaults to 2% and 5 GiB", () => {
-    expect(diskThresholds({})).toEqual({ minFreePct: 2, minFreeGb: 5 });
+  it("defaults to 1% and 5 GiB", () => {
+    expect(diskThresholds({})).toEqual({ minFreePct: 1, minFreeGb: 5 });
   });
   it("reads the env knobs, falls back on garbage", () => {
     expect(diskThresholds({ NLM_DISK_MIN_FREE_PCT: "10", NLM_DISK_MIN_FREE_GB: "20" }))
       .toEqual({ minFreePct: 10, minFreeGb: 20 });
     expect(diskThresholds({ NLM_DISK_MIN_FREE_PCT: "abc", NLM_DISK_MIN_FREE_GB: "-1" }))
-      .toEqual({ minFreePct: 2, minFreeGb: 5 });
+      .toEqual({ minFreePct: 1, minFreeGb: 5 });
   });
 });
 
@@ -35,7 +35,7 @@ describe("createDiskGuard", () => {
       path: "/db/canonical.sqlite",
       logger: (m) => logs.push(m),
       now: () => now.t,
-      // total ≈ 3.8 GiB → 2% = 80 MiB, but the 5 GiB absolute floor dominates.
+      // total ≈ 3.8 GiB → 1% = 40 MiB, but the 5 GiB absolute floor dominates.
       stat: statFor({ free: 4 * GIB }),
     });
     expect(await guard.shouldSkip("fact-embed-sweep")).toBe(true);
@@ -45,7 +45,7 @@ describe("createDiskGuard", () => {
   });
 
   it("the percent threshold dominates on volumes where it exceeds the GiB floor", async () => {
-    // 2 TiB volume: 2% = 40 GiB > 5 GiB floor. 6 GiB free passes the GiB
+    // 2 TiB volume: 1% = 20.48 GiB > 5 GiB floor. 6 GiB free passes the GiB
     // floor but trips the percent floor.
     const guard = createDiskGuard({
       path: "/db/canonical.sqlite",
@@ -55,7 +55,47 @@ describe("createDiskGuard", () => {
     expect(await guard.shouldSkip("db-backup")).toBe(true);
     const s = guard.status()!;
     expect(s.tripped).toBe(true);
-    expect(Math.round(s.threshold / GIB)).toBe(41); // 2% of 2048 GiB = 40.96
+    expect(Math.round(s.threshold / GIB)).toBe(20); // 1% of 2048 GiB = 20.48
+  });
+
+  // T1780: the 2% default asked for 18.5 GiB of headroom on a 926 GB volume
+  // and stalled every write at 14.6 GiB free. The default floor is now
+  // max(5 GiB, 1% of the volume).
+  it("T1780 floors a 926 GiB volume at 1% = 9.26 GiB and keeps writing at 12 GiB free", async () => {
+    const guard = createDiskGuard({
+      path: "/db/canonical.sqlite",
+      logger: () => {},
+      stat: statFor({ bsize: 4096, blocks: (926 * GIB) / 4096, free: 12 * GIB }),
+    });
+    expect(await guard.shouldSkip("scheduler-tick")).toBe(false);
+    const s = guard.status()!;
+    expect(s.threshold / GIB).toBeCloseTo(9.26, 2);
+    expect(s.tripped).toBe(false);
+  });
+
+  it("T1780 floors a 100 GiB volume at the 5 GiB absolute (1% would be 1 GiB)", async () => {
+    const guard = createDiskGuard({
+      path: "/db/canonical.sqlite",
+      logger: () => {},
+      stat: statFor({ bsize: 4096, blocks: (100 * GIB) / 4096, free: 5.5 * GIB }),
+    });
+    expect(await guard.shouldSkip("scheduler-tick")).toBe(false);
+    const s = guard.status()!;
+    expect(s.threshold).toBe(5 * GIB);
+    expect(s.tripped).toBe(false);
+  });
+
+  it("T1780 an explicit NLM_DISK_MIN_FREE_PCT still applies as given", async () => {
+    const guard = createDiskGuard({
+      path: "/db/canonical.sqlite",
+      env: { NLM_DISK_MIN_FREE_PCT: "2" },
+      logger: () => {},
+      stat: statFor({ bsize: 4096, blocks: (926 * GIB) / 4096, free: 12 * GIB }),
+    });
+    expect(await guard.shouldSkip("scheduler-tick")).toBe(true);
+    const s = guard.status()!;
+    expect(s.threshold / GIB).toBeCloseTo(18.52, 2); // 2% of 926 GiB, override wins
+    expect(s.tripped).toBe(true);
   });
 
   it("passes when free space is above both floors", async () => {
