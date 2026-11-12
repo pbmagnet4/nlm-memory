@@ -54,6 +54,10 @@ import {
   loadAuthorities,
 } from "../core/facts/reconcile-facts.js";
 import { listBackupDates, resolveBackup, runRollingBackup } from "../core/storage/backup-rotation.js";
+import { backupDir } from "../core/storage/backup-rotation.js";
+import { backupIntervalMs, runScheduledBackup, scheduledBackupEnabled } from "../core/storage/scheduled-backup.js";
+import { pickNewestBackup, runRestoreDrill } from "../core/storage/restore-drill.js";
+import { createDiskGuard } from "../core/health/disk-guard.js";
 import { createApp } from "../http/app.js";
 import { createMcpServer, listMergeSuggestionsHandler, mergeWorkstreamsHandler, rebindSessionHandler, recallWorkstreamHandler, renameWorkstreamHandler, retireWorkstreamHandler } from "../mcp/server.js";
 import { classifierEgressNotice } from "../llm/classifier-egress.js";
@@ -121,7 +125,7 @@ import { runParity } from "./classify-parity.js";
 import { reembedCorpus } from "../core/embedding/embed-backfill.js";
 import { reembedCorpusPg } from "../core/embedding/pg-embed-backfill.js";
 import { backfillExemplarEmbeddingsPg } from "../core/exemplars/pg-embed-backfill.js";
-import { backfillExemplarEmbeddings } from "../core/exemplars/embed-backfill.js";
+import { backfillExemplarEmbeddings, type ExemplarBackfillReport } from "../core/exemplars/embed-backfill.js";
 import { backfillFactEmbeddings } from "../core/facts/embed-backfill.js";
 import { MAX_CHUNK_EMBED_ATTEMPTS, stuckChunksOnPg, stuckChunksOnSqlite, sweepChunkEmbeddings, type StuckChunk } from "../core/embedding/chunk-retry.js";
 import { runFactEmbedTick } from "../core/facts/embed-sweep-tick.js";
@@ -271,6 +275,35 @@ export async function persistReDerivationPairs(
   writeFileSync(tmpPath, JSON.stringify(report.pairs), "utf8");
   renameSync(tmpPath, pairsPath);
   return report;
+}
+
+/**
+ * One daemon pass of the exemplar embed-backfill (T1772 review): the sweep
+ * opens the live store read-write (a vector upsert per missing row, plus
+ * the rebuild path), so it asks the disk guard before touching it — the
+ * same contract as the db-backup, fact-embed-sweep and chunk-embed-sweep
+ * ticks; without the gate a tripped volume takes this sweep's writes
+ * straight into SQLITE_FULL, the exact failure the guard exists to
+ * prevent. Exported with the gate inside the tick so the pairing is
+ * testable; `backfill` is the live-store sweep, injected so the gate is
+ * provably ahead of any write. Errors stay one log line — a daemon timer
+ * must never crash on a pass.
+ */
+export async function runExemplarBackfillTick(deps: {
+  diskGuard: { shouldSkip(job: string): Promise<boolean> };
+  backfill: () => Promise<Pick<ExemplarBackfillReport, "total" | "succeeded" | "failed">>;
+  logger?: (msg: string) => void;
+}): Promise<void> {
+  const log = deps.logger ?? ((m: string) => console.error(m));
+  if (await deps.diskGuard.shouldSkip("exemplar-backfill")) return;
+  try {
+    const report = await deps.backfill();
+    if (report.succeeded > 0 || report.failed > 0) {
+      log(`[exemplar-backfill] ${report.succeeded}/${report.total} repaired (${report.failed} failed)`);
+    }
+  } catch (e) {
+    log(`[exemplar-backfill] error: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 function loadTopicProvider(): TopicProvider {
@@ -575,6 +608,11 @@ program
       thresholdHours: ingestLagThresholdHours(),
       schedulerIntervalMs: opts.intervalMin * 60_000,
     });
+    // T1772: one disk guard for the whole daemon — every write-heavy tick
+    // (ingest, embed sweeps, the scheduled backup) asks it before touching
+    // the store, and /api/health exposes its last snapshot. Reads are never
+    // gated. See core/health/disk-guard.ts.
+    const diskGuard = createDiskGuard({ path: dbPath(), logger: (m) => console.error(m) });
     // T1771: rolling 24h/7d SLO counters for GET /api/health/slo. Hook
     // processes own hook-log.jsonl, so the daemon tail-reads it by byte
     // offset; the counter file persists atomically on the refresh timer.
@@ -582,6 +620,7 @@ program
     sloMetrics.load();
     const app = createApp({
       ingestLag,
+      diskGuard: () => diskGuard.status(),
       slo: sloMetrics,
       properties: storage.properties,
       recall,
@@ -913,36 +952,67 @@ program
     // corpus monitor above — discovery reads code_exemplars_vec directly via
     // dbPath(). Daily cadence: the drop is a rare cold-embedder race, not a
     // steady leak, so this just keeps recall_code from silently degrading
-    // between operator-run `nlm embed-backfill --exemplars` passes.
+    // between operator-run `nlm embed-backfill --exemplars` passes. The sweep
+    // writes to the live store, so the tick asks the disk guard first (T1772).
     if (!(storage instanceof PgStorage) && process.env["NLM_CODE_EXEMPLARS_ENABLED"] === "1") {
       const EXEMPLAR_BACKFILL_INTERVAL_MS = 24 * 60 * 60 * 1000;
       const EXEMPLAR_BACKFILL_INITIAL_DELAY_MS = 120 * 1000;
-      const runExemplarBackfill = async () => {
-        try {
-          // Re-resolved per tick: a Settings save swaps codeEmb live, so boot-time lanes.code goes stale.
-          const code = laneValues(resolveEmbedderLane("code", await storage.embedderSettings.get("code"), process.env));
-          const report = await backfillExemplarEmbeddings({
-            tenantId: DEFAULT_TEAM_ID,
-            dbPath: dbPath(),
-            embedder: codeEmb,
-            store: storage.exemplars,
-            provider: code.provider,
-            model: code.model,
-            onStale: "skip",
-          });
-          if (report.succeeded > 0 || report.failed > 0) {
-            console.error(
-              `[exemplar-backfill] ${report.succeeded}/${report.total} repaired (${report.failed} failed)`,
-            );
-          }
-        } catch (e) {
-          console.error(`[exemplar-backfill] error: ${e instanceof Error ? e.message : String(e)}`);
-        }
-      };
+      const runExemplarBackfill = () =>
+        runExemplarBackfillTick({
+          diskGuard,
+          backfill: async () => {
+            // Re-resolved per tick: a Settings save swaps codeEmb live, so boot-time lanes.code goes stale.
+            const code = laneValues(resolveEmbedderLane("code", await storage.embedderSettings.get("code"), process.env));
+            return backfillExemplarEmbeddings({
+              tenantId: DEFAULT_TEAM_ID,
+              dbPath: dbPath(),
+              embedder: codeEmb,
+              store: storage.exemplars,
+              provider: code.provider,
+              model: code.model,
+              onStale: "skip",
+            });
+          },
+          logger: (m) => console.error(m),
+        });
       const exemplarBackfillTimer = setInterval(() => { void timedJob("exemplar-backfill", runExemplarBackfill); }, EXEMPLAR_BACKFILL_INTERVAL_MS);
       exemplarBackfillTimer.unref();
       setTimeout(() => { void timedJob("exemplar-backfill", runExemplarBackfill); }, EXEMPLAR_BACKFILL_INITIAL_DELAY_MS).unref();
       console.error("  exemplar-backfill: enabled, repair sweep every 24h");
+    }
+
+    // Scheduled online backup (T1772): unattended snapshots so the RPO stays
+    // <= 24h without anybody babysitting the machine. The first pass runs 60s
+    // after boot and self-cancels while the newest snapshot is still inside
+    // the interval — that is what keeps daily-restarting daemons both covered
+    // and non-duplicating — then it reruns every interval. SQLite only (the
+    // backup API needs the better-sqlite3 handle; Postgres operators use
+    // pg_dump, same as `nlm backup`). NLM_BACKUP=off turns it off.
+    if (!(storage instanceof PgStorage) && scheduledBackupEnabled(process.env)) {
+      const BACKUP_INITIAL_DELAY_MS = 60_000;
+      const BACKUP_INTERVAL_MS = backupIntervalMs(process.env);
+      const runBackup = async () => {
+        try {
+          if (await diskGuard.shouldSkip("db-backup")) return;
+          await runScheduledBackup({
+            db: (storage as SqliteStorage).rawDb(),
+            dbPath: dbPath(),
+            logger: (m) => console.error(m),
+          });
+        } catch (e) {
+          console.error(`[backup] error: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      };
+      const backupTimer = setInterval(() => {
+        void timedJob("db-backup", runBackup);
+      }, BACKUP_INTERVAL_MS);
+      backupTimer.unref();
+      setTimeout(() => {
+        void timedJob("db-backup", runBackup);
+      }, BACKUP_INITIAL_DELAY_MS).unref();
+      console.error(
+        `  backup: online snapshot every ${Math.round(BACKUP_INTERVAL_MS / 3_600_000)}h to ${backupDir(dbPath())}`,
+      );
     }
 
     // Fact-embedding sweep (T732 / E1): re-embeds facts whose vector failed or
@@ -953,6 +1023,7 @@ program
       const FACT_EMBED_SWEEP_INTERVAL_MS = 2 * 60 * 1000;
       const FACT_EMBED_SWEEP_INITIAL_DELAY_MS = 90 * 1000;
       const runFactEmbedSweep = async () => {
+        if (await diskGuard.shouldSkip("fact-embed-sweep")) return;
         try {
           const report = await runFactEmbedTick({
             tenantId: DEFAULT_TEAM_ID,
@@ -985,6 +1056,7 @@ program
       const CHUNK_EMBED_SWEEP_INTERVAL_MS = 2 * 60 * 1000;
       const CHUNK_EMBED_SWEEP_INITIAL_DELAY_MS = 105 * 1000;
       const runChunkEmbedSweep = async () => {
+        if (await diskGuard.shouldSkip("chunk-embed-sweep")) return;
         try {
           const report = await sweepChunkEmbeddings({ store: storage instanceof PgStorage ? storage.sessions : (storage as SqliteStorage).sessions, embedder });
           if (report.repaired > 0 || report.failed > 0) {
@@ -1027,6 +1099,7 @@ program
           workstreams: storage.workstreams,
           classifierDescriptor: { provider: classifier.provider, model: classifier.model },
           ingestGate: buildIngestGate(),
+          diskGuard,
         });
         scheduler.start();
         console.error(
@@ -3346,7 +3419,7 @@ program
     }
   });
 
-program
+const backupCommand = program
   .command("backup")
   .description("Write a dated snapshot to ~/.nlm/backups/ and prune ones past the retention window")
   .option("--retention <days>", "keep snapshots from the last N days", "7")
@@ -3369,6 +3442,31 @@ program
     } finally {
       await storage.close();
     }
+  });
+
+// T1772: the restore drill. Proves a snapshot can still serve reads without
+// touching the live DB — copy to a temp dir, open read-only, integrity_check
+// plus three representative queries. Non-zero exit on failure so cron/CI can
+// gate on it. See core/storage/restore-drill.ts.
+backupCommand
+  .command("restore-drill")
+  .description("Verify a backup restores and serves reads (never touches the live DB)")
+  .option("--backup <file>", "snapshot file to drill (default: newest in the backups dir)")
+  .action((opts: { backup?: string }) => {
+    const file = opts.backup
+      ? resolve(String(opts.backup))
+      : pickNewestBackup(backupDir(dbPath()));
+    if (!file || !existsSync(file)) {
+      console.error(`nlm backup restore-drill: no backup ${opts.backup ? `at ${opts.backup}` : `in ${backupDir(dbPath())}`}. Run \`nlm backup\` first.`);
+      process.exit(1);
+    }
+    const report = runRestoreDrill({ backupFile: file });
+    console.log(`restore-drill: ${file}`);
+    for (const check of report.checks) {
+      console.log(`  ${check.ok ? "PASS" : "FAIL"}  ${check.name} — ${check.detail}`);
+    }
+    console.log(`restore-drill: ${report.ok ? "PASS" : "FAIL"}`);
+    if (!report.ok) process.exit(1);
   });
 
 program

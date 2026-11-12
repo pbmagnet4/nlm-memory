@@ -174,6 +174,10 @@ export interface SchedulerOptions {
   /** Synchronous-slice length at which a scheduler job logs a `[loop] .. took`
    *  line (see loop-monitor.ts). Default 250ms. */
   readonly loopThresholdMs?: number;
+  /** T1772 disk guard: when set and tripped, the ingest/dream tick is skipped
+   *  wholesale (it is one write-heavy unit). Narrowed to the one method the
+   *  tick needs so tests pass a plain fake. See core/health/disk-guard.ts. */
+  readonly diskGuard?: { shouldSkip(job: string): Promise<boolean> } | null;
 }
 
 export interface IngestGate {
@@ -195,7 +199,7 @@ export interface TickReport {
 }
 
 export class ScanScheduler {
-  private readonly opts: Required<Omit<SchedulerOptions, "embedder" | "factStore" | "signalStore" | "installScope" | "exemplarStore" | "codeEmbedder" | "workstreams" | "classifierDescriptor" | "tenantId" | "ingestGate">> & {
+  private readonly opts: Required<Omit<SchedulerOptions, "embedder" | "factStore" | "signalStore" | "installScope" | "exemplarStore" | "codeEmbedder" | "workstreams" | "classifierDescriptor" | "tenantId" | "ingestGate" | "diskGuard">> & {
     readonly tenantId: string;
     readonly embedder: LLMClient | null;
     readonly factStore: SqliteFactStore | PgFactStore | null;
@@ -206,6 +210,7 @@ export class ScanScheduler {
     readonly workstreams: WorkstreamStore | null;
     readonly classifierDescriptor: { readonly provider: string; readonly model: string } | undefined;
     readonly ingestGate: IngestGate | null;
+    readonly diskGuard: { shouldSkip(job: string): Promise<boolean> } | null;
   };
   private readonly aliasToLabel: ReadonlyMap<string, string>;
   /** Periodic background passes (dream lane), run from the tick tail. */
@@ -242,6 +247,7 @@ export class ScanScheduler {
       idleMinutes: opts.idleMinutes ?? DEFAULT_IDLE_MINUTES,
       logger: opts.logger ?? ((msg) => console.error(msg)),
       loopThresholdMs: opts.loopThresholdMs ?? DEFAULT_LOOP_THRESHOLD_MS,
+      diskGuard: opts.diskGuard ?? null,
     };
     this.aliasToLabel = loadAliasToLabel();
 
@@ -355,6 +361,13 @@ export class ScanScheduler {
   }
 
   private async runTick(): Promise<TickReport> {
+    // T1772: a tripped disk guard pauses the whole tick — discovery is pure
+    // read but classification ends in writes, and the dream passes at the
+    // tick tail all write. Recall and every other read path stay served.
+    if (this.opts.diskGuard && (await this.opts.diskGuard.shouldSkip("scheduler-tick"))) {
+      return { inserted: 0, gatedSkips: 0, skippedLowConfidence: 0, classifyFailures: 0, storageFailures: 0, chunksSeen: 0, deferred: 0 };
+    }
+
     let inserted = 0;
     let skippedLowConfidence = 0;
     let gatedSkips = 0;
