@@ -138,6 +138,12 @@ export const CLASSIFIER_JSON_SCHEMA = {
   required: ["label", "summary", "entities", "decisions", "open", "confidence", "facts"],
 } as const;
 
+import {
+  loadConfiguredSubjectVocab,
+  MAX_PROMPT_SUBJECTS,
+  type SubjectVocab,
+} from "./subject-vocab.js";
+
 export const MAX_TRANSCRIPT_CHARS = 15_000;
 
 export function truncateTranscript(text: string, maxChars: number = MAX_TRANSCRIPT_CHARS): string {
@@ -167,10 +173,95 @@ export function validateClassifierJson(data: unknown): data is Record<string, un
   return REQUIRED_KEYS.every((k) => k in obj);
 }
 
-export function buildUserPrompt(transcript: string, priorContext: string): string {
+/**
+ * Whole-word occurrence count of `word` in an already-lowercased transcript.
+ * Boundaries exclude ASCII alphanumerics only, so a hyphenated run
+ * ("openai-api") still counts one occurrence each of "openai" and "api",
+ * and CJK text is not treated as one giant boundary.
+ */
+function countWordOccurrences(text: string, word: string): number {
+  let count = 0;
+  let from = 0;
+  for (;;) {
+    const i = text.indexOf(word, from);
+    if (i === -1) return count;
+    const before = i > 0 ? text.charCodeAt(i - 1) : -1;
+    const afterIdx = i + word.length;
+    const after = afterIdx < text.length ? text.charCodeAt(afterIdx) : -1;
+    if (!isAsciiWordChar(before) && !isAsciiWordChar(after)) count += 1;
+    from = i + word.length;
+  }
+}
+
+function isAsciiWordChar(code: number): boolean {
+  return (code >= 97 && code <= 122) || (code >= 48 && code <= 57); // a-z, 0-9
+}
+
+/**
+ * Pick the vocabulary subjects a transcript is about: an entry matches when
+ * every '-'-separated part appears as a whole word, or the joined form
+ * appears. Ranked by occurrence count — a joined mention, plus, when the
+ * parts also appear individually, the number of times the rarest part
+ * occurs — descending, ties keeping file order, capped at
+ * MAX_PROMPT_SUBJECTS. Pure; the caller handles loading.
+ */
+export function selectSubjectVocab(
+  vocab: SubjectVocab,
+  transcript: string,
+): string[] {
+  if (vocab.subjects.length === 0 || transcript.length === 0) return [];
+  const text = transcript.toLowerCase();
+  const scored: Array<{ subject: string; count: number }> = [];
+  for (const subject of vocab.subjects) {
+    const parts = subject.split("-").filter((p) => p.length > 0);
+    if (parts.length === 0) continue;
+    const joinedCount = countWordOccurrences(text, subject);
+    const partCounts = parts.map((p) => countWordOccurrences(text, p));
+    const allParts = partCounts.every((c) => c > 0);
+    const count = joinedCount + (allParts ? Math.min(...partCounts) : 0);
+    if (count > 0) scored.push({ subject, count });
+  }
+  scored.sort((a, b) => b.count - a.count);
+  return scored.slice(0, MAX_PROMPT_SUBJECTS).map((s) => s.subject);
+}
+
+export interface BuildUserPromptOptions {
+  /**
+   * Canonical subjects to name in the prompt (see selectSubjectVocab). When
+   * omitted, resolved from NLM_SUBJECT_VOCAB_PATH against this call's
+   * transcript; unset env or an empty selection leaves the prompt
+   * byte-identical to the no-vocabulary baseline (T1633).
+   */
+  readonly vocab?: SubjectVocab;
+  /** Env to resolve the vocab path from. Defaults to process.env. Tests only. */
+  readonly env?: NodeJS.ProcessEnv;
+  /** Warn sink for vocab load failures. Tests only. */
+  readonly warn?: (msg: string) => void;
+}
+
+export function buildUserPrompt(
+  transcript: string,
+  priorContext: string,
+  opts: BuildUserPromptOptions = {},
+): string {
   const truncated = truncateTranscript(transcript);
+  let knownSubjects: readonly string[] = [];
+  if (opts.vocab) {
+    knownSubjects = selectSubjectVocab(opts.vocab, truncated);
+  } else if (!opts.env || opts.env["NLM_SUBJECT_VOCAB_PATH"]) {
+    const vocab = loadConfiguredSubjectVocab(
+      opts.env ?? process.env,
+      opts.warn ?? ((msg) => console.error(`nlm: ${msg}`)),
+    );
+    knownSubjects = selectSubjectVocab(vocab, truncated);
+  }
   const parts: string[] = [];
   if (priorContext) parts.push(`PRIOR CONTEXT (already filed):\n${priorContext}\n`);
+  if (knownSubjects.length > 0) {
+    parts.push(
+      `Known subjects (use the exact name when a fact is about one of these; otherwise name the subject as usual): ${knownSubjects.join(", ")}\n`,
+    );
+  }
   parts.push(`TRANSCRIPT TO CLASSIFY:\n${truncated}`);
   return parts.join("\n");
 }
