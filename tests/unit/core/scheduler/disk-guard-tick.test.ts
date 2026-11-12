@@ -4,7 +4,7 @@
  * tail, so one gate covers both. The not-tripped path proves the gate is a
  * pass-through, not an accidental always-skip.
  */
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -15,17 +15,26 @@ const MIGRATIONS_DIR = resolve(__dirname, "../../../../migrations");
 
 let tmp: string;
 let storage: SqliteStorage;
+// The suite owns NLM_INTEGRITY_CACHE for its run and hands the developer's
+// value (or absence of one) back afterwards, like scheduled-backup.test.ts
+// does with its tmpdir — no env mutation leaks to other files on the worker.
+const INTEGRITY_ENV = "NLM_INTEGRITY_CACHE";
+let prevIntegrityEnv: string | undefined;
 
 beforeAll(async () => {
   tmp = mkdtempSync(join(tmpdir(), "nlm-sched-diskguard-"));
   // Keep the 24h cheap-integrity-cache out of the developer's ~/.nlm and
   // pre-stamped "just ran" so it never fires (or writes) during these ticks.
-  process.env["NLM_INTEGRITY_CACHE"] = join(tmp, "integrity-cache.json");
+  prevIntegrityEnv = process.env[INTEGRITY_ENV];
+  process.env[INTEGRITY_ENV] = join(tmp, "integrity-cache.json");
   storage = SqliteStorage.create({ dbPath: join(tmp, "c.sqlite"), migrationsDir: MIGRATIONS_DIR });
   await storage.init();
 });
 afterAll(async () => {
   await storage.close();
+  if (prevIntegrityEnv === undefined) delete process.env[INTEGRITY_ENV];
+  else process.env[INTEGRITY_ENV] = prevIntegrityEnv;
+  rmSync(tmp, { recursive: true, force: true });
 });
 
 function makeScheduler(diskGuard: { shouldSkip(job: string): Promise<boolean> } | undefined, spy: () => void) {
