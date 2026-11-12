@@ -37,9 +37,39 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { homedir, loadavg } from "node:os";
 import { join } from "node:path";
 import type { ClefAnswer, ClefQuestion } from "../../src/llm/clef-client.js";
-import { CLEF_MODELS, askClefDirect, clefBaseUrl, flag, latency, mapPool, parseModelFlag, type ClefModelKey } from "./lib/clef-direct.js";
+import { ask, mapLimit, type ClefModel } from "./lib/t1778-clef.js";
 import { auc, splitOf } from "./lib/clef-stats.js";
 import { spearman } from "./lib/t1778-stats.js";
+
+/** Checkpoints under test — the ids survive in lib/t1778-clef's ClefModel union. */
+const CLEF_MODELS = { flash: "clef-flash-oQ8e", base: "clef-oQ4e" } as const satisfies Record<string, ClefModel>;
+type ClefModelKey = keyof typeof CLEF_MODELS;
+
+function parseModelFlag(argv: readonly string[]): ClefModelKey {
+  const i = argv.indexOf("--model");
+  const inline = argv.find((a) => a.startsWith("--model="));
+  const v = inline ? inline.split("=")[1] : i >= 0 ? argv[i + 1] : "flash";
+  if (v === "flash" || v === CLEF_MODELS.flash) return "flash";
+  if (v === "base" || v === "27b" || v === CLEF_MODELS.base) return "base";
+  throw new Error(`unknown --model ${v}`);
+}
+
+/** Flags as --name value or --name=value. */
+function flag(name: string, def: string): string {
+  const argv = process.argv.slice(2);
+  const eq = argv.find((a) => a.startsWith(`--${name}=`));
+  if (eq) return eq.split("=")[1]!;
+  const i = argv.indexOf(`--${name}`);
+  return i >= 0 && argv[i + 1] !== undefined && !argv[i + 1]!.startsWith("--") ? argv[i + 1]! : def;
+}
+
+/** Latency percentiles for one model, from measured ms values. */
+function latency(ms: readonly number[]): { n: number; p50: number; p95: number; max: number; total: number } {
+  if (ms.length === 0) return { n: 0, p50: 0, p95: 0, max: 0, total: 0 };
+  const s = [...ms].sort((a, b) => a - b);
+  const q = (p: number) => s[Math.min(s.length - 1, Math.floor(p * s.length))] ?? 0;
+  return { n: s.length, p50: q(0.5), p95: q(0.95), max: s[s.length - 1]!, total: s.reduce((a, b) => a + b, 0) };
+}
 
 const EVAL = join(import.meta.dirname, "../../.eval");
 const DIR = join(EVAL, "t1782");
@@ -163,7 +193,7 @@ async function collect(model: ClefModelKey, all: Pair[]): Promise<void> {
   console.log(`collect ${CLEF_MODELS[model]}: ${todo0.length} calls (${Object.keys(PHRASES).length} questions per memory, <= ${flag("chunk", "8")} memories per call), ${done.size} cached, ${todo.length} to call`);
 
   let since = 0;
-  await mapPool(todo, Number(flag("parallel", "2")), async (u) => {
+  await mapLimit(todo, Number(flag("parallel", "2")), async (u) => {
     const questions: Record<string, ClefQuestion> = {};
     u.mems.forEach((m, i) => {
       for (const [name, q] of Object.entries(PHRASES)) {
@@ -180,17 +210,18 @@ async function collect(model: ClefModelKey, all: Pair[]): Promise<void> {
       load1: loadavg()[0] ?? 0, answers: null,
     };
     try {
-      const r = await askClefDirect({ prompt: u.prompt }, questions, { baseUrl: clefBaseUrl(), model: CLEF_MODELS[model], timeoutMs: 180_000 });
+      const state = { prompt: u.prompt };
+      const r = await ask(CLEF_MODELS[model], state, questions, { timeoutMs: 180_000 });
       row.answers = r.answers;
       row.ms = r.ms;
-      row.stateChars = r.stateChars;
+      row.stateChars = JSON.stringify(state).length;
     } catch (e) {
       row.error = e instanceof Error ? e.message : String(e);
     }
     const i = rows.findIndex((x) => x.key === u.key);
     if (i >= 0) rows[i] = row; else rows.push(row);
     if (++since >= 20) { since = 0; writeFileSync(path, JSON.stringify(rows)); }
-  }, 20);
+  });
   writeFileSync(path, JSON.stringify(rows));
   const ok = rows.filter((r) => r.answers);
   const l = latency(ok.map((r) => r.ms));
