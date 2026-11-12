@@ -39,3 +39,7 @@ latest.json
 # sha256(model:text). Delete it and the sampler re-embeds; never commit it.
 reports/re-derivation/decision-vectors.jsonl
 .claude/worktrees/
+
+# Eval scratch: answer caches and per-run tables, regenerable and full of real prompt
+# text. Never commit.
+.eval/
