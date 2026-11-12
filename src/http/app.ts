@@ -129,6 +129,7 @@ import { laneHealthSnapshot } from "@core/health/embedding-lane-state.js";
 import { inflightSnapshot } from "@core/health/embed-inflight.js";
 import { factEmbedSnapshot } from "@core/health/fact-embed-state.js";
 import type { IngestLagMonitor } from "@core/health/ingest-lag.js";
+import type { DiskGuardStatus } from "@core/health/disk-guard.js";
 import { corpusSnapshot } from "@core/health/corpus-state.js";
 import { DEFAULT_NLM_PORT } from "../shared/net.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
@@ -219,6 +220,10 @@ export interface HttpDeps {
   readonly jobSupervisor?: Pick<JobSupervisor, "start" | "stop" | "snapshot">;
   /** Wire to enable GET /api/health/ingest. */
   readonly ingestLag?: IngestLagMonitor;
+  /** T1772: last disk-guard snapshot for the `diskGuard` block on
+   *  GET /api/health (null until the first write-heavy tick has checked).
+   *  Getter so the route always reads the live last-known value. */
+  readonly diskGuard?: () => DiskGuardStatus | null;
   /**
    * Wire to enable the GET/POST /api/dreaming control-plane pair. The
    * settings themselves are the process-global in-memory registry
@@ -769,7 +774,7 @@ function registerHealthRoute(app: Hono<AppEnv>, deps: HttpDeps): void {
     const job = jobSnap && jobSnap.state !== "idle" ? jobSnap : null;
     const embedJobSnap: JobSnapshot | null = deps.embedder ? deps.embedder.jobs.snapshot() : null;
     const embedJob = embedJobSnap && embedJobSnap.state !== "idle" ? embedJobSnap : null;
-    return c.json({ status: "ok", service: "nlm-memory", version: pkg.version, warmup: warmupSnapshot(), embedding: laneHealthSnapshot(), embedInflight: inflightSnapshot(), factEmbeddings: factEmbedSnapshot(), corpus, update, job, embedJob });
+    return c.json({ status: "ok", service: "nlm-memory", version: pkg.version, warmup: warmupSnapshot(), embedding: laneHealthSnapshot(), embedInflight: inflightSnapshot(), factEmbeddings: factEmbedSnapshot(), corpus, update, job, embedJob, diskGuard: deps.diskGuard ? deps.diskGuard() : null });
   });
 
   app.get("/api/health/ingest", async (c) => {
