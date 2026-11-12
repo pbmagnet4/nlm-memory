@@ -582,6 +582,7 @@ program
     sloMetrics.load();
     const app = createApp({
       ingestLag,
+      slo: sloMetrics,
       properties: storage.properties,
       recall,
       store,
