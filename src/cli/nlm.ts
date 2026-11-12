@@ -58,6 +58,7 @@ import { backupDir } from "../core/storage/backup-rotation.js";
 import { backupIntervalMs, runScheduledBackup, scheduledBackupEnabled } from "../core/storage/scheduled-backup.js";
 import { pickNewestBackup, runRestoreDrill } from "../core/storage/restore-drill.js";
 import { createDiskGuard } from "../core/health/disk-guard.js";
+import { relevanceJudgeEnabled, runRelevanceNightly } from "../core/health/relevance-judge.js";
 import { createApp } from "../http/app.js";
 import { createMcpServer, listMergeSuggestionsHandler, mergeWorkstreamsHandler, rebindSessionHandler, recallWorkstreamHandler, renameWorkstreamHandler, retireWorkstreamHandler } from "../mcp/server.js";
 import { classifierEgressNotice } from "../llm/classifier-egress.js";
@@ -1100,6 +1101,23 @@ program
           classifierDescriptor: { provider: classifier.provider, model: classifier.model },
           ingestGate: buildIngestGate(),
           diskGuard,
+          // T1782: the nightly relevance sample lands in the same store
+          // /api/health/slo reads, persisted on record so the number survives a
+          // restart before the next refresh tick. The scheduler owns the flag,
+          // the once-a-night marker, the disk guard and the fact that this
+          // never blocks a tick; everything Clef-specific lives here.
+          relevanceNightly: {
+            enabled: () => relevanceJudgeEnabled(),
+            run: () =>
+              runRelevanceNightly({
+                sessions: store,
+                logger: (m) => console.error(m),
+                record: (sample) => {
+                  sloMetrics.recordRelevance(sample);
+                  sloMetrics.persist();
+                },
+              }),
+          },
         });
         scheduler.start();
         console.error(

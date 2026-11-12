@@ -17,6 +17,12 @@
  *   • Ingest/classify lag — the last /api/health/ingest report the daemon
  *     sampled (`recordIngestReport`), reduced to minute gauges. A gauge, not
  *     a counter: a sample older than the queried window reads as missing.
+ *   • Relevance precision — the nightly Clef judge (T1782, see
+ *     core/health/relevance-judge.ts) records the share of sampled injections
+ *     it judged relevant. Also a gauge, and deliberately *not* a target: on the
+ *     eval holdout the judge cannot both keep most of the relevant memories and
+ *     drop most of the noise, so this number is trend-only and nothing in the
+ *     recall path reads it.
  *
  * Persistence: one small JSON file (slo-metrics.json) in the tenant state
  * dir, written atomically by `persist()` on the daemon's refresh timer —
@@ -92,22 +98,37 @@ export interface SloIngestSample {
   readonly summary: string;
 }
 
+/** One night's Clef relevance measurement (T1782). `threshold`/`model`/
+ *  `phrasing` travel with the value because the number is only comparable
+ *  night to night while they stay fixed. */
+export interface SloRelevanceSample {
+  readonly at: number;
+  /** Share of the sampled (prompt, memory) pairs the judge kept, 0-1. */
+  readonly value: number;
+  readonly pairs: number;
+  readonly threshold: number;
+  readonly model: string;
+  readonly phrasing: string;
+}
+
 export interface SloState {
   readonly savedAt: number;
   readonly recall: readonly SloRecallEvent[];
   readonly stalls: readonly SloStallEvent[];
   readonly ingest: SloIngestSample | null;
+  readonly relevance: SloRelevanceSample | null;
 }
 
 const MAX_WINDOW_MS = SLO_WINDOW_MS["7d"];
-const EMPTY_STATE: SloState = { savedAt: 0, recall: [], stalls: [], ingest: null };
+const EMPTY_STATE: SloState = { savedAt: 0, recall: [], stalls: [], ingest: null, relevance: null };
 
 function round1(v: number): number {
   return Math.round(v * 10) / 10;
 }
 
 /** Drop events past the largest supported window (clock-skewed future ts kept
- *  — they belong to a window query, not to pruning). */
+ *  — they belong to a window query, not to pruning). Both gauges survive:
+ *  window membership is decided at query time, not here. */
 export function pruneSloState(state: SloState, nowMs: number): SloState {
   const cutoff = nowMs - MAX_WINDOW_MS;
   return {
@@ -115,6 +136,7 @@ export function pruneSloState(state: SloState, nowMs: number): SloState {
     recall: state.recall.filter((e) => e.ts >= cutoff),
     stalls: state.stalls.filter((e) => e.ts >= cutoff),
     ingest: state.ingest,
+    relevance: state.relevance,
   };
 }
 
@@ -143,6 +165,15 @@ export interface SloActual {
     readonly lagging: boolean;
     readonly timeouts1h: number;
     readonly summary: string;
+  } | null;
+  /** Nightly Clef relevance-precision gauge; null when the last sample falls
+   *  outside the queried window (or the job is off). */
+  readonly relevancePrecision: {
+    readonly value: number;
+    readonly pairs: number;
+    readonly threshold: number;
+    readonly model: string;
+    readonly at: string;
   } | null;
 }
 
@@ -185,6 +216,16 @@ export function computeSloActual(state: SloState, window: SloWindow, nowMs: numb
         summary: state.ingest.summary,
       }
     : null;
+  const relevance = state.relevance
+    && state.relevance.at >= from && state.relevance.at <= nowMs
+    ? {
+        value: state.relevance.value,
+        pairs: state.relevance.pairs,
+        threshold: state.relevance.threshold,
+        model: state.relevance.model,
+        at: new Date(state.relevance.at).toISOString(),
+      }
+    : null;
   return {
     outcomes: {
       total: recall.length,
@@ -197,11 +238,13 @@ export function computeSloActual(state: SloState, window: SloWindow, nowMs: numb
       maxMs: stalls.length === 0 ? null : Math.max(...stalls.map((e) => e.ms)),
     },
     ingest,
+    relevancePrecision: relevance,
   };
 }
 
 /** Names of the targets the actuals violate. A null/absent measurement is
- *  never a breach — absence is reported by the null in `actual`. */
+ *  never a breach — absence is reported by the null in `actual`. Note there is
+ *  no relevance target: the nightly judge is a metric, not a gate (T1782). */
 export function sloBreaches(
   actual: SloActual,
   targets: typeof SLO_TARGETS = SLO_TARGETS,
@@ -274,6 +317,16 @@ interface PersistedState {
     timeouts1h: number;
     summary: string;
   } | null;
+  /** Absent in files written before T1782; read back as null. Additive, so
+   *  schemaVersion stays 1 and an upgrade never discards live counters. */
+  relevance?: {
+    at: string;
+    value: number;
+    pairs: number;
+    threshold: number;
+    model: string;
+    phrasing: string;
+  } | null;
 }
 
 function serialize(state: SloState): string {
@@ -293,6 +346,14 @@ function serialize(state: SloState): string {
       lagging: state.ingest.lagging,
       timeouts1h: state.ingest.timeouts1h,
       summary: state.ingest.summary,
+    },
+    relevance: state.relevance && {
+      at: new Date(state.relevance.at).toISOString(),
+      value: state.relevance.value,
+      pairs: state.relevance.pairs,
+      threshold: state.relevance.threshold,
+      model: state.relevance.model,
+      phrasing: state.relevance.phrasing,
     },
   };
   return JSON.stringify(out);
@@ -336,7 +397,27 @@ function deserialize(raw: string): SloState | null {
     };
   }
   const savedAt = typeof p.savedAt === "string" ? Date.parse(p.savedAt) : Number.NaN;
-  return { savedAt: Number.isFinite(savedAt) ? savedAt : 0, recall, stalls, ingest };
+  let relevance: SloRelevanceSample | null = null;
+  if (p.relevance && typeof p.relevance === "object") {
+    const at = Date.parse(p.relevance.at);
+    const { value, pairs, threshold } = p.relevance;
+    if (
+      Number.isFinite(at)
+      && typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
+      && typeof pairs === "number" && Number.isInteger(pairs) && pairs > 0
+      && typeof threshold === "number" && Number.isFinite(threshold)
+      && typeof p.relevance.model === "string" && typeof p.relevance.phrasing === "string"
+    ) {
+      relevance = { at, value, pairs, threshold, model: p.relevance.model, phrasing: p.relevance.phrasing };
+    }
+  }
+  return {
+    savedAt: Number.isFinite(savedAt) ? savedAt : 0,
+    recall,
+    stalls,
+    ingest,
+    relevance,
+  };
 }
 
 // ── hook-log tail reader ──────────────────────────────────────────────
@@ -391,6 +472,11 @@ export interface SloMetricsStore {
   recordStall(ms: number, ts?: number): void;
   /** Stash the latest /api/health/ingest report as minute gauges. */
   recordIngestReport(report: IngestLagReport): void;
+  /** Stash one nightly Clef relevance sample (T1782). Whole-night only — the
+   *  judge records on success and leaves the previous sample standing when it
+   *  fails. Reported as `actual.relevancePrecision`, never compared to a
+   *  target. */
+  recordRelevance(sample: SloRelevanceSample): void;
   snapshot(): SloState;
   /** Atomic write of the pruned state. Best-effort, never throws. */
   persist(): void;
@@ -456,6 +542,11 @@ export function createSloMetricsStore(deps: SloMetricsDeps = {}): SloMetricsStor
 
     recordIngestReport(report: IngestLagReport): void {
       state = { ...state, ingest: computeIngestSample(report, now()) };
+    },
+
+    recordRelevance(sample: SloRelevanceSample): void {
+      if (!Number.isFinite(sample.at) || !Number.isFinite(sample.value)) return;
+      state = { ...state, relevance: sample };
     },
 
     snapshot(): SloState {
