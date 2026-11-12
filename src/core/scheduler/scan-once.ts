@@ -29,6 +29,8 @@ import type {
   SourceStat,
   TranscriptAdapter,
 } from "@ports/transcript-adapter.js";
+import { timeSyncSlice } from "@core/scheduler/loop-monitor.js";
+import { yieldToEventLoop } from "@core/util/yield-loop.js";
 import { recordIngestProgress } from "@core/health/classify-outcomes.js";
 
 export interface ScanResult {
@@ -100,26 +102,76 @@ interface AdapterStateRow {
   failure_count: number;
 }
 
+/** Sources examined between event-loop yields (T1757). Everything between two
+ *  of these positions in the scan loop is synchronous for an unchanged file —
+ *  `statSync`, a Map lookup, sometimes one `UPDATE` — so the loop over a whole
+ *  adapter's discovery list was one slice: `scheduler-tick took 166164ms (sync
+ *  slice 5750.8ms)` on the live corpus. 100 is a few milliseconds of stat even on
+ *  a loaded volume, and the yield costs nothing next to the `parseSession` and
+ *  classify calls the loop already awaits for the files that are new. */
+export const SCAN_BATCH_SOURCES = 100;
+
+/** How the scan loop hands the loop back (T1757). All optional; production uses
+ *  the defaults, tests count the hand-offs through `yieldFn`. */
+export interface ScanPacing {
+  readonly yieldEverySources?: number;
+  readonly yieldFn?: () => Promise<void>;
+  /** Loop-monitor sink/threshold for `[loop] sync scan:..` lines. */
+  readonly loopLogger?: (msg: string) => void;
+  readonly loopThresholdMs?: number;
+}
+
+const DEFAULT_SCAN_PACING: ScanPacing = {};
+
+function scanTiming(pacing: ScanPacing) {
+  return {
+    ...(pacing.loopLogger ? { logger: pacing.loopLogger } : {}),
+    ...(pacing.loopThresholdMs !== undefined ? { thresholdMs: pacing.loopThresholdMs } : {}),
+  };
+}
+
+/** Yield position for scan iteration `i`: `false` for the first `batch` sources
+ *  and after the last one is handled implicitly (the loop ends). Checked at the
+ * *top* of each iteration rather than at its end so no `continue` in the body can
+ *  skip a hand-off. */
+function shouldYield(i: number, batch: number): boolean {
+  return i > 0 && i % batch === 0;
+}
+
 export async function scanOnce(
   adapter: TranscriptAdapter,
   idleMinutes: number,
   db: Database.Database,
   now: number = Date.now(),
   log: (msg: string) => void = console.error,
+  pacing: ScanPacing = DEFAULT_SCAN_PACING,
 ): Promise<ReadonlyArray<ScanResult>> {
   const idleMs = idleMinutes * 60 * 1000;
-  const stateRows = db
-    .prepare<[string], AdapterStateRow>(
-      "SELECT source_path, file_size, session_id, COALESCE(failure_count, 0) AS failure_count FROM adapter_state WHERE adapter_name = ?",
-    )
-    .all(adapter.name);
+  const yieldFn = pacing.yieldFn ?? yieldToEventLoop;
+  const batch = Math.max(1, pacing.yieldEverySources ?? SCAN_BATCH_SOURCES);
+  const stateRows = timeSyncSlice(
+    "scan",
+    `adapter_state:${adapter.name}`,
+    // One statement for every row of this adapter (one per source path ever
+    // ingested), so it gets its own slice line: bounded by tracked files today,
+    // unbounded in general, and it runs at the top of every tick per adapter.
+    () =>
+      db
+        .prepare<[string], AdapterStateRow>(
+          "SELECT source_path, file_size, session_id, COALESCE(failure_count, 0) AS failure_count FROM adapter_state WHERE adapter_name = ?",
+        )
+        .all(adapter.name),
+    scanTiming(pacing),
+  );
   const byPath = new Map<string, AdapterStateRow>(stateRows.map((r) => [r.source_path, r]));
 
   const out: ScanResult[] = [];
   const files = await adapter.discover();
   const statFailures = new StatFailures();
 
-  for (const path of files) {
+  for (let i = 0; i < files.length; i++) {
+    if (shouldYield(i, batch)) await yieldFn();
+    const path = files[i]!;
     const st = statFailures.stat(adapter, path);
     if (!st) continue;
     const age = now - st.mtimeMs;
@@ -200,6 +252,7 @@ export async function scanOncePg(
   pool: Pool,
   now: number = Date.now(),
   log: (msg: string) => void = console.error,
+  pacing: ScanPacing = DEFAULT_SCAN_PACING,
 ): Promise<ScanResult[]> {
   const idleMs = idleMinutes * 60 * 1000;
   const stateRows = await pool.query<{
@@ -228,9 +281,13 @@ export async function scanOncePg(
   const paths = await adapter.discover();
   const results: ScanResult[] = [];
   const statFailures = new StatFailures();
+  const yieldFn = pacing.yieldFn ?? yieldToEventLoop;
+  const batch = Math.max(1, pacing.yieldEverySources ?? SCAN_BATCH_SOURCES);
 
-  for (const sourcePath of paths) {
+  for (let i = 0; i < paths.length; i++) {
+    if (shouldYield(i, batch)) await yieldFn();
     // Bug 1 fix: mtime gate — skip files still being written
+    const sourcePath = paths[i]!;
     const st = statFailures.stat(adapter, sourcePath);
     if (!st) continue;
     if (now - st.mtimeMs < idleMs) continue;

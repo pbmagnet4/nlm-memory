@@ -15,6 +15,12 @@ import type Database from "better-sqlite3";
 import type { Pool } from "pg";
 import type { SourceStat, TranscriptAdapter } from "@ports/transcript-adapter.js";
 import { MAX_CLASSIFY_FAILURES } from "@core/scheduler/scan-once.js";
+import {
+  createSyncStopwatch,
+  timeSyncSlice,
+  type SyncSliceTimingOptions,
+} from "@core/scheduler/loop-monitor.js";
+import { yieldToEventLoop } from "@core/util/yield-loop.js";
 import { PgSessionStore } from "@core/storage/pg-session-store.js";
 import type { SqliteSessionStore } from "@core/storage/sqlite-session-store.js";
 import { classifyOutcomesSnapshot } from "./classify-outcomes.js";
@@ -23,6 +29,15 @@ import { classifyOutcomesSnapshot } from "./classify-outcomes.js";
 export const LOOKBACK_MS = 14 * 86_400_000;
 const CACHE_TTL_MS = 60_000;
 const DEFAULT_ALERT_HOURS = 6;
+
+/** Sources stat'ed per event-loop yield (T1757). `statSource` is `statSync` for
+ *  every file-backed adapter, so the whole 14-day discovery list used to be one
+ *  synchronous slice — measured as `alert-health took 4949ms (sync slice
+ *  1229.5ms)` on the live corpus. 100 stats is a slice of a few ms even on a
+ *  loaded volume, and one `setImmediate` per 100 files costs the wall clock
+ *  nothing next to the `fs.stat` the adapter's own `discover()` already awaits
+ *  per file. */
+export const STAT_BATCH_PATHS = 100;
 
 export interface AdapterLag {
   readonly pending: number;
@@ -57,6 +72,13 @@ export interface IngestLagDeps {
   readonly thresholdHours: number;
   /** Scheduler tick interval; a stall needs three missed ticks. */
   readonly schedulerIntervalMs: number;
+  /** Sources stat'ed between yields. Default `STAT_BATCH_PATHS`. */
+  readonly yieldEveryPaths?: number;
+  /** Yield injection point, so a test can count the hand-offs. */
+  readonly yieldFn?: () => Promise<void>;
+  /** Loop-monitor sink/threshold for the synchronous segments (T1757). */
+  readonly loopLogger?: (msg: string) => void;
+  readonly loopThresholdMs?: number;
 }
 
 /** NLM_INGEST_LAG_ALERT_HOURS, default 6; read once at boot. */
@@ -65,19 +87,34 @@ export function ingestLagThresholdHours(env: NodeJS.ProcessEnv = process.env): n
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_ALERT_HOURS;
 }
 
-/** Reads adapter_state from whichever backend the store runs on, as the scheduler does. */
-export function adapterStateReader(store: SqliteSessionStore | PgSessionStore): AdapterStateReader {
+/** Reads adapter_state from whichever backend the store runs on, as the scheduler does.
+ *  `timing` only re-routes the `[loop] sync ..` line (tests); the read is the same. */
+export function adapterStateReader(
+  store: SqliteSessionStore | PgSessionStore,
+  timing: SyncSliceTimingOptions = {},
+): AdapterStateReader {
   if (store instanceof PgSessionStore) return pgStateReader(store.pool);
-  return sqliteStateReader(store.rawDb());
+  return sqliteStateReader(store.rawDb(), timing);
 }
 
-function sqliteStateReader(db: Database.Database): AdapterStateReader {
+function sqliteStateReader(db: Database.Database, timing: SyncSliceTimingOptions): AdapterStateReader {
   return async (adapterName) => {
-    const rows = db
-      .prepare<[string], { source_path: string; file_size: number | null; failure_count: number }>(
-        "SELECT source_path, file_size, COALESCE(failure_count, 0) AS failure_count FROM adapter_state WHERE adapter_name = ?",
-      )
-      .all(adapterName);
+    // One statement, so it cannot be chunked — but it reads every row of this
+    // adapter's `adapter_state` (one per source path ever ingested) and builds a
+    // Map of all of them, so it is timed: the row count is the only thing
+    // standing between this and a stall line. T1757 instruments rather than
+    // bounds it; keyset pagination is the fix if it ever logs.
+    const rows = timeSyncSlice(
+      "ingest-lag",
+      `adapter_state:${adapterName}`,
+      () =>
+        db
+          .prepare<[string], { source_path: string; file_size: number | null; failure_count: number }>(
+            "SELECT source_path, file_size, COALESCE(failure_count, 0) AS failure_count FROM adapter_state WHERE adapter_name = ?",
+          )
+          .all(adapterName),
+      timing,
+    );
     return new Map(rows.map((r) => [r.source_path, { fileSize: r.file_size, failureCount: r.failure_count }]));
   };
 }
@@ -116,24 +153,40 @@ async function adapterLag(
 ): Promise<{ pending: number; parked: number; unreadable: number; oldestMs: number | null }> {
   const state = await deps.readState(adapter.name);
   const idleMs = deps.idleMinutes * 60_000;
+  const yieldFn = deps.yieldFn ?? yieldToEventLoop;
+  const batch = Math.max(1, deps.yieldEveryPaths ?? STAT_BATCH_PATHS);
+  const watch = createSyncStopwatch("ingest-lag", {
+    ...(deps.loopLogger ? { logger: deps.loopLogger } : {}),
+    ...(deps.loopThresholdMs !== undefined ? { thresholdMs: deps.loopThresholdMs } : {}),
+  });
   let pending = 0;
   let parked = 0;
   let unreadable = 0;
   let oldestMs: number | null = null;
-  for (const path of await adapter.discover({ since: new Date(now - LOOKBACK_MS) })) {
-    const st = statSource(adapter, path);
-    if (st === UNREADABLE) {
-      unreadable += 1;
-      continue;
-    }
-    if (!st || now - st.mtimeMs < idleMs) continue;
-    const prior = state.get(path);
-    if (prior && (prior.fileSize ?? 0) === st.size) {
-      if (prior.failureCount >= MAX_CLASSIFY_FAILURES) parked += 1;
-      continue;
-    }
-    pending += 1;
-    if (oldestMs === null || st.mtimeMs < oldestMs) oldestMs = st.mtimeMs;
+  const paths = await adapter.discover({ since: new Date(now - LOOKBACK_MS) });
+  // Batched rather than one pass over the whole list: the body is synchronous
+  // (`statSync`), so a 14-day backlog of transcripts used to freeze every
+  // in-flight hook for its duration. Same paths, same order, same counters.
+  for (let i = 0; i < paths.length; i += batch) {
+    const slice = paths.slice(i, i + batch);
+    watch.time(`stat:${adapter.name}`, () => {
+      for (const path of slice) {
+        const st = statSource(adapter, path);
+        if (st === UNREADABLE) {
+          unreadable += 1;
+          continue;
+        }
+        if (!st || now - st.mtimeMs < idleMs) continue;
+        const prior = state.get(path);
+        if (prior && (prior.fileSize ?? 0) === st.size) {
+          if (prior.failureCount >= MAX_CLASSIFY_FAILURES) parked += 1;
+          continue;
+        }
+        pending += 1;
+        if (oldestMs === null || st.mtimeMs < oldestMs) oldestMs = st.mtimeMs;
+      }
+    });
+    if (i + batch < paths.length) await yieldFn();
   }
   return { pending, parked, unreadable, oldestMs };
 }

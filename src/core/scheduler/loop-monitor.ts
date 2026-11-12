@@ -32,8 +32,15 @@
  * Attribution caveat: sampling is process-wide. When two jobs overlap, a block
  * from either is reported against whichever job the probe was watching — the
  * same offender appearing under several job names means the block is elsewhere.
- * That still answers the question we have (which window, how often) at a
- * fraction of the cost of instrumenting every statement.
+ *
+ * T1757 closes most of that caveat. `defaultActiveJobSet` records which jobs are
+ * running *right now*, so when the sampler sees a block over
+ * `DEFAULT_STALL_MS` the monitor can name the jobs that were on the loop at that
+ * instant — `[loop] stall <ms>ms during: <jobs>` — rather than waiting five min
+ * for the window report and blaming the job that happens to be running then. A
+ * job that is named but whose work is genuinely async is then ruled out by
+ * `timeSyncSlice`, which brackets one synchronous segment and logs
+ * `[loop] sync <job>:<label> <ms>ms` past 250ms: that is the statement to fix.
  *
  * Logging goes through the caller's logger so tests capture lines instead of
  * writing to the operator's stderr.
@@ -54,6 +61,15 @@ export const DEFAULT_PROBE_RESOLUTION_MS = 20;
 
 const NS_PER_MS = 1e6;
 
+/** Block length at which the lag monitor names the jobs it caught the loop in.
+ *  Half the logging threshold: a 500ms freeze already eats an eighth of a hook's
+ *  4s budget, and the whole point is to catch them before they pile up. */
+export const DEFAULT_STALL_MS = 500;
+
+/** Label used when a stall happened while no tracked job was on the loop — i.e.
+ *  the block came from request handling or a timer nobody registered. */
+export const UNTRACKED_JOBS_LABEL = "no tracked job";
+
 function roundMs(value: number): number {
   return Math.round(value * 10) / 10;
 }
@@ -72,8 +88,16 @@ export interface SyncSliceProbe {
 export type SyncSliceProbeFactory = () => SyncSliceProbe;
 
 /** Windowed max-overrun sampler: arms a `setInterval` and remembers how far
- *  behind its own schedule it fell. See syncSliceProbe for the rationale. */
-function createOverrunSampler(resolutionMs: number) {
+ *  behind its own schedule it fell. See syncSliceProbe for the rationale.
+ *
+ *  `onBlock` (T1757) fires from the timer callback — i.e. immediately after the
+ *  block ends and before any further work — which is why the caller can read the
+ *  active-job set there and get the jobs that were actually on the loop rather
+ *  than whatever is running five minutes later. */
+function createOverrunSampler(
+  resolutionMs: number,
+  opts: { readonly blockThresholdMs?: number; readonly onBlock?: (blockMs: number) => void } = {},
+) {
   let prev = performance.now();
   let maxOverrun = 0;
   let stopped = false;
@@ -84,6 +108,8 @@ function createOverrunSampler(resolutionMs: number) {
     const overrun = now - prev - resolutionMs;
     if (overrun > maxOverrun) maxOverrun = overrun;
     prev = now;
+    const threshold = opts.blockThresholdMs;
+    if (opts.onBlock && threshold !== undefined && overrun > threshold) opts.onBlock(overrun);
   }, resolutionMs);
   timer.unref?.();
   return {
@@ -136,6 +162,172 @@ export function fixedSliceProbe(ms: number): SyncSliceProbeFactory {
       },
     };
   };
+}
+
+/**
+ * Which jobs are on the loop right now. `timeJob` wrappers enter a name for the
+ * whole lifetime of the job (head *and* its awaits), so `active()` is the set of
+ * plausible authors of a stall observed at this instant. Overlapping runs of the
+ * same job collapse to one entry with a count.
+ */
+export interface ActiveJobSet {
+  /** Enter `name`. Call the returned function exactly once when it finishes. */
+  enter(name: string): () => void;
+  /** Active names in first-entered order, e.g. `["scheduler-tick", "alert-health x2"]`. */
+  active(): readonly string[];
+  /** Number of active entries (names × counts) — for tests. */
+  get size(): number;
+}
+
+export function createActiveJobSet(): ActiveJobSet {
+  // Map preserves insertion order, so `active()` reads oldest-first: the job
+  // that has been running longest is the more likely author of a long block.
+  const counts = new Map<string, number>();
+  return {
+    enter(name: string): () => void {
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+      let released = false;
+      return () => {
+        // A double-release (finally in both a wrapper and its callee) must not
+        // drop another run's count.
+        if (released) return;
+        released = true;
+        const left = (counts.get(name) ?? 0) - 1;
+        if (left > 0) counts.set(name, left);
+        else counts.delete(name);
+      };
+    },
+    active(): readonly string[] {
+      return [...counts].map(([name, n]) => (n > 1 ? `${name} x${n}` : name));
+    },
+    get size(): number {
+      let total = 0;
+      for (const n of counts.values()) total += n;
+      return total;
+    },
+  };
+}
+
+/** Process-wide set the lag monitor attributes stalls against. The daemon's job
+ *  wrappers are the only writers; nothing resets it. */
+export const defaultActiveJobSet: ActiveJobSet = createActiveJobSet();
+
+/**
+ * Run `run` while `name` is recorded as active, so any stall inside it is
+ * attributed to it. Pass-through: result and errors are untouched, and the name
+ * is released even when `run` throws or rejects. Fire-and-forget jobs still
+ * release — the name drops when their promise settles.
+ */
+export async function withActiveJob<T>(
+  name: string,
+  run: () => Promise<T> | T,
+  set: ActiveJobSet = defaultActiveJobSet,
+): Promise<T> {
+  const leave = set.enter(name);
+  try {
+    return await run();
+  } finally {
+    leave();
+  }
+}
+
+/** The active-job set is only useful if the name reaches the code that blocks,
+ *  so modules take this instead of a job string. */
+export type JobLabel = string;
+
+/** One stall attribution. The line names the worst block per window. */
+export interface StallAttributor {
+  /** Feed one observed synchronous block. True when it produced a log line. */
+  observe(blockMs: number): boolean;
+  /** Longest block attributed since the last `reset` (0 when none). */
+  readonly attributedMs: number;
+  /** Start a new window (keeps the threshold and logger). */
+  reset(): void;
+}
+
+export interface StallAttributorOptions {
+  readonly logger: (msg: string) => void;
+  /** Blocks under this length are not attributed. */
+  readonly thresholdMs?: number;
+  /** Jobs to name. Defaults to the process-wide set. */
+  readonly activeJobs?: () => readonly string[];
+}
+
+/**
+ * Turns "the loop froze for N ms" into "the loop froze for N ms during X".
+ *
+ * One line per window, for the worst block only: a job that blocks in a loop
+ * would otherwise emit a line per iteration, and the first stall of a burst is
+ * the one that matters. `reset()` (called on every lag report) re-arms it, so a
+ * window with two separate offenders still gets both named.
+ */
+export function createStallAttributor(opts: StallAttributorOptions): StallAttributor {
+  const thresholdMs = opts.thresholdMs ?? DEFAULT_STALL_MS;
+  const getJobs = opts.activeJobs ?? (() => defaultActiveJobSet.active());
+  let attributedMs = 0;
+  return {
+    observe(blockMs: number): boolean {
+      if (blockMs < thresholdMs || blockMs <= attributedMs) return false;
+      attributedMs = blockMs;
+      const jobs = getJobs();
+      opts.logger(
+        `[loop] stall ${roundMs(blockMs)}ms during: ${jobs.length > 0 ? jobs.join(", ") : UNTRACKED_JOBS_LABEL}`,
+      );
+      return true;
+    },
+    get attributedMs(): number {
+      return attributedMs;
+    },
+    reset(): void {
+      attributedMs = 0;
+    },
+  };
+}
+
+/** Options for the synchronous-segment timers (T1757). */
+export interface SyncSliceTimingOptions {
+  /** Segment length that triggers a log line. Default 250ms, same as `timeJob`. */
+  readonly thresholdMs?: number;
+  /** Defaults to console.error. */
+  readonly logger?: (msg: string) => void;
+  /** Monotonic clock. Defaults to `performance.now` (fractional ms, immune to
+   *  wall-clock jumps — these are short measurements). */
+  readonly now?: () => number;
+}
+
+/** Brackets named synchronous segments inside one job. See `timeSyncSlice`. */
+export interface SyncStopwatch {
+  time<T>(label: string, fn: () => T): T;
+}
+
+/**
+ * Run one *synchronous* segment and log `[loop] sync <job>:<label> <ms>ms` when
+ * it reached `thresholdMs`. Returns exactly what `fn` returns and lets its
+ * errors through — this observes only.
+ *
+ * Where `timeJob` says "a job took a long time" and the lag monitor says "the
+ * loop froze", this names the statement: pass a whole `.all()` / `.run()` /
+ * `.iterate()` loop or a `JSON.parse` of a large blob — nothing that awaits. An
+ * awaited segment would measure wall time, which is not the signal.
+ */
+export function timeSyncSlice<T>(job: string, label: string, fn: () => T, opts: SyncSliceTimingOptions = {}): T {
+  const thresholdMs = opts.thresholdMs ?? DEFAULT_SYNC_SLICE_THRESHOLD_MS;
+  const now = opts.now ?? ((): number => performance.now());
+  const startedAt = now();
+  try {
+    return fn();
+  } finally {
+    const ms = Math.max(0, now() - startedAt);
+    if (ms >= thresholdMs) {
+      const logger = opts.logger ?? ((msg: string) => console.error(msg));
+      logger(`[loop] sync ${job}:${label} ${roundMs(ms)}ms`);
+    }
+  }
+}
+
+/** `timeSyncSlice` with the job name and options bound once at the job boundary. */
+export function createSyncStopwatch(job: string, opts: SyncSliceTimingOptions = {}): SyncStopwatch {
+  return { time: <T>(label: string, fn: () => T): T => timeSyncSlice(job, label, fn, opts) };
 }
 
 /** One completed job measurement. Exposed for tests and future metrics sinks. */
@@ -243,6 +435,12 @@ export interface LoopLagMonitorOptions {
   readonly now?: () => number;
   /** Set false in tests that only call report()/snapshot() directly. */
   readonly autoStart?: boolean;
+  /** Block length at which to name the running jobs. Default 500ms. */
+  readonly stallThresholdMs?: number;
+  /** Set false to keep the lag numbers without stall attribution. */
+  readonly stallAttribution?: boolean;
+  /** Author lookup for `[loop] stall`. Defaults to `defaultActiveJobSet`. */
+  readonly activeJobs?: () => readonly string[];
 }
 
 /**
@@ -250,6 +448,10 @@ export interface LoopLagMonitorOptions {
  * `[loop] lag p99=<ms>ms (p50=.. max=.. window=..)` every `reportIntervalMs`
  * (default 5 minutes) and resets the window, so a burst of blocking work shows
  * up as one spike instead of being diluted by the quiet hours around it.
+ *
+ * Separately, and immediately rather than at the report, it logs
+ * `[loop] stall <ms>ms during: <jobs>` when a single block crosses
+ * `stallThresholdMs` — see `createStallAttributor`.
  */
 export function startLoopLagMonitor(opts: LoopLagMonitorOptions = {}): LoopLagMonitor {
   const logger = opts.logger ?? ((msg: string) => console.error(msg));
@@ -258,7 +460,22 @@ export function startLoopLagMonitor(opts: LoopLagMonitorOptions = {}): LoopLagMo
   const resolutionMs = opts.resolutionMs ?? DEFAULT_PROBE_RESOLUTION_MS;
   const histogram = monitorEventLoopDelay({ resolution: resolutionMs });
   histogram.enable();
-  const maxSampler = createOverrunSampler(resolutionMs);
+  const attributor =
+    opts.stallAttribution === false
+      ? null
+      : createStallAttributor({
+          logger,
+          thresholdMs: opts.stallThresholdMs ?? DEFAULT_STALL_MS,
+          ...(opts.activeJobs ? { activeJobs: opts.activeJobs } : {}),
+        });
+  const maxSampler = createOverrunSampler(resolutionMs, {
+    ...(attributor
+      ? {
+          blockThresholdMs: opts.stallThresholdMs ?? DEFAULT_STALL_MS,
+          onBlock: (blockMs: number) => attributor.observe(blockMs),
+        }
+      : {}),
+  });
   let windowStart = now();
   let timer: NodeJS.Timeout | null = null;
 
@@ -282,6 +499,9 @@ export function startLoopLagMonitor(opts: LoopLagMonitorOptions = {}): LoopLagMo
       const snap = read();
       histogram.reset();
       maxSampler.reset();
+      // Re-arm attribution with the new window, so the worst block of each
+      // window gets its own line instead of only the first one ever seen.
+      attributor?.reset();
       windowStart = now();
       if (!snap) return null;
       logger(

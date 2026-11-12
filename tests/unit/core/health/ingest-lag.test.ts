@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { TranscriptAdapter } from "../../../../src/ports/transcript-adapter.js";
 import {
@@ -10,14 +10,17 @@ import {
   resetClassifyOutcomes,
 } from "../../../../src/core/health/classify-outcomes.js";
 import {
+  adapterStateReader,
   computeIngestLag,
   createIngestLagMonitor,
   ingestLagThresholdHours,
   LOOKBACK_MS,
+  STAT_BATCH_PATHS,
   type AdapterStateEntry,
   type IngestLagDeps,
 } from "../../../../src/core/health/ingest-lag.js";
-import { MAX_CLASSIFY_FAILURES } from "../../../../src/core/scheduler/scan-once.js";
+import { MAX_CLASSIFY_FAILURES, recordClassified } from "../../../../src/core/scheduler/scan-once.js";
+import { SqliteSessionStore } from "../../../../src/core/storage/sqlite-session-store.js";
 
 const HOUR = 3_600_000;
 const NOW = Date.parse("2026-10-27T12:00:00Z");
@@ -241,5 +244,99 @@ describe("ingestLagThresholdHours", () => {
     expect(ingestLagThresholdHours({ NLM_INGEST_LAG_ALERT_HOURS: "abc" })).toBe(6);
     expect(ingestLagThresholdHours({ NLM_INGEST_LAG_ALERT_HOURS: "-1" })).toBe(6);
     expect(ingestLagThresholdHours({ NLM_INGEST_LAG_ALERT_HOURS: "12" })).toBe(12);
+  });
+});
+
+/**
+ * T1757 Part 3 — the stat pass is what put `alert-health took 4949ms (sync slice
+ * 1229.5ms)` in the live log: `statSource` is `statSync`, and the loop over the
+ * whole 14-day discovery list had no `await` in its body, so the entire pass was
+ * one synchronous slice inside a job that runs every 5 minutes. It is now batched
+ * with a yield between batches, and both the stat loop and the `adapter_state`
+ * read report their own `[loop] sync ..` slice. What must not change is the
+ * report: same paths, same order, same counters.
+ */
+describe("computeIngestLag pacing", () => {
+  function corpus(count: number): string[] {
+    // Sizes and mtimes that make the counters non-trivial: half unseen, half
+    // already-ingested-and-unchanged, one parked, one still-active.
+    return Array.from({ length: count }, (_, i) =>
+      file(`s${i}`, 10 + i, i % 4 === 0 ? 5 * HOUR : 1 * HOUR),
+    );
+  }
+
+  it("yields between batches and reports exactly what one slice reported", async () => {
+    const paths = corpus(9);
+    const state = {
+      "claude-code": Object.fromEntries(
+        paths
+          .filter((_, i) => i % 2 === 1)
+          .map((p) => [p, { fileSize: 999, failureCount: MAX_CLASSIFY_FAILURES } as AdapterStateEntry]),
+      ),
+    };
+    let yields = 0;
+    const countYields = async () => {
+      yields += 1;
+    };
+    const unbatched = await computeIngestLag(deps([adapter("claude-code", paths)], state), NOW);
+    const batched = await computeIngestLag(
+      {
+        ...deps([adapter("claude-code", paths)], state),
+        yieldEveryPaths: 2,
+        yieldFn: countYields,
+      },
+      NOW,
+    );
+    expect(batched).toEqual(unbatched);
+    expect(batched.adapters["claude-code"]!.pending).toBeGreaterThan(0);
+    // 9 paths, 2 per batch → batches at 0,2,4,6,8; no trailing yield.
+    expect(yields).toBe(4);
+  });
+
+  it("defaults to batching rather than one synchronous pass", () => {
+    expect(STAT_BATCH_PATHS).toBeLessThan(1_000);
+  });
+
+  it("names the stat loop in its own [loop] sync line", async () => {
+    const lines: string[] = [];
+    await computeIngestLag(
+      { ...deps([adapter("claude-code", corpus(3))]), loopLogger: (m) => lines.push(m), loopThresholdMs: 0 },
+      NOW,
+    );
+    const named = lines.filter((l) => /^\[loop\] sync ingest-lag:stat:claude-code \d+(\.\d+)?ms$/.test(l));
+    expect(named).toHaveLength(1); // one batch of 3 paths (default batch is 100)
+    expect(named[0]).toContain("stat:claude-code");
+  });
+});
+
+describe("adapterStateReader", () => {
+  const MIGRATIONS = resolve(__dirname, "../../../../migrations");
+  let storeDir: string;
+  let sessions: SqliteSessionStore;
+
+  beforeEach(() => {
+    storeDir = mkdtempSync(join(tmpdir(), "nlm-lag-store-"));
+    sessions = new SqliteSessionStore({
+      dbPath: join(storeDir, "t.sqlite"),
+      migrationsDir: MIGRATIONS,
+    });
+  });
+  afterEach(async () => {
+    await sessions.close();
+    rmSync(storeDir, { recursive: true, force: true });
+  });
+
+  it("reads adapter_state unchanged and reports its own sync slice", async () => {
+    const db = sessions.rawDb();
+    recordClassified(db, "claude-code", "/transcripts/a.jsonl", "sess_a", 11);
+    recordClassified(db, "claude-code", "/transcripts/b.jsonl", "sess_b", 22);
+    recordClassified(db, "codex", "/transcripts/c.jsonl", "sess_c", 33);
+    const lines: string[] = [];
+    const read = adapterStateReader(sessions, { thresholdMs: 0, logger: (m) => lines.push(m) });
+    const rows = await read("claude-code");
+    expect([...rows.keys()].sort()).toEqual(["/transcripts/a.jsonl", "/transcripts/b.jsonl"]);
+    expect(rows.get("/transcripts/a.jsonl")).toEqual({ fileSize: 11, failureCount: 0 });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/^\[loop\] sync ingest-lag:adapter_state:claude-code \d+(\.\d+)?ms$/);
   });
 });

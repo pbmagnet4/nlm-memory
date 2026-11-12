@@ -44,14 +44,18 @@ import type {
 import { PgSessionStore } from "@core/storage/pg-session-store.js";
 import type { PgFactStore } from "@core/storage/pg-fact-store.js";
 import type { Fact, Signal } from "@shared/types.js";
-import { MAX_CLASSIFY_FAILURES, recordClassified, recordClassifiedPg, recordFailed, recordFailedPg, recordSkipped, recordSkippedPg, scanOnce, scanOncePg } from "./scan-once.js";
+import { MAX_CLASSIFY_FAILURES, recordClassified, recordClassifiedPg, recordFailed, recordFailedPg, recordSkipped, recordSkippedPg, scanOnce, scanOncePg, type ScanPacing } from "./scan-once.js";
 import { runCheapChecksOnSqlite } from "@core/integrity/check-invariants.js";
 import { classifyAdaptive } from "@core/classifier/hierarchical-classify.js";
 import { isTransientLLMError } from "@core/classifier/transient-error.js";
 import { appendShadowLine, gatedClassification, type GateVerdict, type IngestGateMode } from "@core/classifier/ingest-gate.js";
 import { recordClassifyFailure, recordClassifySuccess, recordIngestProgress } from "@core/health/classify-outcomes.js";
 import { TimeoutError } from "@core/util/with-timeout.js";
-import { timeJob, DEFAULT_SYNC_SLICE_THRESHOLD_MS as DEFAULT_LOOP_THRESHOLD_MS } from "./loop-monitor.js";
+import {
+  timeJob,
+  withActiveJob,
+  DEFAULT_SYNC_SLICE_THRESHOLD_MS as DEFAULT_LOOP_THRESHOLD_MS,
+} from "./loop-monitor.js";
 import { yieldToEventLoop } from "@core/util/yield-loop.js";
 import { bindSessionToWorkstream } from "@core/workstream/bind.js";
 import { parseWorkTopics, aliasToLabelMap } from "@core/workstream/work-topics.js";
@@ -334,11 +338,20 @@ export class ScanScheduler {
    *  writes) so it gets its own `[loop]` line. See loop-monitor.ts for why a
    *  *sync slice* rather than wall time is the trigger. */
   tick(): Promise<TickReport> {
-    if (!this.timingEnabled) return this.runTick();
-    return timeJob("scheduler-tick", () => this.runTick(), {
-      logger: this.opts.logger,
-      thresholdMs: this.opts.loopThresholdMs,
-    });
+    return this.timed("scheduler-tick", () => this.runTick());
+  }
+
+  /** Run one scheduler unit under both loop hooks (T1757): entered into the
+   *  process-wide active-job set so a `[loop] stall` line can name it, and —
+   *  when measurement is on — timed for its own `[loop] .. took` line. The two
+   *  are independent: attribution has to survive `NLM_LOOP_LOG=0`, because the
+   *  lag monitor keeps sampling in that mode and an unattributed stall is the
+   *  exact finding this task was opened for. */
+  private async timed<T>(name: string, fn: () => Promise<T> | T): Promise<T> {
+    if (!this.timingEnabled) return withActiveJob(name, fn);
+    return withActiveJob(name, () =>
+      timeJob(name, fn, { logger: this.opts.logger, thresholdMs: this.opts.loopThresholdMs }),
+    );
   }
 
   private async runTick(): Promise<TickReport> {
@@ -374,8 +387,8 @@ export class ScanScheduler {
       let results;
       try {
         results = _pgPool
-          ? await scanOncePg(adapter, this.opts.idleMinutes, _pgPool, Date.now(), this.opts.logger)
-          : await scanOnce(adapter, this.opts.idleMinutes, sqliteDb!, Date.now(), this.opts.logger);
+          ? await scanOncePg(adapter, this.opts.idleMinutes, _pgPool, Date.now(), this.opts.logger, this.scanPacing)
+          : await scanOnce(adapter, this.opts.idleMinutes, sqliteDb!, Date.now(), this.opts.logger, this.scanPacing);
       } catch (e) {
         this.opts.logger(
           `[scheduler] scanOnce error for ${adapter.name}: ${e instanceof Error ? e.message : String(e)}`,
@@ -619,14 +632,7 @@ export class ScanScheduler {
     for (const pass of this.dreamPasses) {
       if (now - (this.dreamPassLastRun.get(pass.name) ?? 0) < pass.intervalMs) continue;
       try {
-        if (this.timingEnabled) {
-          await timeJob(`dream-pass:${pass.name}`, () => pass.run(), {
-            logger: this.opts.logger,
-            thresholdMs: this.opts.loopThresholdMs,
-          });
-        } else {
-          await pass.run();
-        }
+        await this.timed(`dream-pass:${pass.name}`, () => pass.run());
         // Stamp only on success: a throwing pass must retry on the next tick
         // instead of consuming its whole interval slot.
         this.dreamPassLastRun.set(pass.name, Date.now());
@@ -644,12 +650,18 @@ export class ScanScheduler {
    *  event loop first so an already-queued HTTP request gets a slice before the
    *  block starts. A no-op wrapper when timing is off. */
   private async timeSync<T>(name: string, fn: () => T): Promise<T> {
-    if (!this.timingEnabled) return fn();
+    if (!this.timingEnabled) return this.timed(name, fn);
     await yieldToEventLoop();
-    return timeJob(name, fn, {
-      logger: this.opts.logger,
-      thresholdMs: this.opts.loopThresholdMs,
-    });
+    return this.timed(name, fn);
+  }
+
+  /** Pacing for the per-source scan loops (T1757). The yields are always on —
+   *  they are the fix, not the measurement — while the `[loop] sync scan:..`
+   *  lines follow the same `NLM_LOOP_LOG` switch as every other loop line. */
+  private get scanPacing(): ScanPacing {
+    return this.timingEnabled
+      ? { loopLogger: this.opts.logger, loopThresholdMs: this.opts.loopThresholdMs }
+      : {};
   }
 
   private async drainSignals(chunk: { id: string; signals?: ReadonlyArray<unknown> }, scope: string | null): Promise<void> {

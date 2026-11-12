@@ -210,3 +210,159 @@ EXISTS` probe instead of `NOT IN`), the integrity sweep's aggregate checks (one
 check per slice), the dream samplers' `ORDER BY random()` (random rowid start +
 `ORDER BY rowid LIMIT 1` per draw), and promotion's whole-file hook-log parse (read
 the tail, filter by timestamp while streaming).
+
+---
+
+# Phase 2 (T1757) — what the instrumentation then saw, and what it is
+
+T679 shipped the two `[loop]` hooks and chunked the one offender that measurement
+had already caught. This phase is what the live daemon (0.21.21-t679.1, measured
+2026-11-11 over `~/.nlm/daemon.err`, 67 `[loop]` lines) reported afterwards, and
+the code read that explains each line. The headline: **the hook timeouts did not
+stop**, and for the first time the log says how long each freeze was.
+
+## What the log says
+
+```
+[loop] lag p99=23.3ms (p50=22.1ms max=363.7ms window=300s)
+[loop] scheduler-tick took 166164ms (sync slice 5750.8ms; hook budget 4000ms)
+[loop] lag p99=24.1ms (p50=22.1ms max=13652ms window=300s)
+[loop] alert-health took 4949ms (sync slice 1229.5ms; hook budget 4000ms)
+[loop] fact-embed-sweep took 2347ms (sync slice 605ms; hook budget 4000ms)
+[loop] lag p99=41.1ms (p50=22.1ms max=17649.3ms window=300s)
+```
+
+Percentiles stay at 22-55 ms — the loop is healthy *most* of the time — while
+individual blocks run to 13.7 s and 17.6 s. p50 is pinned near the 20 ms probe
+resolution, so nothing here is background noise: every `max` is one deliberate
+synchronous block. Read against the 4 s hook budget, a 17.6 s block misses two
+consecutive prompts; a 1.2 s block is a coin flip.
+
+Three findings, in the order the evidence supports:
+
+1. **p99 ≈ 22 ms with max up to 17.6 s is the signature of a few huge blocks, not
+   of general load.** Nothing about the corpus needs to be faster on average; a
+   handful of statements need to stop holding the loop.
+2. **The named sync slices are 286-5 751 ms**, i.e. every one of them is bigger
+   than the 250 ms threshold and several are longer than a hook's whole budget.
+   The named offenders are all real and all fixable by bounding a loop.
+3. **Several of the largest blocks have no `[loop] <job> took` line near them**
+   (`max=17649.3ms`, `max=13652ms`, `max=10737.8ms`, `max=8498.9ms`). Two causes,
+   both fixed in T1757 Part 1: a job's line is printed when the job *ends*, up to
+   166 s after the block that caused it, and code that no `timedJob` wrapper names
+   at all (`MemoSweepScheduler`, HTTP handlers, anything behind a SQLite lock wait)
+   can never produce one. `[loop] stall <ms>ms during: …` closes the first gap and
+   either names or explicitly clears the second (`during: no tracked job`).
+
+## Synchronous hot spots, by job
+
+### `alert-health` — every 5 min (`src/cli/nlm.ts:748`)
+
+The three checks themselves are clean: `checkEmbedderAndAlert` and
+`checkDriftAndAlert` (`src/core/alerts/check-and-alert.ts:31,60`) do
+`readFile`/`writeFile` of `~/.nlm/alert-state.json` (async, tiny), a cached
+in-process warmup flag read, and `fireAlert`, which returns immediately with zero
+work unless `NLM_ALERT_WEBHOOK` is set. `checkDriftAndAlert`'s npm registry call is
+24 h-cached and awaited. **Nothing in these two can hold the loop**, which is why
+the 286-1229 ms slices `alert-health` reports must come from the third check:
+
+- **`checkIngestLagAndAlert` → `ingestLag.get()` → `computeIngestLag`
+  (`src/core/health/ingest-lag.ts:146`) — the whole 14-day source scan, in one
+  slice.** Two blocks:
+  - `sqliteStateReader` `:76-81`: `SELECT … FROM adapter_state WHERE adapter_name = ?`
+    `.all()` for **every row of that adapter**, then `new Map(rows.map(…))`. On this
+    machine `adapter_state` carries one row per transcript path ever ingested
+    (36 k+ sessions), and the whole result set plus the Map build is one synchronous
+    statement. Same shape as `scanOnce:115`, which this file already lists.
+  - `adapterLag` `:123-139`: `for (const path of await adapter.discover({since}))`
+    then `statSource` → **`statSync` per path with no `await` at all in the loop
+    body**. `adapter.discover()` in `claude-code.ts:68-97` awaits a real `fs.stat`
+    per file, so *the walk yields*; the lag pass throws that away by re-statting
+    every returned path synchronously. `LOOKBACK_MS` (`:23`) is 14 days, i.e.
+    thousands of files on a busy machine, and the cache in `createIngestLagMonitor`
+    (`:211`) is 60 s, so this runs once per alert round — one 1.2 s freeze every
+    five minutes, forever, from a job whose whole purpose is to *report* health.
+
+### Scheduler tick — every 30 min (`src/core/scheduler/scheduler.ts`)
+
+`scheduler-tick took 166164ms (sync slice 5750.8ms)`. Wall time is dominated by
+classify calls (fine); the 5.75 s slice is not. Per-step, in tick order:
+
+| step | sync? | verdict |
+|---|---|---|
+| `runCheapChecksOnSqlite` (`integrity/check-invariants.ts:553-593`) | 7 full-table scans + a `COUNT` of each, one slice | already yielded-into via `timeSync("integrity-check")`, but the block itself is unbounded (already §4 above; once/24 h) |
+| `scanOnce` (`scan-once.ts:103-158`) | `.all(adapter.name)` of every `adapter_state` row `:112-116`, **then a `statSync` per discovered path `:122-146` with no yield**, then `.run()` per row it must reset | **the tick's 5.75 s slice.** Identical shape to the ingest-lag loop, and it runs every tick for every adapter |
+| `parseOrLog` → `adapter.parseSession` | async reads, `JSON.parse` per line of one transcript | yields; bounded by one file |
+| `contentHash`, `extractFacts`, `deriveSubagentMeta`, `scanTranscriptDerivables` | per session, CPU only | bounded per session |
+| `recordClassified` / `recordSkipped` / `recordFailed` (`scan-once.ts:160-194`) | one indexed upsert + one `SELECT` each | fine per session; the failure path runs *two* statements per failed file inside the loop |
+| `insertSession` | row + FTS + entities + markers + vec in one transaction | bounded per session (§4) |
+| `bindSessionToWorkstream`, `drainSessionExemplars`, `drainSignals` | awaited, embedder round-trips between writes | fine |
+| `pruneReverted` / `applyBucketCap` | was one backlog-sized transaction | fixed in T679 §4 |
+| dream passes | `ORDER BY random()`, whole-id-set reads, `readFileSync` of the 13 MB hook log | unchanged, §5 |
+
+### `corpus-monitor` — per boot + every 24 h (`src/cli/nlm.ts:770-822`)
+
+- `computeCorpusStats` (`metrics/corpus-stats.ts:60-130`): `getBodyStats` is the
+  chunked model already (`:66-92`). Still one slice each: `COUNT(*) FROM sessions`
+  `:63`, the `entities`/`hapaxEntities` pair `:96-101` (`COUNT(CASE WHEN
+  session_count = 1 …)` is a full scan, not index-only), the three-way `facts`
+  count `:106-113`, `markers` `:121`, `code_exemplars` `:125`. Sub-millisecond each
+  at today's row counts; unbounded in general, and 5 of them per run.
+- `readFileSync(rederivTrendPath)` `nlm.ts:800` reads the whole append-only trend
+  JSONL to look at its last line, then `JSON.parse`s it. The file grows daily —
+  today ~114 lines, so minutes-per-year of headroom, all of it synchronous.
+- `persistReDerivationPairs` — chunked in T679 §1; `re-derivation.ts:146` (`all
+  sessions in the window`) and `:170` (`all edges`) still materialise in one slice,
+  and `:183` `JSON.parse`s the whole pairs cache.
+- The `store.rawDb()` above means the monitor reads through the serving connection,
+  so any of the above freezes request handling directly.
+
+### Jobs the monitor cannot name
+
+`MemoSweepScheduler` (`src/core/hook/memo-sweep.ts`, every 5 min, started outside
+`timedJob` at `src/cli/nlm.ts:979`) is `readdirSync` + `statSync` per entry +
+`rmSync`. Small, but it is untracked, and "untracked" is indistinguishable
+from "the HTTP path itself" in a stall line — which is exactly the ambiguity Phase 2
+is trying to remove.
+
+## Phase 2 conclusion
+
+The timeouts that survive T679 are two directory-scale `statSync` loops that share
+one bug — a per-file loop that never yields — living in `ingest-lag.ts:123` (5 min
+cadence, and the reason `alert-health` freezes) and `scan-once.ts:122` (30 min
+cadence, the tick's 5.75 s slice); plus `computeFactEmbedStats`
+(`facts/embed-missing.ts:23-31`), whose three full `facts` counts are now measured
+rather than estimated: the `[loop] fact-embed-sweep took … (sync slice 392-605ms)`
+lines are those counts, every 2 minutes, so the bound this file deferred in §3 is
+now justified by measurement. Everything else on the list above is either already
+chunked, sub-millisecond at today's row counts, or documented and cadence-limited.
+Part 3 fixes those three and adds `[loop] sync …` instrumentation on the segments it
+does not bound, so the next phase starts from numbers instead of from a code read.
+
+## Phase 3 (T1757) — what changed, and what to read in the log next
+
+| change | was | now |
+|---|---|---|
+| `computeIngestLag` stat pass | one synchronous pass over the 14-day discovery list, every 5 min | `STAT_BATCH_PATHS` (100) per yield; report byte-identical to the unbatched pass |
+| `scanOnce` / `scanOncePg` per-source loop | `statSync` per source with no yield, every tick per adapter | `SCAN_BATCH_SOURCES` (100) per yield, checked at the top of the iteration so no `continue` skips it |
+| `computeFactEmbedStats` in the sweep | three whole-`facts` counts, every 2 min | `computeFactEmbedStatsChunked`, `FACT_COUNT_BATCH_ROWS` (5,000) rowids per yield, sums asserted equal to the single-statement counts |
+| attribution | "a job took N ms", printed when the job *ended* | `[loop] stall <ms>ms during: <jobs>` at the moment the block ends; `no tracked job` clears the loop itself |
+| statement naming | nothing inside a job | `[loop] sync <job>:<label> <ms>ms` for the segments that were not bounded (`adapter_state` reads, corpus counts path, memo sweep) |
+
+Nothing here changes a result: each bounding is pinned by a test comparing against
+the old shape (whole-table oracle, or the same scan with batching turned off from
+identical seeded state).
+
+What the next read of `grep '\[loop\]' ~/.nlm/daemon.err` decides:
+
+1. `stall … during: scheduler-tick` with a shrinking max, and no
+   `[loop] sync scan:adapter_state:*` line → the two stat loops were it; the
+   `adapter_state` read stays unbounded and named.
+2. Any `stall … during: no tracked job` at multi-second scale is a real finding:
+   it is the HTTP path, a SQLite lock wait behind another process, or a timer no
+   wrapper owns. That is the one branch of this task measurement could not close.
+3. `[loop] sync fact-embed-sweep:count`, `… ingest-lag:adapter_state:*` past 250 ms
+   → bound them for real (keyset pagination on `source_path` / `NOT EXISTS` probes),
+   which is the same advice §3 already carries for the due-list anti-join.
+4. Unchanged backlog: integrity aggregate checks (§4), `ORDER BY random()` dream
+   samplers and the whole-file hook-log parse (§5), `wal_checkpoint` (§2).
