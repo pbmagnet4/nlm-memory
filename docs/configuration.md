@@ -47,6 +47,17 @@
 | `NLM_WIKI_MIN_FACTS` | `3` | Minimum current (non-superseded, non-retired) fact count a subject needs to earn a wiki page. |
 | `NLM_WIKI_MIN_SESSIONS` | `3` | Minimum distinct contributing sessions a subject needs to earn a wiki page. |
 | `NLM_WIKI_LINK_BASE` | `http://127.0.0.1:<NLM_PORT>` | Base URL a wiki page's session links point at. Override when the vault is synced somewhere the daemon's own loopback address won't resolve. |
+| `NLM_CLEF_BASE_URL` | — (Clef off) | Base of the Clef "system one" endpoint. Point it at the classifier gateway or straight at an inference host (`http://127.0.0.1:8080`); unset means no caller has a judge and every Clef-backed job stays home. |
+| `NLM_CLEF_PATH` | `/clef/v1/systemone` | Request path appended to that base. The gateway mounts Clef under a pass-through prefix; a direct server (oMLX, LM Studio) serves the bare `/v1/systemone`, so point it there. |
+| `NLM_CLEF_MODEL` | `clef-oQ4e` | Model name sent in the request body. `clef-flash-oQ8e` is ~5x faster at slightly lower accuracy — the lane the relevance eval recommends for sampled jobs. |
+| `NLM_CLEF_API_KEY` | — (no auth header) | Bearer token. Leave unset for a direct host on a trusted network: no `Authorization` header is sent at all. |
+| `NLM_RELEVANCE_JUDGE` | off (`no measurement`) | Nightly Clef relevance-precision metric (T1782): samples the last 24 h of prompt-recall hook fires, judges each (prompt, injected memory) pair, and reports the kept share as `actual.relevancePrecision` on `GET /api/health/slo`. Metric only, never an injection gate; it rides the scheduler tick (once per 24 h, fired not awaited, behind the disk guard). |
+| `NLM_RELEVANCE_SAMPLE` | `60` | Hook records sampled per night, taken on an even stride across the window. Each record contributes its injected memories, so a night is a couple of minutes of a local model. |
+| `NLM_RELEVANCE_THRESHOLD` | `1.43` | Score at or above which a pair counts as relevant. Default is the tune-split fit for the `same` phrasing at 8 memories/call. The judge reads ~5 points low at it, so recalibrating is a config change — and if you change `NLM_RELEVANCE_CHUNK`, re-fit it: the absolute scale moves with the grouping. |
+| `NLM_RELEVANCE_PHRASING` | `same` | Question wording: `same`, `dev` or `direct`. They correlate 0.95-0.99, so the choice barely matters — but the fitted threshold belongs to whichever one you picked. |
+| `NLM_RELEVANCE_CHUNK` | `8` | Memories per Clef call. One prompt carried 29 and the call came back HTTP 413; 8 was the measured shape. |
+| `NLM_RELEVANCE_STATE` | `~/.nlm/relevance-nightly.json` | When the job last *attempted* (not succeeded), so a night that fails against an offline judge costs one WARN a day instead of a retry every tick. |
+| `NLM_RELEVANCE_DIR` | `~/.nlm/relevance` | Directory for the nightly `<UTC date>.jsonl` dump of scored pairs (prompt preview, memory id/label, score, kept, threshold, model) for recalibration against labels. Keeps 14 nights. |
 
 ### Changing the classifier from the UI
 

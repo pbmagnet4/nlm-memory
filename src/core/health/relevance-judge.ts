@@ -31,8 +31,16 @@
  * place — a half-scored night is a different distribution than a whole one, and
  * a metric that silently changes what it counts when the network is unhappy is
  * worse than a gap.
+ *
+ * Every night also dumps the pairs it scored to `<dataDir>/relevance/<date>.jsonl`
+ * and keeps 14 of them. The eval's other honest caveat was that its gold labels
+ * come from a model reading the same two fields, so before this number is quoted
+ * as anything stronger than a trend, someone has to hand-check the pairs where
+ * judge and label disagree — which needs the raw pairs, at the threshold and
+ * model each night actually ran with, which is what those files are for.
  */
-import { openSync, readSync, closeSync, statSync } from "node:fs";
+import { openSync, readSync, closeSync, statSync, mkdirSync, renameSync, writeFileSync, readdirSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
 import { askClef, clefSettingsFromEnv, type ClefAnswer, type ClefQuestion, type ClefSettings } from "../../llm/clef-client.js";
 import { hookLogPath } from "@core/recall/hook-recall-log.js";
 import { tenantStatePath } from "@core/tenancy/tenant-state-path.js";
@@ -303,6 +311,95 @@ function scoreOf(answer: ClefAnswer | undefined): number | null {
   return answer?.type === "score" && Number.isFinite(answer.score) ? answer.score : null;
 }
 
+// ── the calibration dump ──────────────────────────────────────────
+
+/** Nights of scored pairs to keep. The eval's closing recommendation is that
+ *  this number has to be re-fitted against labels before anyone quotes it as a
+ *  KPI, so the raw pairs are the point of the run's second output: two weeks of
+ *  samples plus the volume a hand-check needs, at tens of kB a night. */
+export const RELEVANCE_PAIRS_KEEP_DAYS = 14;
+
+/** `<dataDir>/relevance` — the same state directory slo-metrics.json lives in. */
+export function relevancePairsDir(env: NodeJS.ProcessEnv = process.env): string {
+  return env["NLM_RELEVANCE_DIR"] ?? tenantStatePath(DEFAULT_TEAM_ID, "relevance");
+}
+
+export function relevancePairsPath(dir: string, date: Date): string {
+  return join(dir, `${date.toISOString().slice(0, 10)}.jsonl`);
+}
+
+/** One scored pair. The prompt preview and the memory label are what a human
+ *  re-labels; `ts`/`conversationId` are how a line joins back to the hook log;
+ *  `threshold`/`model` ride per line so a month of files can be re-scored at a
+ *  new threshold without knowing what the job was configured with that night. */
+function pairLine(p: ScoredPair, threshold: number, model: string): string {
+  return JSON.stringify({
+    ts: new Date(p.ts).toISOString(),
+    conversationId: p.conversationId,
+    promptPreview: p.promptPreview,
+    memoryId: p.memory.id,
+    memoryLabel: p.memory.label,
+    score: p.score,
+    kept: p.kept,
+    threshold,
+    model,
+  });
+}
+
+/** Drop dated pair files older than the retention window. Named by date, so
+ *  retention does not depend on mtime surviving a copy or a restore; anything
+ *  in the directory that is not a dated pair file is left alone. */
+export function prunePairs(dir: string, date: Date): void {
+  const cutoff = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
+    - (RELEVANCE_PAIRS_KEEP_DAYS - 1) * 24 * 60 * 60_000;
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    const dated = /^(\d{4}-\d{2}-\d{2})\.jsonl$/.exec(name);
+    if (!dated) continue;
+    const day = Date.parse(`${dated[1]}T00:00:00.000Z`);
+    if (!Number.isFinite(day) || day >= cutoff) continue;
+    try {
+      unlinkSync(join(dir, name));
+    } catch {
+      // Unlinkable today; next night tries again.
+    }
+  }
+}
+
+/**
+ * Write the night's scored pairs to `<dir>/<UTC date>.jsonl`, then prune.
+ * Whole-file atomic write rather than an append: the file *is* this night's
+ * sample, so a same-date re-run replaces it instead of double-counting.
+ * Returns the path, or null when the write failed — by then the metric is
+ * already recorded, and a calibration dump never fails a night.
+ */
+export function writePairs(
+  dir: string,
+  date: Date,
+  pairs: readonly ScoredPair[],
+  threshold: number,
+  model: string,
+): string | null {
+  const path = relevancePairsPath(dir, date);
+  try {
+    mkdirSync(dir, { recursive: true });
+    const tmp = join(dir, `.pairs.${process.pid}.tmp`);
+    writeFileSync(tmp, pairs.map((p) => pairLine(p, threshold, model)).join("\n") + "\n", "utf8");
+    renameSync(tmp, path);
+  } catch {
+    return null;
+  }
+  prunePairs(dir, date);
+  return path;
+}
+
+// ── one night's run ──────────────────────────────────────────────
+
 export interface RelevanceNightlyDeps {
   readonly env?: NodeJS.ProcessEnv;
   readonly now?: () => number;
@@ -312,6 +409,8 @@ export interface RelevanceNightlyDeps {
   readonly tenantId?: string;
   /** hook-log.jsonl to sample. Defaults to the shared resolution. */
   readonly hookLog?: string;
+  /** Directory for the calibration pairs file. Default relevancePairsDir(). */
+  readonly pairsDir?: string;
   /** Scored pairs go here (the SLO state). */
   readonly record: (sample: SloRelevanceSample) => void;
   readonly ask?: (
@@ -322,7 +421,14 @@ export interface RelevanceNightlyDeps {
 }
 
 export type RelevanceNightlyResult =
-  | { readonly ran: true; readonly value: number; readonly pairs: number; readonly model: string }
+  | {
+      readonly ran: true;
+      readonly value: number;
+      readonly pairs: number;
+      readonly model: string;
+      /** Where the calibration pairs went; null when that write failed. */
+      readonly pairsPath: string | null;
+    }
   | { readonly ran: false; readonly reason: "off" | "no-clef" | "no-records" | "no-pairs" | "clef-error"; readonly detail?: string };
 
 /**
@@ -388,15 +494,26 @@ export async function runRelevanceNightly(deps: RelevanceNightlyDeps): Promise<R
 
   const agg = aggregateRelevance(pairs);
   if (!agg) return { ran: false, reason: "no-pairs" };
-  deps.record({
+  const sample: SloRelevanceSample = {
     at: now(),
     value: agg.value,
     pairs: agg.pairs,
     threshold: settings.threshold,
     model: clef.model,
     phrasing: settings.phrasing,
-  });
-  return { ran: true, value: agg.value, pairs: agg.pairs, model: clef.model };
+  };
+  deps.record(sample);
+  // The metric is recorded first: the calibration dump is worth having, and is
+  // not worth losing a night over.
+  const pairsPath = writePairs(
+    deps.pairsDir ?? relevancePairsDir(deps.env),
+    new Date(sample.at),
+    pairs,
+    settings.threshold,
+    clef.model,
+  );
+  if (pairsPath === null) log("[relevance] WARN could not write the calibration pairs; the metric still stands");
+  return { ran: true, value: agg.value, pairs: agg.pairs, model: clef.model, pairsPath };
 }
 
 // ── where the job keeps its state ───────────────────────────────────

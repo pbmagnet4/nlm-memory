@@ -9,7 +9,7 @@
  * never a throw into the caller.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -21,13 +21,17 @@ import {
   relevanceQuestions,
   relevanceJudgeEnabled,
   relevanceSettings,
+  relevancePairsDir,
   relevanceStatePath,
   RELEVANCE_CHUNK_DEFAULT,
+  RELEVANCE_PAIRS_KEEP_DAYS,
   RELEVANCE_THRESHOLD_DEFAULT,
   runRelevanceNightly,
   sampleRecords,
+  writePairs,
   type InjectionRecord,
   type RelevanceMemory,
+  type ScoredPair,
 } from "../../../../src/core/health/relevance-judge.js";
 import type { ClefAnswer, ClefQuestion } from "../../../../src/llm/clef-client.js";
 import type { SloRelevanceSample } from "../../../../src/core/health/slo-metrics.js";
@@ -305,11 +309,13 @@ describe("runRelevanceNightly", () => {
     env: Record<string, string> = ENV,
     ask: (state: unknown, questions: Record<string, ClefQuestion>, opts: unknown) => Promise<{ answers: Record<string, ClefAnswer> }> = async () => ({ answers: answersFor([2]) }),
     memos: readonly RelevanceMemory[] = [MEMO],
+    pairsDir = join(tmp, "relevance"),
   ) {
     return runRelevanceNightly({
       env,
       now: () => NOW,
       hookLog: log,
+      pairsDir,
       sessions: sessionsWith(memos),
       ask: ask as never,
       logger: (m) => warns.push(m),
@@ -332,7 +338,7 @@ describe("runRelevanceNightly", () => {
       // First prompt relevant, second not.
       return { answers: answersFor(seen.length === 1 ? [RELEVANCE_THRESHOLD_DEFAULT] : [0.4]) };
     });
-    expect(res).toEqual({ ran: true, value: 0.5, pairs: 2, model: "clef-flash-oQ8e" });
+    expect(res).toEqual({ ran: true, value: 0.5, pairs: 2, model: "clef-flash-oQ8e", pairsPath: join(tmp, "relevance", "2026-02-05.jsonl") });
     // One call per prompt, the prompt alone in state, the direct oMLX endpoint.
     expect(seen).toHaveLength(2);
     expect(seen[0]!.state).toEqual({ prompt: "what did we decide about the slo endpoint" });
@@ -351,6 +357,23 @@ describe("runRelevanceNightly", () => {
       phrasing: "same",
     }]);
     expect(warns).toEqual([]);
+    // The night's pairs land next to it, in the shape the recalibration script
+    // reads: what was asked, what it was asked about, what the judge said.
+    if (res.ran !== true || res.pairsPath === null) throw new Error("expected the night to be scored and dumped");
+    const lines = readFileSync(res.pairsPath, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toEqual({
+      ts: new Date(NOW - HOUR).toISOString(),
+      conversationId: "conv-1",
+      promptPreview: "what did we decide about the slo endpoint",
+      memoryId: "s1",
+      memoryLabel: "SLO endpoint design",
+      score: RELEVANCE_THRESHOLD_DEFAULT,
+      kept: true,
+      threshold: RELEVANCE_THRESHOLD_DEFAULT,
+      model: "clef-flash-oQ8e",
+    });
+    expect(lines[1]).toMatchObject({ ts: new Date(NOW - 2 * HOUR).toISOString(), score: 0.4, kept: false });
   });
 
   it("chunks memories into one call per chunk, in order", async () => {
@@ -367,7 +390,7 @@ describe("runRelevanceNightly", () => {
       memos,
     );
     expect(keySets).toEqual([["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7"], ["m0", "m1"]]);
-    expect(res).toEqual({ ran: true, value: 1, pairs: 10, model: "clef-flash-oQ8e" });
+    expect(res).toMatchObject({ ran: true, value: 1, pairs: 10, model: "clef-flash-oQ8e" });
   });
 
   it("a Clef error is one WARN and no sample: the previous night stands", async () => {
@@ -411,5 +434,71 @@ describe("runRelevanceNightly", () => {
     writeFileSync(log, recallLine(NOW - HOUR, ["deleted-1"]) + "\n", "utf8");
     expect(await run()).toEqual({ ran: false, reason: "no-pairs" });
     expect(recorded).toEqual([]);
+  });
+});
+
+describe("the calibration pairs dump", () => {
+  let tmp: string;
+  let dir: string;
+  const pair = (score: number, id = "s1"): ScoredPair => ({
+    ts: NOW,
+    conversationId: "conv-1",
+    promptPreview: "the prompt as the hook saw it",
+    memory: { id, label: `label of ${id}`, summary: "s" },
+    score,
+    kept: score >= RELEVANCE_THRESHOLD_DEFAULT,
+  });
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "nlm-rel-pairs-"));
+    dir = join(tmp, "relevance");
+  });
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+  it("is one file per UTC night, replaced rather than appended", () => {
+    const path = writePairs(dir, new Date(NOW), [pair(2), pair(0)], 1.43, "clef-flash-oQ8e");
+    expect(path).toBe(join(dir, "2026-02-05.jsonl"));
+    expect(readFileSync(path!, "utf8").trim().split("\n")).toHaveLength(2);
+    writePairs(dir, new Date(NOW), [pair(1)], 1.43, "clef-flash-oQ8e");
+    expect(readFileSync(path!, "utf8").trim().split("\n")).toHaveLength(1);
+    expect(readdirSync(dir)).toEqual(["2026-02-05.jsonl"]); // no tmp file left behind
+  });
+
+  it("keeps RELEVANCE_PAIRS_KEEP_DAYS nights and drops everything older", () => {
+    mkdirSync(dir, { recursive: true });
+    const back = (days: number) => new Date(NOW - days * 86_400_000).toISOString().slice(0, 10) + ".jsonl";
+    writeFileSync(join(dir, back(RELEVANCE_PAIRS_KEEP_DAYS - 1)), "oldest kept\n", "utf8");
+    writeFileSync(join(dir, back(RELEVANCE_PAIRS_KEEP_DAYS)), "one past the window\n", "utf8");
+    writeFileSync(join(dir, back(120)), "ancient\n", "utf8");
+    writeFileSync(join(dir, "notes.txt"), "not ours\n", "utf8"); // retention only touches dated pair files
+    writePairs(dir, new Date(NOW), [pair(2)], 1.43, "m");
+    expect(readdirSync(dir).sort()).toEqual([back(RELEVANCE_PAIRS_KEEP_DAYS - 1), "2026-02-05.jsonl", "notes.txt"].sort());
+  });
+
+  it("an unwritable target costs a WARN, never the night", async () => {
+    const blocker = join(tmp, "blocker");
+    writeFileSync(blocker, "not a directory", "utf8");
+    const log: string[] = [];
+    const hookLog = join(tmp, "hook-log.jsonl");
+    writeFileSync(hookLog, recallLine(NOW - HOUR, ["s1"]) + "\n", "utf8");
+    const recorded: SloRelevanceSample[] = [];
+    const res = await runRelevanceNightly({
+      env: { NLM_RELEVANCE_JUDGE: "on", NLM_CLEF_BASE_URL: "http://h" },
+      now: () => NOW,
+      hookLog,
+      pairsDir: blocker, // a file where the pairs directory should be
+      sessions: sessionsWith([MEMO]),
+      ask: async () => ({ answers: answersFor([2]) }),
+      logger: (m) => log.push(m),
+      record: (s) => recorded.push(s),
+    });
+    expect(res).toMatchObject({ ran: true, value: 1, pairsPath: null });
+    expect(recorded).toHaveLength(1);
+    expect(log).toEqual(["[relevance] WARN could not write the calibration pairs; the metric still stands"]);
+  });
+
+  it("sits in the state directory unless NLM_RELEVANCE_DIR says otherwise", () => {
+    expect(relevancePairsDir({ NLM_RELEVANCE_DIR: "/tmp/p" })).toBe("/tmp/p");
+    expect(relevancePairsDir({})).toMatch(/relevance$/);
   });
 });
