@@ -319,9 +319,9 @@ classify calls (fine); the 5.75 s slice is not. Per-step, in tick order:
 
 ### Jobs the monitor cannot name
 
-`MemoSweepScheduler` (`src/core/hooks/memo-sweep.ts:110-155`, every 5 min, started
-outside `timedJob` at `nlm.ts:968`) is `readdirSync` + `statSync` per entry +
-`rmSync` (`:70-91`). Small, but it is untracked, and "untracked" is indistinguishable
+`MemoSweepScheduler` (`src/core/hook/memo-sweep.ts`, every 5 min, started outside
+`timedJob` at `src/cli/nlm.ts:979`) is `readdirSync` + `statSync` per entry +
+`rmSync`. Small, but it is untracked, and "untracked" is indistinguishable
 from "the HTTP path itself" in a stall line — which is exactly the ambiguity Phase 2
 is trying to remove.
 
@@ -338,3 +338,31 @@ now justified by measurement. Everything else on the list above is either alread
 chunked, sub-millisecond at today's row counts, or documented and cadence-limited.
 Part 3 fixes those three and adds `[loop] sync …` instrumentation on the segments it
 does not bound, so the next phase starts from numbers instead of from a code read.
+
+## Phase 3 (T1757) — what changed, and what to read in the log next
+
+| change | was | now |
+|---|---|---|
+| `computeIngestLag` stat pass | one synchronous pass over the 14-day discovery list, every 5 min | `STAT_BATCH_PATHS` (100) per yield; report byte-identical to the unbatched pass |
+| `scanOnce` / `scanOncePg` per-source loop | `statSync` per source with no yield, every tick per adapter | `SCAN_BATCH_SOURCES` (100) per yield, checked at the top of the iteration so no `continue` skips it |
+| `computeFactEmbedStats` in the sweep | three whole-`facts` counts, every 2 min | `computeFactEmbedStatsChunked`, `FACT_COUNT_BATCH_ROWS` (5,000) rowids per yield, sums asserted equal to the single-statement counts |
+| attribution | "a job took N ms", printed when the job *ended* | `[loop] stall <ms>ms during: <jobs>` at the moment the block ends; `no tracked job` clears the loop itself |
+| statement naming | nothing inside a job | `[loop] sync <job>:<label> <ms>ms` for the segments that were not bounded (`adapter_state` reads, corpus counts path, memo sweep) |
+
+Nothing here changes a result: each bounding is pinned by a test comparing against
+the old shape (whole-table oracle, or the same scan with batching turned off from
+identical seeded state).
+
+What the next read of `grep '\[loop\]' ~/.nlm/daemon.err` decides:
+
+1. `stall … during: scheduler-tick` with a shrinking max, and no
+   `[loop] sync scan:adapter_state:*` line → the two stat loops were it; the
+   `adapter_state` read stays unbounded and named.
+2. Any `stall … during: no tracked job` at multi-second scale is a real finding:
+   it is the HTTP path, a SQLite lock wait behind another process, or a timer no
+   wrapper owns. That is the one branch of this task measurement could not close.
+3. `[loop] sync fact-embed-sweep:count`, `… ingest-lag:adapter_state:*` past 250 ms
+   → bound them for real (keyset pagination on `source_path` / `NOT EXISTS` probes),
+   which is the same advice §3 already carries for the due-list anti-join.
+4. Unchanged backlog: integrity aggregate checks (§4), `ORDER BY random()` dream
+   samplers and the whole-file hook-log parse (§5), `wal_checkpoint` (§2).
