@@ -1,4 +1,6 @@
-const STOPWORDS = new Set([
+// Exported for the hubness lexical guard (core/hook/hubness.ts) — one stopword
+// list defines "content word" across the hook path.
+export const STOPWORDS = new Set([
   "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
   "have", "has", "had", "do", "does", "did", "will", "would", "could",
   "should", "may", "might", "shall", "can", "dare", "ought",
