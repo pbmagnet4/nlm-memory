@@ -18,6 +18,7 @@
 import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { timeSyncSlice } from "@core/scheduler/loop-monitor.js";
 
 // Mirrors the dormant threshold in build-dataset.ts:
 //   age <= hour  → "active"
@@ -38,6 +39,14 @@ export interface MemoSweepOptions {
   readonly logger?: (msg: string) => void;
   /** Override for time source — for deterministic tests. */
   readonly now?: () => number;
+  /** Loop-monitor sink/threshold for the `[loop] sync memo-sweep:sweep` line
+   *  (T1757). This job is the reason that mechanism exists rather than the
+   *  active-job set: the sweep is synchronous start to finish, so by the time
+   *  the lag sampler's timer fires after the block, a name entered for the
+   *  duration would already be released. Only the block itself can report
+   *  itself. */
+  readonly loopLogger?: (msg: string) => void;
+  readonly loopThresholdMs?: number;
 }
 
 export interface SweepReport {
@@ -56,6 +65,18 @@ function defaultStateDir(): string {
  * CLI invocations without standing up the scheduler.
  */
 export function sweepMemoDir(opts: MemoSweepOptions = {}): SweepReport {
+  return timeSyncSlice(
+    "memo-sweep",
+    "sweep",
+    () => sweepMemoDirSync(opts),
+    {
+      ...(opts.loopLogger ? { logger: opts.loopLogger } : {}),
+      ...(opts.loopThresholdMs !== undefined ? { thresholdMs: opts.loopThresholdMs } : {}),
+    },
+  );
+}
+
+function sweepMemoDirSync(opts: MemoSweepOptions): SweepReport {
   const stateDir = opts.stateDir ?? defaultStateDir();
   const dormantMs = opts.dormantMs ?? DEFAULT_DORMANT_MS;
   const now = opts.now ?? Date.now;
@@ -108,9 +129,13 @@ export function sweepMemoDir(opts: MemoSweepOptions = {}): SweepReport {
  * accumulated memos right away, not wait an interval.
  */
 export class MemoSweepScheduler {
-  private readonly opts: Required<Omit<MemoSweepOptions, "stateDir" | "now">> & {
+  private readonly opts: Required<
+    Omit<MemoSweepOptions, "stateDir" | "now" | "loopLogger" | "loopThresholdMs">
+  > & {
     readonly stateDir: string | undefined;
     readonly now: (() => number) | undefined;
+    readonly loopLogger: ((msg: string) => void) | undefined;
+    readonly loopThresholdMs: number | undefined;
   };
   private stopped = true;
   private timer: NodeJS.Timeout | null = null;
@@ -122,6 +147,8 @@ export class MemoSweepScheduler {
       intervalMs: opts.intervalMs ?? DEFAULT_INTERVAL_MS,
       logger: opts.logger ?? ((msg) => console.error(msg)),
       now: opts.now,
+      loopLogger: opts.loopLogger,
+      loopThresholdMs: opts.loopThresholdMs,
     };
   }
 
@@ -145,6 +172,8 @@ export class MemoSweepScheduler {
       logger: this.opts.logger,
       ...(this.opts.stateDir !== undefined ? { stateDir: this.opts.stateDir } : {}),
       ...(this.opts.now !== undefined ? { now: this.opts.now } : {}),
+      ...(this.opts.loopLogger !== undefined ? { loopLogger: this.opts.loopLogger } : {}),
+      ...(this.opts.loopThresholdMs !== undefined ? { loopThresholdMs: this.opts.loopThresholdMs } : {}),
     });
   }
 

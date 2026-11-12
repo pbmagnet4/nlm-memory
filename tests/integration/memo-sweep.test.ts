@@ -89,3 +89,56 @@ describe("memo sweep", () => {
     expect(() => sweeper.stop()).not.toThrow();
   });
 });
+
+/**
+ * T1757: this job runs on its own timer, outside every `timedJob` wrapper, and it
+ * is synchronous from `readdirSync` to the last `rmSync` — so the active-job set
+ * can never name it (the lag sampler only runs after the block has already ended
+ * and the name would be released) and neither can a `[loop] <job> took` line that
+ * no wrapper prints. The sweep reports its own slice instead.
+ */
+describe("memo sweep loop monitoring", () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "nlm-memo-loop-"));
+  });
+
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+  function dormant(): void {
+    const path = join(tmp, "dormant.json");
+    writeFileSync(path, "[]", "utf8");
+    const past = (Date.now() - 25 * 60 * 60 * 1000) / 1000;
+    utimesSync(path, past, past);
+  }
+
+  it("reports its own synchronous slice to the loop monitor", () => {
+    dormant();
+    const lines: string[] = [];
+    const report = sweepMemoDir({ stateDir: tmp, loopLogger: (msg) => lines.push(msg), loopThresholdMs: 0 });
+    expect(report.deleted).toBe(1);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/^\[loop\] sync memo-sweep:sweep \d+(\.\d+)?ms$/);
+  });
+
+  it("stays quiet when the sweep stays under the threshold", () => {
+    dormant();
+    const lines: string[] = [];
+    sweepMemoDir({ stateDir: tmp, loopLogger: (msg) => lines.push(msg), loopThresholdMs: 10_000 });
+    expect(lines).toEqual([]);
+  });
+
+  it("threads the loop-monitor options through the scheduler", () => {
+    dormant();
+    const lines: string[] = [];
+    const scheduler = new MemoSweepScheduler({
+      stateDir: tmp,
+      logger: () => {},
+      loopLogger: (msg) => lines.push(msg),
+      loopThresholdMs: 0,
+    });
+    expect(scheduler.tick().deleted).toBe(1);
+    expect(lines).toHaveLength(1);
+  });
+});
