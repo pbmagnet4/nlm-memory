@@ -5,8 +5,11 @@
  * restore-drill` proves the newest (or a named) snapshot can actually serve
  * reads: it is *copied* to a temp dir, opened read-only, passed
  * PRAGMA integrity_check, and exercised with three representative queries —
- * session count, an FTS keyword recall, a fact lookup. The live DB is only
- * ever read as a directory listing to find the newest backup; nothing under
+ * session count, an FTS keyword recall, a fact lookup. Like every other
+ * corpus read those three go through `tenantClause` (spec §4.2), scoped to
+ * the caller's tenant and defaulting to the local team a single-tenant
+ * deployment owns. The live DB is only ever read as a directory listing to
+ * find the newest backup; nothing under
  * the data dir is written. A drill that fails is the signal to escalate
  * *before* the disaster that would have needed the restore.
  */
@@ -14,6 +17,8 @@ import Database from "better-sqlite3";
 import { copyFileSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { tenantClause } from "@core/tenancy/tenant-clause.js";
+import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 
 export interface DrillCheck {
   readonly name: string;
@@ -80,8 +85,16 @@ export function runRestoreDrill(opts: {
   readonly backupFile: string;
   readonly tmpRoot?: string;
   readonly keyword?: string;
+  /** Tenant the representative queries are scoped to; defaults to the local team. */
+  readonly tenantId?: string;
 }): DrillReport {
   const keyword = opts.keyword ?? "memory";
+  const tenantId = opts.tenantId ?? DEFAULT_TEAM_ID;
+  // One clause per query surface: the sessions reads alias the table `s`
+  // (the FTS read must join back to sessions for its tenant filter), the
+  // facts read filters its own stamp.
+  const sessionsTc = tenantClause(tenantId, "s.tenant_id");
+  const factsTc = tenantClause(tenantId);
   const checks: DrillCheck[] = [];
   let tmp: string | null = null;
   let db: Database.Database | null = null;
@@ -104,17 +117,36 @@ export function runRestoreDrill(opts: {
       checks.push({ name: "integrity_check", ok: false, detail: errText(e) });
     }
 
-    checks.push(queryCheck(db, "session count", "SELECT COUNT(*) AS n FROM sessions", [], (r) => `${r.n} sessions`));
+    checks.push(
+      queryCheck(
+        db,
+        "session count",
+        `SELECT COUNT(*) AS n FROM sessions s WHERE ${sessionsTc.sql}`,
+        [sessionsTc.param],
+        (r) => `${r.n} sessions`,
+      ),
+    );
     checks.push(
       queryCheck(
         db,
         `keyword recall (sessions_fts MATCH "${keyword}")`,
-        "SELECT rowid FROM sessions_fts WHERE sessions_fts MATCH ? LIMIT 5",
-        [keyword],
+        `SELECT s.rowid FROM sessions_fts
+         JOIN sessions s ON s.rowid = sessions_fts.rowid
+         WHERE sessions_fts MATCH ? AND ${sessionsTc.sql}
+         LIMIT 5`,
+        [keyword, sessionsTc.param],
         () => "query served",
       ),
     );
-    checks.push(queryCheck(db, "fact lookup", "SELECT COUNT(*) AS n FROM facts", [], (r) => `${r.n} facts`));
+    checks.push(
+      queryCheck(
+        db,
+        "fact lookup",
+        `SELECT COUNT(*) AS n FROM facts WHERE ${factsTc.sql}`,
+        [factsTc.param],
+        (r) => `${r.n} facts`,
+      ),
+    );
   } catch (e) {
     // Failure before or during copy/open: nothing else could run.
     checks.push({ name: "copy + open", ok: false, detail: errText(e) });

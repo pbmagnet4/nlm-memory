@@ -75,6 +75,60 @@ describe("runRestoreDrill", () => {
     expect(report.ok).toBe(true);
     expect(report.checks[2]!.name).toContain('MATCH "walnut"');
   });
+
+  it("scopes every representative query to the tenant (default: the local team)", () => {
+    // Seeded snapshot: two tenants, one keyword only the *other* team owns. A
+    // drill that forgot the tenant filter would see the walnut session and
+    // the other team's rows under the default tenant.
+    const seeded = join(tmp, "canonical-twotenant.sqlite");
+    copyFileSync(backupFile, seeded);
+    const db = new Database(seeded);
+    const session = db.prepare(
+      `INSERT INTO sessions (id, runtime, runtime_session_id, started_at, label, summary, body, status, tenant_id)
+       VALUES (?, 'claude', ?, '2026-11-01T00:00:00Z', ?, ?, ?, 'closed', ?)`,
+    );
+    session.run("s-local-a", "r-a", "local a", "local summary a", "memory of a local session", "team_local");
+    session.run("s-local-b", "r-b", "local b", "local summary b", "memory of another local session", "team_local");
+    session.run("s-other", "r-o", "other", "other summary", "a walnut recall", "team_other");
+    const fact = db.prepare(
+      `INSERT INTO facts (id, kind, subject, predicate, value, source_session_id, confidence, tenant_id)
+       VALUES (?, 'decision', ?, 'uses', ?, ?, 0.9, ?)`,
+    );
+    fact.run("f-local", "local subject", "local value", "s-local-a", "team_local");
+    fact.run("f-other", "other subject", "other value", "s-other", "team_other");
+    db.close();
+
+    const local = runRestoreDrill({ backupFile: seeded, tmpRoot: tmp });
+    expect(local.checks.map((c) => c.detail)).toEqual([
+      expect.any(String),
+      "2 sessions",
+      "query served",
+      "1 facts",
+    ]);
+    // The walnut session belongs to team_other, so the default tenant's FTS
+    // read must come back empty (still a served query, so the drill passes).
+    const localWalnut = runRestoreDrill({ backupFile: seeded, tmpRoot: tmp, keyword: "walnut" });
+    expect(localWalnut.ok).toBe(true);
+    expect(localWalnut.checks[2]!.detail).toBe("no rows");
+
+    const other = runRestoreDrill({ backupFile: seeded, tmpRoot: tmp, tenantId: "team_other" });
+    expect(other.ok).toBe(true);
+    expect(other.checks.map((c) => c.detail)).toEqual([
+      expect.any(String),
+      "1 sessions",
+      "no rows",
+      "1 facts",
+    ]);
+    // …and the reverse: team_other sees the walnut row the local tenant cannot.
+    const otherWalnut = runRestoreDrill({
+      backupFile: seeded,
+      tmpRoot: tmp,
+      tenantId: "team_other",
+      keyword: "walnut",
+    });
+    expect(otherWalnut.ok).toBe(true);
+    expect(otherWalnut.checks[2]!.detail).toBe("query served");
+  });
 });
 
 describe("pickNewestBackup", () => {
