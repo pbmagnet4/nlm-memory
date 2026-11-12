@@ -14,6 +14,8 @@ import { classifyPrompt } from "@core/hook/gate.js";
 import { recentConversationContext, topicalWordCount } from "./recent-context.js";
 import { appendHookLog } from "@core/hook/hook-log.js";
 import { loadSurfaced, recordSurfaced } from "@core/hook/memo.js";
+import { applyHubness, HUB_WINDOW_DAYS } from "@core/hook/hubness.js";
+import { countRecentInjections } from "@core/recall/hook-recall-log.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import { formatPointerBlock, type PointerConcept, type PointerExemplar, type PointerFact } from "@core/hook/pointer-block.js";
 import { selectHits, type RecallHitInput } from "@core/hook/select.js";
@@ -39,6 +41,38 @@ const scoreThreshold = () => parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR
 // while keeping ~97% of cited ones. Only the per-message keyword path runs this;
 // the session-start hybrid path is left unfiltered (unmeasured).
 const relativeFloor = () => parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
+
+// T1783 hub damping — settings live in env like the floors above, read per
+// call (autoloadEnv runs inside main()). Defaults are the shipped posture;
+// Part 3 of the T1783 eval (docs/eval/T1783-recall-hubs.md) set the shipped
+// default for NLM_HOOK_HUB_DAMP from the replayed precision.
+//   NLM_HOOK_HUB_DAMP=off|0  disables both steps below (pre-T1783 behavior).
+//   NLM_HOOK_HUB_ALPHA       penalty weight in score/(1+alpha*ln(1+count)).
+//   NLM_HOOK_LEX_FLOOR       a hit below this raw score with ZERO shared
+//                            content terms with the prompt is dropped.
+const DEFAULT_HUB_DAMP = false; // Part 3 revises once the replay has a verdict
+const DEFAULT_HUB_ALPHA = 0.5;
+const DEFAULT_LEX_FLOOR = 2.0;
+
+/** "off"/"0" disables, anything else enables, unset falls back to default. */
+export function parseHubDampEnabled(raw: string | undefined, fallback: boolean): boolean {
+  const s = raw?.trim().toLowerCase();
+  if (s === undefined || s === "") return fallback;
+  return s !== "off" && s !== "0";
+}
+
+/** Non-negative finite weight; bad input collapses to the default (never deny-all). */
+export function parseHubNumber(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+const hubDampEnabled = () =>
+  parseHubDampEnabled(process.env["NLM_HOOK_HUB_DAMP"], DEFAULT_HUB_DAMP);
+const hubAlpha = () => parseHubNumber(process.env["NLM_HOOK_HUB_ALPHA"], DEFAULT_HUB_ALPHA);
+const hubLexicalFloor = () => parseHubNumber(process.env["NLM_HOOK_LEX_FLOOR"], DEFAULT_LEX_FLOOR);
+
 const PER_FIRE_CAP = 3;
 const PER_CONVERSATION_CAP = 10;
 const PROMPT_PREVIEW_CHARS = 200;
@@ -137,6 +171,12 @@ export interface RunHookDeps {
   ) => Promise<ReadonlyArray<RecallHitInput> | RecallFetchResult>;
   /** Wall-clock deadline for the recall stage. Defaults to NLM_HOOK_DEADLINE_MS (6000ms; must exceed the recall HTTP timeout, see #396). */
   readonly deadlineMs?: number;
+  /**
+   * id -> injections over the recent window for hub damping. Omitted in
+   * production: runHook then reads it from the hook-log tail itself. Tests
+   * supply it directly.
+   */
+  readonly injectionCounts?: ReadonlyMap<string, number>;
 }
 
 function normalizeRecall(
@@ -184,7 +224,19 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
   } catch {
     fetched = { hits: [], facts: [], outcome: "unreachable" };
   }
-  const hits = fetched.hits;
+  // Hub damping (T1783): score recent over-injection down before selectHits,
+  // and drop plateau-tie hits with no lexical contact with the prompt. When
+  // disabled this is exactly the pre-T1783 path. countRecentInjections is
+  // fail-open, and it plus applyHubness only ever remove or reorder.
+  const hits = hubDampEnabled()
+    ? applyHubness(fetched.hits, {
+        prompt: input.prompt,
+        injectionCounts:
+          deps.injectionCounts ?? countRecentInjections(HUB_WINDOW_DAYS),
+        alpha: hubAlpha(),
+        lexicalFloor: hubLexicalFloor(),
+      })
+    : fetched.hits;
 
   const surfaced = loadSurfaced(DEFAULT_TEAM_ID, input.conversationId);
   const selected = selectHits({

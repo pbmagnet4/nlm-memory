@@ -1,4 +1,4 @@
-import { mkdtempSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, rmSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -175,3 +175,130 @@ describe("parseHookDeadline", () => {
     expect(parseHookDeadline("-100")).toBe(4000);
   });
 });
+
+// T1783 hub damping on the hook path.
+function hitWithLabel(id: string, score: number, label: string): RecallHitInput {
+  return { id, label, startedAt: "2026-05-15T10:00:00.000Z", matchScore: score };
+}
+
+function injectedFromLog(tmpDir: string): string[] {
+  const log = readFileSync(join(tmpDir, "hook-log.jsonl"), "utf8").trim();
+  return JSON.parse(log.split("\n").at(-1)!).wouldInject;
+}
+
+describe("hub damping (T1783)", () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "nlm-hub-"));
+    process.env["NLM_HOOK_STATE_DIR"] = join(tmp, "state");
+    process.env["NLM_HOOK_LOG"] = join(tmp, "hook-log.jsonl");
+    process.env["NLM_HOOK_HUB_DAMP"] = "on";
+  });
+  afterEach(() => {
+    for (const k of ["NLM_HOOK_STATE_DIR", "NLM_HOOK_LOG", "NLM_HOOK_HUB_DAMP", "NLM_HOOK_HUB_ALPHA", "NLM_HOOK_LEX_FLOOR"]) {
+      delete process.env[k];
+    }
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("demotes a heavily-injected plateau hit below fresh candidates", async () => {
+    process.env["NLM_HOOK_LEX_FLOOR"] = "0"; // isolate the penalty
+    const plateau = [
+      hitWithLabel("hub", 0.99, "git merge pipeline work"),
+      hitWithLabel("fresh_a", 0.9, "git merge pipeline work"),
+      hitWithLabel("fresh_b", 0.89, "git merge pipeline work"),
+      hitWithLabel("fresh_c", 0.88, "git merge pipeline work"),
+    ];
+    const out = await runHook(
+      { prompt: "rebase the feature branch onto main", conversationId: "c1" },
+      {
+        mode: "shadow",
+        recall: async () => plateau,
+        injectionCounts: new Map([["hub", 100]]),
+      },
+    );
+    expect(out).toBe(""); // shadow
+    expect(injectedFromLog(tmp)).toEqual(["fresh_a", "fresh_b", "fresh_c"]);
+  });
+
+  it("keeps the old ordering when damping is off", async () => {
+    process.env["NLM_HOOK_HUB_DAMP"] = "off";
+    process.env["NLM_HOOK_LEX_FLOOR"] = "0";
+    const plateau = [
+      hitWithLabel("hub", 0.99, "git merge pipeline work"),
+      hitWithLabel("fresh_a", 0.9, "git merge pipeline work"),
+      hitWithLabel("fresh_b", 0.89, "git merge pipeline work"),
+      hitWithLabel("fresh_c", 0.88, "git merge pipeline work"),
+    ];
+    await runHook(
+      { prompt: "rebase the feature branch onto main", conversationId: "c1" },
+      {
+        mode: "shadow",
+        recall: async () => plateau,
+        injectionCounts: new Map([["hub", 100]]),
+      },
+    );
+    expect(injectedFromLog(tmp)).toEqual(["hub", "fresh_a", "fresh_b"]);
+  });
+
+  it("drops a below-floor hit with zero lexical overlap even when it leads", async () => {
+    process.env["NLM_HOOK_HUB_ALPHA"] = "0"; // guard only
+    process.env["NLM_HOOK_LEX_FLOOR"] = "2.0";
+    await runHook(
+      { prompt: "vault backup rotation schedule", conversationId: "c1" },
+      {
+        mode: "shadow",
+        recall: async () => [
+          hitWithLabel("off_topic", 1.0, "LinkedIn Easy Apply for Ryan Sr Manager"),
+          hitWithLabel("keeper", 0.91, "vault rotation design"),
+        ],
+        injectionCounts: new Map(),
+      },
+    );
+    expect(injectedFromLog(tmp)).toEqual(["keeper"]);
+  });
+
+  it("keeps that same hit when the guard floor is 0", async () => {
+    process.env["NLM_HOOK_HUB_ALPHA"] = "0";
+    process.env["NLM_HOOK_LEX_FLOOR"] = "0";
+    await runHook(
+      { prompt: "vault backup rotation schedule", conversationId: "c1" },
+      {
+        mode: "shadow",
+        recall: async () => [
+          hitWithLabel("off_topic", 1.0, "LinkedIn Easy Apply for Ryan Sr Manager"),
+          hitWithLabel("keeper", 0.91, "vault rotation design"),
+        ],
+        injectionCounts: new Map(),
+      },
+    );
+    expect(injectedFromLog(tmp)).toEqual(["off_topic", "keeper"]);
+  });
+
+  it("reads injection counts from the hook-log tail when deps omit them", async () => {
+    process.env["NLM_HOOK_LEX_FLOOR"] = "0"; // isolate the penalty
+    // Three prior fires surfaced "hub" — countRecentInjections must see them
+    // without any deps injection.
+    appendPriorFires(join(tmp, "hook-log.jsonl"), ["hub", "hub", "hub"], ["other"]);
+    const plateau = [
+      hitWithLabel("hub", 0.99, "git merge pipeline work"),
+      hitWithLabel("fresh_a", 0.9, "git merge pipeline work"),
+    ];
+    await runHook(
+      { prompt: "rebase the feature branch onto main", conversationId: "later" },
+      { mode: "shadow", recall: async () => plateau },
+    );
+    // count 3 -> 0.99 / (1 + 0.5 * ln 4) = ~0.59 -> demoted below fresh_a, and
+    // below the relative floor for a 2-hit fire (median 0.9 * 0.9 = 0.81).
+    expect(injectedFromLog(tmp)).toEqual(["fresh_a"]);
+  });
+});
+
+function appendPriorFires(path: string, hubPrior: string[], otherPrior: string[]): void {
+  const lines = hubPrior
+    .map((id) => JSON.stringify({ ts: new Date().toISOString(), conversationId: "old", wouldInject: [id] }))
+    .concat(otherPrior.map((id) => JSON.stringify({ ts: new Date().toISOString(), conversationId: "old2", wouldInject: [id] })))
+    .join("\n");
+  appendFileSync(path, `${lines}\n`, "utf8");
+}
