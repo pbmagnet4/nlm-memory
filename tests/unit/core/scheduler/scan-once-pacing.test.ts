@@ -91,7 +91,9 @@ describe("scanOnce pacing", () => {
     });
   }
 
-  function summarise(results: ReadonlyArray<{ chunk: { id: string }; supersedes: string | null; resumed: boolean }>) {
+  function summarise(
+    results: ReadonlyArray<{ chunk: { id: string }; supersedes: string | null; resumed: boolean; fileSize: number }>,
+  ) {
     return results.map((r) => [r.chunk.id, r.supersedes, r.resumed, r.fileSize]);
   }
 

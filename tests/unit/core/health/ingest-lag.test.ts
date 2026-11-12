@@ -288,7 +288,7 @@ describe("computeIngestLag pacing", () => {
       NOW,
     );
     expect(batched).toEqual(unbatched);
-    expect(batched.adapters["claude-code"].pending).toBeGreaterThan(0);
+    expect(batched.adapters["claude-code"]!.pending).toBeGreaterThan(0);
     // 9 paths, 2 per batch → batches at 0,2,4,6,8; no trailing yield.
     expect(yields).toBe(4);
   });
