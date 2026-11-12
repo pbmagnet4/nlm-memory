@@ -76,7 +76,7 @@ export function flag(name: string, def: string): string {
 export function latency(ms: readonly number[]): { n: number; p50: number; p95: number; max: number; total: number } {
   if (ms.length === 0) return { n: 0, p50: 0, p95: 0, max: 0, total: 0 };
   const s = [...ms].sort((a, b) => a - b);
-  const q = (p: number) => s[Math.min(s.length - 1, Math.floor(p * s.length))];
+  const q = (p: number) => s[Math.min(s.length - 1, Math.floor(p * s.length))] ?? 0;
   return { n: s.length, p50: q(0.5), p95: q(0.95), max: s[s.length - 1]!, total: s.reduce((a, b) => a + b, 0) };
 }
 
