@@ -125,11 +125,7 @@ import { backfillExemplarEmbeddings } from "../core/exemplars/embed-backfill.js"
 import { backfillFactEmbeddings } from "../core/facts/embed-backfill.js";
 import { MAX_CHUNK_EMBED_ATTEMPTS, stuckChunksOnPg, stuckChunksOnSqlite, sweepChunkEmbeddings, type StuckChunk } from "../core/embedding/chunk-retry.js";
 import { runFactEmbedTick } from "../core/facts/embed-sweep-tick.js";
-import {
-  computeFactEmbedStats,
-  computeFactEmbedStatsChunked,
-  computeFactEmbedStatsOnPg,
-} from "../core/facts/embed-missing.js";
+import { computeFactEmbedStatsChunked, computeFactEmbedStatsOnPg } from "../core/facts/embed-missing.js";
 import { warmCodeEmbedder } from "../core/exemplars/warm-embedder.js";
 import { markWarm, markWarmFailure } from "../core/health/warmup-state.js";
 import { setLaneHealth } from "../core/health/embedding-lane-state.js";
