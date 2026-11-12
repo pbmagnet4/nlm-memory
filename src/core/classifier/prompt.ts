@@ -138,7 +138,11 @@ export const CLASSIFIER_JSON_SCHEMA = {
   required: ["label", "summary", "entities", "decisions", "open", "confidence", "facts"],
 } as const;
 
-import { MAX_PROMPT_SUBJECTS, type SubjectVocab } from "./subject-vocab.js";
+import {
+  loadConfiguredSubjectVocab,
+  MAX_PROMPT_SUBJECTS,
+  type SubjectVocab,
+} from "./subject-vocab.js";
 
 export const MAX_TRANSCRIPT_CHARS = 15_000;
 
@@ -221,10 +225,43 @@ export function selectSubjectVocab(
   return scored.slice(0, MAX_PROMPT_SUBJECTS).map((s) => s.subject);
 }
 
-export function buildUserPrompt(transcript: string, priorContext: string): string {
+export interface BuildUserPromptOptions {
+  /**
+   * Canonical subjects to name in the prompt (see selectSubjectVocab). When
+   * omitted, resolved from NLM_SUBJECT_VOCAB_PATH against this call's
+   * transcript; unset env or an empty selection leaves the prompt
+   * byte-identical to the no-vocabulary baseline (T1633).
+   */
+  readonly vocab?: SubjectVocab;
+  /** Env to resolve the vocab path from. Defaults to process.env. Tests only. */
+  readonly env?: NodeJS.ProcessEnv;
+  /** Warn sink for vocab load failures. Tests only. */
+  readonly warn?: (msg: string) => void;
+}
+
+export function buildUserPrompt(
+  transcript: string,
+  priorContext: string,
+  opts: BuildUserPromptOptions = {},
+): string {
   const truncated = truncateTranscript(transcript);
+  let knownSubjects: readonly string[] = [];
+  if (opts.vocab) {
+    knownSubjects = selectSubjectVocab(opts.vocab, truncated);
+  } else if (!opts.env || opts.env["NLM_SUBJECT_VOCAB_PATH"]) {
+    const vocab = loadConfiguredSubjectVocab(
+      opts.env ?? process.env,
+      opts.warn ?? ((msg) => console.error(`nlm: ${msg}`)),
+    );
+    knownSubjects = selectSubjectVocab(vocab, truncated);
+  }
   const parts: string[] = [];
   if (priorContext) parts.push(`PRIOR CONTEXT (already filed):\n${priorContext}\n`);
+  if (knownSubjects.length > 0) {
+    parts.push(
+      `Known subjects (use the exact name when a fact is about one of these; otherwise name the subject as usual): ${knownSubjects.join(", ")}\n`,
+    );
+  }
   parts.push(`TRANSCRIPT TO CLASSIFY:\n${truncated}`);
   return parts.join("\n");
 }
