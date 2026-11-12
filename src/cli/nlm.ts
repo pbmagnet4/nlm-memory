@@ -137,10 +137,12 @@ import { reconcileLane } from "../core/embedding/embedding-config.js";
 import type { EmbeddingConfigStore, EmbeddingLaneConfig } from "../core/embedding/embedding-config.js";
 import { backfillFacts } from "../core/facts/backfill-facts.js";
 import { adapterStateReader, createIngestLagMonitor, ingestLagThresholdHours } from "../core/health/ingest-lag.js";
+import { createSloMetricsStore, SLO_TARGETS } from "../core/health/slo-metrics.js";
 import { DEFAULT_IDLE_MINUTES, ScanScheduler, type IngestGate } from "../core/scheduler/scheduler.js";
 import { makeClefIngestGate, parseIngestGateMode } from "../core/classifier/ingest-gate.js";
 import { GATE_MODEL } from "../core/classifier/gate-model-params.js";
 import { MemoSweepScheduler } from "../core/hook/memo-sweep.js";
+import { installTimestampedConsole } from "../core/logging/timestamped-console.js";
 import { isAgentLoaded, isBenignBootoutError } from "./launchctl-helpers.js";
 import { DAEMON_PKILL_PATTERN, planRestart, executeRestartPlan, type ExecuteRestartPlanDeps } from "./restart-helpers.js";
 import { isDevBuild, updateCheckCachePath } from "./upgrade-helpers.js";
@@ -519,6 +521,11 @@ program
   .option("--no-scheduler", "HTTP only; skip the ingest tick loop")
   .option("--interval-min <n>", "scheduler tick interval (min, default 30)", (v) => Number.parseInt(v, 10), 30)
   .action(async (opts) => {
+    // T1771: launchd routes the daemon's stdout/stderr to ~/.nlm/daemon.log /
+    // daemon.err with no timestamps on any of the ~300 lines it writes. Only
+    // this long-running path installs the prefix; one-shot CLI commands keep
+    // their output verbatim (terminal noise + `--json` pipes).
+    installTimestampedConsole();
     // Self-heal perms on every daemon start. Idempotent. Covers upgrade
     // path from pre-v0.4.2 installs where ~/.nlm contents were world-readable.
     hardenNlmDirPermissions();
@@ -568,8 +575,14 @@ program
       thresholdHours: ingestLagThresholdHours(),
       schedulerIntervalMs: opts.intervalMin * 60_000,
     });
+    // T1771: rolling 24h/7d SLO counters for GET /api/health/slo. Hook
+    // processes own hook-log.jsonl, so the daemon tail-reads it by byte
+    // offset; the counter file persists atomically on the refresh timer.
+    const sloMetrics = createSloMetricsStore();
+    sloMetrics.load();
     const app = createApp({
       ingestLag,
+      slo: sloMetrics,
       properties: storage.properties,
       recall,
       store,
@@ -665,7 +678,13 @@ program
     // These two hooks name the offender: a process-wide lag sample every 5
     // minutes, plus one `[loop] <job> took ..` line whenever a single
     // synchronous slice inside a job crosses 250ms. NLM_LOOP_LOG=0 mutes both.
-    const loopMonitor = startLoopLagMonitor({ logger: (msg) => console.error(msg) });
+    const loopMonitor = startLoopLagMonitor({
+      logger: (msg) => console.error(msg),
+      // T1771: the SLO counts every block over the 250ms target, while the
+      // `[loop] stall` attribution line keeps its 500ms default.
+      stallObserveMs: SLO_TARGETS.maxStallMs,
+      onStallObserved: (ms) => sloMetrics.recordStall(ms),
+    });
     // T1757: every daemon job registers itself in the process-wide active-job
     // set whether or not timing is on, so the `[loop] stall <ms>ms during: ..`
     // line the lag monitor emits can name who was holding the loop. Muting the
@@ -762,6 +781,18 @@ program
       );
     }, ALERT_CHECK_INTERVAL_MS);
     alertHealthTimer.unref();
+
+    // SLO counters (T1771): tail the hook log for new recall outcomes, take
+    // the cached /api/health/ingest numbers, persist the state file. Same
+    // cadence as the alert checks; unref so diagnostics never hold the daemon
+    // open, and timedJob so a slow tail shows up in the lag attribution.
+    const SLO_REFRESH_INTERVAL_MS = 60_000;
+    setTimeout(() => {
+      void timedJob("slo-metrics", () => sloMetrics.refresh(ingestLag));
+    }, 30_000).unref();
+    setInterval(() => {
+      void timedJob("slo-metrics", () => sloMetrics.refresh(ingestLag));
+    }, SLO_REFRESH_INTERVAL_MS).unref();
 
     // Corpus monitor: 24h stats job + pairs-cache refresh + weekly trend log.
     // SQLite only. First run is delayed ~60s so warmup finishes first; then

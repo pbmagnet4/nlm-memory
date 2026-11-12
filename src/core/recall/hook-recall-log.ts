@@ -23,11 +23,16 @@ export interface HookRecallEntry {
   readonly injectedIds: ReadonlyArray<string>;
 }
 
-function defaultLogPath(tenantId: string): string {
+/** Same resolution the readers use: $NLM_HOOK_LOG for the default team, tenant path otherwise. */
+export function hookLogPath(tenantId: string): string {
   if (tenantId === DEFAULT_TEAM_ID) {
     return process.env["NLM_HOOK_LOG"] ?? tenantStatePath(tenantId, "hook-log.jsonl");
   }
   return tenantStatePath(tenantId, "hook-log.jsonl");
+}
+
+function defaultLogPath(tenantId: string): string {
+  return hookLogPath(tenantId);
 }
 
 export async function readHookRecallLog(

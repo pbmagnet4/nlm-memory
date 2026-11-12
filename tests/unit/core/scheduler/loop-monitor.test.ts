@@ -217,6 +217,43 @@ describe("startLoopLagMonitor", () => {
     expect(lines.filter((l) => l.includes("[loop] stall"))).toEqual([]);
     monitor.stop();
   });
+
+  it("observes every block over stallObserveMs via onStallObserved, below the attribution threshold (T1771)", async () => {
+    const { lines, logger } = capture();
+    const observed: number[] = [];
+    const monitor = startLoopLagMonitor({
+      logger,
+      autoStart: false,
+      resolutionMs: 5,
+      stallThresholdMs: 120,
+      stallObserveMs: 30,
+      onStallObserved: (ms) => observed.push(ms),
+    });
+    blockMs(80);
+    await sleep(40);
+    expect(observed.length).toBeGreaterThanOrEqual(1);
+    expect(observed[0]).toBeGreaterThanOrEqual(30);
+    // the 120ms attribution line stays silent for an 80ms block
+    expect(lines.filter((l) => l.includes("[loop] stall"))).toEqual([]);
+    monitor.stop();
+  });
+
+  it("keeps blocks under stallObserveMs out of the observer", async () => {
+    const { logger } = capture();
+    const observed: number[] = [];
+    const monitor = startLoopLagMonitor({
+      logger,
+      autoStart: false,
+      resolutionMs: 5,
+      stallThresholdMs: 120,
+      stallObserveMs: 400,
+      onStallObserved: (ms) => observed.push(ms),
+    });
+    blockMs(80);
+    await sleep(40);
+    expect(observed).toEqual([]);
+    monitor.stop();
+  });
 });
 
 describe("createActiveJobSet", () => {
