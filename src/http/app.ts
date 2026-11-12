@@ -125,6 +125,7 @@ import { buildFailureModeBlock } from "@core/signals/failure-mode-recall.js";
 import { aggregateFailureModes } from "@core/signals/aggregate.js";
 import { parseRelativeFloor } from "../hook/score-floor.js";
 import { warmupSnapshot } from "@core/health/warmup-state.js";
+import { buildSloResponse, type SloState } from "@core/health/slo-metrics.js";
 import { laneHealthSnapshot } from "@core/health/embedding-lane-state.js";
 import { inflightSnapshot } from "@core/health/embed-inflight.js";
 import { factEmbedSnapshot } from "@core/health/fact-embed-state.js";
@@ -224,6 +225,12 @@ export interface HttpDeps {
    *  GET /api/health (null until the first write-heavy tick has checked).
    *  Getter so the route always reads the live last-known value. */
   readonly diskGuard?: () => DiskGuardStatus | null;
+  /**
+   * Wire to enable GET /api/health/slo (T1771). Narrowed to the reader the
+   * route needs so unit tests pass a fixture-backed fake instead of the
+   * daemon's SloMetricsStore.
+   */
+  readonly slo?: { snapshot(): SloState };
   /**
    * Wire to enable the GET/POST /api/dreaming control-plane pair. The
    * settings themselves are the process-global in-memory registry
@@ -540,7 +547,11 @@ function installLocalOnlyMiddleware(app: Hono<AppEnv>, boundPort: number, deps: 
         return c.json({ error: "host header not allowed" }, 403);
       }
     }
-    if (c.req.path === "/api/health") {
+    if (c.req.path === "/api/health" || c.req.path === "/api/health/slo") {
+      // T1771: the SLO endpoint carries the same credential-free local liveness
+      // contract as /api/health (counts and gauges only, no corpus or transcript
+      // content), so it shares the health-route skip; loopback Host is still
+      // enforced above. /api/health/ingest deliberately stays fully gated.
       return next();
     }
     if (!skipLocalGate) {
@@ -635,6 +646,9 @@ const HOSTED_GATED_ROUTES: ReadonlyArray<{ method: string; path: string; disposi
   { method: "POST", path: "/api/data/restore", disposition: "LOCAL" },
   { method: "GET", path: "/api/data/stats", disposition: "LOCAL" },
   { method: "GET", path: "/api/health/ingest", disposition: "LOCAL" },
+  // SLO counters aggregate the whole install (hook-lane outcomes, loop stalls,
+  // ingest lag) — no per-tenant meaning, same LOCAL class as the ingest lag.
+  { method: "GET", path: "/api/health/slo", disposition: "LOCAL" },
   { method: "POST", path: "/api/classifier", disposition: "LOCAL" },
   { method: "PUT", path: "/api/classifier/settings", disposition: "LOCAL" },
   // Process-global dreaming lane (the scheduler's background passes) — a
@@ -780,6 +794,18 @@ function registerHealthRoute(app: Hono<AppEnv>, deps: HttpDeps): void {
   app.get("/api/health/ingest", async (c) => {
     if (!deps.ingestLag) return c.json({ error: "ingest lag monitor not wired" }, 503);
     return c.json(await deps.ingestLag.get());
+  });
+
+  // SLO rollup (T1771): rolling-window actuals for the four daemon targets,
+  // with the breached target names. Fixtures exercise the math in
+  // tests/unit/core/health/slo-metrics.test.ts; this route is thin.
+  app.get("/api/health/slo", (c) => {
+    if (!deps.slo) return c.json({ error: "slo metrics not wired" }, 503);
+    const raw = c.req.query("window") ?? "24h";
+    if (raw !== "24h" && raw !== "7d") {
+      return c.json({ error: `unknown window "${raw}" (expected "24h" or "7d")` }, 400);
+    }
+    return c.json(buildSloResponse(deps.slo.snapshot(), raw, Date.now()));
   });
 
   // Passive update poll for the UI. Same daily-cached check the CLI

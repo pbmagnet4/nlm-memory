@@ -441,6 +441,14 @@ export interface LoopLagMonitorOptions {
   readonly stallAttribution?: boolean;
   /** Author lookup for `[loop] stall`. Defaults to `defaultActiveJobSet`. */
   readonly activeJobs?: () => readonly string[];
+  /** T1771: called for *every* observed block over `stallObserveMs`, independent
+   *  of the attribution line — the metrics sink behind /api/health/slo. Fires
+   *  from the sampler callback, so it must not throw or block. */
+  readonly onStallObserved?: (blockMs: number) => void;
+  /** Threshold for `onStallObserved`; default `stallThresholdMs`, i.e. the
+   *  observer sees exactly the blocks the `[loop] stall` line reports. The
+   *  daemon passes the SLO's 250ms to count smaller blocks too. */
+  readonly stallObserveMs?: number;
 }
 
 /**
@@ -468,14 +476,25 @@ export function startLoopLagMonitor(opts: LoopLagMonitorOptions = {}): LoopLagMo
           thresholdMs: opts.stallThresholdMs ?? DEFAULT_STALL_MS,
           ...(opts.activeJobs ? { activeJobs: opts.activeJobs } : {}),
         });
-  const maxSampler = createOverrunSampler(resolutionMs, {
-    ...(attributor
-      ? {
-          blockThresholdMs: opts.stallThresholdMs ?? DEFAULT_STALL_MS,
-          onBlock: (blockMs: number) => attributor.observe(blockMs),
-        }
-      : {}),
-  });
+  const maxSampler = createOverrunSampler(resolutionMs, (() => {
+    const stallThreshold = opts.stallThresholdMs ?? DEFAULT_STALL_MS;
+    const observeMs = opts.stallObserveMs ?? stallThreshold;
+    const onStallObserved = opts.onStallObserved;
+    if (!attributor && !onStallObserved) return {};
+    // Fire the callback at the lowest threshold anyone listens at; each
+    // consumer applies its own gate (the attributor re-checks 500ms).
+    const fireMs = Math.min(
+      attributor ? stallThreshold : Number.POSITIVE_INFINITY,
+      onStallObserved ? observeMs : Number.POSITIVE_INFINITY,
+    );
+    return {
+      blockThresholdMs: fireMs,
+      onBlock: (blockMs: number) => {
+        attributor?.observe(blockMs);
+        if (onStallObserved && blockMs >= observeMs) onStallObserved(blockMs);
+      },
+    };
+  })());
   let windowStart = now();
   let timer: NodeJS.Timeout | null = null;
 
