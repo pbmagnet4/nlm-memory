@@ -16,7 +16,6 @@ import {
   aggregateRelevance,
   expandMemories,
   parseInjectionRecord,
-  readTail,
   relevanceQuestionKey,
   relevanceQuestions,
   relevanceJudgeEnabled,
@@ -178,41 +177,6 @@ describe("sampleRecords", () => {
     const text = "nope\n" + recallLine(NOW, ["a"]) + "\n\n";
     expect(sampleRecords(text, { now: NOW, sample: 60 })).toHaveLength(1);
   });
-});
-
-describe("readTail", () => {
-  let tmp: string;
-  beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), "nlm-rel-tail-"));
-  });
-  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
-
-  it("reads the end of the file and drops the partial first line", () => {
-    const path = join(tmp, "hook-log.jsonl");
-    const a = recallLine(NOW - HOUR, ["a"]);
-    const b = recallLine(NOW, ["b"]);
-    writeFileSync(path, `${"x".repeat(500)}\n${a}\n${b}\n`, "utf8");
-    // Cap covers the last record plus the tail of the one before it: that
-    // leading fragment is dropped whole rather than half-parsed.
-    expect(readTail(path, b.length + 40)).toBe(b + "\n");
-  });
-
-  it("returns nothing when not even one record fits the cap", () => {
-    const path = join(tmp, "tiny.jsonl");
-    writeFileSync(path, recallLine(NOW, ["a"]) + "\n", "utf8");
-    expect(readTail(path, 8)).toBe("");
-  });
-
-  it("returns a short file whole, and nothing for a missing one", () => {
-    const path = join(tmp, "small.jsonl");
-    writeFileSync(path, full2(), "utf8");
-    expect(readTail(path).trim().split("\n")).toHaveLength(2);
-    expect(readTail(join(tmp, "nope.jsonl"))).toBe("");
-  });
-
-  function full2(): string {
-    return recallLine(NOW, ["a"]) + "\n" + recallLine(NOW, ["b"]) + "\n";
-  }
 });
 
 describe("relevanceQuestions", () => {

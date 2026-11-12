@@ -39,10 +39,10 @@
  * judge and label disagree — which needs the raw pairs, at the threshold and
  * model each night actually ran with, which is what those files are for.
  */
-import { openSync, readSync, closeSync, statSync, mkdirSync, renameSync, writeFileSync, readdirSync, unlinkSync } from "node:fs";
+import { mkdirSync, renameSync, writeFileSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { askClef, clefSettingsFromEnv, type ClefAnswer, type ClefQuestion, type ClefSettings } from "../../llm/clef-client.js";
-import { hookLogPath } from "@core/recall/hook-recall-log.js";
+import { hookLogPath, readTailText } from "@core/recall/hook-recall-log.js";
 import { tenantStatePath } from "@core/tenancy/tenant-state-path.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import type { SloRelevanceSample } from "./slo-metrics.js";
@@ -66,7 +66,7 @@ const LABEL_CAP = 200;
 /** Hook-log bytes read from the end of the file. A record is a few hundred
  *  bytes, so this is several thousand records — far more than a day of traffic,
  *  and it keeps a huge history file from being slurped for a sample. */
-const READ_CAP = 8 * 1024 * 1024;
+const RELEVANCE_TAIL_BYTES = 8 * 1024 * 1024;
 /** Ids per store read; `id IN (...)` stays well inside SQLite's parameter cap. */
 const ID_BATCH = 50;
 
@@ -240,34 +240,6 @@ export function aggregateRelevance(
     pairs: pairs.length,
     kept,
   };
-}
-
-/** Read the last `maxBytes` of a file, dropping the first (possibly partial)
- *  line. Same reason the SLO tail reader is careful with a mid-append line: a
- *  torn first line parses to nothing, and the sample loses one record. */
-export function readTail(path: string, maxBytes = READ_CAP): string {
-  let size: number;
-  try {
-    size = statSync(path).size;
-  } catch {
-    return "";
-  }
-  const len = Math.min(size, maxBytes);
-  const pos = size - len;
-  const buf = Buffer.alloc(len);
-  let fd: number | null = null;
-  try {
-    fd = openSync(path, "r");
-    const read = readSync(fd, buf, 0, len, pos);
-    const text = buf.toString("utf8");
-    if (pos === 0) return text;
-    const firstNl = text.indexOf("\n");
-    return firstNl === -1 ? "" : text.slice(firstNl + 1);
-  } catch {
-    return "";
-  } finally {
-    if (fd !== null) closeSync(fd);
-  }
 }
 
 export interface RelevanceSessionReader {
@@ -451,7 +423,9 @@ export async function runRelevanceNightly(deps: RelevanceNightlyDeps): Promise<R
   // host; the client's 60 s default is generous without being unbounded.
   const opts: ClefSettings = { ...clef, timeoutMs: 60_000 };
 
-  const records = sampleRecords(readTail(deps.hookLog ?? hookLogPath(deps.tenantId ?? DEFAULT_TEAM_ID)), {
+  // The hook log's own tail reader, shared with hub damping: a capped seek, so
+  // a busy month-old log costs the same as an empty one.
+  const records = sampleRecords(readTailText(deps.hookLog ?? hookLogPath(deps.tenantId ?? DEFAULT_TEAM_ID), RELEVANCE_TAIL_BYTES), {
     now: now(),
     sample: settings.sample,
   });

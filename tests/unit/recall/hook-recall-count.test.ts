@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { countRecentInjectionPrompts } from "../../../src/core/recall/hook-recall-log.js";
+import { countRecentInjectionPrompts, readTailText } from "../../../src/core/recall/hook-recall-log.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const nowTs = (agoDays: number) => new Date(Date.now() - agoDays * DAY_MS).toISOString();
@@ -69,5 +69,23 @@ describe("countRecentInjectionPrompts", () => {
 
   it("fail-open: missing file yields an empty map", () => {
     expect(countRecentInjectionPrompts(14, join(tmp, "nope.jsonl")).size).toBe(0);
+  });
+});
+
+describe("readTailText — the shared tail seek", () => {
+  it("returns a file that fits the cap whole", () => {
+    const p = join(tmp, "hook-log.jsonl");
+    writeFileSync(p, `${line(nowTs(1), ["a"])}\n${line(nowTs(1), ["b"])}\n`);
+    expect(readTailText(p, 1024 * 1024).trim().split("\n")).toHaveLength(2);
+  });
+
+  it("returns nothing rather than a half record when the cap holds no whole line", () => {
+    const p = join(tmp, "hook-log.jsonl");
+    writeFileSync(p, `${line(nowTs(1), ["a"])}\n`);
+    expect(readTailText(p, 8)).toBe("");
+  });
+
+  it("returns nothing for a missing or unreadable log", () => {
+    expect(readTailText(join(tmp, "nope.jsonl"), 1024)).toBe("");
   });
 });
