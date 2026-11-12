@@ -24,8 +24,9 @@
  * a failed check — removes the partial and returns status "failed". So the
  * freshness gate and the retention set only ever see verified snapshots: a
  * failed pass leaves nothing that could suppress the next pass for a full
- * interval, and nothing corrupt that an operator might later restore.
- * The outcome of each check is recorded in `<dataDir>/backup-integrity.json`
+ * interval, and nothing corrupt that an operator might later restore. Old
+ * snapshots are pruned only after a promotion, never on a failed pass. The
+ * outcome of each check is recorded in `<dataDir>/backup-integrity.json`
  * — the latest drill-down an operator or a future SLO exporter reads; a
  * failure logs ERROR. The live DB is never opened for the check.
  */
@@ -209,14 +210,6 @@ export async function runScheduledBackup(deps: BackupRunDeps): Promise<BackupRun
   chmodSync(partial, 0o600);
   const bytes = statSync(partial).size;
 
-  const before = new Set(present());
-  before.add(name); // count the incoming promotion against keep
-  const pruned = scheduledBackupsToPrune([...before], backupKeep(env));
-  for (const victim of pruned) {
-    if (victim === name) continue;
-    rmSync(join(dir, victim), { force: true });
-  }
-
   const c0 = elapsed();
   let check: BackupCheckResult;
   try {
@@ -235,10 +228,18 @@ export async function runScheduledBackup(deps: BackupRunDeps): Promise<BackupRun
   if (!check.ok) {
     rmSync(partial, { force: true });
     log(`[backup] ERROR quick_check FAILED on ${name}: ${check.error ?? "unknown"}`);
-    log(`[backup] ${name} ${mib(bytes)} in ${ms}ms check=FAILED pruned=${pruned.length} (snapshot discarded)`);
-    return { status: "failed", bytes, ms, pruned, integrityOk: false, reason: check.error ?? "quick_check failed" };
+    log(`[backup] ${name} ${mib(bytes)} in ${ms}ms check=FAILED pruned=0 (snapshot discarded, everything kept)`);
+    return { status: "failed", bytes, ms, integrityOk: false, reason: check.error ?? "quick_check failed" };
   }
   renameSync(partial, dest);
+  // Rotation runs only once the replacement is verified and promoted: a
+  // failed pass (above) keeps every existing snapshot rather than trading
+  // known-good copies for nothing.
+  const pruned = scheduledBackupsToPrune(present(), backupKeep(env));
+  for (const victim of pruned) {
+    if (victim === name) continue;
+    rmSync(join(dir, victim), { force: true });
+  }
   log(`[backup] ${name} ${mib(bytes)} in ${ms}ms check=ok pruned=${pruned.length}`);
   return { status: "ok", file: dest, bytes, ms, pruned, integrityOk: check.ok };
 }

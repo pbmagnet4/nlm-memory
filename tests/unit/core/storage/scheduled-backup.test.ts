@@ -173,6 +173,26 @@ describe("runScheduledBackup (real sqlite)", () => {
     expect(logs[0]).toContain("pruned=2");
   });
 
+  it("prunes only after a verified success: a failed check keeps every existing snapshot", async () => {
+    const dir = join(tmp, "backups");
+    mkdirSync(dir, { recursive: true });
+    const olds = ["202601010000", "202601020000", "202601030000"].map((s) => `canonical-${s}.sqlite`);
+    for (const f of olds) writeFileSync(join(dir, f), "good");
+    const res = await runScheduledBackup(deps({
+      env: { NLM_BACKUP_KEEP: "2" },
+      quickCheck: async () => ({ ok: false, error: "corrupt" }),
+    }));
+    expect(res.status).toBe("failed");
+    // The replacement was discarded, so the retention set must be exactly
+    // what it was: pruning known-good snapshots before there is a verified
+    // replacement shrinks the recovery window on a run that produced nothing.
+    expect(readdirSync(dir).sort()).toEqual([...olds].sort());
+    expect(res.pruned ?? []).toHaveLength(0);
+    const failed = logs.find((l) => l.includes("check=FAILED"));
+    expect(failed).toBeDefined();
+    expect(failed).toContain("pruned=0");
+  });
+
   it("discards the snapshot and returns failed when quick_check fails on it", async () => {
     const res = await runScheduledBackup(deps({
       quickCheck: async () => ({ ok: false, error: "btree msg for page 3: corrupt" }),
