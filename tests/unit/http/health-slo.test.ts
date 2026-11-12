@@ -30,6 +30,15 @@ const STATE: SloState = {
     timeouts1h: 2,
     summary: "2 pending, oldest 4m, 5 ok/1h",
   },
+  // Last night's Clef judge run (the eval's own holdout number, for shape).
+  relevance: {
+    at: NOW - 40 * 60_000,
+    value: 0.254,
+    pairs: 114,
+    threshold: 1.43,
+    model: "clef-flash-oQ8e",
+    phrasing: "same",
+  },
 };
 
 function appWith(slo?: { snapshot(): SloState }) {
@@ -58,6 +67,23 @@ describe("GET /api/health/slo", () => {
     expect(body.actual.recallLatency.p95Ms).toBe(940); // nearest-rank of [700,940]
     expect(body.actual.stalls).toEqual({ count: 2, maxMs: 640 });
     expect(body.actual.ingest.lagMinutes).toBe(4);
+    // T1782 gauge. It is reported and never breached: a 25% kept share is what
+    // the eval measured, not a target.
+    expect(body.actual.relevancePrecision).toMatchObject({
+      value: 0.254,
+      pairs: 114,
+      threshold: 1.43,
+      model: "clef-flash-oQ8e",
+    });
+    // The fixture is rebased onto the wall clock, so `at` is relative.
+    expect(Date.now() - Date.parse(body.actual.relevancePrecision!.at)).toBeLessThan(41 * 60_000);
+    expect(body.breaches).toEqual(["timeoutRate", "maxStallMs"]);
+  });
+
+  it("a night with no judge run reports relevancePrecision: null", async () => {
+    const res = await appWith({ snapshot: () => shifted({ ...STATE, relevance: null }) }).request("/api/health/slo");
+    const body = (await res.json()) as ReturnType<typeof buildSloResponse>;
+    expect(body.actual.relevancePrecision).toBeNull();
     expect(body.breaches).toEqual(["timeoutRate", "maxStallMs"]);
   });
 
@@ -112,6 +138,7 @@ function shifted(state: SloState): SloState {
     recall: state.recall.map((e) => ({ ...e, ts: e.ts + delta })),
     stalls: state.stalls.map((e) => ({ ...e, ts: e.ts + delta })),
     ingest: state.ingest && { ...state.ingest, sampledAt: state.ingest.sampledAt + delta },
+    relevance: state.relevance && { ...state.relevance, at: state.relevance.at + delta },
   };
 }
 

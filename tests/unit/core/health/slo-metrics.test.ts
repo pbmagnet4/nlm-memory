@@ -89,6 +89,7 @@ describe("rolling windows", () => {
       timeouts1h: 1,
       summary: "7 pending",
     },
+    relevance: null,
   };
 
   it("24h window excludes older events; 7d keeps them; 8d never counts", () => {
@@ -126,10 +127,36 @@ describe("rolling windows", () => {
     expect(fresh7.ingest?.lagMinutes).toBe(3.5);
   });
 
+  it("the relevance gauge reads as a gauge and never as a breach", () => {
+    const rel = { at: NOW - 2 * HOUR, value: 0.25, pairs: 40, threshold: 1.43, model: "clef-flash-oQ8e", phrasing: "same" };
+    const withRel: SloState = { ...state, relevance: rel };
+    expect(computeSloActual(withRel, "24h", NOW).relevancePrecision).toEqual({
+      value: 0.25,
+      pairs: 40,
+      threshold: 1.43,
+      model: "clef-flash-oQ8e",
+      at: new Date(NOW - 2 * HOUR).toISOString(),
+    });
+    // A 25% kept share is right where the eval expects the number to land, and
+    // it must not move `breaches`: relevance is a metric, not a target (T1782).
+    const withRelBreach = { ...state, relevance: { ...rel, value: 0 } };
+    expect(buildSloResponse(withRelBreach, "24h", NOW).breaches)
+      .toEqual(buildSloResponse(state, "24h", NOW).breaches);
+    // Older than the window reads as missing; still visible on 7d.
+    const old: SloState = { ...state, relevance: { ...rel, at: NOW - 2 * DAY } };
+    expect(computeSloActual(old, "24h", NOW).relevancePrecision).toBeNull();
+    expect(computeSloActual(old, "7d", NOW).relevancePrecision?.value).toBe(0.25);
+  });
+
   it("pruneSloState drops past-7d events, keeps the rest", () => {
     const p = pruneSloState(state, NOW);
     expect(p.recall).toHaveLength(3);
     expect(p.stalls).toHaveLength(2);
+  });
+
+  it("pruneSloState leaves the relevance gauge alone (windowing is a query-time decision)", () => {
+    const rel = { at: NOW - 9 * DAY, value: 0.3, pairs: 10, threshold: 1.43, model: "m", phrasing: "same" };
+    expect(pruneSloState({ ...state, relevance: rel }, NOW).relevance).toEqual(rel);
   });
 });
 
@@ -143,6 +170,7 @@ describe("buildSloResponse", () => {
       ],
       stalls: [{ ts: NOW - HOUR, ms: 900 }],
       ingest: { sampledAt: NOW - 1000, lagMinutes: 40, classifyLagMinutes: 30, lagging: true, timeouts1h: 2, summary: "s" },
+      relevance: null,
     };
     const res = buildSloResponse(state, "24h", NOW);
     expect(res.window).toBe("24h");
@@ -151,12 +179,13 @@ describe("buildSloResponse", () => {
   });
 
   it("no outcomes / no latency / no stalls / no ingest -> nothing breaches", () => {
-    const res = buildSloResponse({ savedAt: 0, recall: [], stalls: [], ingest: null }, "7d", NOW);
+    const res = buildSloResponse({ savedAt: 0, recall: [], stalls: [], ingest: null, relevance: null }, "7d", NOW);
     expect(res.breaches).toEqual([]);
     expect(res.actual.outcomes.timeoutRate).toBeNull();
     expect(res.actual.recallLatency.p95Ms).toBeNull();
     expect(res.actual.stalls).toEqual({ count: 0, maxMs: null });
     expect(res.actual.ingest).toBeNull();
+    expect(res.actual.relevancePrecision).toBeNull();
   });
 });
 
@@ -327,5 +356,38 @@ describe("createSloMetricsStore — persistence", () => {
     expect(s.snapshot().recall).toHaveLength(1);
     expect(s.snapshot().ingest).toBeNull();
     expect(() => readFileSync(statePath, "utf8")).not.toThrow();
+  });
+
+  it("recordRelevance round-trips, and a pre-T1782 file loads with no relevance", () => {
+    const rel = { at: NOW - HOUR, value: 0.3077, pairs: 26, threshold: 1.43, model: "clef-flash-oQ8e", phrasing: "same" };
+    const s = store();
+    s.recordRelevance(rel);
+    s.persist();
+
+    const s2 = store();
+    s2.load();
+    expect(s2.snapshot().relevance).toEqual(rel);
+
+    // A file written before this field existed must not lose its counters.
+    const raw = JSON.parse(readFileSync(statePath, "utf8")) as Record<string, unknown>;
+    delete raw.relevance;
+    writeFileSync(statePath, JSON.stringify({ ...raw, stalls: [{ ts: new Date(NOW - HOUR).toISOString(), ms: 300 }] }), "utf8");
+    const s3 = store();
+    s3.load();
+    expect(s3.snapshot().relevance).toBeNull();
+    expect(s3.snapshot().stalls).toEqual([{ ts: NOW - HOUR, ms: 300 }]);
+
+    // A garbage relevance block is dropped rather than trusted.
+    writeFileSync(statePath, JSON.stringify({
+      schemaVersion: 1,
+      savedAt: new Date(NOW).toISOString(),
+      recall: [],
+      stalls: [],
+      ingest: null,
+      relevance: { at: "nope", value: 5, pairs: 0, threshold: "x", model: 1, phrasing: 2 },
+    }), "utf8");
+    const s4 = store();
+    s4.load();
+    expect(s4.snapshot().relevance).toBeNull();
   });
 });

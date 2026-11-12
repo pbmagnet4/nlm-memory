@@ -63,6 +63,7 @@ import { deriveScope } from "@core/scope/derive-scope.js";
 import { loadAliasMap } from "@core/scope/alias-map.js";
 import { scopeStampEnabled } from "@core/scope/stamp-flag.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
+import { relevanceStatePath, RELEVANCE_WINDOW_MS } from "@core/health/relevance-judge.js";
 
 function bindWorkstreamsEnabled(): boolean {
   return process.env["NLM_WORKSTREAM_BIND"] === "true";
@@ -99,35 +100,40 @@ function exemplarMaxPerBucket(): number {
 }
 const INTEGRITY_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24h
 
-interface IntegrityCache {
-  readonly checkedAt: string;
-}
-
 function integrityCheckCachePath(): string {
   return process.env["NLM_INTEGRITY_CACHE"] ?? join(homedir(), ".nlm", "integrity-check.json");
 }
 
-function shouldRunIntegrityCheck(now: number): boolean {
+/** Marker file for a 24 h job: `{ <key>: ISO }`. Missing, corrupt or a blank
+ *  key all mean "run now"; a failed write means it may run again next tick,
+ *  which is the lesser evil for a background pass. */
+function lastRanAt(path: string, key: string): number | null {
   try {
-    const raw = readFileSync(integrityCheckCachePath(), "utf8");
-    const parsed = JSON.parse(raw) as Partial<IntegrityCache>;
-    if (typeof parsed.checkedAt === "string") {
-      return now - Date.parse(parsed.checkedAt) >= INTEGRITY_CHECK_INTERVAL_MS;
-    }
+    const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    const v = raw[key];
+    const at = typeof v === "string" ? Date.parse(v) : Number.NaN;
+    return Number.isFinite(at) ? at : null;
   } catch {
-    // cache missing or corrupt — run the check
+    return null;
   }
-  return true;
 }
 
-function markIntegrityCheckRan(now: number): void {
+function markRan(path: string, key: string, now: number): void {
   try {
-    const path = integrityCheckCachePath();
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, JSON.stringify({ checkedAt: new Date(now).toISOString() }, null, 2), "utf8");
+    writeFileSync(path, JSON.stringify({ [key]: new Date(now).toISOString() }), "utf8");
   } catch {
     // cache write failure is non-fatal
   }
+}
+
+function shouldRunIntegrityCheck(now: number): boolean {
+  const last = lastRanAt(integrityCheckCachePath(), "checkedAt");
+  return last === null || now - last >= INTEGRITY_CHECK_INTERVAL_MS;
+}
+
+function markIntegrityCheckRan(now: number): void {
+  markRan(integrityCheckCachePath(), "checkedAt", now);
 }
 
 export interface SchedulerOptions {
@@ -178,6 +184,14 @@ export interface SchedulerOptions {
    *  wholesale (it is one write-heavy unit). Narrowed to the one method the
    *  tick needs so tests pass a plain fake. See core/health/disk-guard.ts. */
   readonly diskGuard?: { shouldSkip(job: string): Promise<boolean> } | null;
+  /** T1782 nightly relevance-precision judge (core/health/relevance-judge.ts).
+   *  The daemon owns what it means — Clef's configuration, which store to
+   *  expand ids from, where the sample lands — and the scheduler owns when it
+   *  may run (once per 24 h), that the disk guard gets the first say, and that
+   *  a minutes-long network job never blocks a tick. Absent or `enabled() ===
+   *  false` (the default: NLM_RELEVANCE_JUDGE unset) costs one file read a
+   *  tick and fires nothing. */
+  readonly relevanceNightly?: { readonly enabled: () => boolean; readonly run: () => Promise<unknown> } | null;
 }
 
 export interface IngestGate {
@@ -199,7 +213,7 @@ export interface TickReport {
 }
 
 export class ScanScheduler {
-  private readonly opts: Required<Omit<SchedulerOptions, "embedder" | "factStore" | "signalStore" | "installScope" | "exemplarStore" | "codeEmbedder" | "workstreams" | "classifierDescriptor" | "tenantId" | "ingestGate" | "diskGuard">> & {
+  private readonly opts: Required<Omit<SchedulerOptions, "embedder" | "factStore" | "signalStore" | "installScope" | "exemplarStore" | "codeEmbedder" | "workstreams" | "classifierDescriptor" | "tenantId" | "ingestGate" | "diskGuard" | "relevanceNightly">> & {
     readonly tenantId: string;
     readonly embedder: LLMClient | null;
     readonly factStore: SqliteFactStore | PgFactStore | null;
@@ -211,11 +225,14 @@ export class ScanScheduler {
     readonly classifierDescriptor: { readonly provider: string; readonly model: string } | undefined;
     readonly ingestGate: IngestGate | null;
     readonly diskGuard: { shouldSkip(job: string): Promise<boolean> } | null;
+    readonly relevanceNightly: { readonly enabled: () => boolean; readonly run: () => Promise<unknown> } | null;
   };
   private readonly aliasToLabel: ReadonlyMap<string, string>;
   /** Periodic background passes (dream lane), run from the tick tail. */
   private readonly dreamPasses: DreamPassSpec[] = [];
   private readonly dreamPassLastRun = new Map<string, number>();
+  /** One nightly Clef judge at a time — it outlives the tick that fired it. */
+  private relevanceRunning = false;
   private stopped = true;
   /** Hash of the normalized text last classified per source; a touch that adds no content is not re-classified. */
   private readonly classifiedHash = new Map<string, string>();
@@ -248,6 +265,7 @@ export class ScanScheduler {
       logger: opts.logger ?? ((msg) => console.error(msg)),
       loopThresholdMs: opts.loopThresholdMs ?? DEFAULT_LOOP_THRESHOLD_MS,
       diskGuard: opts.diskGuard ?? null,
+      relevanceNightly: opts.relevanceNightly ?? null,
     };
     this.aliasToLabel = loadAliasToLabel();
 
@@ -360,6 +378,39 @@ export class ScanScheduler {
     );
   }
 
+  /**
+   * T1782: fire the nightly relevance sample. Deliberately *not* awaited — the
+   * job is minutes of network time (measured p95 20 s per Clef call), and a tick
+   * that waits on an inference host is the exact shape the loop monitor exists
+   * to catch; it would also sit inside `withActiveJob("scheduler-tick")` and get
+   * blamed for stalls it does not cause. Gates, cheapest first: the flag, the
+   * once-a-night marker, the disk guard (the job writes, so it asks like every
+   * other job). The marker is written before the run, so a night that fails
+   * against an offline judge costs one WARN a day rather than a retry every tick.
+   */
+  private fireRelevanceNightly(): void {
+    const job = this.opts.relevanceNightly;
+    if (!job || !job.enabled() || this.relevanceRunning) return;
+    const marker = relevanceStatePath();
+    const now = Date.now();
+    const last = lastRanAt(marker, "attemptedAt");
+    if (last !== null && now - last < RELEVANCE_WINDOW_MS) return;
+    this.relevanceRunning = true;
+    markRan(marker, "attemptedAt", now);
+    void (async () => {
+      if (this.opts.diskGuard && (await this.opts.diskGuard.shouldSkip("relevance-nightly"))) return;
+      await job.run();
+    })()
+      .catch((e: unknown) => {
+        this.opts.logger(
+          `[relevance] WARN nightly judge failed (${e instanceof Error ? e.message : String(e)}); the last sample stands`,
+        );
+      })
+      .finally(() => {
+        this.relevanceRunning = false;
+      });
+  }
+
   private async runTick(): Promise<TickReport> {
     // T1772: a tripped disk guard pauses the whole tick — discovery is pure
     // read but classification ends in writes, and the dream passes at the
@@ -393,6 +444,8 @@ export class ScanScheduler {
         this.opts.logger(`[integrity] check error: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
+    // T1782: fired, never awaited — see fireRelevanceNightly.
+    this.fireRelevanceNightly();
 
     let classifierDown = false;
     for (const adapter of this.opts.adapters) {
