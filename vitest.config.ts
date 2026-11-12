@@ -18,6 +18,10 @@ export default defineConfig({
     globals: false,
     environment: "node",
     include: ["tests/**/*.test.ts"],
+    // Imported in every worker before any test module, so an operator shell with
+    // live deployment config exported (NLM_FORMAT=toon, NLM_PORT, keys) runs the
+    // same suite a clean machine does. T1760.
+    setupFiles: ["tests/setup/hermetic-env.ts"],
     // Spec C: MCP recall_sessions defaults rewrite=true in production. In
     // tests the LLM stubs throw on rewriteForRecall — disable the default so
     // existing tests don't accidentally trigger the rewrite path. Individual
