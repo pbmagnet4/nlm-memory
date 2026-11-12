@@ -54,6 +54,10 @@ import {
   loadAuthorities,
 } from "../core/facts/reconcile-facts.js";
 import { listBackupDates, resolveBackup, runRollingBackup } from "../core/storage/backup-rotation.js";
+import { backupDir } from "../core/storage/backup-rotation.js";
+import { backupIntervalMs, runScheduledBackup, scheduledBackupEnabled } from "../core/storage/scheduled-backup.js";
+import { pickNewestBackup, runRestoreDrill } from "../core/storage/restore-drill.js";
+import { createDiskGuard } from "../core/health/disk-guard.js";
 import { createApp } from "../http/app.js";
 import { createMcpServer, listMergeSuggestionsHandler, mergeWorkstreamsHandler, rebindSessionHandler, recallWorkstreamHandler, renameWorkstreamHandler, retireWorkstreamHandler } from "../mcp/server.js";
 import { classifierEgressNotice } from "../llm/classifier-egress.js";
@@ -568,8 +572,14 @@ program
       thresholdHours: ingestLagThresholdHours(),
       schedulerIntervalMs: opts.intervalMin * 60_000,
     });
+    // T1772: one disk guard for the whole daemon — every write-heavy tick
+    // (ingest, embed sweeps, the scheduled backup) asks it before touching
+    // the store, and /api/health exposes its last snapshot. Reads are never
+    // gated. See core/health/disk-guard.ts.
+    const diskGuard = createDiskGuard({ path: dbPath(), logger: (m) => console.error(m) });
     const app = createApp({
       ingestLag,
+      diskGuard: () => diskGuard.status(),
       properties: storage.properties,
       recall,
       store,
@@ -914,6 +924,40 @@ program
       console.error("  exemplar-backfill: enabled, repair sweep every 24h");
     }
 
+    // Scheduled online backup (T1772): unattended snapshots so the RPO stays
+    // <= 24h without anybody babysitting the machine. The first pass runs 60s
+    // after boot and self-cancels while the newest snapshot is still inside
+    // the interval — that is what keeps daily-restarting daemons both covered
+    // and non-duplicating — then it reruns every interval. SQLite only (the
+    // backup API needs the better-sqlite3 handle; Postgres operators use
+    // pg_dump, same as `nlm backup`). NLM_BACKUP=off turns it off.
+    if (!(storage instanceof PgStorage) && scheduledBackupEnabled(process.env)) {
+      const BACKUP_INITIAL_DELAY_MS = 60_000;
+      const BACKUP_INTERVAL_MS = backupIntervalMs(process.env);
+      const runBackup = async () => {
+        try {
+          if (await diskGuard.shouldSkip("db-backup")) return;
+          await runScheduledBackup({
+            db: (storage as SqliteStorage).rawDb(),
+            dbPath: dbPath(),
+            logger: (m) => console.error(m),
+          });
+        } catch (e) {
+          console.error(`[backup] error: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      };
+      const backupTimer = setInterval(() => {
+        void timedJob("db-backup", runBackup);
+      }, BACKUP_INTERVAL_MS);
+      backupTimer.unref();
+      setTimeout(() => {
+        void timedJob("db-backup", runBackup);
+      }, BACKUP_INITIAL_DELAY_MS).unref();
+      console.error(
+        `  backup: online snapshot every ${Math.round(BACKUP_INTERVAL_MS / 3_600_000)}h to ${backupDir(dbPath())}`,
+      );
+    }
+
     // Fact-embedding sweep (T732 / E1): re-embeds facts whose vector failed or
     // was shed (fact_embed_pending) plus unrecorded drops, a small batch every
     // 2 min under the shared embed in-flight cap, then publishes the
@@ -922,6 +966,7 @@ program
       const FACT_EMBED_SWEEP_INTERVAL_MS = 2 * 60 * 1000;
       const FACT_EMBED_SWEEP_INITIAL_DELAY_MS = 90 * 1000;
       const runFactEmbedSweep = async () => {
+        if (await diskGuard.shouldSkip("fact-embed-sweep")) return;
         try {
           const report = await runFactEmbedTick({
             tenantId: DEFAULT_TEAM_ID,
@@ -954,6 +999,7 @@ program
       const CHUNK_EMBED_SWEEP_INTERVAL_MS = 2 * 60 * 1000;
       const CHUNK_EMBED_SWEEP_INITIAL_DELAY_MS = 105 * 1000;
       const runChunkEmbedSweep = async () => {
+        if (await diskGuard.shouldSkip("chunk-embed-sweep")) return;
         try {
           const report = await sweepChunkEmbeddings({ store: storage instanceof PgStorage ? storage.sessions : (storage as SqliteStorage).sessions, embedder });
           if (report.repaired > 0 || report.failed > 0) {
@@ -996,6 +1042,7 @@ program
           workstreams: storage.workstreams,
           classifierDescriptor: { provider: classifier.provider, model: classifier.model },
           ingestGate: buildIngestGate(),
+          diskGuard,
         });
         scheduler.start();
         console.error(
@@ -3315,7 +3362,7 @@ program
     }
   });
 
-program
+const backupCommand = program
   .command("backup")
   .description("Write a dated snapshot to ~/.nlm/backups/ and prune ones past the retention window")
   .option("--retention <days>", "keep snapshots from the last N days", "7")
@@ -3338,6 +3385,31 @@ program
     } finally {
       await storage.close();
     }
+  });
+
+// T1772: the restore drill. Proves a snapshot can still serve reads without
+// touching the live DB — copy to a temp dir, open read-only, integrity_check
+// plus three representative queries. Non-zero exit on failure so cron/CI can
+// gate on it. See core/storage/restore-drill.ts.
+backupCommand
+  .command("restore-drill")
+  .description("Verify a backup restores and serves reads (never touches the live DB)")
+  .option("--backup <file>", "snapshot file to drill (default: newest in the backups dir)")
+  .action((opts: { backup?: string }) => {
+    const file = opts.backup
+      ? resolve(String(opts.backup))
+      : pickNewestBackup(backupDir(dbPath()));
+    if (!file || !existsSync(file)) {
+      console.error(`nlm backup restore-drill: no backup ${opts.backup ? `at ${opts.backup}` : `in ${backupDir(dbPath())}`}. Run \`nlm backup\` first.`);
+      process.exit(1);
+    }
+    const report = runRestoreDrill({ backupFile: file });
+    console.log(`restore-drill: ${file}`);
+    for (const check of report.checks) {
+      console.log(`  ${check.ok ? "PASS" : "FAIL"}  ${check.name} — ${check.detail}`);
+    }
+    console.log(`restore-drill: ${report.ok ? "PASS" : "FAIL"}`);
+    if (!report.ok) process.exit(1);
   });
 
 program
