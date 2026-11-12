@@ -12,14 +12,18 @@
  * not.
  *
  * The floor is the larger of two thresholds:
- *   NLM_DISK_MIN_FREE_PCT (default 2)  — percent of the volume's total size
+ *   NLM_DISK_MIN_FREE_PCT (default 1)  — percent of the volume's total size
  *   NLM_DISK_MIN_FREE_GB  (default 5)  — absolute floor in GiB
- * so a 2% floor on a tiny boot volume does not license writing down to a
- * hundred free megabytes.
+ * so the guard aims at "~99% full" on a large volume (1% of 926 GiB = 9.3
+ * GiB) without letting that percentage fall below a sane 5 GiB on a small
+ * one. The 1% default is the T1780 fix: the previous 2% default demanded an
+ * 18.5 GiB floor on a 926 GB volume and paused every write at 14.6 GiB free
+ * — nowhere near full. Setting NLM_DISK_MIN_FREE_PCT explicitly overrides
+ * the 1% and applies as given.
  */
 import { statfs } from "node:fs";
 
-export const DISK_MIN_FREE_PCT_DEFAULT = 2;
+export const DISK_MIN_FREE_PCT_DEFAULT = 1;
 export const DISK_MIN_FREE_GB_DEFAULT = 5;
 
 export interface DiskGuardStatus {
