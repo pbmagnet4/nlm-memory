@@ -11,22 +11,27 @@
  * newest `NLM_BACKUP_KEEP` (default 7). `NLM_BACKUP=off` disables the job.
  *
  * Guards, in order, before copying:
- *  - fresh-backup skip: a backup newer than the interval makes the run a
- *    no-op, which is what lets the daemon run a catch-up shortly after every
- *    boot without ever backing up twice a day;
+ *  - fresh-backup skip: a *verified* backup newer than the interval makes
+ *    the run a no-op, which is what lets the daemon run a catch-up shortly
+ *    after every boot without ever backing up twice a day;
  *  - low-disk skip (WARN): free space must be >= 3x the DB size, because a
  *    backup written onto an almost-full volume is how a stall becomes
  *    corruption (see disk-guard.ts).
  *
- * After each write the *backup file* is verified with PRAGMA quick_check in
- * a worker thread (Part 2) and the outcome recorded in
- * `<dataDir>/backup-integrity.json` — the latest drill-down an operator or a
- * future SLO exporter reads; a failure logs ERROR. The live DB is never
- * opened for the check.
+ * The copy is written to `<name>.partial` and only promoted to the final
+ * `canonical-<stamp>.sqlite` name by rename once PRAGMA quick_check (Part 2,
+ * run off-thread on the *backup file*) passes; any error — mid-copy ENOSPC or
+ * a failed check — removes the partial and returns status "failed". So the
+ * freshness gate and the retention set only ever see verified snapshots: a
+ * failed pass leaves nothing that could suppress the next pass for a full
+ * interval, and nothing corrupt that an operator might later restore.
+ * The outcome of each check is recorded in `<dataDir>/backup-integrity.json`
+ * — the latest drill-down an operator or a future SLO exporter reads; a
+ * failure logs ERROR. The live DB is never opened for the check.
  */
 import Database from "better-sqlite3";
 import { statfs } from "node:fs";
-import { chmodSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { backupDir } from "./backup-rotation.js";
 import { runQuickCheckOnFile, type BackupCheckResult } from "./backup-check.js";
@@ -132,10 +137,11 @@ function mib(bytes: number): string {
   return `${(bytes / 1_048_576).toFixed(1)} MiB`;
 }
 
-/** One backup pass. Every branch logs at most one line and returns a
- *  structured result; an unexpected throw (backup API failure) propagates to
- *  the caller's timer wrapper, which logs it — same contract as the other
- *  daemon jobs. */
+/** One backup pass. Every branch logs its outcome and returns a structured
+ *  result; a backup or verification failure is reported as status "failed"
+ *  (partial removed, nothing promoted), and any other unexpected throw
+ *  propagates to the caller's timer wrapper, which logs it — same contract
+ *  as the other daemon jobs. */
 export async function runScheduledBackup(deps: BackupRunDeps): Promise<BackupRunResult> {
   const env = deps.env ?? process.env;
   const log = deps.logger ?? ((m: string) => console.error(m));
@@ -151,6 +157,9 @@ export async function runScheduledBackup(deps: BackupRunDeps): Promise<BackupRun
   const present = (): string[] => readdirSync(dir).filter((f) => SCHEDULED_RE.test(f));
 
   // Freshness gate: newest scheduled snapshot still inside the interval.
+  // Only quick_check-verified files ever carry the final name (a failed or
+  // interrupted pass leaves at most a .partial, which SCHEDULED_RE does not
+  // match), so "fresh" here always means "fresh *and* verified".
   const newest = present().sort();
   if (newest.length > 0) {
     const newestName = newest[newest.length - 1]!;
@@ -178,16 +187,31 @@ export async function runScheduledBackup(deps: BackupRunDeps): Promise<BackupRun
 
   const name = `canonical-${backupStampUTC(nowFn())}.sqlite`;
   const dest = join(dir, name);
-  rmSync(dest, { force: true }); // same-minute re-run overwrites instead of failing
+  const partial = `${dest}.partial`;
+  rmSync(partial, { force: true }); // stale partial from a killed pass; any existing verified final stays until the replacement is verified
   // better-sqlite3's Online Backup API: copies in pages and yields the
   // event loop between steps by default — the whole point of using it here.
+  // The copy lands on the .partial name; renameSync replaces a same-minute
+  // final atomically once the check passes.
   const t0 = elapsed();
-  await deps.db.backup(dest);
+  try {
+    await deps.db.backup(partial);
+  } catch (e) {
+    // Mid-copy failure (ENOSPC is the case this whole feature targets):
+    // the half-written file must not outlive the pass, or it reads as a
+    // fresh snapshot to the next one.
+    rmSync(partial, { force: true });
+    const reason = e instanceof Error ? e.message : String(e);
+    log(`[backup] ERROR ${name}: copy failed: ${reason} (existing snapshots kept)`);
+    return { status: "failed", reason };
+  }
   const ms = Math.max(0, elapsed() - t0);
-  chmodSync(dest, 0o600);
-  const bytes = statSync(dest).size;
+  chmodSync(partial, 0o600);
+  const bytes = statSync(partial).size;
 
-  const pruned = scheduledBackupsToPrune(present(), backupKeep(env));
+  const before = new Set(present());
+  before.add(name); // count the incoming promotion against keep
+  const pruned = scheduledBackupsToPrune([...before], backupKeep(env));
   for (const victim of pruned) {
     if (victim === name) continue;
     rmSync(join(dir, victim), { force: true });
@@ -196,7 +220,7 @@ export async function runScheduledBackup(deps: BackupRunDeps): Promise<BackupRun
   const c0 = elapsed();
   let check: BackupCheckResult;
   try {
-    check = await quickCheck(dest);
+    check = await quickCheck(partial);
   } catch (e) {
     check = { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
@@ -209,8 +233,12 @@ export async function runScheduledBackup(deps: BackupRunDeps): Promise<BackupRun
     ...(check.error !== undefined ? { error: check.error } : {}),
   });
   if (!check.ok) {
+    rmSync(partial, { force: true });
     log(`[backup] ERROR quick_check FAILED on ${name}: ${check.error ?? "unknown"}`);
+    log(`[backup] ${name} ${mib(bytes)} in ${ms}ms check=FAILED pruned=${pruned.length} (snapshot discarded)`);
+    return { status: "failed", bytes, ms, pruned, integrityOk: false, reason: check.error ?? "quick_check failed" };
   }
-  log(`[backup] ${name} ${mib(bytes)} in ${ms}ms check=${check.ok ? "ok" : "FAILED"} pruned=${pruned.length}`);
+  renameSync(partial, dest);
+  log(`[backup] ${name} ${mib(bytes)} in ${ms}ms check=ok pruned=${pruned.length}`);
   return { status: "ok", file: dest, bytes, ms, pruned, integrityOk: check.ok };
 }

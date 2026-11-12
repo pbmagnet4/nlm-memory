@@ -173,13 +173,19 @@ describe("runScheduledBackup (real sqlite)", () => {
     expect(logs[0]).toContain("pruned=2");
   });
 
-  it("keeps the snapshot and logs ERROR when quick_check fails on it", async () => {
+  it("discards the snapshot and returns failed when quick_check fails on it", async () => {
     const res = await runScheduledBackup(deps({
       quickCheck: async () => ({ ok: false, error: "btree msg for page 3: corrupt" }),
     }));
-    expect(res.status).toBe("ok"); // the backup itself succeeded; visibility is the point
+    // A known-bad copy is never promoted to the canonical name: it would
+    // sit there suppressing retries for a full interval and could be
+    // restored by an operator who trusts the rotation.
+    expect(res.status).toBe("failed");
     expect(res.integrityOk).toBe(false);
+    expect(res.reason).toContain("corrupt");
+    expect(readdirSync(join(tmp, "backups"))).toEqual([]); // no final, no partial
     expect(logs.some((l) => l.startsWith("[backup] ERROR quick_check FAILED") && l.includes("corrupt"))).toBe(true);
+    expect(logs.some((l) => l.includes("check=FAILED"))).toBe(true);
     const state = JSON.parse(readFileSync(join(tmp, INTEGRITY_STATE_FILENAME), "utf8"));
     expect(state).toMatchObject({ backup: "canonical-202611110530.sqlite", ok: false, error: "btree msg for page 3: corrupt" });
   });
@@ -188,9 +194,34 @@ describe("runScheduledBackup (real sqlite)", () => {
     const res = await runScheduledBackup(deps({
       quickCheck: async () => { throw new Error("worker exploded"); },
     }));
-    expect(res.status).toBe("ok");
+    expect(res.status).toBe("failed");
     expect(res.integrityOk).toBe(false);
+    expect(readdirSync(join(tmp, "backups"))).toEqual([]);
     expect(logs.some((l) => l.includes("worker exploded"))).toBe(true);
+  });
+
+  it("returns failed and removes the partial when the copy throws mid-write (ENOSPC)", async () => {
+    const halfWritten = { backup: async (p: string) => {
+      writeFileSync(p, "half a database");
+      throw new Error("SqliteError: database or disk is full");
+    } } as unknown as Database.Database;
+    const res = await runScheduledBackup(deps({ db: halfWritten }));
+    expect(res.status).toBe("failed");
+    expect(res.reason).toMatch(/disk is full/);
+    expect(readdirSync(join(tmp, "backups"))).toEqual([]); // partial cleaned up, nothing promoted
+    expect(logs.some((l) => l.startsWith("[backup] ERROR") && l.includes("disk is full"))).toBe(true);
+  });
+
+  it("a discarded backup does not make the freshness gate skip the next pass", async () => {
+    const bad = await runScheduledBackup(deps({
+      quickCheck: async () => ({ ok: false, error: "corrupt" }),
+    }));
+    expect(bad.status).toBe("failed");
+    // Same clock minute → same stamp. The failed run left no verified
+    // snapshot behind, so this pass must run again, not return skipped-fresh.
+    const retry = await runScheduledBackup(deps());
+    expect(retry.status).toBe("ok");
+    expect(readdirSync(join(tmp, "backups"))).toEqual(["canonical-202611110530.sqlite"]);
   });
 });
 
