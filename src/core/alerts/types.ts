@@ -18,11 +18,12 @@ export type AlertEventType =
   | "nlm.facts.embedding_drop";
 
 /**
- * Generic across both transition-based event types: `current` is the
+ * Generic across the transition-based event types: `current` is the
  * observed value, `latest` is the target/expected value, `since` is the
  * ISO timestamp the current state began holding. For version drift that's
  * the installed vs. npm-latest version; for embedder health it's the
- * degraded ("cold") vs. healthy ("ready") state label.
+ * degraded ("cold") vs. healthy ("ready") state label. The embedder
+ * event extends this — see `EmbedderColdAlertEventData`.
  */
 export interface AlertEventData {
   readonly current: string;
@@ -90,9 +91,22 @@ export interface FactEmbedAlertEventData {
   readonly message: string;
 }
 
+/**
+ * `nlm.health.embedder_cold` payload. The first alert of a cold episode
+ * carries only the inherited three fields; a re-alert (T1867 — the same
+ * episode still down 6h after the last message) adds `repeat` and
+ * `downMinutes` so a relay can escalate instead of replaying the same
+ * sentence. Consumers that ignore unknown fields are unaffected.
+ */
+export interface EmbedderColdAlertEventData extends AlertEventData {
+  readonly repeat?: true;
+  /** Whole minutes down as of this event, measured from `since`. */
+  readonly downMinutes?: number;
+}
+
 export type AlertEvent =
   | { readonly type: "nlm.drift.version_behind"; readonly data: AlertEventData }
-  | { readonly type: "nlm.health.embedder_cold"; readonly data: AlertEventData }
+  | { readonly type: "nlm.health.embedder_cold"; readonly data: EmbedderColdAlertEventData }
   | { readonly type: "nlm.health.ingest_lagging"; readonly data: AlertEventData }
   | { readonly type: "nlm.job.stalled"; readonly data: JobAlertEventData }
   | { readonly type: "nlm.wiki.projection_failed"; readonly data: WikiAlertEventData }
