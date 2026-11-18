@@ -219,7 +219,7 @@ export async function recallSessionsHandler(
       ...(args.workstream !== undefined ? { workstream: args.workstream } : {}),
       ...(args.property !== undefined ? { property: args.property } : {}),
     };
-    const result = await deps.recall.search(tenantId, query);
+    const result = await deps.recall.search(tenantId, query, ...(deps.workTracker ? [{ workTracker: deps.workTracker }] as const : []));
     const page = sessionRecallPage(result, args, cursor, format);
     const conversationId = trustedConversationId(deps, tenantId);
     // Telemetry — the MCP path is the real agent-usage path; without this it
@@ -635,7 +635,7 @@ export async function recallFactsHandler(
         ? { minConfidence: input.minConfidence }
         : {}),
     };
-    const result = await deps.factRecall.search(tenantId, query);
+    const result = await deps.factRecall.search(tenantId, query, ...(deps.workTracker ? [{ workTracker: deps.workTracker }] as const : []));
     const conversationId = trustedConversationId(deps, tenantId);
     // Telemetry — see recallSessionsHandler. Fire-and-forget.
     void trackDetached(deps, logFactQuery(tenantId, {

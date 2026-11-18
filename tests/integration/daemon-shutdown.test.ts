@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -138,6 +138,90 @@ describe("daemon shutdown", () => {
       releaseResponse?.destroy();
       if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await exited; }
       await new Promise<void>((resolve) => classifier.close(() => resolve()));
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 40_000);
+
+  it("reports failure rather than a clean fence when an active child is interrupted", async () => {
+    const home = mkdtempSync(join(tmpdir(), "nlm-daemon-child-"));
+    const port = await new Promise<number>((resolve, reject) => {
+      const probe = createTcpServer();
+      probe.once("error", reject);
+      probe.listen(0, "127.0.0.1", () => {
+        const address = probe.address();
+        if (!address || typeof address === "string") return reject(new Error("no daemon port"));
+        probe.close(() => resolve(address.port));
+      });
+    });
+    const child = spawn(process.execPath, ["--import", "tsx", "src/cli/nlm.ts", "start", "--no-scheduler"], {
+      cwd: process.cwd(), stdio: ["ignore", "ignore", "pipe"], env: {
+        PATH: process.env["PATH"], HOME: home, NLM_DB_PATH: join(home, "canonical.sqlite"),
+        NLM_PORT: String(port), NLM_MCP_TOKEN: "synthetic-test-token", NODE_OPTIONS: "--import=tsx",
+        NLM_OLLAMA_URL: "http://127.0.0.1:9", NLM_LOOP_LOG: "0",
+      },
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
+    try {
+      const deadline = Date.now() + 20_000;
+      while (!stderr.includes("http listening") && child.exitCode === null && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(stderr).toContain("http listening");
+      const response = await fetch(`http://127.0.0.1:${port}/api/jobs/reprocess`, {
+        method: "POST", headers: { authorization: "Bearer synthetic-test-token", "content-type": "application/json" },
+        body: JSON.stringify({ args: [] }),
+      });
+      expect(response.status).toBe(202);
+      child.kill("SIGTERM");
+      expect(await exited).toBe(1);
+      expect(stderr).toContain("child job interrupted; reconcile state before handoff");
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await exited; }
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 40_000);
+
+  it("handles SIGTERM during asynchronous daemon startup", async () => {
+    const home = mkdtempSync(join(tmpdir(), "nlm-daemon-early-"));
+    const preload = join(home, "early-signal.mjs");
+    writeFileSync(preload, `
+      const original = process.on;
+      process.on = function(event, listener) {
+        const result = original.call(this, event, listener);
+        if (event === "SIGTERM" && listener.name === "earlyShutdown") {
+          setImmediate(() => { process.stderr.write("fixture-early-signal\\n"); process.kill(process.pid, "SIGTERM"); });
+        }
+        return result;
+      };
+    `);
+    const port = await new Promise<number>((resolve, reject) => {
+      const probe = createTcpServer();
+      probe.once("error", reject);
+      probe.listen(0, "127.0.0.1", () => {
+        const address = probe.address();
+        if (!address || typeof address === "string") return reject(new Error("no daemon port"));
+        probe.close(() => resolve(address.port));
+      });
+    });
+    const database = join(home, "canonical.sqlite");
+    const child = spawn(process.execPath, ["--import", "tsx", "src/cli/nlm.ts", "start", "--no-scheduler"], {
+      cwd: process.cwd(), stdio: ["ignore", "ignore", "pipe"], env: {
+        PATH: process.env["PATH"], HOME: home, NLM_DB_PATH: database, NLM_PORT: String(port),
+        NLM_MCP_TOKEN: "synthetic-test-token", NODE_OPTIONS: `--import=${preload}`,
+        NLM_OLLAMA_URL: "http://127.0.0.1:9", NLM_LOOP_LOG: "0",
+      },
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
+    try {
+      expect(await exited).toBe(0);
+      expect(stderr).toContain("fixture-early-signal");
+      const db = new Database(database, { readonly: true });
+      try { expect(db.pragma("quick_check", { simple: true })).toBe("ok"); }
+      finally { db.close(); }
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await exited; }
       rmSync(home, { recursive: true, force: true });
     }
   }, 40_000);

@@ -952,7 +952,7 @@ function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
       ...(withExemplars ? { withRelatedExemplars: true } : {}),
       ...(includeSuperseded !== undefined ? { includeSuperseded } : {}),
     };
-    const result = await deps.recall.search(tenantId, query);
+    const result = await deps.recall.search(tenantId, query, ...(deps.workTracker ? [{ workTracker: deps.workTracker }] as const : []));
 
     // Fire-and-forget telemetry — never blocks the response.
     void trackWork(deps, logQuery(
@@ -1175,7 +1175,7 @@ function registerHermesAgentHookRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
         limit: 5,
         withRelatedFacts: true,
         withRelatedExemplars: true,
-      });
+      }, ...(deps.workTracker ? [{ workTracker: deps.workTracker }] as const : []));
       const hits: ReadonlyArray<RecallHitInput> = result.results.map((r) => ({
         id: r.id,
         label: r.label,
@@ -1314,7 +1314,7 @@ function registerFactRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
       ...(kind !== undefined ? { kind: kind as FactKind } : {}),
       ...(minConfidence !== undefined ? { minConfidence } : {}),
     };
-    const result = await deps.factRecall.search(tenantId, query);
+    const result = await deps.factRecall.search(tenantId, query, ...(deps.workTracker ? [{ workTracker: deps.workTracker }] as const : []));
 
     const source = c.req.header("x-recall-source") ?? "http";
     const runtime = c.req.header("x-recall-runtime") ?? null;

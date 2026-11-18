@@ -9,7 +9,8 @@ export class RequestBudget {
   private readonly parent: AbortSignal | undefined;
   private readonly onAbort = () => this.controller.abort(new Error("recall cancelled"));
 
-  constructor(timeoutMs: number, options: Pick<RecallExecutionOptions, "signal" | "deadlineAt" | "now"> = {}) {
+  constructor(timeoutMs: number, options: Pick<RecallExecutionOptions, "signal" | "deadlineAt" | "now" | "workTracker"> = {}) {
+    this.workTracker = options.workTracker;
     this.now = options.now ?? (() => performance.now());
     this.deadlineAt = Math.min(this.now() + timeoutMs, options.deadlineAt ?? Infinity);
     this.signal = this.controller.signal;
@@ -22,6 +23,7 @@ export class RequestBudget {
   }
 
   readonly now: () => number;
+  private readonly workTracker: RecallExecutionOptions["workTracker"];
   remaining(): number { return Math.max(0, this.deadlineAt - this.now()); }
   check(): void {
     if (this.remaining() <= 0 && !this.signal.aborted) this.onAbort();
@@ -35,7 +37,8 @@ export class RequestBudget {
       this.signal.addEventListener("abort", abort, { once: true });
     });
     try {
-      const result = await Promise.race([operation(), stopped]);
+      const work = operation();
+      const result = await Promise.race([this.workTracker?.track(work) ?? work, stopped]);
       this.check();
       return result;
     } finally {
