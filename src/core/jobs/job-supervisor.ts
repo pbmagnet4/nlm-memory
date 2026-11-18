@@ -177,6 +177,7 @@ export class JobSupervisor {
   private args: string[] = [];
   private env: Record<string, string> | undefined;
   private child: ChildHandle | null = null;
+  private readonly childExits = new Set<Promise<void>>();
   private processed = 0;
   private total = 0;
   private startedAt: string | null = null;
@@ -248,6 +249,10 @@ export class JobSupervisor {
     }
   }
 
+  async drain(): Promise<void> {
+    while (this.childExits.size > 0) await Promise.all([...this.childExits]);
+  }
+
   snapshot(): JobSnapshot {
     return {
       name: this.job,
@@ -264,6 +269,9 @@ export class JobSupervisor {
   private spawnAndWire(): void {
     const child = this.spawnChildFn(this.args, this.env);
     this.child = child;
+    let markExited!: () => void;
+    const exited = new Promise<void>((resolve) => { markExited = resolve; });
+    this.childExits.add(exited);
     // Identity-guard every callback against `this.child`: a killed-but-not-yet-
     // exited child (stop(), or a respawn racing a slow exit/line delivery) can
     // still deliver onLine/onExit after this.child has moved on to a newer
@@ -280,6 +288,8 @@ export class JobSupervisor {
       }
     });
     child.onExit((code) => {
+      this.childExits.delete(exited);
+      markExited();
       if (this.child !== child) return;
       try {
         this.handleExit(code);
