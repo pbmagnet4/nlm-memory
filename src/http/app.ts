@@ -843,7 +843,10 @@ function registerMcpRoute(app: Hono<AppEnv>, deps: HttpDeps): void {
       "refusing to mount an unauthenticated /mcp endpoint",
     );
   }
-  const capturedMcpDeps = deps.mcpDeps;
+  const capturedMcpDeps = {
+    ...deps.mcpDeps,
+    ...(deps.workTracker ? { workTracker: deps.workTracker } : {}),
+  };
   const teamTokens = deps.teamTokens;
   app.all("/mcp", async (c) => {
     const auth = c.req.header("authorization") ?? "";

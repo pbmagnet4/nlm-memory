@@ -1,3 +1,4 @@
+import type { WorkTracker } from "@core/lifecycle/work-tracker.js";
 import type { PropertyStore } from "@ports/property-store.js";
 import { requireProperty, propertySlug } from "@core/properties/model.js";
 import { validateSourceAnchor } from "@core/facts/source-anchor.js";
@@ -85,6 +86,7 @@ const SERVER_VERSION = "0.5.9";
 const useToon = (): boolean => process.env.NLM_FORMAT === "toon";
 
 export interface McpDeps {
+  readonly workTracker?: WorkTracker;
   readonly properties?: Pick<PropertyStore, "list">;
   readonly recall: RecallService;
   readonly requestContext?: { readonly tenantId: string; readonly conversationId?: string; readonly signal?: AbortSignal };
@@ -1340,6 +1342,18 @@ export async function learnerCompleteHandler(
  * only and always passes DEFAULT_TEAM_ID; the HTTP /mcp mount
  * (src/http/app.ts) passes the token-resolved team (M3).
  */
+function trackTool<T>(deps: McpDeps, run: () => Promise<T>): Promise<T> {
+  if (!deps.workTracker) return run();
+  const done = deps.workTracker.beginRequest();
+  if (!done) return Promise.reject(new Error("server shutting down"));
+  try {
+    return run().finally(done);
+  } catch (error) {
+    done();
+    throw error;
+  }
+}
+
 export function createMcpServer(deps: McpDeps, tenantId: string): McpServer {
   const server = new McpServer({
     name: SERVER_NAME,
@@ -1360,12 +1374,12 @@ export function createMcpServer(deps: McpDeps, tenantId: string): McpServer {
       },
     },
     async (args) =>
-      recallSessionsHandler(
+      trackTool(deps, () => recallSessionsHandler(
         deps,
         tenantId,
         args,
         mcpRuntimeFromClient(server.server.getClientVersion()),
-      ) as never,
+      ) as never),
   );
 
   server.registerTool(
@@ -1392,10 +1406,10 @@ for more source context, or view=transcript with offset for original text.`,
       inputSchema: contextInput.shape,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
-    async (args, extra) => recallContextHandler({ ...deps, requestContext: {
+    async (args, extra) => trackTool(deps, () => recallContextHandler({ ...deps, requestContext: {
       tenantId, signal: extra.signal,
       ...(trustedConversationId(deps, tenantId) ? { conversationId: trustedConversationId(deps, tenantId)! } : {}),
-    } }, tenantId, args, mcpRuntimeFromClient(server.server.getClientVersion())) as never,
+    } }, tenantId, args, mcpRuntimeFromClient(server.server.getClientVersion())) as never),
   );
 
   server.registerTool(
@@ -1411,7 +1425,7 @@ for more source context, or view=transcript with offset for original text.`,
         openWorldHint: true,
       },
     },
-    async (args) => getSessionHandler(deps, tenantId, args) as never,
+    async (args) => trackTool(deps, () => getSessionHandler(deps, tenantId, args) as never),
   );
 
   if (deps.factRecall && deps.factStore) {
@@ -1469,12 +1483,12 @@ for more source context, or view=transcript with offset for original text.`,
         },
       },
       async (args) =>
-        recallFactsHandler(
+        trackTool(deps, () => recallFactsHandler(
           deps,
           tenantId,
           args,
           mcpRuntimeFromClient(server.server.getClientVersion()),
-        ) as never,
+        ) as never),
     );
 
     server.registerTool(
@@ -1498,7 +1512,7 @@ for more source context, or view=transcript with offset for original text.`,
           openWorldHint: true,
         },
       },
-      async (args) => getFactHistoryHandler(deps, tenantId, args) as never,
+      async (args) => trackTool(deps, () => getFactHistoryHandler(deps, tenantId, args) as never),
     );
 
     server.registerTool(
@@ -1523,7 +1537,7 @@ for more source context, or view=transcript with offset for original text.`,
           openWorldHint: false,
         },
       },
-      async (args) => supersedeFactHandler(deps, tenantId, args) as never,
+      async (args) => trackTool(deps, () => supersedeFactHandler(deps, tenantId, args) as never),
     );
   }
 
@@ -1550,7 +1564,7 @@ for more source context, or view=transcript with offset for original text.`,
         openWorldHint: false,
       },
     },
-    async (args) => citeSessionHandler(tenantId, args, deps.requestContext) as never,
+    async (args) => trackTool(deps, () => citeSessionHandler(tenantId, args, deps.requestContext) as never),
   );
 
   if (deps.signalStore && deps.installScope !== undefined) {
@@ -1587,7 +1601,7 @@ for more source context, or view=transcript with offset for original text.`,
           openWorldHint: false,
         },
       },
-      async (args) => reportOutcomeHandler(deps, tenantId, args) as never,
+      async (args) => trackTool(deps, () => reportOutcomeHandler(deps, tenantId, args) as never),
     );
   }
 
@@ -1617,7 +1631,7 @@ for more source context, or view=transcript with offset for original text.`,
         openWorldHint: false,
       },
     },
-    async (args) => markSupersededHandler(deps, tenantId, args) as never,
+    async (args) => trackTool(deps, () => markSupersededHandler(deps, tenantId, args) as never),
   );
 
   server.registerTool(
@@ -1635,7 +1649,7 @@ for more source context, or view=transcript with offset for original text.`,
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (args) => workSummaryHandler(deps, tenantId, args) as never,
+    async (args) => trackTool(deps, () => workSummaryHandler(deps, tenantId, args) as never),
   );
 
   server.registerTool(
@@ -1649,7 +1663,7 @@ for more source context, or view=transcript with offset for original text.`,
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (args) => recallWorkstreamHandler(deps, tenantId, args, mcpRuntimeFromClient(server.server.getClientVersion())) as never,
+    async (args) => trackTool(deps, () => recallWorkstreamHandler(deps, tenantId, args, mcpRuntimeFromClient(server.server.getClientVersion())) as never),
   );
 
   server.registerTool(
@@ -1664,7 +1678,7 @@ for more source context, or view=transcript with offset for original text.`,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (args) => rebindSessionHandler(deps, tenantId, args) as never,
+    async (args) => trackTool(deps, () => rebindSessionHandler(deps, tenantId, args) as never),
   );
 
   server.registerTool(
@@ -1679,7 +1693,7 @@ for more source context, or view=transcript with offset for original text.`,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
-    async (args) => mergeWorkstreamsHandler(deps, tenantId, args) as never,
+    async (args) => trackTool(deps, () => mergeWorkstreamsHandler(deps, tenantId, args) as never),
   );
 
   server.registerTool(
@@ -1694,7 +1708,7 @@ for more source context, or view=transcript with offset for original text.`,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (args) => renameWorkstreamHandler(deps, tenantId, args) as never,
+    async (args) => trackTool(deps, () => renameWorkstreamHandler(deps, tenantId, args) as never),
   );
 
   server.registerTool(
@@ -1706,7 +1720,7 @@ for more source context, or view=transcript with offset for original text.`,
       inputSchema: { idOrLabel: z.string().describe("Workstream id or label.") },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (args) => retireWorkstreamHandler(deps, tenantId, args) as never,
+    async (args) => trackTool(deps, () => retireWorkstreamHandler(deps, tenantId, args) as never),
   );
 
   server.registerTool(
@@ -1718,7 +1732,7 @@ for more source context, or view=transcript with offset for original text.`,
       inputSchema: { minScore: z.number().optional().describe("Minimum similarity score 0..1 (default 0.5).") },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (args) => listMergeSuggestionsHandler(deps, tenantId, args) as never,
+    async (args) => trackTool(deps, () => listMergeSuggestionsHandler(deps, tenantId, args) as never),
   );
 
   if (
@@ -1765,7 +1779,7 @@ for more source context, or view=transcript with offset for original text.`,
           openWorldHint: false,
         },
       },
-      async (args) => recallCodeHandler(deps, tenantId, args, runtime) as never,
+      async (args) => trackTool(deps, () => recallCodeHandler(deps, tenantId, args, runtime) as never),
     );
 
     server.registerTool(
@@ -1780,7 +1794,7 @@ for more source context, or view=transcript with offset for original text.`,
         },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       },
-      async (args) => {
+      async (args) => trackTool(deps, async () => {
         const a = args as { exemplar_id: string; retire?: boolean; outcome?: "pass" | "fail" | "fix" | "exhausted" };
         const patch: { retired?: boolean; outcome?: "pass" | "fail" | "fix" | "exhausted" } = {};
         if (a.retire !== undefined) patch.retired = a.retire;
@@ -1790,7 +1804,7 @@ for more source context, or view=transcript with offset for original text.`,
         }
         const res = await exemplarStore.setVerdict(tenantId, a.exemplar_id, patch, "human");
         return { content: [{ type: "text", text: JSON.stringify({ exemplar_id: a.exemplar_id, status: res.status }) }] } as never;
-      },
+      }),
     );
   }
 
@@ -1811,7 +1825,7 @@ for more source context, or view=transcript with offset for original text.`,
         },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       },
-      async (args) => learnerEnrollHandler(deps, tenantId, args as never) as never,
+      async (args) => trackTool(deps, () => learnerEnrollHandler(deps, tenantId, args as never) as never),
     );
 
     server.registerTool(
@@ -1840,7 +1854,7 @@ for more source context, or view=transcript with offset for original text.`,
         },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       },
-      async (args) => learnerRecordHandler(deps, tenantId, args as never) as never,
+      async (args) => trackTool(deps, () => learnerRecordHandler(deps, tenantId, args as never) as never),
     );
 
     server.registerTool(
@@ -1855,7 +1869,7 @@ for more source context, or view=transcript with offset for original text.`,
         },
         annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       },
-      async (args) => learnerSummaryHandler(deps, tenantId, args as never) as never,
+      async (args) => trackTool(deps, () => learnerSummaryHandler(deps, tenantId, args as never) as never),
     );
 
     server.registerTool(
@@ -1869,7 +1883,7 @@ for more source context, or view=transcript with offset for original text.`,
         },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       },
-      async (args) => learnerCompleteHandler(deps, tenantId, args as never) as never,
+      async (args) => trackTool(deps, () => learnerCompleteHandler(deps, tenantId, args as never) as never),
     );
   }
 
