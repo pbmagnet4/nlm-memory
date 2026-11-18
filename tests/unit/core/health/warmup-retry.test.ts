@@ -25,6 +25,25 @@ function harness(overrides: Partial<Parameters<typeof retryUntilWarm>[0]> = {}) 
 }
 
 describe("retryUntilWarm", () => {
+  it("stops during a cancelled retry delay without starting another attempt", async () => {
+    const abort = new AbortController();
+    let sleeping!: () => void;
+    const startedSleep = new Promise<void>((resolve) => { sleeping = resolve; });
+    const h = harness({
+      signal: abort.signal,
+      attempt: vi.fn().mockRejectedValue(new Error("offline")),
+      sleep: () => new Promise<void>((_resolve, reject) => {
+        sleeping();
+        abort.signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
+      }),
+    });
+    const running = retryUntilWarm(h.deps);
+    await startedSleep;
+    abort.abort();
+    await running;
+    expect(h.deps.attempt).toHaveBeenCalledTimes(1);
+    expect(h.warmed()).toBe(0);
+  });
   it("marks warm on the first attempt and never sleeps", async () => {
     const h = harness();
     await retryUntilWarm(h.deps);

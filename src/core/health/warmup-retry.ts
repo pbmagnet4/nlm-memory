@@ -15,6 +15,7 @@
  */
 
 export interface RetryUntilWarmDeps {
+  readonly signal?: AbortSignal;
   /** The probe. Resolving means the lane is live. */
   readonly attempt: () => Promise<unknown>;
   readonly onSuccess: () => void;
@@ -42,11 +43,14 @@ export async function retryUntilWarm(deps: RetryUntilWarmDeps): Promise<void> {
   const maxDelay = deps.maxDelayMs ?? DEFAULT_MAX_DELAY_MS;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (deps.signal?.aborted) return;
     try {
       await deps.attempt();
+      if (deps.signal?.aborted) return;
       deps.onSuccess();
       return;
     } catch (err) {
+      if (deps.signal?.aborted) return;
       try {
         deps.onFailure(reasonOf(err), attempt);
       } catch {

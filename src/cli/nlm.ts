@@ -2,6 +2,7 @@
 import { WorkTracker } from "@core/lifecycle/work-tracker.js";
 import { ManagedTimers } from "@core/lifecycle/timers.js";
 import { createShutdown } from "@core/lifecycle/shutdown.js";
+import { setTimeout as delay } from "node:timers/promises";
 import { registerPropertyCommands } from "./property-commands.js";
 /**
  * nlm — CLI entry point. Composition root for the whole stack.
@@ -572,11 +573,13 @@ program
     const mcpToken = ensureMcpToken();
     const workTracker = new WorkTracker();
     const managedTimers = new ManagedTimers();
+    const warmupAbort = new AbortController();
     let earlyShutdownRequested = false;
     let earlyDeadline: ReturnType<typeof setTimeout> | undefined;
     const earlyShutdown = () => {
       earlyShutdownRequested = true;
       workTracker.stopAdmission();
+      warmupAbort.abort();
       earlyDeadline ??= setTimeout(() => {
         console.error("[shutdown] startup did not finish within 30 seconds");
         process.exit(1);
@@ -606,7 +609,7 @@ program
       spawnChild: createJobSpawnChild({ subcommand: "reprocess", execPath: process.execPath, nlmScriptPath: __filename }),
       clock: realClock,
       onEvent: (event) => {
-        void fireAlert(buildJobAlertEvent(event));
+        void workTracker.track(fireAlert(buildJobAlertEvent(event)));
       },
     });
     // Embedding rebuild: the same supervisor running `nlm embed-backfill`, started
@@ -616,7 +619,7 @@ program
       spawnChild: createJobSpawnChild({ subcommand: "embed-backfill", execPath: process.execPath, nlmScriptPath: __filename }),
       clock: realClock,
       onEvent: (event) => {
-        void fireAlert(buildJobAlertEvent(event));
+        void workTracker.track(fireAlert(buildJobAlertEvent(event)));
       },
     });
     const ingestLag = createIngestLagMonitor({
@@ -705,22 +708,23 @@ program
           }
         : {}),
     });
-    warmCodeEmbedder(codeEmb);
+    void workTracker.track(warmCodeEmbedder(codeEmb, warmupAbort.signal));
     void workTracker.track(reconcileEmbeddingLanes(storage, embedder, codeEmb, lanes).catch(() => {}));
 
     // Retried, not one-shot. A single attempt with a swallowed catch latched
     // this stage cold for the whole uptime whenever the backend was not yet
     // servable, which is the normal case when the embedder host is started by
     // hand after a reboot.
-    void retryUntilWarm({
-      attempt: () => embedder.embed("warmup init", "query"),
+    void workTracker.track(retryUntilWarm({
+      signal: warmupAbort.signal,
+      attempt: () => embedder.embed("warmup init", "query", { signal: warmupAbort.signal }),
       onSuccess: () => {
         markWarm("textEmbedder");
         setLaneHealth("prose", "ok");
       },
       onFailure: (reason, attempt) => markWarmFailure("textEmbedder", reason, attempt),
-      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms).unref?.()),
-    });
+      sleep: (ms) => delay(ms, undefined, { signal: warmupAbort.signal, ref: false }),
+    }));
 
     void workTracker.track(Promise.resolve().then(() => recall
       .search(DEFAULT_TEAM_ID, { query: "warmup init", mode: "keyword", limit: 1 }))
@@ -774,11 +778,13 @@ program
       // npm `-g` install upgrades with npm, a NxtOS versioned install
       // flips its `current` pointer and npm would install a copy nothing
       // loads.
-      void getUpdateStatus({ currentVersion: pkg.version }).then((status) => {
-        if (status.behind && status.latest) {
-          console.error(formatUpdateNotice(status.current, status.latest, __dirname));
-        }
-      });
+      if (workTracker.isAccepting()) {
+        void workTracker.track(getUpdateStatus({ currentVersion: pkg.version }).then((status) => {
+          if (status.behind && status.latest) {
+            console.error(formatUpdateNotice(status.current, status.latest, __dirname));
+          }
+        }));
+      }
     });
 
     // Keep the SQLite WAL bounded. WAL mode is on but nothing else
@@ -1098,7 +1104,7 @@ program
     let finishStartup!: () => void;
     const startupFinished = new Promise<void>((resolve) => { finishStartup = resolve; });
     const shutdown = createShutdown({
-      stopAdmission: () => workTracker.stopAdmission(),
+      stopAdmission: () => { workTracker.stopAdmission(); warmupAbort.abort(); },
       cancelTimers: () => managedTimers.stop(),
       closeServer: () => new Promise<void>((resolve, reject) => {
         httpServer.close((error) => error ? reject(error) : resolve());

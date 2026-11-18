@@ -13,7 +13,7 @@
 
 import type { CodeEmbedder } from "@ports/code-embedder.js";
 
-export function warmCodeEmbedder(embedder: CodeEmbedder): void {
-  if (process.env["NLM_CODE_EXEMPLARS_ENABLED"] !== "1") return;
-  void embedder.embed("warm", "query").catch(() => { /* best-effort; never block startup */ });
+export async function warmCodeEmbedder(embedder: CodeEmbedder, signal?: AbortSignal): Promise<void> {
+  if (process.env["NLM_CODE_EXEMPLARS_ENABLED"] !== "1" || signal?.aborted) return;
+  await embedder.embed("warm", "query", signal).catch(() => { /* best-effort */ });
 }
