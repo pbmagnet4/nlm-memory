@@ -87,6 +87,22 @@ class FakeClock implements Clock {
 function noopLog(): void {}
 
 describe("JobSupervisor", () => {
+  it("permanently refuses new children after shutdown and waits for the active one", async () => {
+    const children: FakeChild[] = [];
+    const sup = new JobSupervisor({ job: "reprocess", spawnChild: fakeSpawner(children), clock: new FakeClock() });
+    sup.start([]);
+    expect(sup.shutdown()).toBe(true);
+    expect(children[0]!.killed).toBe(true);
+    expect(() => sup.start([])).toThrow("supervisor is shutting down");
+    let done = false;
+    const drain = sup.drain().then(() => { done = true; });
+    await Promise.resolve();
+    expect(done).toBe(false);
+    children[0]!.emitExit(null);
+    await drain;
+    expect(done).toBe(true);
+    expect(sup.shutdown()).toBe(false);
+  });
   it("waits for the stopped child to exit before draining", async () => {
     const children: FakeChild[] = [];
     const sup = new JobSupervisor({ job: "reprocess", spawnChild: fakeSpawner(children), clock: new FakeClock() });

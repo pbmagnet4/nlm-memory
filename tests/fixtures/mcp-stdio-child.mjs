@@ -10,6 +10,12 @@ const { FactRecallService } = await load("core/recall-facts/fact-recall-service.
 const { createMcpServer } = await load("mcp/server.ts");
 const storage = SqliteStorage.create({ dbPath, migrationsDir: join(repo, "migrations") });
 await storage.init();
+if (mode === "blocked-tool") {
+  storage.sessions.markSuperseded = async () => {
+    process.stderr.write("fixture-tool-blocked\n");
+    await new Promise((resolve) => process.once("SIGUSR2", resolve));
+  };
+}
 let reads = 0; let closes = 0;
 const reader = storage.sessions.semanticReader;
 const read = reader.read.bind(reader);
@@ -24,9 +30,9 @@ const inputEvents = ["end", "close", "error", "data"];
 const inputBefore = inputEvents.map((name) => process.stdin.listenerCount(name));
 let failure;
 try {
-  await runMcpStdio(storage, () => {
+  await runMcpStdio(storage, (workTracker) => {
     if (mode === "startup-create") throw new Error("fixture startup create");
-    const server = createMcpServer({ store: storage.sessions, factStore: storage.facts,
+    const server = createMcpServer({ workTracker, store: storage.sessions, factStore: storage.facts,
       recall: new RecallService({ store: storage.sessions, llm }),
       factRecall: new FactRecallService({ factStore: storage.facts, llm }) }, "team_local");
     server.registerTool("fixture_close", { inputSchema: {} }, async () => {

@@ -165,6 +165,7 @@ function stallMinutesFromEnv(): number {
 }
 
 export class JobSupervisor {
+  private closed = false;
   private readonly job: string;
   private readonly spawnChildFn: SpawnChild;
   private readonly clock: Clock;
@@ -203,6 +204,7 @@ export class JobSupervisor {
   /** Starts a new run. Refuses (throws) if a run is already active. `env` is
    *  extra child environment (may hold secrets: never logged or snapshotted). */
   start(args: string[], env?: Record<string, string>): void {
+    if (this.closed) throw new Error(`${this.job} supervisor is shutting down`);
     if (this.state === "running" || this.state === "stalled") {
       throw new Error(`${this.job} job already active`);
     }
@@ -247,6 +249,13 @@ export class JobSupervisor {
     } catch (e) {
       this.log(`[job-supervisor] kill failed: ${e instanceof Error ? e.message : String(e)}`);
     }
+  }
+
+  shutdown(): boolean {
+    const wasActive = this.state === "running" || this.state === "stalled";
+    this.closed = true;
+    this.stop();
+    return wasActive;
   }
 
   async drain(): Promise<void> {

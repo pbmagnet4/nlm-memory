@@ -23,6 +23,10 @@ export class WorkTracker {
     this.accepting = false;
   }
 
+  isAccepting(): boolean {
+    return this.accepting;
+  }
+
   async drain(): Promise<void> {
     while (this.active.size > 0) {
       await Promise.allSettled([...this.active]);

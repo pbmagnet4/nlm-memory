@@ -225,7 +225,7 @@ export async function recallSessionsHandler(
     // Telemetry — the MCP path is the real agent-usage path; without this it
     // is invisible to query_log.jsonl and the Recall page. Fire-and-forget,
     // mirrors the HTTP /api/recall handler.
-    void logQuery(tenantId, {
+    void trackDetached(deps, logQuery(tenantId, {
       source: "mcp",
       runtime,
       query: args.query ?? null,
@@ -238,7 +238,7 @@ export async function recallSessionsHandler(
       ...(args.workstream !== undefined ? { workstream: args.workstream } : {}),
       ...(args.property !== undefined ? { property: args.property } : {}),
       ...(conversationId !== undefined ? { conversationId } : {}),
-    });
+    }));
     return { content: [{ type: "text", text: page.text }] };
   } catch (e) {
     return err(e);
@@ -283,7 +283,7 @@ export async function recallWorkstreamHandler(
       found.id,
     );
     if (!view) return okText(`No workstream matches "${idOrLabel}".`);
-    void logQuery(tenantId, {
+    void trackDetached(deps, logQuery(tenantId, {
       source: "mcp",
       runtime,
       query: idOrLabel,
@@ -294,7 +294,7 @@ export async function recallWorkstreamHandler(
       nResults: 1,
       returnedIds: [found.id],
       ...(conversationId !== undefined ? { conversationId } : {}),
-    });
+    }));
     return okText(composeWorkstreamRecall(view));
   } catch (e) {
     return err(e);
@@ -452,21 +452,21 @@ export async function recallContextHandler(
     const bundle = buildContextBundle(args.query, context.facts, context.sessions, context.sources,
       args.maxChars, args.workstream, context.lookup, responseMetadata, format);
     const conversationId = trustedConversationId(deps, tenantId);
-    if (context.sessionsExecuted) void logQuery(tenantId, { source: "mcp", runtime, query: args.query, entity: null,
+    if (context.sessionsExecuted) void trackDetached(deps, logQuery(tenantId, { source: "mcp", runtime, query: args.query, entity: null,
       kind: null, mode: args.mode ?? "keyword", limit: 4, nResults: bundle.sessions.length,
       returnedIds: bundle.sessions.map((s) => s.id),
       ...(args.workstream !== undefined ? { workstream: args.workstream } : {}),
       ...(args.property !== undefined ? { property: args.property } : {}),
       ...(conversationId ? { conversationId } : {}),
-    });
-    if (context.factsExecuted) void logFactQuery(tenantId, { source: "mcp", runtime, query: args.query,
+    }));
+    if (context.factsExecuted) void trackDetached(deps, logFactQuery(tenantId, { source: "mcp", runtime, query: args.query,
       subject: args.subject ?? null, predicate: args.predicate ?? null,
       kind: intent === "decision" ? "decision" : null, mode: exact ? "keyword" : args.mode ?? "hybrid", limit: 12,
       nResults: bundle.facts.length, returnedIds: bundle.facts.map((f) => f.id),
       ...(args.workstream !== undefined ? { workstream: args.workstream } : {}),
       ...(args.property !== undefined ? { property: args.property } : {}),
       ...(conversationId ? { conversationId } : {}),
-    });
+    }));
     return { content: [{ type: "text", text: format(bundle) }] };
   } catch (e) {
     return err(e);
@@ -638,7 +638,7 @@ export async function recallFactsHandler(
     const result = await deps.factRecall.search(tenantId, query);
     const conversationId = trustedConversationId(deps, tenantId);
     // Telemetry — see recallSessionsHandler. Fire-and-forget.
-    void logFactQuery(tenantId, {
+    void trackDetached(deps, logFactQuery(tenantId, {
       source: "mcp",
       runtime,
       query: input.query ?? null,
@@ -652,7 +652,7 @@ export async function recallFactsHandler(
       ...(input.workstream !== undefined ? { workstream: input.workstream } : {}),
       ...(input.property !== undefined ? { property: input.property } : {}),
       ...(conversationId !== undefined ? { conversationId } : {}),
-    });
+    }));
     return ok(result);
   } catch (e) {
     return err(e);
@@ -698,7 +698,7 @@ export async function recallCodeHandler(
     ];
     // Telemetry — marks the pull as a code pull so usefulness evals can
     // attribute it without overloading the kind filter enum.
-    void logQuery(tenantId, {
+    void trackDetached(deps, logQuery(tenantId, {
       source: "mcp",
       runtime,
       query: input.query,
@@ -710,7 +710,7 @@ export async function recallCodeHandler(
       returnedIds: allIds,
       tool: "recall_code",
       ...(conversationId !== undefined ? { conversationId } : {}),
-    });
+    }));
     return { content: [{ type: "text", text: format(result) }] };
   } catch (e) {
     return err(e);
@@ -927,12 +927,12 @@ export async function markSupersededHandler(
   }
   try {
     await deps.store.markSuperseded(tenantId, input.predecessor_id, input.successor_id);
-    void appendSupersedence(tenantId, {
+    void trackDetached(deps, appendSupersedence(tenantId, {
       predecessorId: input.predecessor_id,
       successorId: input.successor_id,
       source: "mcp",
       ...(input.reason !== undefined ? { reason: input.reason } : {}),
-    });
+    }));
     return ok({
       marked: true,
       predecessor_id: input.predecessor_id,
@@ -984,11 +984,11 @@ export async function supersedeFactHandler(
   }
   try {
     await deps.factStore.retire(tenantId, input.fact_id);
-    void appendFactSupersedence(tenantId, {
+    void trackDetached(deps, appendFactSupersedence(tenantId, {
       factId: input.fact_id,
       source: "mcp",
       ...(input.reason !== undefined ? { reason: input.reason } : {}),
-    });
+    }));
     return ok({
       marked: true,
       fact_id: input.fact_id,
@@ -1342,6 +1342,10 @@ export async function learnerCompleteHandler(
  * only and always passes DEFAULT_TEAM_ID; the HTTP /mcp mount
  * (src/http/app.ts) passes the token-resolved team (M3).
  */
+function trackDetached<T>(deps: McpDeps, work: Promise<T>): Promise<T> {
+  return deps.workTracker?.track(work) ?? work;
+}
+
 function trackTool<T>(deps: McpDeps, run: () => Promise<T>): Promise<T> {
   if (!deps.workTracker) return run();
   const done = deps.workTracker.beginRequest();
