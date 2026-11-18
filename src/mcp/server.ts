@@ -1,3 +1,4 @@
+import type { WorkTracker } from "@core/lifecycle/work-tracker.js";
 import type { PropertyStore } from "@ports/property-store.js";
 import { requireProperty, propertySlug } from "@core/properties/model.js";
 import { validateSourceAnchor } from "@core/facts/source-anchor.js";
@@ -85,6 +86,7 @@ const SERVER_VERSION = "0.5.9";
 const useToon = (): boolean => process.env.NLM_FORMAT === "toon";
 
 export interface McpDeps {
+  readonly workTracker?: WorkTracker;
   readonly properties?: Pick<PropertyStore, "list">;
   readonly recall: RecallService;
   readonly requestContext?: { readonly tenantId: string; readonly conversationId?: string; readonly signal?: AbortSignal };
@@ -217,13 +219,13 @@ export async function recallSessionsHandler(
       ...(args.workstream !== undefined ? { workstream: args.workstream } : {}),
       ...(args.property !== undefined ? { property: args.property } : {}),
     };
-    const result = await deps.recall.search(tenantId, query);
+    const result = await deps.recall.search(tenantId, query, ...(deps.workTracker ? [{ workTracker: deps.workTracker }] as const : []));
     const page = sessionRecallPage(result, args, cursor, format);
     const conversationId = trustedConversationId(deps, tenantId);
     // Telemetry — the MCP path is the real agent-usage path; without this it
     // is invisible to query_log.jsonl and the Recall page. Fire-and-forget,
     // mirrors the HTTP /api/recall handler.
-    void logQuery(tenantId, {
+    void trackDetached(deps, logQuery(tenantId, {
       source: "mcp",
       runtime,
       query: args.query ?? null,
@@ -236,7 +238,7 @@ export async function recallSessionsHandler(
       ...(args.workstream !== undefined ? { workstream: args.workstream } : {}),
       ...(args.property !== undefined ? { property: args.property } : {}),
       ...(conversationId !== undefined ? { conversationId } : {}),
-    });
+    }));
     return { content: [{ type: "text", text: page.text }] };
   } catch (e) {
     return err(e);
@@ -281,7 +283,7 @@ export async function recallWorkstreamHandler(
       found.id,
     );
     if (!view) return okText(`No workstream matches "${idOrLabel}".`);
-    void logQuery(tenantId, {
+    void trackDetached(deps, logQuery(tenantId, {
       source: "mcp",
       runtime,
       query: idOrLabel,
@@ -292,7 +294,7 @@ export async function recallWorkstreamHandler(
       nResults: 1,
       returnedIds: [found.id],
       ...(conversationId !== undefined ? { conversationId } : {}),
-    });
+    }));
     return okText(composeWorkstreamRecall(view));
   } catch (e) {
     return err(e);
@@ -450,21 +452,21 @@ export async function recallContextHandler(
     const bundle = buildContextBundle(args.query, context.facts, context.sessions, context.sources,
       args.maxChars, args.workstream, context.lookup, responseMetadata, format);
     const conversationId = trustedConversationId(deps, tenantId);
-    if (context.sessionsExecuted) void logQuery(tenantId, { source: "mcp", runtime, query: args.query, entity: null,
+    if (context.sessionsExecuted) void trackDetached(deps, logQuery(tenantId, { source: "mcp", runtime, query: args.query, entity: null,
       kind: null, mode: args.mode ?? "keyword", limit: 4, nResults: bundle.sessions.length,
       returnedIds: bundle.sessions.map((s) => s.id),
       ...(args.workstream !== undefined ? { workstream: args.workstream } : {}),
       ...(args.property !== undefined ? { property: args.property } : {}),
       ...(conversationId ? { conversationId } : {}),
-    });
-    if (context.factsExecuted) void logFactQuery(tenantId, { source: "mcp", runtime, query: args.query,
+    }));
+    if (context.factsExecuted) void trackDetached(deps, logFactQuery(tenantId, { source: "mcp", runtime, query: args.query,
       subject: args.subject ?? null, predicate: args.predicate ?? null,
       kind: intent === "decision" ? "decision" : null, mode: exact ? "keyword" : args.mode ?? "hybrid", limit: 12,
       nResults: bundle.facts.length, returnedIds: bundle.facts.map((f) => f.id),
       ...(args.workstream !== undefined ? { workstream: args.workstream } : {}),
       ...(args.property !== undefined ? { property: args.property } : {}),
       ...(conversationId ? { conversationId } : {}),
-    });
+    }));
     return { content: [{ type: "text", text: format(bundle) }] };
   } catch (e) {
     return err(e);
@@ -633,10 +635,10 @@ export async function recallFactsHandler(
         ? { minConfidence: input.minConfidence }
         : {}),
     };
-    const result = await deps.factRecall.search(tenantId, query);
+    const result = await deps.factRecall.search(tenantId, query, ...(deps.workTracker ? [{ workTracker: deps.workTracker }] as const : []));
     const conversationId = trustedConversationId(deps, tenantId);
     // Telemetry — see recallSessionsHandler. Fire-and-forget.
-    void logFactQuery(tenantId, {
+    void trackDetached(deps, logFactQuery(tenantId, {
       source: "mcp",
       runtime,
       query: input.query ?? null,
@@ -650,7 +652,7 @@ export async function recallFactsHandler(
       ...(input.workstream !== undefined ? { workstream: input.workstream } : {}),
       ...(input.property !== undefined ? { property: input.property } : {}),
       ...(conversationId !== undefined ? { conversationId } : {}),
-    });
+    }));
     return ok(result);
   } catch (e) {
     return err(e);
@@ -696,7 +698,7 @@ export async function recallCodeHandler(
     ];
     // Telemetry — marks the pull as a code pull so usefulness evals can
     // attribute it without overloading the kind filter enum.
-    void logQuery(tenantId, {
+    void trackDetached(deps, logQuery(tenantId, {
       source: "mcp",
       runtime,
       query: input.query,
@@ -708,7 +710,7 @@ export async function recallCodeHandler(
       returnedIds: allIds,
       tool: "recall_code",
       ...(conversationId !== undefined ? { conversationId } : {}),
-    });
+    }));
     return { content: [{ type: "text", text: format(result) }] };
   } catch (e) {
     return err(e);
@@ -925,12 +927,12 @@ export async function markSupersededHandler(
   }
   try {
     await deps.store.markSuperseded(tenantId, input.predecessor_id, input.successor_id);
-    void appendSupersedence(tenantId, {
+    void trackDetached(deps, appendSupersedence(tenantId, {
       predecessorId: input.predecessor_id,
       successorId: input.successor_id,
       source: "mcp",
       ...(input.reason !== undefined ? { reason: input.reason } : {}),
-    });
+    }));
     return ok({
       marked: true,
       predecessor_id: input.predecessor_id,
@@ -982,11 +984,11 @@ export async function supersedeFactHandler(
   }
   try {
     await deps.factStore.retire(tenantId, input.fact_id);
-    void appendFactSupersedence(tenantId, {
+    void trackDetached(deps, appendFactSupersedence(tenantId, {
       factId: input.fact_id,
       source: "mcp",
       ...(input.reason !== undefined ? { reason: input.reason } : {}),
-    });
+    }));
     return ok({
       marked: true,
       fact_id: input.fact_id,
@@ -1340,6 +1342,22 @@ export async function learnerCompleteHandler(
  * only and always passes DEFAULT_TEAM_ID; the HTTP /mcp mount
  * (src/http/app.ts) passes the token-resolved team (M3).
  */
+function trackDetached<T>(deps: McpDeps, work: Promise<T>): Promise<T> {
+  return deps.workTracker?.track(work) ?? work;
+}
+
+function trackTool<T>(deps: McpDeps, run: () => Promise<T>): Promise<T> {
+  if (!deps.workTracker) return run();
+  const done = deps.workTracker.beginRequest();
+  if (!done) return Promise.reject(new Error("server shutting down"));
+  try {
+    return run().finally(done);
+  } catch (error) {
+    done();
+    throw error;
+  }
+}
+
 export function createMcpServer(deps: McpDeps, tenantId: string): McpServer {
   const server = new McpServer({
     name: SERVER_NAME,
@@ -1360,12 +1378,12 @@ export function createMcpServer(deps: McpDeps, tenantId: string): McpServer {
       },
     },
     async (args) =>
-      recallSessionsHandler(
+      trackTool(deps, () => recallSessionsHandler(
         deps,
         tenantId,
         args,
         mcpRuntimeFromClient(server.server.getClientVersion()),
-      ) as never,
+      ) as never),
   );
 
   server.registerTool(
@@ -1392,10 +1410,10 @@ for more source context, or view=transcript with offset for original text.`,
       inputSchema: contextInput.shape,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
-    async (args, extra) => recallContextHandler({ ...deps, requestContext: {
+    async (args, extra) => trackTool(deps, () => recallContextHandler({ ...deps, requestContext: {
       tenantId, signal: extra.signal,
       ...(trustedConversationId(deps, tenantId) ? { conversationId: trustedConversationId(deps, tenantId)! } : {}),
-    } }, tenantId, args, mcpRuntimeFromClient(server.server.getClientVersion())) as never,
+    } }, tenantId, args, mcpRuntimeFromClient(server.server.getClientVersion())) as never),
   );
 
   server.registerTool(
@@ -1411,7 +1429,7 @@ for more source context, or view=transcript with offset for original text.`,
         openWorldHint: true,
       },
     },
-    async (args) => getSessionHandler(deps, tenantId, args) as never,
+    async (args) => trackTool(deps, () => getSessionHandler(deps, tenantId, args) as never),
   );
 
   if (deps.factRecall && deps.factStore) {
@@ -1469,12 +1487,12 @@ for more source context, or view=transcript with offset for original text.`,
         },
       },
       async (args) =>
-        recallFactsHandler(
+        trackTool(deps, () => recallFactsHandler(
           deps,
           tenantId,
           args,
           mcpRuntimeFromClient(server.server.getClientVersion()),
-        ) as never,
+        ) as never),
     );
 
     server.registerTool(
@@ -1498,7 +1516,7 @@ for more source context, or view=transcript with offset for original text.`,
           openWorldHint: true,
         },
       },
-      async (args) => getFactHistoryHandler(deps, tenantId, args) as never,
+      async (args) => trackTool(deps, () => getFactHistoryHandler(deps, tenantId, args) as never),
     );
 
     server.registerTool(
@@ -1523,7 +1541,7 @@ for more source context, or view=transcript with offset for original text.`,
           openWorldHint: false,
         },
       },
-      async (args) => supersedeFactHandler(deps, tenantId, args) as never,
+      async (args) => trackTool(deps, () => supersedeFactHandler(deps, tenantId, args) as never),
     );
   }
 
@@ -1550,7 +1568,7 @@ for more source context, or view=transcript with offset for original text.`,
         openWorldHint: false,
       },
     },
-    async (args) => citeSessionHandler(tenantId, args, deps.requestContext) as never,
+    async (args) => trackTool(deps, () => citeSessionHandler(tenantId, args, deps.requestContext) as never),
   );
 
   if (deps.signalStore && deps.installScope !== undefined) {
@@ -1587,7 +1605,7 @@ for more source context, or view=transcript with offset for original text.`,
           openWorldHint: false,
         },
       },
-      async (args) => reportOutcomeHandler(deps, tenantId, args) as never,
+      async (args) => trackTool(deps, () => reportOutcomeHandler(deps, tenantId, args) as never),
     );
   }
 
@@ -1617,7 +1635,7 @@ for more source context, or view=transcript with offset for original text.`,
         openWorldHint: false,
       },
     },
-    async (args) => markSupersededHandler(deps, tenantId, args) as never,
+    async (args) => trackTool(deps, () => markSupersededHandler(deps, tenantId, args) as never),
   );
 
   server.registerTool(
@@ -1635,7 +1653,7 @@ for more source context, or view=transcript with offset for original text.`,
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (args) => workSummaryHandler(deps, tenantId, args) as never,
+    async (args) => trackTool(deps, () => workSummaryHandler(deps, tenantId, args) as never),
   );
 
   server.registerTool(
@@ -1649,7 +1667,7 @@ for more source context, or view=transcript with offset for original text.`,
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (args) => recallWorkstreamHandler(deps, tenantId, args, mcpRuntimeFromClient(server.server.getClientVersion())) as never,
+    async (args) => trackTool(deps, () => recallWorkstreamHandler(deps, tenantId, args, mcpRuntimeFromClient(server.server.getClientVersion())) as never),
   );
 
   server.registerTool(
@@ -1664,7 +1682,7 @@ for more source context, or view=transcript with offset for original text.`,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (args) => rebindSessionHandler(deps, tenantId, args) as never,
+    async (args) => trackTool(deps, () => rebindSessionHandler(deps, tenantId, args) as never),
   );
 
   server.registerTool(
@@ -1679,7 +1697,7 @@ for more source context, or view=transcript with offset for original text.`,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
-    async (args) => mergeWorkstreamsHandler(deps, tenantId, args) as never,
+    async (args) => trackTool(deps, () => mergeWorkstreamsHandler(deps, tenantId, args) as never),
   );
 
   server.registerTool(
@@ -1694,7 +1712,7 @@ for more source context, or view=transcript with offset for original text.`,
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (args) => renameWorkstreamHandler(deps, tenantId, args) as never,
+    async (args) => trackTool(deps, () => renameWorkstreamHandler(deps, tenantId, args) as never),
   );
 
   server.registerTool(
@@ -1706,7 +1724,7 @@ for more source context, or view=transcript with offset for original text.`,
       inputSchema: { idOrLabel: z.string().describe("Workstream id or label.") },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (args) => retireWorkstreamHandler(deps, tenantId, args) as never,
+    async (args) => trackTool(deps, () => retireWorkstreamHandler(deps, tenantId, args) as never),
   );
 
   server.registerTool(
@@ -1718,7 +1736,7 @@ for more source context, or view=transcript with offset for original text.`,
       inputSchema: { minScore: z.number().optional().describe("Minimum similarity score 0..1 (default 0.5).") },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async (args) => listMergeSuggestionsHandler(deps, tenantId, args) as never,
+    async (args) => trackTool(deps, () => listMergeSuggestionsHandler(deps, tenantId, args) as never),
   );
 
   if (
@@ -1765,7 +1783,7 @@ for more source context, or view=transcript with offset for original text.`,
           openWorldHint: false,
         },
       },
-      async (args) => recallCodeHandler(deps, tenantId, args, runtime) as never,
+      async (args) => trackTool(deps, () => recallCodeHandler(deps, tenantId, args, runtime) as never),
     );
 
     server.registerTool(
@@ -1780,7 +1798,7 @@ for more source context, or view=transcript with offset for original text.`,
         },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       },
-      async (args) => {
+      async (args) => trackTool(deps, async () => {
         const a = args as { exemplar_id: string; retire?: boolean; outcome?: "pass" | "fail" | "fix" | "exhausted" };
         const patch: { retired?: boolean; outcome?: "pass" | "fail" | "fix" | "exhausted" } = {};
         if (a.retire !== undefined) patch.retired = a.retire;
@@ -1790,7 +1808,7 @@ for more source context, or view=transcript with offset for original text.`,
         }
         const res = await exemplarStore.setVerdict(tenantId, a.exemplar_id, patch, "human");
         return { content: [{ type: "text", text: JSON.stringify({ exemplar_id: a.exemplar_id, status: res.status }) }] } as never;
-      },
+      }),
     );
   }
 
@@ -1811,7 +1829,7 @@ for more source context, or view=transcript with offset for original text.`,
         },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       },
-      async (args) => learnerEnrollHandler(deps, tenantId, args as never) as never,
+      async (args) => trackTool(deps, () => learnerEnrollHandler(deps, tenantId, args as never) as never),
     );
 
     server.registerTool(
@@ -1840,7 +1858,7 @@ for more source context, or view=transcript with offset for original text.`,
         },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       },
-      async (args) => learnerRecordHandler(deps, tenantId, args as never) as never,
+      async (args) => trackTool(deps, () => learnerRecordHandler(deps, tenantId, args as never) as never),
     );
 
     server.registerTool(
@@ -1855,7 +1873,7 @@ for more source context, or view=transcript with offset for original text.`,
         },
         annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       },
-      async (args) => learnerSummaryHandler(deps, tenantId, args as never) as never,
+      async (args) => trackTool(deps, () => learnerSummaryHandler(deps, tenantId, args as never) as never),
     );
 
     server.registerTool(
@@ -1869,7 +1887,7 @@ for more source context, or view=transcript with offset for original text.`,
         },
         annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       },
-      async (args) => learnerCompleteHandler(deps, tenantId, args as never) as never,
+      async (args) => trackTool(deps, () => learnerCompleteHandler(deps, tenantId, args as never) as never),
     );
   }
 

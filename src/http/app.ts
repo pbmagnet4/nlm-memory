@@ -1,3 +1,4 @@
+import type { WorkTracker } from "@core/lifecycle/work-tracker.js";
 import { requireProperty } from "@core/properties/model.js";
 import type { PropertyStore } from "@ports/property-store.js";
 /**
@@ -150,6 +151,7 @@ import {
 const HERMES_RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 
 export interface HttpDeps {
+  readonly workTracker?: WorkTracker;
   readonly properties?: Pick<PropertyStore, "list">;
   readonly recall: RecallService;
   readonly store: SessionStore;
@@ -448,8 +450,20 @@ export interface AppEnv {
   };
 }
 
+function trackWork<T>(deps: HttpDeps, work: Promise<T>): Promise<T> {
+  return deps.workTracker?.track(work) ?? work;
+}
+
 export function createApp(deps: HttpDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
+  if (deps.workTracker) {
+    const tracker = deps.workTracker;
+    app.use("*", async (c, next) => {
+      const done = tracker.beginRequest();
+      if (!done) return c.json({ error: "server shutting down" }, 503);
+      try { await next(); } finally { done(); }
+    });
+  }
   const boundPort = process.env["NLM_PORT"] ? Number.parseInt(process.env["NLM_PORT"], 10) : Number.parseInt(DEFAULT_NLM_PORT, 10);
 
   installLocalOnlyMiddleware(app, boundPort, deps);
@@ -829,7 +843,10 @@ function registerMcpRoute(app: Hono<AppEnv>, deps: HttpDeps): void {
       "refusing to mount an unauthenticated /mcp endpoint",
     );
   }
-  const capturedMcpDeps = deps.mcpDeps;
+  const capturedMcpDeps = {
+    ...deps.mcpDeps,
+    ...(deps.workTracker ? { workTracker: deps.workTracker } : {}),
+  };
   const teamTokens = deps.teamTokens;
   app.all("/mcp", async (c) => {
     const auth = c.req.header("authorization") ?? "";
@@ -935,10 +952,10 @@ function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
       ...(withExemplars ? { withRelatedExemplars: true } : {}),
       ...(includeSuperseded !== undefined ? { includeSuperseded } : {}),
     };
-    const result = await deps.recall.search(tenantId, query);
+    const result = await deps.recall.search(tenantId, query, ...(deps.workTracker ? [{ workTracker: deps.workTracker }] as const : []));
 
     // Fire-and-forget telemetry — never blocks the response.
-    void logQuery(
+    void trackWork(deps, logQuery(
       tenantId,
       {
         source,
@@ -956,7 +973,7 @@ function registerRecallRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
         ...(conversationIdParam !== undefined ? { conversationId: conversationIdParam } : {}),
       },
       ...(deps.queryLogPath !== undefined ? [deps.queryLogPath] : []),
-    );
+    ));
 
     return c.json(result);
   });
@@ -1158,7 +1175,7 @@ function registerHermesAgentHookRoutes(app: Hono<AppEnv>, deps: HttpDeps): void 
         limit: 5,
         withRelatedFacts: true,
         withRelatedExemplars: true,
-      });
+      }, ...(deps.workTracker ? [{ workTracker: deps.workTracker }] as const : []));
       const hits: ReadonlyArray<RecallHitInput> = result.results.map((r) => ({
         id: r.id,
         label: r.label,
@@ -1297,11 +1314,11 @@ function registerFactRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
       ...(kind !== undefined ? { kind: kind as FactKind } : {}),
       ...(minConfidence !== undefined ? { minConfidence } : {}),
     };
-    const result = await deps.factRecall.search(tenantId, query);
+    const result = await deps.factRecall.search(tenantId, query, ...(deps.workTracker ? [{ workTracker: deps.workTracker }] as const : []));
 
     const source = c.req.header("x-recall-source") ?? "http";
     const runtime = c.req.header("x-recall-runtime") ?? null;
-    void logFactQuery(
+    void trackWork(deps, logFactQuery(
       tenantId,
       {
         source,
@@ -1316,7 +1333,7 @@ function registerFactRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
         returnedIds: result.results.map((r) => r.id),
       },
       ...(deps.factQueryLogPath !== undefined ? [deps.factQueryLogPath] : []),
-    );
+    ));
 
     const responseBody: typeof result & { hint?: string } = result;
     if (result.total === 0) {
@@ -1835,10 +1852,10 @@ function registerIngestRoute(app: Hono<AppEnv>, deps: HttpDeps): void {
     // source row's own tenant_id, not the caller's general-gate tenantId —
     // ingest auth is a distinct credential (the source's webhook token)
     // from the team_tokens Bearer auth the rest of /api/* uses.
-    void ingestSession(input, ingest, source.tenantId).catch((e) => {
+    void trackWork(deps, ingestSession(input, ingest, source.tenantId).catch((e) => {
       const msg = e instanceof Error ? e.message : String(e);
       console.error(`[ingest] background failure for ${id}: ${msg}`);
-    });
+    }));
 
     return c.json({ id, status: "accepted", source: source.name }, 202);
   });
@@ -2000,12 +2017,12 @@ function registerSessionRoute(app: Hono<AppEnv>, deps: HttpDeps): void {
           : 500;
       return c.json({ error: msg }, status);
     }
-    void appendSupersedence(tenantId, {
+    void trackWork(deps, appendSupersedence(tenantId, {
       predecessorId,
       successorId,
       source: c.req.header("x-supersedence-source") ?? "http",
       ...(typeof reason === "string" ? { reason } : {}),
-    });
+    }));
     return c.json({
       marked: true,
       predecessor_id: predecessorId,
@@ -2187,10 +2204,10 @@ function registerSignalRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
         if (exemplar) {
           const { id, skipped } = await exemplarStore.insert(tenantId, exemplar);
           if (!skipped && deps.codeEmbedder) {
-            void deps.codeEmbedder
+            void trackWork(deps, deps.codeEmbedder
               .embed(composeEmbedText(exemplar.taskContext, exemplar.code), "document")
               .then((r) => exemplarStore.upsertEmbedding(tenantId, id, r.vector))
-              .catch(() => { /* degraded; exemplar stored without a vector */ });
+              .catch(() => { /* degraded; exemplar stored without a vector */ }));
           }
         }
       } catch { /* capture is best-effort; never blocks signal ingest */ }
@@ -2259,9 +2276,9 @@ function registerSignalRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     const { id, skipped } = await deps.exemplarStore.insert(tenantId, inp);
     if (!skipped && deps.codeEmbedder) {
       // Best-effort embedding: fire-and-forget, never blocks the response.
-      deps.codeEmbedder.embed(composeEmbedText(inp.taskContext, inp.code), "document")
+      void trackWork(deps, deps.codeEmbedder.embed(composeEmbedText(inp.taskContext, inp.code), "document")
         .then((r) => deps.exemplarStore!.upsertEmbedding(tenantId, id, r.vector))
-        .catch(() => { /* degraded; exemplar is still stored without a vector */ });
+        .catch(() => { /* degraded; exemplar is still stored without a vector */ }));
     }
     return c.json({ id, skipped, status: "accepted" }, 202);
   });

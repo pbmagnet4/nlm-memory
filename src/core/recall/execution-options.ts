@@ -1,7 +1,9 @@
 import type { EmbedResult, EmbeddingKind, LLMClient } from "@ports/llm-client.js";
 import type { FactRecallResult, RecallResult } from "@shared/types.js";
+import type { WorkTracker } from "@core/lifecycle/work-tracker.js";
 
 export interface RecallExecutionOptions {
+  readonly workTracker?: WorkTracker;
   readonly signal?: AbortSignal;
   readonly deadlineAt?: number;
   readonly now?: () => number;

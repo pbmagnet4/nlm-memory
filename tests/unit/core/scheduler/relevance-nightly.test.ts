@@ -65,6 +65,21 @@ function marker(): { attemptedAt: string } {
 }
 
 describe("ScanScheduler nightly relevance judge", () => {
+  it("drains a detached relevance job after stopping", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const scheduler = makeScheduler({ run: async () => { await gate; } });
+    await scheduler.tick();
+    await flush();
+    scheduler.stop();
+    let done = false;
+    const drain = scheduler.drain().then(() => { done = true; });
+    await flush();
+    expect(done).toBe(false);
+    release();
+    await drain;
+    expect(done).toBe(true);
+  });
   it("costs nothing and fires nothing when the job is not wired or is off", async () => {
     const asked: string[] = [];
     const guard = { shouldSkip: async (job: string) => { asked.push(job); return false; } };

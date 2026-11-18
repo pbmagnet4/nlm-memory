@@ -165,6 +165,7 @@ function stallMinutesFromEnv(): number {
 }
 
 export class JobSupervisor {
+  private closed = false;
   private readonly job: string;
   private readonly spawnChildFn: SpawnChild;
   private readonly clock: Clock;
@@ -177,6 +178,7 @@ export class JobSupervisor {
   private args: string[] = [];
   private env: Record<string, string> | undefined;
   private child: ChildHandle | null = null;
+  private readonly childExits = new Set<Promise<void>>();
   private processed = 0;
   private total = 0;
   private startedAt: string | null = null;
@@ -202,6 +204,7 @@ export class JobSupervisor {
   /** Starts a new run. Refuses (throws) if a run is already active. `env` is
    *  extra child environment (may hold secrets: never logged or snapshotted). */
   start(args: string[], env?: Record<string, string>): void {
+    if (this.closed) throw new Error(`${this.job} supervisor is shutting down`);
     if (this.state === "running" || this.state === "stalled") {
       throw new Error(`${this.job} job already active`);
     }
@@ -248,6 +251,17 @@ export class JobSupervisor {
     }
   }
 
+  shutdown(): boolean {
+    const wasActive = this.state === "running" || this.state === "stalled";
+    this.closed = true;
+    this.stop();
+    return wasActive;
+  }
+
+  async drain(): Promise<void> {
+    while (this.childExits.size > 0) await Promise.all([...this.childExits]);
+  }
+
   snapshot(): JobSnapshot {
     return {
       name: this.job,
@@ -264,6 +278,9 @@ export class JobSupervisor {
   private spawnAndWire(): void {
     const child = this.spawnChildFn(this.args, this.env);
     this.child = child;
+    let markExited!: () => void;
+    const exited = new Promise<void>((resolve) => { markExited = resolve; });
+    this.childExits.add(exited);
     // Identity-guard every callback against `this.child`: a killed-but-not-yet-
     // exited child (stop(), or a respawn racing a slow exit/line delivery) can
     // still deliver onLine/onExit after this.child has moved on to a newer
@@ -280,6 +297,8 @@ export class JobSupervisor {
       }
     });
     child.onExit((code) => {
+      this.childExits.delete(exited);
+      markExited();
       if (this.child !== child) return;
       try {
         this.handleExit(code);

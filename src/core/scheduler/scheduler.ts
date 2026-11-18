@@ -233,6 +233,8 @@ export class ScanScheduler {
   private readonly dreamPassLastRun = new Map<string, number>();
   /** One nightly Clef judge at a time — it outlives the tick that fired it. */
   private relevanceRunning = false;
+  private relevanceTask: Promise<void> | null = null;
+  private readonly activeTicks = new Set<Promise<TickReport>>();
   private stopped = true;
   /** Hash of the normalized text last classified per source; a touch that adds no content is not re-classified. */
   private readonly classifiedHash = new Map<string, string>();
@@ -350,6 +352,12 @@ export class ScanScheduler {
     }
   }
 
+  async drain(): Promise<void> {
+    while (this.activeTicks.size > 0 || this.relevanceTask) {
+      await Promise.allSettled([...this.activeTicks, ...(this.relevanceTask ? [this.relevanceTask] : [])]);
+    }
+  }
+
   private scheduleNext(delayMs: number): void {
     if (this.stopped) return;
     this.timer = setTimeout(() => {
@@ -362,7 +370,10 @@ export class ScanScheduler {
    *  writes) so it gets its own `[loop]` line. See loop-monitor.ts for why a
    *  *sync slice* rather than wall time is the trigger. */
   tick(): Promise<TickReport> {
-    return this.timed("scheduler-tick", () => this.runTick());
+    const tick = this.timed("scheduler-tick", () => this.runTick());
+    this.activeTicks.add(tick);
+    void tick.then(() => this.activeTicks.delete(tick), () => this.activeTicks.delete(tick));
+    return tick;
   }
 
   /** Run one scheduler unit under both loop hooks (T1757): entered into the
@@ -397,7 +408,7 @@ export class ScanScheduler {
     if (last !== null && now - last < RELEVANCE_WINDOW_MS) return;
     this.relevanceRunning = true;
     markRan(marker, "attemptedAt", now);
-    void (async () => {
+    this.relevanceTask = (async () => {
       if (this.opts.diskGuard && (await this.opts.diskGuard.shouldSkip("relevance-nightly"))) return;
       await job.run();
     })()
@@ -408,6 +419,7 @@ export class ScanScheduler {
       })
       .finally(() => {
         this.relevanceRunning = false;
+        this.relevanceTask = null;
       });
   }
 

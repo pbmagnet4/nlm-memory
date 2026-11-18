@@ -57,3 +57,47 @@ it.each(["eof", "server", "transport", "repeated", "startup-create", "startup-co
     }
   }, 20_000,
 );
+
+it("drains an active stdio tool before closing storage on SIGTERM", async () => {
+  const repo = resolve(".");
+  const dir = mkdtempSync(join(tmpdir(), "nlm-stdio-blocked-"));
+  for (const name of ["home", "state", "config", "cache", "data"]) mkdirSync(join(dir, name));
+  const child = spawn(process.execPath, ["--import", "tsx", "tests/fixtures/mcp-stdio-child.mjs", repo, join(dir, "test.sqlite"), "blocked-tool", "src"], {
+    cwd: repo, stdio: ["pipe", "pipe", "pipe"], env: {
+      PATH: process.env.PATH, HOME: join(dir, "home"), NLM_STATE_ROOT: join(dir, "state"),
+      XDG_CONFIG_HOME: join(dir, "config"), XDG_CACHE_HOME: join(dir, "cache"), XDG_DATA_HOME: join(dir, "data"),
+      TSX_TSCONFIG_PATH: join(repo, "tsconfig.json"),
+    },
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+  const lines = createInterface({ input: child.stdout });
+  let fixture: Record<string, unknown> | undefined;
+  let initialized!: () => void;
+  const init = new Promise<void>((resolve) => { initialized = resolve; });
+  lines.on("line", (line) => {
+    const data = JSON.parse(line);
+    if (data.fixture) fixture = data;
+    if (data.id === 1) initialized();
+  });
+  const exited = new Promise<{ code: number | null; signal: string | null }>((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })));
+  try {
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "fixture", version: "1" } } }) + "\n");
+    await init;
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "mark_superseded", arguments: { predecessor_id: "synthetic-old-session", successor_id: "synthetic-new-session" } } }) + "\n");
+    const deadline = Date.now() + 10_000;
+    while (!stderr.includes("fixture-tool-blocked") && child.exitCode === null && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(stderr).toContain("fixture-tool-blocked");
+    child.kill("SIGTERM");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(child.exitCode).toBeNull();
+    child.kill("SIGUSR2");
+    expect(await exited).toEqual({ code: 0, signal: null });
+    expect(fixture?.closes).toBe(1);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await exited; }
+    lines.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 30_000);

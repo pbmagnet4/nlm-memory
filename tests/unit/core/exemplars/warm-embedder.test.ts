@@ -49,4 +49,23 @@ describe("warmCodeEmbedder", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(embedder.calls.length).toBe(1);
   });
+
+  it("passes cancellation to an in-flight warmup", async () => {
+    process.env["NLM_CODE_EXEMPLARS_ENABLED"] = "1";
+    const controller = new AbortController();
+    let seen: AbortSignal | undefined;
+    const embedder: CodeEmbedder = {
+      embed: async (_text, _role, signal) => {
+        seen = signal;
+        await new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
+        });
+        return { vector: new Float32Array(768), dim: 768 };
+      },
+    };
+    const warm = warmCodeEmbedder(embedder, controller.signal);
+    controller.abort();
+    await expect(warm).resolves.toBeUndefined();
+    expect(seen?.aborted).toBe(true);
+  });
 });

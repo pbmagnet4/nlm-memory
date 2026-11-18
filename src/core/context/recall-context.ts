@@ -11,6 +11,7 @@ import type { RecallExecutionOptions } from "@core/recall/execution-options.js";
 import { RequestBudget, embedForRecall } from "@core/recall/request-budget.js";
 import { resolveRecallScope, type ResolvedRecallScope } from "@core/recall/resolve-scope.js";
 import type { ContextLookup } from "./context-bundle.js";
+import type { WorkTracker } from "@core/lifecycle/work-tracker.js";
 
 export interface ContextRequest {
   readonly property?: string | undefined;
@@ -25,6 +26,7 @@ export interface ContextRequest {
   readonly deadlineAt?: number;
 }
 export interface ContextDeps {
+  readonly workTracker?: WorkTracker;
   readonly properties?: Pick<PropertyStore, "list">;
   readonly recall: RecallService;
   readonly factRecall?: FactRecallService;
@@ -53,7 +55,7 @@ export interface ContextResult {
 }
 
 export async function recallContext(tenantId: string, input: ContextRequest, deps: ContextDeps): Promise<ContextResult> {
-  const budget = new RequestBudget(input.timeoutMs ?? 1_500, { ...input, ...(deps.now ? { now: deps.now } : {}) });
+  const budget = new RequestBudget(input.timeoutMs ?? 1_500, { ...input, ...(deps.now ? { now: deps.now } : {}), ...(deps.workTracker ? { workTracker: deps.workTracker } : {}) });
   if (input.property !== undefined) {
     try { await budget.run(() => requireProperty(tenantId, input.property, deps.properties)); }
     catch (error) { budget.dispose(); throw error; }
@@ -143,6 +145,7 @@ export async function recallContext(tenantId: string, input: ContextRequest, dep
       scope = await budget.run(() => resolveRecallScope(deps.workstreams!.store, tenantId, input.workstream));
     }
     const options: RecallExecutionOptions = { signal: budget.signal, deadlineAt: budget.deadlineAt, now: budget.now,
+      ...(deps.workTracker ? { workTracker: deps.workTracker } : {}),
       ...(scope.status === "all" ? {} : { workstreamIds: scope.workstreamIds }),
       onPartialFacts: publishFacts, onPartialSessions: publishSessions };
     let current: CurrentValueSummary | null = null;
@@ -164,7 +167,7 @@ export async function recallContext(tenantId: string, input: ContextRequest, dep
       Object.defineProperties(options, {
         queryEmbeddingIdentity: { value: { client, text: input.query, kind: "query" }, enumerable: true },
         queryEmbedding: { get: () => shared ??= embedForRecall(client, input.query,
-          { signal: budget.signal, deadlineAt: budget.deadlineAt, now: budget.now }, Math.min(deps.recall.embeddingTimeoutMs, 2_000)), enumerable: true },
+          { signal: budget.signal, deadlineAt: budget.deadlineAt, now: budget.now, ...(deps.workTracker ? { workTracker: deps.workTracker } : {}) }, Math.min(deps.recall.embeddingTimeoutMs, 2_000)), enumerable: true },
       });
     }
     const factLane = async () => {

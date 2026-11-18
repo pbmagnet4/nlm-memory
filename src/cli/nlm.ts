@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+import { WorkTracker } from "@core/lifecycle/work-tracker.js";
+import { ManagedTimers } from "@core/lifecycle/timers.js";
+import { createShutdown } from "@core/lifecycle/shutdown.js";
+import { setTimeout as delay } from "node:timers/promises";
 import { registerPropertyCommands } from "./property-commands.js";
 /**
  * nlm — CLI entry point. Composition root for the whole stack.
@@ -567,6 +571,22 @@ program
     // non-browser callers. Idempotent: re-reads persisted token first.
     autoloadEnv();
     const mcpToken = ensureMcpToken();
+    const workTracker = new WorkTracker();
+    const managedTimers = new ManagedTimers();
+    const warmupAbort = new AbortController();
+    let earlyShutdownRequested = false;
+    let earlyDeadline: ReturnType<typeof setTimeout> | undefined;
+    const earlyShutdown = () => {
+      earlyShutdownRequested = true;
+      workTracker.stopAdmission();
+      warmupAbort.abort();
+      earlyDeadline ??= setTimeout(() => {
+        console.error("[shutdown] startup did not finish within 30 seconds");
+        process.exit(1);
+      }, 30_000);
+    };
+    process.on("SIGINT", earlyShutdown);
+    process.on("SIGTERM", earlyShutdown);
     const { storage, store, facts, signals, scope, sources, providers, recall, factRecall, embedder, codeEmbedder: codeEmb, classifier, lanes } = await buildStack();
     // Local-mode continuity (program spec §3 M3): idempotently seed the
     // existing NLM_MCP_TOKEN's hash for the default team, so an install that
@@ -589,7 +609,7 @@ program
       spawnChild: createJobSpawnChild({ subcommand: "reprocess", execPath: process.execPath, nlmScriptPath: __filename }),
       clock: realClock,
       onEvent: (event) => {
-        void fireAlert(buildJobAlertEvent(event));
+        void workTracker.track(fireAlert(buildJobAlertEvent(event)));
       },
     });
     // Embedding rebuild: the same supervisor running `nlm embed-backfill`, started
@@ -599,7 +619,7 @@ program
       spawnChild: createJobSpawnChild({ subcommand: "embed-backfill", execPath: process.execPath, nlmScriptPath: __filename }),
       clock: realClock,
       onEvent: (event) => {
-        void fireAlert(buildJobAlertEvent(event));
+        void workTracker.track(fireAlert(buildJobAlertEvent(event)));
       },
     });
     const ingestLag = createIngestLagMonitor({
@@ -620,6 +640,7 @@ program
     const sloMetrics = createSloMetricsStore();
     sloMetrics.load();
     const app = createApp({
+      workTracker,
       ingestLag,
       diskGuard: () => diskGuard.status(),
       slo: sloMetrics,
@@ -687,29 +708,28 @@ program
           }
         : {}),
     });
-    warmCodeEmbedder(codeEmb);
-    void reconcileEmbeddingLanes(storage, embedder, codeEmb, lanes).catch(() => {});
+    void workTracker.track(warmCodeEmbedder(codeEmb, warmupAbort.signal));
+    void workTracker.track(reconcileEmbeddingLanes(storage, embedder, codeEmb, lanes).catch(() => {}));
 
     // Retried, not one-shot. A single attempt with a swallowed catch latched
     // this stage cold for the whole uptime whenever the backend was not yet
     // servable, which is the normal case when the embedder host is started by
     // hand after a reboot.
-    void retryUntilWarm({
-      attempt: () => embedder.embed("warmup init", "query"),
+    void workTracker.track(retryUntilWarm({
+      signal: warmupAbort.signal,
+      attempt: () => embedder.embed("warmup init", "query", { signal: warmupAbort.signal }),
       onSuccess: () => {
         markWarm("textEmbedder");
         setLaneHealth("prose", "ok");
       },
       onFailure: (reason, attempt) => markWarmFailure("textEmbedder", reason, attempt),
-      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms).unref?.()),
-    });
+      sleep: (ms) => delay(ms, undefined, { signal: warmupAbort.signal, ref: false }),
+    }));
 
-    setImmediate(() => {
-      void recall
-        .search(DEFAULT_TEAM_ID, { query: "warmup init", mode: "keyword", limit: 1 })
-        .then(() => markWarm("fts5"))
-        .catch(() => {});
-    });
+    void workTracker.track(Promise.resolve().then(() => recall
+      .search(DEFAULT_TEAM_ID, { query: "warmup init", mode: "keyword", limit: 1 }))
+      .then(() => markWarm("fts5"))
+      .catch(() => {}));
 
     const p = port();
     // T679 measurement. better-sqlite3 calls are synchronous, so any background
@@ -732,10 +752,10 @@ program
     const loopLogMuted = process.env["NLM_LOOP_LOG"] === "0";
     const loopLog = (msg: string) => console.error(msg);
     const timedJob = <T>(name: string, run: () => Promise<T> | T): Promise<T> =>
-      withActiveJob(name, () =>
+      workTracker.track(withActiveJob(name, () =>
         loopLogMuted ? Promise.resolve().then(run) : timeJob(name, run, { logger: loopLog }),
-      );
-    serve({ fetch: app.fetch, port: p, hostname: "127.0.0.1" }, (info) => {
+      ));
+    const httpServer = serve({ fetch: app.fetch, port: p, hostname: "127.0.0.1" }, (info) => {
       console.error(`nlm-memory http listening on http://localhost:${info.port}`);
       if (hasMcpToken) {
         console.error(`  mcp:    http://localhost:${info.port}/mcp (token-gated)`);
@@ -758,19 +778,20 @@ program
       // npm `-g` install upgrades with npm, a NxtOS versioned install
       // flips its `current` pointer and npm would install a copy nothing
       // loads.
-      void getUpdateStatus({ currentVersion: pkg.version }).then((status) => {
-        if (status.behind && status.latest) {
-          console.error(formatUpdateNotice(status.current, status.latest, __dirname));
-        }
-      });
+      if (workTracker.isAccepting()) {
+        void workTracker.track(getUpdateStatus({ currentVersion: pkg.version }).then((status) => {
+          if (status.behind && status.latest) {
+            console.error(formatUpdateNotice(status.current, status.latest, __dirname));
+          }
+        }));
+      }
     });
 
     // Keep the SQLite WAL bounded. WAL mode is on but nothing else
     // checkpoints it; under continuous readers it grows without limit
     // (it had reached 38 MB), which slows every read. Drain once at boot,
     // then every 5 minutes. Skip entirely when using PgStorage (no WAL).
-    const checkpointTimer = !(storage instanceof PgStorage)
-      ? (() => {
+    if (!(storage instanceof PgStorage)) {
           const WAL_CHECKPOINT_INTERVAL_MS = 5 * 60_000;
           const sqliteStore = store as import("../core/storage/sqlite-session-store.js").SqliteSessionStore;
           try {
@@ -778,7 +799,7 @@ program
           } catch {
             // Boot checkpoint can lose a race with readers — the interval retries.
           }
-          const t = setInterval(() => {
+          const t = managedTimers.interval(() => {
             void timedJob("wal-checkpoint", () => {
               sqliteStore.checkpoint();
             }).catch(() => {
@@ -786,16 +807,14 @@ program
             });
           }, WAL_CHECKPOINT_INTERVAL_MS);
           t.unref();
-          return t;
-        })()
-      : null;
+    }
 
     // Signal retention prune. Best-effort, every 6h, default 90d. Runs on
     // both SQLite and Pg backends since both expose pruneOlderThan().
     const parsedRetentionDays = Number.parseInt(process.env["NLM_SIGNAL_RETENTION_DAYS"] ?? "90", 10);
     const SIGNAL_RETENTION_DAYS = Number.isFinite(parsedRetentionDays) && parsedRetentionDays > 0 ? parsedRetentionDays : 90;
     const SIGNAL_PRUNE_INTERVAL_MS = 6 * 60 * 60_000;
-    const signalPruneTimer = setInterval(() => {
+    const signalPruneTimer = managedTimers.interval(() => {
       const cutoff = new Date(Date.now() - SIGNAL_RETENTION_DAYS * 86_400_000).toISOString();
       void timedJob("signal-prune", () => signals.pruneOlderThan(DEFAULT_TEAM_ID, cutoff)).catch(() => { /* prune is best-effort */ });
     }, SIGNAL_PRUNE_INTERVAL_MS);
@@ -808,7 +827,7 @@ program
     // Drift stays hourly: every 12th round (the update check itself is cached 24h).
     const ALERT_DRIFT_EVERY_N_ROUNDS = 12;
     let alertRound = 0;
-    const alertHealthTimer = setInterval(() => {
+    const alertHealthTimer = managedTimers.interval(() => {
       alertRound += 1;
       void timedJob("alert-health", () =>
         runAlertChecks([
@@ -827,10 +846,10 @@ program
     // cadence as the alert checks; unref so diagnostics never hold the daemon
     // open, and timedJob so a slow tail shows up in the lag attribution.
     const SLO_REFRESH_INTERVAL_MS = 60_000;
-    setTimeout(() => {
+    managedTimers.timeout(() => {
       void timedJob("slo-metrics", () => sloMetrics.refresh(ingestLag));
     }, 30_000).unref();
-    setInterval(() => {
+    managedTimers.interval(() => {
       void timedJob("slo-metrics", () => sloMetrics.refresh(ingestLag));
     }, SLO_REFRESH_INTERVAL_MS).unref();
 
@@ -897,9 +916,9 @@ program
         }
       };
 
-      const corpusMonitorTimer = setInterval(() => { void timedJob("corpus-monitor", runCorpusMonitor); }, CORPUS_MONITOR_INTERVAL_MS);
+      const corpusMonitorTimer = managedTimers.interval(() => { void timedJob("corpus-monitor", runCorpusMonitor); }, CORPUS_MONITOR_INTERVAL_MS);
       corpusMonitorTimer.unref();
-      setTimeout(() => { void timedJob("corpus-monitor", runCorpusMonitor); }, CORPUS_MONITOR_INITIAL_DELAY_MS).unref();
+      managedTimers.timeout(() => { void timedJob("corpus-monitor", runCorpusMonitor); }, CORPUS_MONITOR_INITIAL_DELAY_MS).unref();
 
       // Wiki projection: regenerate the generated markdown tree. SQLite only,
       // same as the corpus monitor. Idempotent, so a run with no corpus change
@@ -941,9 +960,9 @@ program
         };
 
         console.error(`  wiki: enabled, projecting to ${wikiTarget}`);
-        const wikiTimer = setInterval(() => { void timedJob("wiki-projection", runWikiProjection); }, WIKI_INTERVAL_MS);
+        const wikiTimer = managedTimers.interval(() => { void timedJob("wiki-projection", runWikiProjection); }, WIKI_INTERVAL_MS);
         wikiTimer.unref();
-        setTimeout(() => { void timedJob("wiki-projection", runWikiProjection); }, WIKI_INITIAL_DELAY_MS).unref();
+        managedTimers.timeout(() => { void timedJob("wiki-projection", runWikiProjection); }, WIKI_INITIAL_DELAY_MS).unref();
       }
     }
 
@@ -976,9 +995,9 @@ program
           },
           logger: (m) => console.error(m),
         });
-      const exemplarBackfillTimer = setInterval(() => { void timedJob("exemplar-backfill", runExemplarBackfill); }, EXEMPLAR_BACKFILL_INTERVAL_MS);
+      const exemplarBackfillTimer = managedTimers.interval(() => { void timedJob("exemplar-backfill", runExemplarBackfill); }, EXEMPLAR_BACKFILL_INTERVAL_MS);
       exemplarBackfillTimer.unref();
-      setTimeout(() => { void timedJob("exemplar-backfill", runExemplarBackfill); }, EXEMPLAR_BACKFILL_INITIAL_DELAY_MS).unref();
+      managedTimers.timeout(() => { void timedJob("exemplar-backfill", runExemplarBackfill); }, EXEMPLAR_BACKFILL_INITIAL_DELAY_MS).unref();
       console.error("  exemplar-backfill: enabled, repair sweep every 24h");
     }
 
@@ -1004,11 +1023,11 @@ program
           console.error(`[backup] error: ${e instanceof Error ? e.message : String(e)}`);
         }
       };
-      const backupTimer = setInterval(() => {
+      const backupTimer = managedTimers.interval(() => {
         void timedJob("db-backup", runBackup);
       }, BACKUP_INTERVAL_MS);
       backupTimer.unref();
-      setTimeout(() => {
+      managedTimers.timeout(() => {
         void timedJob("db-backup", runBackup);
       }, BACKUP_INITIAL_DELAY_MS).unref();
       console.error(
@@ -1045,8 +1064,8 @@ program
           console.error(`[fact-embed-sweep] error: ${e instanceof Error ? e.message : String(e)}`);
         }
       };
-      setInterval(() => { void timedJob("fact-embed-sweep", runFactEmbedSweep); }, FACT_EMBED_SWEEP_INTERVAL_MS).unref();
-      setTimeout(() => { void timedJob("fact-embed-sweep", runFactEmbedSweep); }, FACT_EMBED_SWEEP_INITIAL_DELAY_MS).unref();
+      managedTimers.interval(() => { void timedJob("fact-embed-sweep", runFactEmbedSweep); }, FACT_EMBED_SWEEP_INTERVAL_MS).unref();
+      managedTimers.timeout(() => { void timedJob("fact-embed-sweep", runFactEmbedSweep); }, FACT_EMBED_SWEEP_INITIAL_DELAY_MS).unref();
       console.error("  fact-embed-sweep: enabled, retry sweep every 2m");
     }
 
@@ -1067,8 +1086,8 @@ program
           console.error(`[chunk-embed-sweep] error: ${e instanceof Error ? e.message : String(e)}`);
         }
       };
-      setInterval(() => { void timedJob("chunk-embed-sweep", runChunkEmbedSweep); }, CHUNK_EMBED_SWEEP_INTERVAL_MS).unref();
-      setTimeout(() => { void timedJob("chunk-embed-sweep", runChunkEmbedSweep); }, CHUNK_EMBED_SWEEP_INITIAL_DELAY_MS).unref();
+      managedTimers.interval(() => { void timedJob("chunk-embed-sweep", runChunkEmbedSweep); }, CHUNK_EMBED_SWEEP_INTERVAL_MS).unref();
+      managedTimers.timeout(() => { void timedJob("chunk-embed-sweep", runChunkEmbedSweep); }, CHUNK_EMBED_SWEEP_INITIAL_DELAY_MS).unref();
       console.error("  chunk-embed-sweep: enabled, retry sweep every 2m");
     }
 
@@ -1080,64 +1099,99 @@ program
     memoSweep.start();
     console.error("  memo sweep: dormant cleanup every 5m (threshold 24h)");
 
-    if (opts.scheduler !== false) {
-      const adapters = await buildAdapters(sources, DEFAULT_TEAM_ID);
-      if (adapters.length === 0) {
-        console.error("  scheduler: no adapters detected (set NLM_ADAPTERS to force-enable)");
-      } else {
-        const scheduler = new ScanScheduler({
-          store,
-          adapters,
-          classifier,
-          classifyTimeoutMs: () => classifier.timeoutMs,
-          embedder,
-          factStore: facts ?? null,
-          signalStore: signals,
-          installScope: scope,
-          intervalMs: opts.intervalMin * 60_000,
-          exemplarStore: storage.exemplars,
-          codeEmbedder: codeEmb,
-          workstreams: storage.workstreams,
-          classifierDescriptor: { provider: classifier.provider, model: classifier.model },
-          ingestGate: buildIngestGate(),
-          diskGuard,
-          // T1782: the nightly relevance sample lands in the same store
-          // /api/health/slo reads, persisted on record so the number survives a
-          // restart before the next refresh tick. The scheduler owns the flag,
-          // the once-a-night marker, the disk guard and the fact that this
-          // never blocks a tick; everything Clef-specific lives here.
-          relevanceNightly: {
-            enabled: () => relevanceJudgeEnabled(),
-            run: () =>
-              runRelevanceNightly({
-                sessions: store,
-                logger: (m) => console.error(m),
-                record: (sample) => {
-                  sloMetrics.recordRelevance(sample);
-                  sloMetrics.persist();
-                },
-              }),
-          },
-        });
-        scheduler.start();
-        console.error(
-          `  scheduler: ${adapters.map((a) => a.name).join(", ")} every ${opts.intervalMin}m`,
-        );
-        const shutdown = async () => {
-          if (checkpointTimer) clearInterval(checkpointTimer);
-          loopMonitor.stop();
-          scheduler.stop();
-          memoSweep.stop();
-          // Reaps an active reprocess child instead of leaving it orphaned
-          // when the daemon exits. stop() is idempotent and a no-op when no
-          // run is active.
-          jobSupervisor.stop();
-          await storage.close();
-          process.exit(0);
-        };
-        process.on("SIGINT", shutdown);
-        process.on("SIGTERM", shutdown);
+    let scheduler: ScanScheduler | undefined;
+    let interruptedChild = false;
+    let finishStartup!: () => void;
+    const startupFinished = new Promise<void>((resolve) => { finishStartup = resolve; });
+    const shutdown = createShutdown({
+      stopAdmission: () => { workTracker.stopAdmission(); warmupAbort.abort(); },
+      cancelTimers: () => managedTimers.stop(),
+      closeServer: () => new Promise<void>((resolve, reject) => {
+        httpServer.close((error) => error ? reject(error) : resolve());
+      }),
+      stopWorkers: () => {
+        loopMonitor.stop();
+        scheduler?.stop();
+        memoSweep.stop();
+        const reprocessInterrupted = jobSupervisor.shutdown();
+        const embeddingInterrupted = embedJobSupervisor.shutdown();
+        interruptedChild = reprocessInterrupted || embeddingInterrupted;
+      },
+      drain: async () => {
+        await startupFinished;
+        scheduler?.stop();
+        await Promise.all([
+          workTracker.drain(), scheduler?.drain(),
+          jobSupervisor.drain(), embedJobSupervisor.drain(),
+        ]);
+        if (interruptedChild) throw new Error("child job interrupted; reconcile state before handoff");
+      },
+      closeStorage: () => storage.close(),
+    }, 30_000);
+    const onShutdown = () => {
+      void shutdown().then(() => process.exit(0), (error: unknown) => {
+        console.error(`[shutdown] ${error instanceof Error ? error.message : String(error)}`);
+        process.exit(1);
+      });
+    };
+    process.on("SIGINT", onShutdown);
+    process.on("SIGTERM", onShutdown);
+    process.off("SIGINT", earlyShutdown);
+    process.off("SIGTERM", earlyShutdown);
+    if (earlyDeadline) clearTimeout(earlyDeadline);
+    if (earlyShutdownRequested) onShutdown();
+
+    try {
+      if (opts.scheduler !== false && workTracker.isAccepting()) {
+        const adapters = await buildAdapters(sources, DEFAULT_TEAM_ID);
+        if (!workTracker.isAccepting()) {
+          // A shutdown requested while adapter discovery was in progress.
+        } else if (adapters.length === 0) {
+          console.error("  scheduler: no adapters detected (set NLM_ADAPTERS to force-enable)");
+        } else {
+          scheduler = new ScanScheduler({
+            store,
+            adapters,
+            classifier,
+            classifyTimeoutMs: () => classifier.timeoutMs,
+            embedder,
+            factStore: facts ?? null,
+            signalStore: signals,
+            installScope: scope,
+            intervalMs: opts.intervalMin * 60_000,
+            exemplarStore: storage.exemplars,
+            codeEmbedder: codeEmb,
+            workstreams: storage.workstreams,
+            classifierDescriptor: { provider: classifier.provider, model: classifier.model },
+            ingestGate: buildIngestGate(),
+            diskGuard,
+            // T1782: the nightly relevance sample lands in the same store
+            // /api/health/slo reads, persisted on record so the number survives a
+            // restart before the next refresh tick. The scheduler owns the flag,
+            // the once-a-night marker, the disk guard and the fact that this
+            // never blocks a tick; everything Clef-specific lives here.
+            relevanceNightly: {
+              enabled: () => relevanceJudgeEnabled(),
+              run: () =>
+                runRelevanceNightly({
+                  sessions: store,
+                  logger: (m) => console.error(m),
+                  record: (sample) => {
+                    sloMetrics.recordRelevance(sample);
+                    sloMetrics.persist();
+                  },
+                }),
+            },
+          });
+          scheduler.start();
+          console.error(
+            `  scheduler: ${adapters.map((a) => a.name).join(", ")} every ${opts.intervalMin}m`,
+          );
+
+        }
       }
+    } finally {
+      finishStartup();
     }
   });
 
@@ -2073,19 +2127,24 @@ program
 
 export async function runMcpStdio(
   storage: { close(): Promise<void> },
-  createServer: () => ReturnType<typeof createMcpServer>,
+  createServer: (workTracker: WorkTracker) => ReturnType<typeof createMcpServer>,
   transport = new StdioServerTransport(),
 ): Promise<void> {
+  const workTracker = new WorkTracker();
   let server: ReturnType<typeof createMcpServer> | undefined;
   let previousClose: (() => void) | undefined;
   let closing: Promise<void> | undefined;
   let finish!: () => void;
   const stopped = new Promise<void>((resolve) => { finish = resolve; });
-  const shutdown = () => closing ??= Promise.resolve().then(async () => {
-    process.stdin.pause();
-    try { await server?.close(); }
-    finally { await storage.close(); }
-  }).finally(() => {
+  const drain = createShutdown({
+    stopAdmission: () => { process.stdin.pause(); workTracker.stopAdmission(); },
+    cancelTimers: () => {},
+    closeServer: async () => { await server?.close(); },
+    stopWorkers: () => {},
+    drain: () => workTracker.drain(),
+    closeStorage: () => storage.close(),
+  }, 30_000);
+  const shutdown = () => closing ??= Promise.resolve().then(drain).finally(() => {
     for (const event of ["end", "close", "error"] as const) process.stdin.off(event, onStop);
     process.off("SIGINT", onStop);
     process.off("SIGTERM", onStop);
@@ -2101,7 +2160,7 @@ export async function runMcpStdio(
   process.on("SIGINT", onStop);
   process.on("SIGTERM", onStop);
   try {
-    server = createServer();
+    server = createServer(workTracker);
     previousClose = server.server.onclose;
     server.server.onclose = () => {
       try { previousClose?.(); }
@@ -2120,8 +2179,9 @@ program
   .description("Run as an MCP stdio server (for ~/.mcp.json)")
   .action(async () => {
     const { recall, store, facts, factRecall, storage, scope, signals, codeEmbedder } = await buildStack();
-    await runMcpStdio(storage, () => createMcpServer(
+    await runMcpStdio(storage, (workTracker) => createMcpServer(
       {
+        workTracker,
         recall,
         store,
         factStore: facts,

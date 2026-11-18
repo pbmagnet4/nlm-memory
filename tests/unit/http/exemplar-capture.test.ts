@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { createApp } from "../../../src/http/app.js";
+import { WorkTracker } from "../../../src/core/lifecycle/work-tracker.js";
 import type { SignalStore, SignalAggregationFilter } from "../../../src/ports/signal-store.js";
 import type { CodeExemplarStore } from "../../../src/ports/code-exemplar-store.js";
 import type { CodeEmbedder } from "../../../src/ports/code-embedder.js";
@@ -44,6 +45,7 @@ function appWith(deps: {
   signalStore: SignalStore;
   exemplarStore?: CodeExemplarStore;
   codeEmbedder?: CodeEmbedder;
+  workTracker?: WorkTracker;
 }) {
   return createApp({
     recall: { search: async () => ({ query: "", mode: "keyword", limit: 0, total: 0, results: [] }) } as never,
@@ -52,6 +54,7 @@ function appWith(deps: {
     installScope: "install-test",
     ...(deps.exemplarStore ? { exemplarStore: deps.exemplarStore } : {}),
     ...(deps.codeEmbedder ? { codeEmbedder: deps.codeEmbedder } : {}),
+    ...(deps.workTracker ? { workTracker: deps.workTracker } : {}),
   } as never);
 }
 
@@ -84,6 +87,27 @@ describe("signal-ingest auto-capture of code exemplars", () => {
   afterEach(() => {
     if (prev === undefined) delete process.env["NLM_CODE_EXEMPLARS_ENABLED"];
     else process.env["NLM_CODE_EXEMPLARS_ENABLED"] = prev;
+  });
+
+  it("drains accepted background embedding and rejects new requests during shutdown", async () => {
+    process.env["NLM_CODE_EXEMPLARS_ENABLED"] = "1";
+    const tracker = new WorkTracker();
+    const exemplarStore = fakeExemplarStore();
+    let resolveEmbedding!: (value: { vector: Float32Array; dim: number }) => void;
+    const codeEmbedder: CodeEmbedder = {
+      embed: () => new Promise((resolve) => { resolveEmbedding = resolve; }),
+    };
+    const app = appWith({ signalStore: fakeSignalStore(), exemplarStore, codeEmbedder, workTracker: tracker });
+    expect((await postSignal(app)).status).toBe(202);
+    tracker.stopAdmission();
+    let drained = false;
+    const drain = tracker.drain().then(() => { drained = true; });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    expect((await postSignal(app)).status).toBe(503);
+    resolveEmbedding({ vector: new Float32Array(768), dim: 768 });
+    await drain;
+    expect(exemplarStore.embedded).toEqual(["ex_1"]);
   });
 
   it("captures an exemplar from a code-bearing signal when the flag is on", async () => {
