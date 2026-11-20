@@ -63,7 +63,7 @@ export class CodexAdapter implements TranscriptAdapter {
   }
 
   detect(): DetectionResult {
-    const p = join(homedir(), ".codex", "sessions");
+    const p = this.sessionsPath;
     if (existsSync(p) && statSync(p).isDirectory()) {
       return { adapterName: this.name, enabled: true, path: p, hint: null };
     }
@@ -71,7 +71,7 @@ export class CodexAdapter implements TranscriptAdapter {
       adapterName: this.name,
       enabled: false,
       path: null,
-      hint: "Codex not detected — ~/.codex/sessions/ missing. Install with `npm i -g @openai/codex`.",
+      hint: "Codex source directory is missing or not a directory.",
     };
   }
 

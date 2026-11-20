@@ -110,10 +110,8 @@ describe("ClaudeCodeAdapter.detect", () => {
   it("returns enabled=false with a hint when projects dir is missing", () => {
     const adapter = new ClaudeCodeAdapter({ projectsPath: "/tmp/definitely-does-not-exist-cc" });
     const result = adapter.detect();
-    // detect() always probes ~/.claude/projects, not the configured path.
-    // We just verify the shape is sane.
     expect(result.adapterName).toBe("claude-code");
-    expect(typeof result.enabled).toBe("boolean");
+    expect(result.enabled).toBe(false);
   });
 });
 
