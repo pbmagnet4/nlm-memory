@@ -57,7 +57,7 @@ export class HermesAdapter implements TranscriptAdapter {
   }
 
   detect(): DetectionResult {
-    const p = join(homedir(), ".hermes", "sessions");
+    const p = this.sessionsPath;
     if (existsSync(p) && statSync(p).isDirectory()) {
       return { adapterName: this.name, enabled: true, path: p, hint: null };
     }
@@ -65,7 +65,7 @@ export class HermesAdapter implements TranscriptAdapter {
       adapterName: this.name,
       enabled: false,
       path: null,
-      hint: "Hermes not detected — ~/.hermes/sessions/ missing.",
+      hint: "Hermes source directory is missing or not a directory.",
     };
   }
 

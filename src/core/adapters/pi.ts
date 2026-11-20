@@ -64,7 +64,7 @@ export class PiAdapter implements TranscriptAdapter {
   }
 
   detect(): DetectionResult {
-    const p = defaultSessionsPath();
+    const p = this.sessionsPath;
     if (existsSync(p) && statSync(p).isDirectory()) {
       return { adapterName: this.name, enabled: true, path: p, hint: null };
     }
@@ -72,7 +72,7 @@ export class PiAdapter implements TranscriptAdapter {
       adapterName: this.name,
       enabled: false,
       path: null,
-      hint: "Pi not detected — ~/.pi/agent/sessions/ missing.",
+      hint: "Pi source directory is missing or not a directory.",
     };
   }
 

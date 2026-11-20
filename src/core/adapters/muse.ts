@@ -92,7 +92,7 @@ export class MuseAdapter implements TranscriptAdapter {
   }
 
   detect(): DetectionResult {
-    const p = defaultSessionsPath();
+    const p = this.sessionsPath;
     if (existsSync(p) && statSync(p).isDirectory()) {
       return { adapterName: this.name, enabled: true, path: p, hint: null };
     }
@@ -100,7 +100,7 @@ export class MuseAdapter implements TranscriptAdapter {
       adapterName: this.name,
       enabled: false,
       path: null,
-      hint: "Muse not detected — no sessions directory. Sessions live under ${XDG_DATA_HOME:-~/.local/share}/muse/sessions/.",
+      hint: "Muse source directory is missing or not a directory.",
     };
   }
 

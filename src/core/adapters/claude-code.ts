@@ -53,7 +53,7 @@ export class ClaudeCodeAdapter implements TranscriptAdapter {
   }
 
   detect(): DetectionResult {
-    const p = join(homedir(), ".claude", "projects");
+    const p = this.projectsPath;
     if (existsSync(p) && statSync(p).isDirectory()) {
       return { adapterName: this.name, enabled: true, path: p, hint: null };
     }
@@ -61,7 +61,7 @@ export class ClaudeCodeAdapter implements TranscriptAdapter {
       adapterName: this.name,
       enabled: false,
       path: null,
-      hint: "Claude Code not detected — ~/.claude/projects/ missing.",
+      hint: "Claude Code source directory is missing or not a directory.",
     };
   }
 
