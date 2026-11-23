@@ -28,6 +28,10 @@ export interface CircuitBreaker {
   failure(reason: string): void;
   /** A call that was allowed but ended for a reason that says nothing about the dependency. */
   release(): void;
+  /** Back to the cold closed state. Test isolation — the process-wide breaker
+   *  outlives a single test, so each one has to start from closed. No
+   *  production caller. */
+  reset(): void;
   snapshot(): BreakerSnapshot;
 }
 
@@ -35,7 +39,12 @@ export const FAILURE_THRESHOLD = 3;
 export const BASE_COOLDOWN_MS = 15_000;
 export const MAX_COOLDOWN_MS = 300_000;
 
-export function createCircuitBreaker(now: () => number = Date.now): CircuitBreaker {
+// The default clock is read through `Date` on every call rather than captured
+// as `Date.now`: a breaker created at module load — `recallEmbedBreaker` —
+// would otherwise keep the native function even after a test replaces the
+// global, and its cool-down could never be advanced. Same shape as the `now`
+// default in createDiskGuard.
+export function createCircuitBreaker(now: () => number = () => Date.now()): CircuitBreaker {
   let failures = 0;
   let cooldownMs = BASE_COOLDOWN_MS;
   let openUntil: number | null = null;
@@ -78,6 +87,14 @@ export function createCircuitBreaker(now: () => number = Date.now): CircuitBreak
     },
     release() {
       probing = false;
+    },
+    reset() {
+      failures = 0;
+      cooldownMs = BASE_COOLDOWN_MS;
+      openUntil = null;
+      probing = false;
+      lastError = null;
+      shortCircuited = 0;
     },
     snapshot() {
       const s = state();
