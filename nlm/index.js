@@ -1049,6 +1049,7 @@ async function runHook(input, deps) {
     estTokens,
     mode: deps.mode,
     recallQuery: recallQuery.slice(0, RECALL_QUERY_LOG_CHARS),
+    ...recallQuery.length > RECALL_QUERY_LOG_CHARS ? { recallQueryTruncated: true } : {},
     ...fetched.outcome ? { recallOutcome: fetched.outcome } : {},
     ...fetched.outcome === "ok" ? { latencyMs } : {}
   });

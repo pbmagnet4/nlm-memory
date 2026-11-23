@@ -198,6 +198,21 @@ describe("replayQuery", () => {
     expect(res.approximate).toBe(false);
   });
 
+  it("counts a logged-but-truncated recallQuery as approximate, still replaying it", () => {
+    const cut = `${"a".repeat(490)} backup`;
+    const record = parsed({ recallQuery: cut, recallQueryTruncated: true });
+    expect(record.recallQueryTruncated).toBe(true);
+    const res = replayQuery(record, {});
+    expect(res.query).toBe(cut);
+    expect(res.approximate).toBe(true);
+  });
+
+  it("ignores a non-true recallQueryTruncated value", () => {
+    const record = parsed({ recallQuery: "indexing archives nightly", recallQueryTruncated: false });
+    expect(record.recallQueryTruncated).toBeUndefined();
+    expect(replayQuery(record, {}).approximate).toBe(false);
+  });
+
   it("falls back to the hook's own composition for older lines, flagged approximate", () => {
     const res = replayQuery(parsed({}), {});
     expect(res.approximate).toBe(true);

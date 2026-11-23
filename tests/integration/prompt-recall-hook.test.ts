@@ -63,6 +63,7 @@ describe("runHook", () => {
     const entry = JSON.parse(readFileSync(join(tmp, "hook-log.jsonl"), "utf8").trim());
     expect(entry.recallQuery).toBe(received);
     expect(entry.recallQuery).toContain("pgvector");
+    expect(entry.recallQueryTruncated).toBeUndefined();
   });
 
   it("truncates the logged recallQuery to the log budget", async () => {
@@ -74,6 +75,7 @@ describe("runHook", () => {
     );
     const entry = JSON.parse(readFileSync(join(tmp, "hook-log.jsonl"), "utf8").trim());
     expect(entry.recallQuery).toHaveLength(RECALL_QUERY_LOG_CHARS);
+    expect(entry.recallQueryTruncated).toBe(true);
     expect(received.length).toBeGreaterThan(RECALL_QUERY_LOG_CHARS);
     expect(received.startsWith(entry.recallQuery)).toBe(true);
   });

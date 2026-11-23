@@ -25,6 +25,8 @@ export interface ReplayRecord {
   readonly promptPreview: string;
   /** The query the hook actually sent, once logged (T1775b); absent on older lines. */
   readonly recallQuery?: string;
+  /** True when the hook cut recallQuery at the log budget — replays approximate. */
+  readonly recallQueryTruncated?: boolean;
 }
 
 export interface HookLogParse {
@@ -76,7 +78,10 @@ export function parseHookLogLines(raw: string): HookLogParse {
       conversationId: typeof row["conversationId"] === "string" ? row["conversationId"] : "unknown",
       promptPreview: row["promptPreview"],
       ...(typeof row["recallQuery"] === "string" && row["recallQuery"] !== ""
-        ? { recallQuery: (row["recallQuery"] as string).slice(0, RECALL_QUERY_LOG_CHARS) }
+        ? {
+            recallQuery: (row["recallQuery"] as string).slice(0, RECALL_QUERY_LOG_CHARS),
+            ...(row["recallQueryTruncated"] === true ? { recallQueryTruncated: true } : {}),
+          }
         : {}),
     });
   }
@@ -135,17 +140,18 @@ export interface ReplayQueryResult {
 
 /**
  * The query to replay: the logged recallQuery when present (the hook's real
- * input), otherwise the hook's own composition over the preview — which the
- * caller must count as approximate. Both then pass through the extraction
- * recallOverHttp applies before the GET; null means the hook would send
- * nothing for this prompt.
+ * input), otherwise the hook's own composition over the preview. A
+ * recallQuery the hook flagged as cut at the log budget replays the real
+ * query but approximate: a preview of the remainder is unknown. Both then
+ * pass through the extraction recallOverHttp applies before the GET; null
+ * means the hook would send nothing for this prompt.
  */
 export function replayQuery(
   record: ReplayRecord,
   env: NodeJS.ProcessEnv = process.env,
 ): ReplayQueryResult {
   if (record.recallQuery !== undefined) {
-    return { query: extractRecallQuery(record.recallQuery), approximate: false };
+    return { query: extractRecallQuery(record.recallQuery), approximate: record.recallQueryTruncated === true };
   }
   const input: { prompt: string; conversationId: string } = { prompt: record.promptPreview, conversationId: record.conversationId };
   return { query: extractRecallQuery(buildRecallQuery(input, env)), approximate: true };
