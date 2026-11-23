@@ -1020,7 +1020,7 @@ async function runHook(input, deps) {
   }
   const latencyMs = Math.round(performance.now() - recallStart);
   const hits = hubDampEnabled() ? applyHubness(fetched.hits, {
-    prompt: input.prompt,
+    prompt: envelope.text,
     injectionCounts: deps.injectionCounts ?? countRecentInjectionPrompts(HUB_WINDOW_DAYS),
     alpha: hubAlpha(),
     lexicalFloor: hubLexicalFloor()
