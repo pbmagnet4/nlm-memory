@@ -4,13 +4,15 @@
  * voice → channel → audience layers. A file is read on every call (they are
  * small) but re-parsed only when its sha256 changes — an mtime/size
  * fingerprint can miss a same-length edit within one mtime tick and then
- * serve stale rules forever. rules_version shells out to git at most once
- * per 60 s per dir. A bad file never fails recall: it logs one WARN per
- * file change and resolves to no rules.
+ * serve stale rules forever. Reads happen on the opened fd (fstat plus a
+ * bounded buffer), so nothing checked on a path can be swapped in before
+ * the read. rules_version shells out to git at most once per 60 s per dir.
+ * A bad file never fails recall: it logs one WARN per change and resolves
+ * to no rules.
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { voiceRulesFileSchema, type VoiceRulesFile, type VoiceRulesOverrides } from "./rules-schema.js";
@@ -23,6 +25,9 @@ const MAX_RULES_BYTES = 256 * 1024;
 
 /** rules_version resolution interval per dir; keeps git off the recall path. */
 const GIT_VERSION_TTL_MS = 60_000;
+
+/** Upper bound on distinct rules dirs held in the version cache. */
+const VERSION_CACHE_MAX = 64;
 
 export interface ResolvedRules {
   rules: string[];
@@ -59,54 +64,75 @@ function firstIssueMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Reads and parses one rules file, re-parsing only when its bytes change. Null: file absent. */
+/**
+ * Reads and parses one rules file, re-parsing only when its bytes change.
+ * All checks run on the opened fd; null means the file is absent.
+ */
 function readFileEntry(path: string, log?: (message: string) => void): CacheEntry | null {
-  let stat;
-  try {
-    stat = statSync(path);
-  } catch {
-    cache.delete(path); // missing (dir or file): no rules, no log
-    return null;
-  }
-  // Only a small regular file is readable: a FIFO would block readFileSync
-  // forever, an oversized file is not a rules file. Warned once per change,
-  // fingerprinted on stat since we never read it.
-  if (!stat.isFile() || stat.size > MAX_RULES_BYTES) {
-    const fingerprint = `meta:${stat.mtimeMs}:${stat.size}:${stat.isFile()}`;
+  // Invalid-state entry, warned at most once per fingerprint change.
+  const invalid = (fingerprint: string, reason: string): CacheEntry => {
     const cached = cache.get(path);
-    if (cached && cached.fingerprint === fingerprint) return cached;
-    log?.(
-      `[voice] WARN ${path}: ${stat.isFile() ? `exceeds ${MAX_RULES_BYTES} bytes` : "not a regular file"}`,
-    );
-    const entry: CacheEntry = { fingerprint, file: null };
-    cache.set(path, entry);
-    return entry;
-  }
-
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf8");
-  } catch (err) {
-    if ((err as { code?: string }).code === "ENOENT") {
-      cache.delete(path); // vanished between stat and read
+    if (!cached || cached.fingerprint !== fingerprint) {
+      log?.(`[voice] WARN ${path}: ${reason}`);
+      cache.set(path, { fingerprint, file: null });
+    }
+    return cache.get(path)!;
+  };
+  const fromError = (err: unknown): CacheEntry | null => {
+    const code = (err as { code?: string }).code;
+    if (code === "ENOENT") {
+      cache.delete(path); // missing (dir or file): no rules, no log
       return null;
     }
-    log?.(`[voice] WARN ${path}: ${firstIssueMessage(err)}`);
-    return null; // no content fingerprint to cache under; will warn again
-  }
-  const fingerprint = createHash("sha256").update(raw).digest("hex");
-  const cached = cache.get(path);
-  if (cached && cached.fingerprint === fingerprint) return cached;
+    return invalid(`err:${code ?? "unknown"}`, firstIssueMessage(err));
+  };
 
-  let entry: CacheEntry;
+  // O_NONBLOCK: opening a FIFO without a writer returns at once instead of
+  // blocking; fstat on the fd means the checks cannot be raced by a swap.
+  let fd: number;
   try {
-    entry = { fingerprint, file: voiceRulesFileSchema.parse(parseYaml(raw)) };
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
   } catch (err) {
-    log?.(`[voice] WARN ${path}: ${firstIssueMessage(err)}`);
-    entry = { fingerprint, file: null };
+    return fromError(err);
   }
-  cache.set(path, entry);
-  return entry;
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) {
+      return invalid(`meta:${st.mtimeMs}:${st.size}:notfile`, "not a regular file");
+    }
+    if (st.size > MAX_RULES_BYTES) {
+      return invalid(`meta:${st.mtimeMs}:${st.size}:oversize`, `exceeds ${MAX_RULES_BYTES} bytes`);
+    }
+    // One byte past the cap: a file that grew between fstat and read is
+    // caught after the read, never read past the cap.
+    const buf = Buffer.allocUnsafe(MAX_RULES_BYTES + 1);
+    let total = 0;
+    while (total < buf.length) {
+      const n = readSync(fd, buf, total, buf.length - total, null);
+      if (n === 0) break;
+      total += n;
+    }
+    if (total > MAX_RULES_BYTES) {
+      return invalid(`meta:${st.mtimeMs}:${st.size}:oversize`, `exceeds ${MAX_RULES_BYTES} bytes`);
+    }
+    const raw = buf.toString("utf8", 0, total);
+    const fingerprint = createHash("sha256").update(raw).digest("hex");
+    const cached = cache.get(path);
+    if (cached && cached.fingerprint === fingerprint) return cached;
+    let entry: CacheEntry;
+    try {
+      entry = { fingerprint, file: voiceRulesFileSchema.parse(parseYaml(raw)) };
+    } catch (err) {
+      log?.(`[voice] WARN ${path}: ${firstIssueMessage(err)}`);
+      entry = { fingerprint, file: null };
+    }
+    cache.set(path, entry);
+    return entry;
+  } catch (err) {
+    return fromError(err);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function resolvePath(dir: string, voice: string): string | null {
@@ -193,7 +219,8 @@ function computeVersion(dir: string): string {
  * `git -C <dir> rev-parse --short HEAD`, suffixed `-dirty` when tracked files
  * differ (untracked paths do not count), `unversioned` outside a git repo.
  * Cached per dir for `ttlMs` (default 60 s) so recall never shells out to
- * git per call; `now` is injectable for tests.
+ * git per call; expired entries are pruned on write and the map is capped
+ * at 64 dirs (oldest evicted). `now` is injectable for tests.
  */
 export function rulesVersion(
   dir: string,
@@ -204,7 +231,15 @@ export function rulesVersion(
   const cached = versionCache.get(dir);
   if (cached && at - cached.at < Math.max(ttlMs, 0)) return cached.version;
   const version = computeVersion(dir);
+  for (const [d, e] of versionCache) {
+    if (at - e.at >= GIT_VERSION_TTL_MS) versionCache.delete(d);
+  }
   versionCache.set(dir, { at, version });
+  while (versionCache.size > VERSION_CACHE_MAX) {
+    const oldest = versionCache.keys().next();
+    if (oldest.done) break;
+    versionCache.delete(oldest.value);
+  }
   return version;
 }
 

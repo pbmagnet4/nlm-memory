@@ -1,10 +1,35 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadVoiceRules, resolveRules, rulesVersion, voiceRules } from "../../../../src/core/voice/rules.js";
 import { renderVoiceRulesSchema } from "../../../../scripts/gen-voice-rules-schema.js";
+
+// Injectable fault for readSync, so the post-read size cap and the
+// read-failure caching can be exercised on the fd read path. Pass-through
+// unless a test arms it; reset in afterEach.
+const fsState = vi.hoisted(() => ({ readThrow: null as Error | null, readFillAll: false }));
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...fs,
+    readSync: (
+      fd: number,
+      buffer: Uint8Array,
+      offset: number,
+      length: number,
+      position: number | null,
+    ): number => {
+      if (fsState.readThrow) throw fsState.readThrow;
+      if (fsState.readFillAll) {
+        buffer.fill(0x20, offset, offset + length);
+        return length;
+      }
+      return fs.readSync(fd, buffer, offset, length, position);
+    },
+  };
+});
 
 const dirs: string[] = [];
 function tmp(): string {
@@ -14,6 +39,8 @@ function tmp(): string {
 }
 
 afterEach(() => {
+  fsState.readThrow = null;
+  fsState.readFillAll = false;
   while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
@@ -119,6 +146,55 @@ describe("loadVoiceRules", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain("not a regular file");
   });
+
+  it("refuses a file that grew past the size cap during the read", () => {
+    const dir = tmp();
+    writeVoice(dir, "edward", VALID); // small: passes the fstat gate
+    fsState.readFillAll = true; // the read comes back oversize
+    const { lines, log } = harvestLog();
+    expect(loadVoiceRules(dir, "edward", log)).toBeNull();
+    expect(loadVoiceRules(dir, "edward", log)).toBeNull();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("exceeds");
+  });
+
+  it("caches a read failure so it warns once, not on every call", () => {
+    const dir = tmp();
+    writeVoice(dir, "edward", VALID);
+    fsState.readThrow = Object.assign(new Error("EIO: i/o error, read"), { code: "EIO" });
+    const { lines, log } = harvestLog();
+    expect(loadVoiceRules(dir, "edward", log)).toBeNull();
+    expect(loadVoiceRules(dir, "edward", log)).toBeNull();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("EIO");
+    fsState.readThrow = null;
+    expect(loadVoiceRules(dir, "edward", log)?.voice).toBe("edward");
+    expect(lines).toHaveLength(1);
+  });
+
+  it.skipIf(typeof process.getuid === "function" && process.getuid() === 0)(
+    "logs and caches a non-ENOENT open failure (EACCES), silent ENOENT stays silent",
+    () => {
+      const dir = tmp();
+      const path = writeVoice(dir, "edward", VALID);
+      chmodSync(path, 0o000);
+      try {
+        const { lines, log } = harvestLog();
+        expect(loadVoiceRules(dir, "edward", log)).toBeNull();
+        expect(loadVoiceRules(dir, "edward", log)).toBeNull();
+        expect(lines).toHaveLength(1);
+        expect(lines[0]).toContain("EACCES");
+        chmodSync(path, 0o600);
+        expect(loadVoiceRules(dir, "edward", log)?.voice).toBe("edward");
+        expect(lines).toHaveLength(1);
+        // ENOENT: missing file, still no log.
+        expect(loadVoiceRules(dir, "ghost", log)).toBeNull();
+        expect(lines).toHaveLength(1);
+      } finally {
+        chmodSync(path, 0o600);
+      }
+    },
+  );
 
   it("rejects unknown top-level keys (strict)", () => {
     const dir = tmp();
@@ -273,6 +349,26 @@ describe("rulesVersion", () => {
     const out = voiceRules(dir, "edward", "linkedin")!;
     expect(out.rules).toContain("Second person"); // rules refresh immediately
     expect(out.rulesVersion).toBe(head); // version lags by up to the 60 s TTL
+  });
+
+  it("evicts the oldest dir once more than 64 dirs are cached", () => {
+    const dir1 = tmp();
+    gitInitCommitted(dir1);
+    const head1 = gitIn(dir1, ["rev-parse", "--short", "HEAD"]).trim();
+    const future = Date.now() + 3_600_000; // expires other tests' entries on first write
+    const clock = () => future;
+    expect(rulesVersion(dir1, 60_000, clock)).toBe(head1);
+    writeFileSync(join(dir1, "edward.yaml"), VALID.replace("First person", "Second person"));
+    gitIn(dir1, ["add", "edward.yaml"]);
+    gitIn(dir1, ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "second"]);
+    const head2 = gitIn(dir1, ["rev-parse", "--short", "HEAD"]).trim();
+    expect(head2).not.toBe(head1);
+    for (let i = 0; i < 64; i++) {
+      expect(rulesVersion(tmp(), 60_000, clock)).toBe("unversioned");
+    }
+    // dir1 was the oldest entry: evicted despite its TTL not having expired,
+    // so its new head is visible immediately.
+    expect(rulesVersion(dir1, 60_000, clock)).toBe(head2);
   });
 });
 
