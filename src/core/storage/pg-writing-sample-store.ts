@@ -61,6 +61,7 @@ export class PgWritingSampleStore implements WritingSampleStore {
     const scope = this.resolveScope();
     const textHash = writingTextHash(input.text);
     const id = writingSampleId({
+      tenantId,
       installScope: scope,
       voice: input.voice,
       channel: input.channel,

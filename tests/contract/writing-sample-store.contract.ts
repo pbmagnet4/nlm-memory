@@ -80,7 +80,7 @@ export function runWritingSampleStoreContract(h: WritingSampleStoreContractHarne
       expect(second.skipped).toBe(true);
     });
 
-    it("derives the id from install_scope|voice|channel|text_hash|source", async () => {
+    it("derives the id from tenant_id|install_scope|voice|channel|text_hash|source", async () => {
       const input = makeSample({ audience: "client-blog", sourceRef: "https://example.test/post" });
       const { id } = await storage.writingSamples.insert(TENANT, input);
       const textHash = createHash("sha256")
@@ -88,6 +88,7 @@ export function runWritingSampleStoreContract(h: WritingSampleStoreContractHarne
         .digest("hex");
       expect(id).toBe(
         writingSampleId({
+          tenantId: TENANT,
           installScope: h.installScope,
           voice: input.voice,
           channel: input.channel,
@@ -95,6 +96,19 @@ export function runWritingSampleStoreContract(h: WritingSampleStoreContractHarne
           source: input.source,
         }),
       );
+    });
+
+    it("dedups per tenant: the same post in two tenants is two rows, each visible only to its owner", async () => {
+      const input = makeSample({ text: "one post, two tenants" });
+      const mine = await storage.writingSamples.insert(TENANT, input);
+      const theirs = await storage.writingSamples.insert(FOREIGN, input);
+      expect(mine.skipped).toBe(false);
+      expect(theirs.skipped).toBe(false);
+      expect(theirs.id).not.toBe(mine.id);
+      expect((await storage.writingSamples.missingEmbeddings(TENANT, 10)).map((r) => r.id)).toContain(mine.id);
+      expect((await storage.writingSamples.missingEmbeddings(TENANT, 10)).map((r) => r.id)).not.toContain(theirs.id);
+      expect((await storage.writingSamples.missingEmbeddings(FOREIGN, 10)).map((r) => r.id)).toEqual([theirs.id]);
+      expect((await storage.writingSamples.insert(FOREIGN, input)).skipped).toBe(true);
     });
 
     it("treats the same post seen under two sources as two rows", async () => {

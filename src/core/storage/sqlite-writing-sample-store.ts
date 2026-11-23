@@ -38,12 +38,15 @@ import { readSemanticWritingSamples, type WritingSampleReadFilter } from "./sqli
 import type { SqliteSemanticReader } from "./sqlite-semantic-reader.js";
 
 /**
- * Deterministic primary key: sha256(install_scope|voice|channel|text_hash|source)[:16].
+ * Deterministic primary key: sha256(tenant_id|install_scope|voice|channel|text_hash|source)[:16].
+ * The tenant is part of it so dedup is per tenant: two tenants storing the same
+ * post get two rows (review 0e604bf5).
  * `source` is in the tuple on purpose: the same post first ingested as
  * `approved` and later as `published` is two rows, and recall prefers the
  * higher source (design invariant 2).
  */
 export function writingSampleId(parts: {
+  tenantId: string;
   installScope: string;
   voice: string;
   channel: string;
@@ -51,7 +54,7 @@ export function writingSampleId(parts: {
   source: string;
 }): string {
   return createHash("sha256")
-    .update([parts.installScope, parts.voice, parts.channel, parts.textHash, parts.source].join("|"))
+    .update([parts.tenantId, parts.installScope, parts.voice, parts.channel, parts.textHash, parts.source].join("|"))
     .digest("hex")
     .slice(0, 16);
 }
@@ -110,6 +113,7 @@ export class SqliteWritingSampleStore implements WritingSampleStore {
     const scope = this.resolveScope();
     const textHash = writingTextHash(input.text);
     const id = writingSampleId({
+      tenantId,
       installScope: scope,
       voice: input.voice,
       channel: input.channel,
