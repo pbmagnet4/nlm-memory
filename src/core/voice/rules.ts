@@ -1,12 +1,15 @@
 /**
  * Voice rules reader (design §B): loads `<voice>.yaml` files from a rules
  * directory, validates them against the shipped schema, and merges the
- * voice → channel → audience layers. Loading follows the file-config
- * precedent in src/core/scope/alias-map.ts, with an mtime fingerprint so a
- * file is re-parsed only when it changes. A bad file never fails recall: it
- * logs one WARN per file change and resolves to no rules.
+ * voice → channel → audience layers. A file is read on every call (they are
+ * small) but re-parsed only when its sha256 changes — an mtime/size
+ * fingerprint can miss a same-length edit within one mtime tick and then
+ * serve stale rules forever. rules_version shells out to git at most once
+ * per 60 s per dir. A bad file never fails recall: it logs one WARN per
+ * file change and resolves to no rules.
  */
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -14,6 +17,12 @@ import { voiceRulesFileSchema, type VoiceRulesFile, type VoiceRulesOverrides } f
 
 /** Voice names become file names; never path-join an unchecked one. */
 const VOICE_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/;
+
+/** Rules files are small by design; anything bigger is refused unread. */
+const MAX_RULES_BYTES = 256 * 1024;
+
+/** rules_version resolution interval per dir; keeps git off the recall path. */
+const GIT_VERSION_TTL_MS = 60_000;
 
 export interface ResolvedRules {
   rules: string[];
@@ -27,17 +36,16 @@ export interface VoiceRules extends ResolvedRules {
 }
 
 type CacheEntry = {
-  /** `${mtimeMs}:${size}` of the yaml file; the cache hit condition. */
+  /** sha256 of the file bytes; for states we do not read, a meta fingerprint. */
   fingerprint: string;
   /** Parsed file, or null when the file is present but invalid. */
   file: VoiceRulesFile | null;
-  /** git version of dir; computed with the file, not per call (design §B.3). */
-  version: string | null;
 };
 
 // Keyed by absolute file path; tests use fresh mkdtemp dirs, so entries from
 // different runs never collide.
 const cache = new Map<string, CacheEntry>();
+const versionCache = new Map<string, { at: number; version: string }>();
 
 function firstIssueMessage(err: unknown): string {
   if (err instanceof Error && "issues" in err) {
@@ -51,12 +59,8 @@ function firstIssueMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Reads and parses one rules file, cached by mtime+size. Null: file absent. */
-function readFileEntry(
-  dir: string,
-  path: string,
-  log?: (message: string) => void,
-): CacheEntry | null {
+/** Reads and parses one rules file, re-parsing only when its bytes change. Null: file absent. */
+function readFileEntry(path: string, log?: (message: string) => void): CacheEntry | null {
   let stat;
   try {
     stat = statSync(path);
@@ -64,17 +68,42 @@ function readFileEntry(
     cache.delete(path); // missing (dir or file): no rules, no log
     return null;
   }
-  const fingerprint = `${stat.mtimeMs}:${stat.size}`;
+  // Only a small regular file is readable: a FIFO would block readFileSync
+  // forever, an oversized file is not a rules file. Warned once per change,
+  // fingerprinted on stat since we never read it.
+  if (!stat.isFile() || stat.size > MAX_RULES_BYTES) {
+    const fingerprint = `meta:${stat.mtimeMs}:${stat.size}:${stat.isFile()}`;
+    const cached = cache.get(path);
+    if (cached && cached.fingerprint === fingerprint) return cached;
+    log?.(
+      `[voice] WARN ${path}: ${stat.isFile() ? `exceeds ${MAX_RULES_BYTES} bytes` : "not a regular file"}`,
+    );
+    const entry: CacheEntry = { fingerprint, file: null };
+    cache.set(path, entry);
+    return entry;
+  }
+
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (err) {
+    if ((err as { code?: string }).code === "ENOENT") {
+      cache.delete(path); // vanished between stat and read
+      return null;
+    }
+    log?.(`[voice] WARN ${path}: ${firstIssueMessage(err)}`);
+    return null; // no content fingerprint to cache under; will warn again
+  }
+  const fingerprint = createHash("sha256").update(raw).digest("hex");
   const cached = cache.get(path);
   if (cached && cached.fingerprint === fingerprint) return cached;
 
   let entry: CacheEntry;
   try {
-    const file = voiceRulesFileSchema.parse(parseYaml(readFileSync(path, "utf8")));
-    entry = { fingerprint, file, version: rulesVersion(dir) };
+    entry = { fingerprint, file: voiceRulesFileSchema.parse(parseYaml(raw)) };
   } catch (err) {
     log?.(`[voice] WARN ${path}: ${firstIssueMessage(err)}`);
-    entry = { fingerprint, file: null, version: null };
+    entry = { fingerprint, file: null };
   }
   cache.set(path, entry);
   return entry;
@@ -98,7 +127,7 @@ export function loadVoiceRules(
   if (!dir) return null;
   const path = resolvePath(dir, voice);
   if (!path) return null;
-  return readFileEntry(dir, path, log)?.file ?? null;
+  return readFileEntry(path, log)?.file ?? null;
 }
 
 function pick(
@@ -152,11 +181,7 @@ function git(dir: string, args: string[]): string | null {
   }
 }
 
-/**
- * `git -C <dir> rev-parse --short HEAD`, suffixed `-dirty` when tracked files
- * differ (untracked paths do not count), `unversioned` outside a git repo.
- */
-export function rulesVersion(dir: string): string {
+function computeVersion(dir: string): string {
   const head = git(dir, ["rev-parse", "--short", "HEAD"])?.trim();
   if (!head) return "unversioned";
   const status = git(dir, ["status", "--porcelain"]);
@@ -165,20 +190,40 @@ export function rulesVersion(dir: string): string {
 }
 
 /**
+ * `git -C <dir> rev-parse --short HEAD`, suffixed `-dirty` when tracked files
+ * differ (untracked paths do not count), `unversioned` outside a git repo.
+ * Cached per dir for `ttlMs` (default 60 s) so recall never shells out to
+ * git per call; `now` is injectable for tests.
+ */
+export function rulesVersion(
+  dir: string,
+  ttlMs: number = GIT_VERSION_TTL_MS,
+  now: () => number = Date.now,
+): string {
+  const at = now();
+  const cached = versionCache.get(dir);
+  if (cached && at - cached.at < Math.max(ttlMs, 0)) return cached.version;
+  const version = computeVersion(dir);
+  versionCache.set(dir, { at, version });
+  return version;
+}
+
+/**
  * One entry point for consumers: merged rules for a voice/channel/audience,
- * or null when there are none. Does not log; pass loadVoiceRules directly
- * when you want the invalid-file WARN.
+ * or null when there are none. `log` receives the invalid-file WARN (one per
+ * file change).
  */
 export function voiceRules(
   dir: string | undefined,
   voice: string,
   channel: string,
   audience?: string,
+  log?: (message: string) => void,
 ): VoiceRules | null {
   if (!dir) return null;
   const path = resolvePath(dir, voice);
   if (!path) return null;
-  const entry = readFileEntry(dir, path);
+  const entry = readFileEntry(path, log);
   if (!entry || !entry.file) return null;
-  return { ...resolveRules(entry.file, channel, audience), rulesVersion: entry.version ?? "unversioned" };
+  return { ...resolveRules(entry.file, channel, audience), rulesVersion: rulesVersion(dir) };
 }

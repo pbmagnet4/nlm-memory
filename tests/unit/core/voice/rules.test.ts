@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadVoiceRules, resolveRules, rulesVersion, voiceRules } from "../../../../src/core/voice/rules.js";
@@ -90,12 +90,34 @@ describe("loadVoiceRules", () => {
     expect(lines[0]).toContain("[voice] WARN");
   });
 
-  it("re-reads when the file changes (mtime/size fingerprint)", () => {
+  it("re-reads when the file changes (content hash)", () => {
     const dir = tmp();
     writeVoice(dir, "edward", "voice: edward\nrules: [first]\n");
     expect(loadVoiceRules(dir, "edward")?.rules).toEqual(["first"]);
     writeVoice(dir, "edward", "voice: edward\nrules: [second, third]\n");
     expect(loadVoiceRules(dir, "edward")?.rules).toEqual(["second", "third"]);
+  });
+
+  it("detects a same-length edit within one mtime tick", () => {
+    // A sha256 of the bytes catches what an mtime/size fingerprint misses.
+    const dir = tmp();
+    const path = writeVoice(dir, "edward", "voice: edward\nrules: [aaaa]\n");
+    expect(loadVoiceRules(dir, "edward")?.rules).toEqual(["aaaa"]);
+    const { atime, mtime } = statSync(path);
+    writeVoice(dir, "edward", "voice: edward\nrules: [bbbb]\n"); // byte-length identical
+    utimesSync(path, atime, mtime);
+    expect(loadVoiceRules(dir, "edward")?.rules).toEqual(["bbbb"]);
+  });
+
+  it.skipIf(process.platform === "win32")("refuses a FIFO at <voice>.yaml without blocking", () => {
+    const dir = tmp();
+    const path = join(dir, "edward.yaml");
+    execFileSync("mkfifo", [path]);
+    const { lines, log } = harvestLog();
+    expect(loadVoiceRules(dir, "edward", log)).toBeNull();
+    expect(loadVoiceRules(dir, "edward", log)).toBeNull();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("not a regular file");
   });
 
   it("rejects unknown top-level keys (strict)", () => {
@@ -171,6 +193,16 @@ describe("voiceRules", () => {
     expect(voiceRules(dir, "ghost", "linkedin")).toBeNull();
     expect(voiceRules(undefined, "edward", "linkedin")).toBeNull();
   });
+
+  it("passes the invalid-file WARN through voiceRules, once per change", () => {
+    const dir = tmp();
+    writeVoice(dir, "edward", "voice: edward\nmax_chars: 0\n");
+    const { lines, log } = harvestLog();
+    expect(voiceRules(dir, "edward", "linkedin", undefined, log)).toBeNull();
+    expect(voiceRules(dir, "edward", "linkedin", undefined, log)).toBeNull();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("[voice] WARN");
+  });
 });
 
 function gitIn(dir: string, args: string[]): string {
@@ -199,9 +231,9 @@ describe("rulesVersion", () => {
     const dir = tmp();
     gitInitCommitted(dir);
     writeFileSync(join(dir, "scratch.txt"), "untracked\n");
-    expect(rulesVersion(dir)).not.toContain("-dirty");
+    expect(rulesVersion(dir, 0)).not.toContain("-dirty"); // ttl 0: check git, not the cache
     writeFileSync(join(dir, "edward.yaml"), VALID + "\n");
-    expect(rulesVersion(dir)).toBe(`${gitIn(dir, ["rev-parse", "--short", "HEAD"]).trim()}-dirty`);
+    expect(rulesVersion(dir, 0)).toBe(`${gitIn(dir, ["rev-parse", "--short", "HEAD"]).trim()}-dirty`);
   });
 
   it("is 'unversioned' outside a git repo (and for an empty repo)", () => {
@@ -211,14 +243,36 @@ describe("rulesVersion", () => {
     expect(rulesVersion(bare)).toBe("unversioned");
   });
 
-  it("is read once per file change through voiceRules", () => {
+  it("refreshes after the cache TTL, not before", () => {
+    const dir = tmp();
+    gitInitCommitted(dir);
+    const head1 = gitIn(dir, ["rev-parse", "--short", "HEAD"]).trim();
+    let now = 1_000_000;
+    const clock = () => now;
+    expect(rulesVersion(dir, 60_000, clock)).toBe(head1);
+    writeFileSync(join(dir, "edward.yaml"), VALID + "\n");
+    gitIn(dir, ["add", "edward.yaml"]);
+    gitIn(dir, ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "second"]);
+    const head2 = gitIn(dir, ["rev-parse", "--short", "HEAD"]).trim();
+    expect(head2).not.toBe(head1);
+    expect(rulesVersion(dir, 60_000, clock)).toBe(head1); // TTL not expired
+    now += 60_001;
+    expect(rulesVersion(dir, 60_000, clock)).toBe(head2);
+    writeFileSync(join(dir, "edward.yaml"), VALID + "x"); // dirty a tracked file
+    expect(rulesVersion(dir, 60_000, clock)).toBe(head2); // still TTL-cached
+    now += 60_001;
+    expect(rulesVersion(dir, 60_000, clock)).toBe(`${head2}-dirty`);
+  });
+
+  it("refreshes rules on file change while the version stays TTL-cached", () => {
     const dir = tmp();
     gitInitCommitted(dir);
     const head = gitIn(dir, ["rev-parse", "--short", "HEAD"]).trim();
     expect(voiceRules(dir, "edward", "linkedin")!.rulesVersion).toBe(head);
     writeFileSync(join(dir, "edward.yaml"), VALID.replace("First person", "Second person"));
-    expect(voiceRules(dir, "edward", "linkedin")!.rulesVersion).toBe(`${head}-dirty`);
-    expect(voiceRules(dir, "edward", "linkedin")!.rules).toContain("Second person");
+    const out = voiceRules(dir, "edward", "linkedin")!;
+    expect(out.rules).toContain("Second person"); // rules refresh immediately
+    expect(out.rulesVersion).toBe(head); // version lags by up to the 60 s TTL
   });
 });
 
