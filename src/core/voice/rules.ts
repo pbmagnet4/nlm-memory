@@ -84,7 +84,10 @@ function readFileEntry(path: string, log?: (message: string) => void): CacheEntr
       cache.delete(path); // missing (dir or file): no rules, no log
       return null;
     }
-    return invalid(`err:${code ?? "unknown"}`, firstIssueMessage(err));
+    // Include the message as well as the code: two different I/O failures
+    // with the same code (EIO reading different offsets, say) must warn
+    // separately instead of collapsing onto one fingerprint.
+    return invalid(`err:${code ?? "unknown"}:${firstIssueMessage(err)}`, firstIssueMessage(err));
   };
 
   // O_NONBLOCK: opening a FIFO without a writer returns at once instead of
@@ -131,7 +134,13 @@ function readFileEntry(path: string, log?: (message: string) => void): CacheEntr
   } catch (err) {
     return fromError(err);
   } finally {
-    closeSync(fd);
+    try {
+      closeSync(fd);
+    } catch {
+      // A close failure carries no information about the rules: the read
+      // already succeeded or failed on its own terms. Swallowing it also
+      // keeps a bad fd from masking the entry this call resolved to.
+    }
   }
 }
 

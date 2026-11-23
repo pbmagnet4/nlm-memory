@@ -38,6 +38,11 @@ export interface WritingSampleInput {
   readonly ts: string;
 }
 
+/** One newest-first hit: the sample with no query vector, so no distance. */
+export interface WritingSampleLatestHit extends Omit<WritingSampleHit, "distance"> {
+  readonly distance: number | null;
+}
+
 /** One recall hit: the sample plus its distance from the query vector. */
 export interface WritingSampleHit {
   readonly id: string;
@@ -90,4 +95,14 @@ export interface WritingSampleStore {
     queryVector: Float32Array,
     filter: WritingSampleSearchFilter,
   ): Promise<ReadonlyArray<WritingSampleHit>>;
+
+  /**
+   * Newest-first read over the tenant's samples, no vector needed. Recall
+   * falls back to this when no embedder is reachable (design §D.4): the
+   * newest published samples of the channel, `distance` always null.
+   */
+  latest(
+    tenantId: string,
+    filter: WritingSampleSearchFilter,
+  ): Promise<ReadonlyArray<WritingSampleLatestHit>>;
 }
