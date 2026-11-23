@@ -114,6 +114,8 @@ import type {
 } from "@shared/types.js";
 import type { SignalStore } from "@ports/signal-store.js";
 import type { CodeExemplarStore } from "@ports/code-exemplar-store.js";
+import type { WritingSampleStore } from "@ports/writing-sample-store.js";
+import { toWritingSampleInput } from "@core/voice/intake.js";
 import type { CodeEmbedder } from "@ports/code-embedder.js";
 import { normalizeSignal } from "@core/signals/ingest-signal.js";
 import { scopeStampEnabled } from "@core/scope/stamp-flag.js";
@@ -212,6 +214,8 @@ export interface HttpDeps {
   readonly sessionScopeReader?: SessionScopeReader;
   /** Code exemplar store — wire to enable POST /api/exemplar + GET /api/recall-code. */
   readonly exemplarStore?: CodeExemplarStore;
+  /** Writing-sample store — wire to enable POST /api/voice/sample (also needs NLM_VOICE_ENABLED=1). */
+  readonly writingSampleStore?: WritingSampleStore;
   /** Optional code embedder for semantic recall-code queries. */
   readonly codeEmbedder?: CodeEmbedder;
   /** Test-only override for /api/health's update-check cache read (defaults to ~/.nlm/update-check.json via NLM_UPDATE_CHECK_CACHE). */
@@ -491,6 +495,7 @@ export function createApp(deps: HttpDeps): Hono<AppEnv> {
   registerProviderRoutes(app, deps);
   registerSessionRoute(app, deps);
   registerSignalRoutes(app, deps);
+  registerVoiceRoutes(app, deps);
   registerJobRoutes(app, deps);
 
   const nonceStore = createNonceStore();
@@ -2348,6 +2353,61 @@ function registerSignalRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
       null,
     );
     return c.json(result);
+  });
+}
+
+// ── Voice intake (NLM_VOICE_ENABLED=1) ─────────────────────────────────────
+//
+// The flag decides whether the route exists at all, so an install with the
+// voice lane off answers 404 rather than leaking that a store is wired behind
+// it — the code-exemplar lane is younger here and answers 403, but a producer
+// probing for a lane should not be able to detect one that is switched off.
+// Tenant and loopback come from the shared /api/* gate exactly as /api/signal
+// gets them, and `install_scope` is stamped by the store, never read here.
+function registerVoiceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
+  app.post("/api/voice/sample", async (c) => {
+    if (process.env["NLM_VOICE_ENABLED"] !== "1") {
+      return c.json({ error: "not found" }, 404);
+    }
+    const store = deps.writingSampleStore;
+    if (!store) {
+      return c.json({ error: "writing-sample store not wired in this deployment" }, 503);
+    }
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "body must be JSON" }, 400);
+    }
+    const parsed = toWritingSampleInput(body, () => new Date().toISOString());
+    if (!parsed.ok) {
+      return c.json({ error: parsed.error }, 400);
+    }
+
+    const tenantId = c.get("tenantId");
+    let stored: { id: string; skipped: boolean };
+    try {
+      stored = await store.insert(tenantId, parsed.input);
+    } catch {
+      return c.json({ error: "writing sample insert failed" }, 500);
+    }
+
+    // Best-effort on the prose lane, fire-and-forget: a sample the daemon could
+    // not embed is still stored, and the voice-embed-sweep picks it up. A
+    // duplicate is not re-embedded — its vector belongs to the row already
+    // there. `context` never reaches the embedder (design invariant A.3).
+    const prose = deps.embedder?.prose;
+    if (!stored.skipped && prose) {
+      void trackWork(
+        deps,
+        prose
+          .embed(parsed.input.text, "document")
+          .then((r) => store.upsertEmbedding(tenantId, stored.id, r.vector))
+          .catch(() => { /* degraded; the sweep retries rows with no vector */ }),
+      );
+    }
+
+    return c.json({ id: stored.id, skipped: stored.skipped }, stored.skipped ? 200 : 201);
   });
 }
 

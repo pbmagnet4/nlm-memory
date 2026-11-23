@@ -42,6 +42,7 @@ Daemon binds `127.0.0.1:3940` (override with `NLM_PORT`). Selected endpoints:
 | ALL | `/mcp` | Bearer required | Streamable-HTTP MCP transport — the default for every runtime; stateless, team resolved from the token |
 | GET | `/api/recall-code` | Local/API mode | Semantic code-exemplar search — `?q=`, `?repo=`, `?lang=`, `?k=`, `?negatives=0`. Requires `NLM_CODE_EXEMPLARS_ENABLED=1`. |
 | POST | `/api/exemplar` | Local/API mode | Direct code-exemplar push (capture also happens automatically from code-bearing signals). Requires the flag. |
+| POST | `/api/voice/sample` | Local/API mode | Store one piece of the person's own writing as a voice sample — `{voice, channel, text, outcome, source?, source_ref?, context?, audience?, draft_id?, session_id?, ts?}`. 201 `{id, skipped: false}` for a new row, 200 `{id, skipped: true}` when the same writing is already stored, 400 for empty text or text over 20,000 characters. `source` defaults from `outcome`; the embed runs after the response, so a dead embedder still stores the row (`voice-embed-sweep` repairs the vector). Requires `NLM_VOICE_ENABLED=1`, else 404. Producers: `nlm voice-signal`, `nlm voice backfill`. |
 | POST | `/api/jobs/reprocess` | Local/API mode | Start a daemon-supervised `reprocess` run (body: optional `{args: string[]}`, forwarded verbatim as CLI flags). 202 + snapshot on start, 409 + snapshot if one's already active. Backs `nlm reprocess --daemon`. |
 | DELETE | `/api/jobs/reprocess` | Local/API mode | Stop the active supervised run (no-op if idle/already terminal). 200 + snapshot. |
 

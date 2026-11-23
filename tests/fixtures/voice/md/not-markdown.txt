@@ -1,0 +1,1 @@
+A published post that is not markdown — the readers must ignore this file.
