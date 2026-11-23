@@ -207,6 +207,13 @@ describe("replayQuery", () => {
     expect(res.approximate).toBe(true);
   });
 
+  it("flags an over-long unflagged recallQuery that the parser itself cuts as approximate", () => {
+    const record = parsed({ recallQuery: `indexing ${"archives ".repeat(80)}nightly` });
+    expect(record.recallQuery!.length).toBe(RECALL_QUERY_LOG_CHARS);
+    expect(record.recallQueryTruncated).toBe(true);
+    expect(replayQuery(record, {}).approximate).toBe(true);
+  });
+
   it("ignores a non-true recallQueryTruncated value", () => {
     const record = parsed({ recallQuery: "indexing archives nightly", recallQueryTruncated: false });
     expect(record.recallQueryTruncated).toBeUndefined();

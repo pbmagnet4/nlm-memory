@@ -80,7 +80,9 @@ export function parseHookLogLines(raw: string): HookLogParse {
       ...(typeof row["recallQuery"] === "string" && row["recallQuery"] !== ""
         ? {
             recallQuery: (row["recallQuery"] as string).slice(0, RECALL_QUERY_LOG_CHARS),
-            ...(row["recallQueryTruncated"] === true ? { recallQueryTruncated: true } : {}),
+            // A cut here counts like a cut by the hook: the replay is approximate either way.
+            ...(row["recallQueryTruncated"] === true || (row["recallQuery"] as string).length > RECALL_QUERY_LOG_CHARS
+              ? { recallQueryTruncated: true } : {}),
           }
         : {}),
     });
