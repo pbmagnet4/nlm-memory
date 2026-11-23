@@ -395,3 +395,17 @@ describe("HermesAgentAdapter source filtering", () => {
     expect(await new HermesAgentAdapter({ dbPath }).discover()).toEqual([`${dbPath}::sess_old_schema`]);
   });
 });
+
+describe("HermesAgentAdapter.stat", () => {
+  it("sees a new message written through the WAL by the same adapter instance", () => {
+    db.pragma("journal_mode = WAL");
+    addSession(db, { id: "sess_wal" });
+    addMessage(db, { sessionId: "sess_wal", role: "user", content: "first", timestamp: 1000 });
+    const adapter = new HermesAgentAdapter({ dbPath });
+    const source = `${dbPath}::sess_wal`;
+    expect(adapter.stat(source)).toEqual({ mtimeMs: 1_000_000, size: 1 });
+    addMessage(db, { sessionId: "sess_wal", role: "assistant", content: "second", timestamp: 2000 });
+    expect(adapter.stat(source)).toEqual({ mtimeMs: 2_000_000, size: 2 });
+    expect(adapter.stat(`${dbPath}::missing`)).toBeNull();
+  });
+});

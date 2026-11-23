@@ -36,6 +36,8 @@ export interface HookLogEntry {
   /** Why recall returned what it did. Absent on gate-skipped fires (no recall ran).
    *  Without it, `hits: []` cannot be told apart from a recall that timed out. */
   readonly recallOutcome?: "ok" | "timeout" | "unreachable" | "http-error" | "skipped";
+  /** Recall-stage wall time of an answered ("ok") recall; the SLO p95 reads it (T1770). */
+  readonly latencyMs?: number;
 }
 
 function logPath(tenantId: string): string {

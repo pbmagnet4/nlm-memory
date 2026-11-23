@@ -39,6 +39,20 @@ describe("runHook", () => {
     expect(JSON.parse(log).mode).toBe("shadow");
   });
 
+  it("logs the recall-stage latency of an answered recall, and none for a timeout (SLO p95)", async () => {
+    const prompt = { prompt: "what did we decide about pgvector", conversationId: "c1" };
+    await runHook(prompt, { mode: "shadow", recall: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { hits: hits("sess_a"), facts: [], outcome: "ok" };
+    } });
+    await runHook(prompt, { mode: "shadow", deadlineMs: 5, recall: () => new Promise(() => {}) });
+    const [answered, timedOut] = readFileSync(join(tmp, "hook-log.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(answered.recallOutcome).toBe("ok");
+    expect(answered.latencyMs).toBeGreaterThanOrEqual(15);
+    expect(timedOut.recallOutcome).toBe("timeout");
+    expect(timedOut.latencyMs).toBeUndefined();
+  });
+
   it("shadow mode does not write the memo", async () => {
     await runHook(
       { prompt: "what did we decide", conversationId: "c1" },

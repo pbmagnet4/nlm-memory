@@ -913,8 +913,10 @@ export class SqliteSessionStore implements SessionStore {
     opts?: SearchOptions,
     execution?: { readonly signal?: AbortSignal },
   ): Promise<ReadonlyArray<SemanticNeighbor>> {
-    if (execution?.signal && this.semanticReader) {
-      return this.semanticReader.read({ lane: "sessions", tenantId, queryVector, limit, ...(opts ? { options: opts } : {}) }, execution.signal) as Promise<ReadonlyArray<SemanticNeighbor>>;
+    // T1770: always off the main loop when a reader exists; a caller without a
+    // signal (MCP tools, the write judge) used to run the scan inline.
+    if (this.semanticReader) {
+      return this.semanticReader.read({ lane: "sessions", tenantId, queryVector, limit, ...(opts ? { options: opts } : {}) }, execution?.signal) as Promise<ReadonlyArray<SemanticNeighbor>>;
     }
     execution?.signal?.throwIfAborted();
     return readSemanticSessions(this.db, tenantId, queryVector, limit, opts);

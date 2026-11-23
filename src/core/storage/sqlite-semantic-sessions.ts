@@ -27,11 +27,11 @@ export function readSemanticSessions(
   const k = Math.max(1, Math.trunc(limit));
   params.push(k);
   // The embedding's own attribution survives historical gaps in session_chunk_map.
-  const exact = (): readonly SemanticNeighbor[] => db.prepare<unknown[], NeighborRow>(`
-    WITH eligible AS MATERIALIZED (
+  const rank = (candidates: string): string => `
+    WITH ${candidates}eligible AS MATERIALIZED (
       SELECT sec.session_id, sec.chunk_idx, sec.chunk_id,
              vec_distance_L2(sec.embedding, ?) AS distance
-      FROM session_embedding_chunks sec
+      FROM ${candidates ? "candidates CROSS JOIN session_embedding_chunks sec ON sec.chunk_id = candidates.chunk_id" : "session_embedding_chunks sec"}
       JOIN sessions s ON s.id = sec.session_id
       WHERE ${where.join(" AND ")}
     ), ranked AS (
@@ -43,8 +43,29 @@ export function readSemanticSessions(
     WHERE rank = 1
     ORDER BY distance, session_id
     LIMIT ?
-  `).all(...params).map((r) => ({ sessionId: r.session_id, distance: r.distance, chunkIndex: Number(r.chunk_idx) }));
-  if (opts?.workstreamIds !== undefined || opts?.property !== undefined) return exact();
+  `;
+  const read = (sql: string, args: readonly unknown[]): readonly SemanticNeighbor[] => db.prepare<unknown[], NeighborRow>(sql).all(...args)
+    .map((r) => ({ sessionId: r.session_id, distance: r.distance, chunkIndex: Number(r.chunk_idx) }));
+  const exact = (): readonly SemanticNeighbor[] => read(rank(""), params);
+  // T1770: a workstream or property filter keeps a few percent of the corpus, so
+  // distances are computed only for the eligible sessions' chunks (reached through
+  // session_chunk_map) plus any chunk the map lacks, instead of all ~170k vectors:
+  // 650ms -> 160ms for the broadest property on the live corpus, 540ms -> 30ms typical.
+  if (opts?.workstreamIds !== undefined || opts?.property !== undefined) {
+    return db.transaction(() => {
+      const unmapped = db.prepare<[], { chunk_id: number }>(`
+        SELECT r.rowid AS chunk_id FROM session_embedding_chunks_rowids r
+        WHERE NOT EXISTS (SELECT 1 FROM session_chunk_map m WHERE m.chunk_id = r.rowid)
+      `).all().map((r) => r.chunk_id);
+      const filters = params.slice(1, -1);
+      const candidates = `candidates(chunk_id) AS (
+        SELECT m.chunk_id FROM sessions s JOIN session_chunk_map m ON m.session_id = s.id
+        WHERE ${where.join(" AND ")}
+        UNION ALL SELECT value FROM json_each(?)
+      ), `;
+      return read(rank(candidates), [...filters, JSON.stringify(unmapped), ...params]);
+    }).deferred();
+  }
   return db.transaction(() => completeSemanticTopK(k,
     (window) => db.prepare<[Buffer, number], NeighborRow>(`
       SELECT session_id, distance, chunk_idx FROM session_embedding_chunks

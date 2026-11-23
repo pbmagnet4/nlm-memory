@@ -65,6 +65,7 @@ export async function runHook(
 ): Promise<string> {
   let hits: ReadonlyArray<RecallHitInput> = [];
   let recallOutcome: RecallOutcome = "unreachable";
+  const recallStart = performance.now();
   try {
     const fetched = await deps.recall(input.query, input.conversationId);
     hits = fetched.hits;
@@ -72,6 +73,7 @@ export async function runHook(
   } catch {
     hits = [];
   }
+  const latencyMs = Math.round(performance.now() - recallStart);
 
   // Client-side hook composition root: no per-tenant CLI/hook concept exists
   // today, so DEFAULT_TEAM_ID is this surface's real identity, not a placeholder.
@@ -97,6 +99,7 @@ export async function runHook(
     estTokens,
     mode: deps.mode,
     recallOutcome,
+    ...(recallOutcome === "ok" ? { latencyMs } : {}),
   });
 
   if (deps.mode === "live" && selected.length > 0) {

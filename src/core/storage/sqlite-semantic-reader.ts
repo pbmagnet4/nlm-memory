@@ -10,7 +10,7 @@ export type SemanticRead = {
 export type SemanticRows = readonly SemanticNeighbor[] | readonly FactSemanticNeighbor[];
 interface Pending {
   readonly request: SemanticRead;
-  readonly signal: AbortSignal;
+  readonly signal: AbortSignal | undefined;
   readonly resolve: (rows: SemanticRows) => void;
   readonly reject: (error: Error) => void;
   readonly cleanup: () => void;
@@ -24,8 +24,8 @@ export class SqliteSemanticReader {
   private closed = false;
   constructor(private readonly dbPath: string, private readonly onRead?: (lane: SemanticRead["lane"], sqlMs: number) => void) {}
 
-  read(request: SemanticRead, signal: AbortSignal): Promise<SemanticRows> {
-    if (signal.aborted) return Promise.reject(signal.reason);
+  read(request: SemanticRead, signal?: AbortSignal): Promise<SemanticRows> {
+    if (signal?.aborted) return Promise.reject(signal.reason);
     if (this.closed) return Promise.reject(new Error("semantic reader closed"));
     if (this.queue.length >= 8) return Promise.reject(new Error("semantic read queue full"));
     return new Promise((resolve, reject) => {
@@ -37,8 +37,8 @@ export class SqliteSemanticReader {
         reject(new Error("semantic read cancelled"));
         if (slot) { slot.pending = undefined; this.stop(slot); }
       };
-      const pending: Pending = { request, signal, resolve, reject, cleanup: () => signal.removeEventListener("abort", abort) };
-      signal.addEventListener("abort", abort, { once: true });
+      const pending: Pending = { request, signal, resolve, reject, cleanup: () => signal?.removeEventListener("abort", abort) };
+      signal?.addEventListener("abort", abort, { once: true });
       this.queue.push(pending);
       this.drain();
     });

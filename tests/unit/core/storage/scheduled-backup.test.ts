@@ -245,7 +245,9 @@ describe("runScheduledBackup (real sqlite)", () => {
   });
 });
 
-describe("runQuickCheckOnFile (real worker thread)", () => {
+// Each case boots a real worker through tsx; under the full suite that alone
+// passed the 5s default (land gate, 2026-11-23).
+describe("runQuickCheckOnFile (real worker thread)", { timeout: 20_000 }, () => {
   let tmp: string;
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "nlm-backup-check-"));

@@ -147,6 +147,7 @@ import {
   testEmbedder,
   type EmbedderSettingsDeps,
 } from "@core/embedding/embedder-settings-service.js";
+import { withActiveJob } from "@core/scheduler/loop-monitor.js";
 
 const HERMES_RELATIVE_FLOOR = parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
 
@@ -456,6 +457,9 @@ function trackWork<T>(deps: HttpDeps, work: Promise<T>): Promise<T> {
 
 export function createApp(deps: HttpDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
+  // T1770: name the request in the active-job set, so a `[loop] stall` during a
+  // recall or MCP call says which route instead of "no tracked job".
+  app.use("*", (c, next) => withActiveJob(`http ${c.req.method} ${c.req.path}`, next));
   if (deps.workTracker) {
     const tracker = deps.workTracker;
     app.use("*", async (c, next) => {

@@ -8,6 +8,8 @@ import { join, resolve } from "node:path";
 import { SqliteStorage } from "../../src/core/storage/sqlite-storage.js";
 import type { Storage } from "../../src/ports/storage.js";
 import { runScopedSemanticRecallContract } from "../contract/scoped-semantic-recall.contract.js";
+import { readSemanticSessions } from "../../src/core/storage/sqlite-semantic-sessions.js";
+import { readSemanticFacts } from "../../src/core/storage/sqlite-semantic-facts.js";
 
 const dirs = new WeakMap<Storage, string>();
 runScopedSemanticRecallContract({
@@ -92,7 +94,8 @@ it.each(["session", "fact"] as const)("pins %s candidate distances and eligibili
       return original(sql);
     });
     const query = new Float32Array(768);
-    const search = () => lane === "session" ? storage.sessions.semanticSearch("team_local", query, 1) : storage.facts.semanticSearch("team_local", query, 1);
+    // The snapshot guarantee lives in the read functions; the store sends them to the worker.
+    const search = () => lane === "session" ? readSemanticSessions(db, "team_local", query, 1) : readSemanticFacts(db, "team_local", query, 1);
     const first = await search();
     expect(changed).toBe(true);
     expect(first).toEqual([lane === "session" ? { sessionId: "a", chunkIndex: 0, distance: 1 } : { factId: "a", distance: 1 }]);

@@ -290,8 +290,10 @@ export class SqliteFactStore implements FactStore {
     eligibility?: FactEligibility,
     execution?: { readonly signal?: AbortSignal },
   ): Promise<ReadonlyArray<FactSemanticNeighbor>> {
-    if (execution?.signal && this.semanticReader) {
-      return this.semanticReader.read({ lane: "facts", tenantId, queryVector, limit, ...(eligibility ? { options: eligibility } : {}) }, execution.signal) as Promise<ReadonlyArray<FactSemanticNeighbor>>;
+    // T1770: always off the main loop when a reader exists; a caller without a
+    // signal (MCP tools, the write judge) used to run the scan inline.
+    if (this.semanticReader) {
+      return this.semanticReader.read({ lane: "facts", tenantId, queryVector, limit, ...(eligibility ? { options: eligibility } : {}) }, execution?.signal) as Promise<ReadonlyArray<FactSemanticNeighbor>>;
     }
     execution?.signal?.throwIfAborted();
     return readSemanticFacts(this.db, tenantId, queryVector, limit, eligibility);

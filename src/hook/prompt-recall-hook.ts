@@ -222,6 +222,7 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
   // yield an empty result, so both must name themselves or the log conflates
   // them with a real miss.
   let fetched: RecallFetchResult = { hits: [], facts: [], outcome: "timeout" };
+  const recallStart = performance.now();
   try {
     fetched = normalizeRecall(
       await withDeadline(
@@ -233,6 +234,7 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
   } catch {
     fetched = { hits: [], facts: [], outcome: "unreachable" };
   }
+  const latencyMs = Math.round(performance.now() - recallStart);
   // Hub damping (T1783): score recent over-injection down before selectHits,
   // and drop plateau-tie hits with no lexical contact with the prompt. When
   // disabled this is exactly the pre-T1783 path. countRecentInjectionPrompts is
@@ -270,6 +272,7 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
     estTokens,
     mode: deps.mode,
     ...(fetched.outcome ? { recallOutcome: fetched.outcome } : {}),
+    ...(fetched.outcome === "ok" ? { latencyMs } : {}),
   });
 
   if (deps.mode === "live" && selected.length > 0) {
