@@ -134,6 +134,7 @@ import { backfillExemplarEmbeddings, type ExemplarBackfillReport } from "../core
 import { backfillFactEmbeddings } from "../core/facts/embed-backfill.js";
 import { MAX_CHUNK_EMBED_ATTEMPTS, stuckChunksOnPg, stuckChunksOnSqlite, sweepChunkEmbeddings, type StuckChunk } from "../core/embedding/chunk-retry.js";
 import { runFactEmbedTick } from "../core/facts/embed-sweep-tick.js";
+import { sweepVoiceEmbeddings } from "../core/voice/embed-sweep.js";
 import { computeFactEmbedStatsChunked, computeFactEmbedStatsOnPg } from "../core/facts/embed-missing.js";
 import { warmCodeEmbedder } from "../core/exemplars/warm-embedder.js";
 import { markWarm, markWarmFailure } from "../core/health/warmup-state.js";
@@ -686,6 +687,9 @@ program
       // the /api/exemplar + /api/recall-code routes at request time.
       exemplarStore: storage.exemplars,
       codeEmbedder: codeEmb,
+      // Voice lane (T2438): always wired; NLM_VOICE_ENABLED gates the route at
+      // request time, so a flag-off install answers 404 rather than 503.
+      writingSampleStore: storage.writingSamples,
       // Dreaming control plane (GET/POST /api/dreaming): the daemon owns the
       // one process-global dream-settings module the passes read, so it is
       // always wired — without it the Dreaming settings page 503s. The risky
@@ -1100,6 +1104,33 @@ program
       managedTimers.interval(() => { void timedJob("chunk-embed-sweep", runChunkEmbedSweep); }, CHUNK_EMBED_SWEEP_INTERVAL_MS).unref();
       managedTimers.timeout(() => { void timedJob("chunk-embed-sweep", runChunkEmbedSweep); }, CHUNK_EMBED_SWEEP_INITIAL_DELAY_MS).unref();
       console.error("  chunk-embed-sweep: enabled, retry sweep every 2m");
+    }
+
+    // Voice-embedding retry sweep (T2438 C): re-embeds writing samples whose
+    // ingest embed failed or was shed, a few every 2 min under the same shared
+    // embed cap. Registered only while the flag is on — with the lane off
+    // nothing can insert, so there would never be anything to repair.
+    if (process.env["NLM_VOICE_ENABLED"] === "1") {
+      const VOICE_EMBED_SWEEP_INTERVAL_MS = 2 * 60 * 1000;
+      const VOICE_EMBED_SWEEP_INITIAL_DELAY_MS = 120 * 1000;
+      const runVoiceEmbedSweep = async () => {
+        if (await diskGuard.shouldSkip("voice-embed-sweep")) return;
+        try {
+          const report = await sweepVoiceEmbeddings({
+            tenantId: DEFAULT_TEAM_ID,
+            store: storage.writingSamples,
+            embedder,
+          });
+          if (report.repaired > 0 || report.failed > 0) {
+            console.error(repairLine("voice-embed-sweep", report.repaired, report.attempted, report.failed, report.shed));
+          }
+        } catch (e) {
+          console.error(`[voice-embed-sweep] error: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      };
+      managedTimers.interval(() => { void timedJob("voice-embed-sweep", runVoiceEmbedSweep); }, VOICE_EMBED_SWEEP_INTERVAL_MS).unref();
+      managedTimers.timeout(() => { void timedJob("voice-embed-sweep", runVoiceEmbedSweep); }, VOICE_EMBED_SWEEP_INITIAL_DELAY_MS).unref();
+      console.error("  voice-embed-sweep: enabled, retry sweep every 2m");
     }
 
     // Memo sweep runs independently of the transcript scheduler — it's the
@@ -3804,6 +3835,134 @@ scopeCmd
       process.stdout.write(JSON.stringify(result, null, 2) + "\n");
     } else {
       formatCoverageResult(result, (s) => process.stdout.write(s));
+    }
+  });
+
+// Voice lane (T2438, NLM_VOICE_ENABLED=1). `voice-signal` is the producer an
+// agent or a publish step calls with the text it just shipped; `voice backfill`
+// imports a folder of already-published files. Both talk to the daemon over
+// loopback rather than the store, so tenancy, install scope and the prose
+// embedder stay the daemon's alone.
+program
+  .command("voice-signal")
+  .description("Store one piece of the person's own writing as a voice sample")
+  .requiredOption("--voice <v>", "voice this writing is an example of")
+  .requiredOption("--channel <c>", "channel it was written for (linkedin, email-professional, …)")
+  .option("--text <s>", "the text itself (prefer --text-file)")
+  .option("--text-file <path>", "read the text from this file instead")
+  .option("--url <url>", "where it was published (provenance, never embedded)")
+  .option("--outcome <o>", "published | approved | rejected | pending_review", "published")
+  .option("--draft-id <id>", "draft this text came from")
+  .option("--dry-run", "print the payload and do not POST")
+  .action(async (opts) => {
+    const { buildVoiceSignalPayload, formatVoiceSignalResult, parseVoiceOutcome } = await import("../core/voice/voice-signal.js");
+    if (opts.textFile !== undefined && opts.text !== undefined) {
+      process.stderr.write("voice-signal: pass --text or --text-file, not both\n");
+      process.exit(1);
+      return;
+    }
+    const source = (opts.textFile ?? opts.text) as string | undefined;
+    if (source === undefined) {
+      process.stderr.write("voice-signal: pass --text or --text-file\n");
+      process.exit(1);
+      return;
+    }
+    const outcome = parseVoiceOutcome(opts.outcome as string);
+    if (outcome === undefined) {
+      process.stderr.write("voice-signal: --outcome must be published, approved, rejected or pending_review\n");
+      process.exit(1);
+      return;
+    }
+    let text: string;
+    try {
+      text = opts.textFile !== undefined ? readFileSync(source, "utf8") : source;
+    } catch (e) {
+      process.stderr.write(`voice-signal: cannot read ${source}: ${e instanceof Error ? e.message : String(e)}\n`);
+      process.exit(1);
+      return;
+    }
+    const payload = buildVoiceSignalPayload({
+      voice: opts.voice as string,
+      channel: opts.channel as string,
+      text,
+      outcome,
+      ...(opts.url ? { url: opts.url as string } : {}),
+      ...(opts.draftId ? { draftId: opts.draftId as string } : {}),
+    });
+    if (opts.dryRun) {
+      process.stdout.write(JSON.stringify(payload, null, 2) + "\n");
+      return;
+    }
+    const url = `http://127.0.0.1:${port()}/api/voice/sample`;
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.status !== 201 && res.status !== 200) {
+        // A daemon that answers is up: its own reason is the useful half of the
+        // line, and 404 usually means the voice flag is off on this install.
+        // Anything on the other end of that port could answer, so the reason
+        // stays one bounded line rather than a body.
+        const reason = (await res.text()).replace(/\s+/g, " ").trim().slice(0, 200);
+        process.stderr.write(`voice-signal: daemon returned ${res.status} ${reason}; skipping\n`);
+        return;
+      }
+      const accepted = (await res.json()) as { id?: string; skipped?: boolean };
+      process.stdout.write(formatVoiceSignalResult({ id: accepted.id ?? "unknown", skipped: accepted.skipped === true }) + "\n");
+    } catch {
+      process.stderr.write(`voice-signal: daemon not listening on 127.0.0.1:${port()}; skipping\n`);
+    }
+  });
+
+const voiceCmd = program
+  .command("voice")
+  .description("Voice memory corpus commands");
+
+voiceCmd
+  .command("backfill <format> <path>")
+  .description("Import published writing into the voice corpus through the daemon. Prints counts only — never the text.")
+  .requiredOption("--voice <v>", "voice these files are examples of")
+  .option("--channel <c>", "channel for every row (required for markdown-dir)")
+  .option("--dry-run", "read and count only: no POST, nothing stored")
+  .action(async (format: string, path: string, opts) => {
+    const { formatVoiceBackfillCounts, runVoiceBackfill } = await import("../core/voice/backfill.js");
+    const url = `http://127.0.0.1:${port()}/api/voice/sample`;
+    let unreachable = 0;
+    try {
+      const counts = await runVoiceBackfill({
+        format,
+        path,
+        voice: opts.voice as string,
+        ...(opts.channel ? { channel: opts.channel as string } : {}),
+        dryRun: Boolean(opts.dryRun),
+        // A refused row and a daemon that never answered are both rejections:
+        // the import has to finish and report, not die at row one. The one
+        // thing `rejected` cannot say on its own is *why*, so the rows that
+        // never reached a socket get their own line — counts and a reason,
+        // still nothing of the text.
+        post: async (payload) => {
+          try {
+            const res = await fetch(url, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+            return { status: res.status };
+          } catch {
+            unreachable += 1;
+            return { status: 0 };
+          }
+        },
+      });
+      process.stdout.write(formatVoiceBackfillCounts(counts) + "\n");
+      if (unreachable > 0) {
+        process.stderr.write(`voice backfill: ${unreachable} row(s) never reached the daemon at ${url}\n`);
+      }
+    } catch (e) {
+      process.stderr.write(`voice backfill: ${e instanceof Error ? e.message : String(e)}\n`);
+      process.exit(1);
     }
   });
 

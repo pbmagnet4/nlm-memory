@@ -1,0 +1,12 @@
+{"channel":"linkedin","text":"Automation is a documentation problem, not a tooling problem.","url":"https://whtnxt.com/documentation-problem","published_at":"2026-01-08T09:00:00.000Z"}
+{"channel":"email-professional","text":"Can you approve the two drafts by Friday? The client call is Monday.","ref":"nocodb:4f2a","published_at":"2026-01-09T14:30:00.000Z","source":"import","outcome":"approved","context":"Subject: Two drafts, Friday"}
+{"channel":"linkedin","text":"An unknown source label","source":"newsletter"}
+{"channel":"linkedin","text":"An unknown outcome label","outcome":"shipped"}
+{"channel":"linkedin","text":"A context that is not a string","context":42}
+{"channel":"linkedin","published_at":"2026-01-10T09:00:00.000Z"}
+{"text":"A line with no channel","published_at":"2026-01-10T09:00:00.000Z"}
+{"channel":"linkedin","text":"   ","url":"https://whtnxt.com/blank"}
+{"channel":"linkedin","text":"An unparseable date","published_at":"the day before yesterday"}
+not json at all
+
+{"channel":"linkedin","text":"A second good line with no date or ref."}
