@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { hookRuntimeFromEnv, parseHookDeadline, promptRecallEnabled, runHook } from "../../src/hook/prompt-recall-hook.js";
+import { RECALL_QUERY_LOG_CHARS } from "../../src/core/hook/hook-log.js";
 import type { RecallHitInput } from "../../src/core/hook/select.js";
 
 const hits = (...ids: string[]): ReadonlyArray<RecallHitInput> =>
@@ -51,6 +52,30 @@ describe("runHook", () => {
     expect(answered.latencyMs).toBeGreaterThanOrEqual(15);
     expect(timedOut.recallOutcome).toBe("timeout");
     expect(timedOut.latencyMs).toBeUndefined();
+  });
+
+  it("logs the exact recallQuery the recall dep received (T1775b replay fidelity)", async () => {
+    let received = "";
+    await runHook(
+      { prompt: "what did we decide about pgvector sharding", conversationId: "c1" },
+      { mode: "shadow", recall: async (q) => { received = q; return hits("sess_a"); } },
+    );
+    const entry = JSON.parse(readFileSync(join(tmp, "hook-log.jsonl"), "utf8").trim());
+    expect(entry.recallQuery).toBe(received);
+    expect(entry.recallQuery).toContain("pgvector");
+  });
+
+  it("truncates the logged recallQuery to the log budget", async () => {
+    const long = `why does the daemon lag on ${"archive rotation ".repeat(50)}questions`;
+    let received = "";
+    await runHook(
+      { prompt: long, conversationId: "c1" },
+      { mode: "shadow", recall: async (q) => { received = q; return hits("sess_a"); } },
+    );
+    const entry = JSON.parse(readFileSync(join(tmp, "hook-log.jsonl"), "utf8").trim());
+    expect(entry.recallQuery).toHaveLength(RECALL_QUERY_LOG_CHARS);
+    expect(received.length).toBeGreaterThan(RECALL_QUERY_LOG_CHARS);
+    expect(received.startsWith(entry.recallQuery)).toBe(true);
   });
 
   it("shadow mode does not write the memo", async () => {
@@ -109,6 +134,7 @@ describe("runHook", () => {
     expect(called).toBe(false);
     const log = readFileSync(join(tmp, "hook-log.jsonl"), "utf8").trim();
     expect(JSON.parse(log).gate).toBe("generative");
+    expect(JSON.parse(log).recallQuery).toBeUndefined();
   });
 
   it("returns empty and does not throw when recall rejects", async () => {

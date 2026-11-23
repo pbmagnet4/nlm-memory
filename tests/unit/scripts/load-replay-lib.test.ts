@@ -11,7 +11,9 @@ import {
   replayQuery,
   selectWindow,
   type MeasuredRequest,
+  type ReplayRecord,
 } from "../../../scripts/eval/lib/load-replay-lib.js";
+import { RECALL_QUERY_LOG_CHARS } from "../../../src/core/hook/hook-log.js";
 
 const line = (fields: Record<string, unknown>): string => JSON.stringify(fields);
 
@@ -84,6 +86,24 @@ describe("parseHookLogLines", () => {
       line({ ts: "2026-11-01T10:00:00.000Z", promptPreview: "a real prompt about recall", gate: "evaluate" }),
     );
     expect(records[0]!.conversationId).toBe("unknown");
+  });
+
+  it("carries a logged recallQuery and truncates over-long values to the log budget", () => {
+    const kept = parseHookLogLines(
+      line({ ts: "2026-11-01T10:00:00.000Z", promptPreview: "a real prompt", gate: "evaluate", recallQuery: "indexing archives nightly" }),
+    );
+    expect(kept.records[0]!.recallQuery).toBe("indexing archives nightly");
+
+    const truncated = parseHookLogLines(
+      line({ ts: "2026-11-01T10:00:00.000Z", promptPreview: "a real prompt", gate: "evaluate", recallQuery: "a".repeat(600) }),
+    );
+    expect(truncated.records[0]!.recallQuery).toBe("a".repeat(RECALL_QUERY_LOG_CHARS));
+    expect(truncated.records[0]!.recallQuery).toHaveLength(500);
+
+    const empty = parseHookLogLines(
+      line({ ts: "2026-11-01T10:00:00.000Z", promptPreview: "a real prompt", gate: "evaluate", recallQuery: "" }),
+    );
+    expect(empty.records[0]!.recallQuery).toBeUndefined();
   });
 });
 
@@ -167,17 +187,34 @@ describe("percentile (nearest-rank, same definition as slo-metrics p95)", () => 
 });
 
 describe("replayQuery", () => {
-  it("is the hook's own composition: buildRecallQuery then extractRecallQuery", () => {
-    const q = replayQuery("please compare ranking weights for exemplar recall", "conv-1", {});
-    expect(q).not.toBeNull();
-    expect(q).toContain("compare");
-    expect(q).toContain("ranking");
-    expect(q).toContain("recall");
-    expect(q).not.toContain("please");
+  const parsed = (over: Record<string, unknown>): ReplayRecord =>
+    parseHookLogLines(
+      line({ ts: "2026-11-01T10:00:00.000Z", conversationId: "conv-1", promptPreview: "compare ranking weights for exemplar recall", gate: "evaluate", ...over }),
+    ).records[0]!;
+
+  it("prefers the logged recallQuery over the preview rebuild", () => {
+    const res = replayQuery(parsed({ recallQuery: "indexing archives nightly" }), {});
+    expect(res.query).toBe("indexing archives nightly");
+    expect(res.approximate).toBe(false);
   });
 
-  it("returns null for thin prompts the hook would never send", () => {
-    expect(replayQuery("ok thanks", "conv-1", {})).toBeNull();
+  it("falls back to the hook's own composition for older lines, flagged approximate", () => {
+    const res = replayQuery(parsed({}), {});
+    expect(res.approximate).toBe(true);
+    expect(res.query).not.toBeNull();
+    expect(res.query).toContain("compare");
+    expect(res.query).toContain("ranking");
+    expect(res.query).toContain("recall");
+    // Same buildRecallQuery -> extractRecallQuery chain: the stopword "for"
+    // is dropped from the wire query.
+    expect(res.query).toBe("compare ranking weights exemplar recall");
+  });
+
+  it("the fallback stays null for thin prompts the hook would never send", () => {
+    const thin = parseHookLogLines(
+      line({ ts: "2026-11-01T10:00:00.000Z", conversationId: "conv-1", promptPreview: "ok thanks", gate: "evaluate" }),
+    ).records[0]!;
+    expect(replayQuery(thin, {})).toEqual({ query: null, approximate: true });
   });
 });
 
@@ -208,9 +245,11 @@ describe("buildReport", () => {
       mk("unreachable", 1),
       mk("http-error", 5),
     ];
-    const report = buildReport(measured, 2);
+    const report = buildReport(measured, { skipped: 2 });
     expect(report.requests).toBe(10);
     expect(report.skipped).toBe(2);
+    expect(report.approximate).toBe(0);
+    expect(report.noData).toBe(false);
     expect(report.counts).toEqual({ ok: 7, timeout: 1, unreachable: 1, "http-error": 1 });
     expect(report.timeoutRate).toBe(0.1);
     expect(report.failureRate).toBe(0.3);
@@ -247,6 +286,11 @@ describe("buildReport", () => {
     expect(report.latencyMs.max).toBe(20);
   });
 
+  it("carries the approximate count of preview-rebuilt queries", () => {
+    const report = buildReport([ok(10), mk("unreachable", 1)], { approximate: 4 });
+    expect(report.approximate).toBe(4);
+  });
+
   it("omits latency stats when no request succeeded", () => {
     const report = buildReport([mk("timeout", 4000), mk("unreachable", 1)]);
     expect(report.latencyMs).toEqual({ p50: null, p95: null, max: null });
@@ -266,8 +310,9 @@ describe("buildReport", () => {
     expect(report.breaches).toEqual(["recallP95Ms"]);
   });
 
-  it("an empty run measures nothing: zero rates, null latency, no breaches", () => {
-    const report = buildReport([], 3);
+  it("measures nothing: a no-data verdict, not a clean pass", () => {
+    const report = buildReport([], { skipped: 3 });
+    expect(report.noData).toBe(true);
     expect(report.requests).toBe(0);
     expect(report.timeoutRate).toBe(0);
     expect(report.failureRate).toBe(0);

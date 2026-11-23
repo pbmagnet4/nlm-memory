@@ -10,6 +10,13 @@
  *   npm run eval:load-replay -- [--log <path>] [--since <ISO>] [--limit <n>]
  *     [--speed <x>] [--concurrency <n>] [--base-url <url>]
  *
+ * Hook-log lines written by T1775b or later replay the exact query the hook
+ * sent (recallQuery); older lines rebuild it from the 200-char preview and
+ * are counted as `approximate` in the report — approximate replays may see
+ * slightly different recall latencies for long or context-augmented prompts.
+ * A run that selects no records or measures no request exits 2 (`noData`),
+ * never as a silent pass.
+ *
  * All the judgment (filtering, windowing, schedule, percentiles, breaches)
  * is the unit-tested pure lib; this file only reads the log, speaks HTTP and
  * exits.
@@ -190,15 +197,17 @@ async function main(): Promise<void> {
   const offsets = buildSchedule(selected.map((r) => r.tsMs), args.speed);
   const timed: Job[] = [];
   let noQuery = 0;
+  let approximate = 0;
   selected.forEach((rec, i) => {
-    const query = replayQuery(rec.promptPreview, rec.conversationId);
-    if (query === null) {
+    const built = replayQuery(rec);
+    if (built.query === null) {
       noQuery++;
       return;
     }
+    if (built.approximate) approximate++;
     timed.push({
       offsetMs: offsets[i]!,
-      query,
+      query: built.query,
       ...(rec.conversationId !== "unknown" ? { conversationId: rec.conversationId } : {}),
     });
   });
@@ -208,7 +217,7 @@ async function main(): Promise<void> {
   const measured = await runSchedule(timed, args.baseUrl, timeoutMs, args.concurrency);
   const stallsAfter = await fetchStalls(args.baseUrl, timeoutMs);
 
-  const report = buildReport(measured, noQuery);
+  const report = buildReport(measured, { skipped: noQuery, approximate });
   process.stdout.write(
     `${JSON.stringify(
       {
@@ -232,6 +241,13 @@ async function main(): Promise<void> {
       2,
     )}\n`,
   );
+  if (report.noData) {
+    process.stderr.write(
+      `load-replay: NO DATA — requests: 0 (${selected.length} record(s) selected, none measured) — not a pass\n`,
+    );
+    process.exitCode = 2;
+    return;
+  }
   process.exitCode = report.breaches.length > 0 ? 1 : 0;
 }
 

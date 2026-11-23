@@ -38,7 +38,12 @@ export interface HookLogEntry {
   readonly recallOutcome?: "ok" | "timeout" | "unreachable" | "http-error" | "skipped";
   /** Recall-stage wall time of an answered ("ok") recall; the SLO p95 reads it (T1770). */
   readonly latencyMs?: number;
+  /** The exact query string handed to recall, truncated to RECALL_QUERY_LOG_CHARS; absent when recall never ran. Written so eval replays the wire query instead of rebuilding it from the preview (T1775b). */
+  readonly recallQuery?: string;
 }
+
+/** Log budget for the recorded recall query — the wire query's routing data is trivial but the log must stay flat-cost. */
+export const RECALL_QUERY_LOG_CHARS = 500;
 
 function logPath(tenantId: string): string {
   if (tenantId === DEFAULT_TEAM_ID) {

@@ -355,6 +355,7 @@ var package_default = {
 var NLM_VERSION = package_default.version;
 
 // src/core/hook/hook-log.ts
+var RECALL_QUERY_LOG_CHARS = 500;
 function logPath(tenantId) {
   if (tenantId === DEFAULT_TEAM_ID) {
     return process.env["NLM_HOOK_LOG"] ?? tenantStatePath(tenantId, "hook-log.jsonl");
@@ -1006,12 +1007,13 @@ async function runHook(input, deps) {
     return "";
   }
   const deadline = Date.now() + (deps.deadlineMs ?? hookDeadlineMs());
+  const recallQuery = buildRecallQuery({ ...input, prompt: envelope.text });
   let fetched = { hits: [], facts: [], outcome: "timeout" };
   const recallStart = performance.now();
   try {
     fetched = normalizeRecall(
       await withDeadline(
-        deps.recall(buildRecallQuery({ ...input, prompt: envelope.text })),
+        deps.recall(recallQuery),
         deadline - Date.now(),
         { hits: [], facts: [], outcome: "timeout" }
       )
@@ -1046,6 +1048,7 @@ async function runHook(input, deps) {
     wouldInject: selected.map((h) => h.id),
     estTokens,
     mode: deps.mode,
+    recallQuery: recallQuery.slice(0, RECALL_QUERY_LOG_CHARS),
     ...fetched.outcome ? { recallOutcome: fetched.outcome } : {},
     ...fetched.outcome === "ok" ? { latencyMs } : {}
   });

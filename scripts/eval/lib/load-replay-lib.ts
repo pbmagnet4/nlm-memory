@@ -10,6 +10,7 @@
 
 import { buildRecallQuery } from "../../../src/hook/prompt-recall-hook.js";
 import { extractRecallQuery } from "../../../src/core/hook/query-extract.js";
+import { RECALL_QUERY_LOG_CHARS } from "../../../src/core/hook/hook-log.js";
 import { RECALL_LIMIT } from "../../../src/hook/recall-over-http.js";
 
 // ---------------------------------------------------------------------------
@@ -22,6 +23,8 @@ export interface ReplayRecord {
   readonly tsMs: number;
   readonly conversationId: string;
   readonly promptPreview: string;
+  /** The query the hook actually sent, once logged (T1775b); absent on older lines. */
+  readonly recallQuery?: string;
 }
 
 export interface HookLogParse {
@@ -72,6 +75,9 @@ export function parseHookLogLines(raw: string): HookLogParse {
       tsMs: Date.parse(row["ts"]),
       conversationId: typeof row["conversationId"] === "string" ? row["conversationId"] : "unknown",
       promptPreview: row["promptPreview"],
+      ...(typeof row["recallQuery"] === "string" && row["recallQuery"] !== ""
+        ? { recallQuery: (row["recallQuery"] as string).slice(0, RECALL_QUERY_LOG_CHARS) }
+        : {}),
     });
   }
   return { records, malformed, skipped };
@@ -121,18 +127,28 @@ export function buildSchedule(tsMsList: ReadonlyArray<number>, speed: number): n
 // Query and URL (mirrors what the live hook puts on the wire)
 // ---------------------------------------------------------------------------
 
+export interface ReplayQueryResult {
+  readonly query: string | null;
+  /** True when the query was rebuilt from the 200-char preview (pre-T1775b line), not the logged wire query. */
+  readonly approximate: boolean;
+}
+
 /**
- * The hook's own query composition: buildRecallQuery first (identity unless
- * context recall is armed), then the extraction recallOverHttp applies
- * before the GET. Null means the hook would send nothing for this prompt.
+ * The query to replay: the logged recallQuery when present (the hook's real
+ * input), otherwise the hook's own composition over the preview — which the
+ * caller must count as approximate. Both then pass through the extraction
+ * recallOverHttp applies before the GET; null means the hook would send
+ * nothing for this prompt.
  */
 export function replayQuery(
-  promptPreview: string,
-  conversationId: string,
+  record: ReplayRecord,
   env: NodeJS.ProcessEnv = process.env,
-): string | null {
-  const input: { prompt: string; conversationId: string } = { prompt: promptPreview, conversationId };
-  return extractRecallQuery(buildRecallQuery(input, env));
+): ReplayQueryResult {
+  if (record.recallQuery !== undefined) {
+    return { query: extractRecallQuery(record.recallQuery), approximate: false };
+  }
+  const input: { prompt: string; conversationId: string } = { prompt: record.promptPreview, conversationId: record.conversationId };
+  return { query: extractRecallQuery(buildRecallQuery(input, env)), approximate: true };
 }
 
 /** The hook's GET, against a configurable base URL. */
@@ -168,6 +184,10 @@ export interface LoadReport {
   readonly requests: number;
   /** Prompts for which the hook itself would issue no request. */
   readonly skipped: number;
+  /** Queries rebuilt from the 200-char preview because the line predates recallQuery logging. */
+  readonly approximate: number;
+  /** Nothing was measured — no selected record produced a request. Not a pass. */
+  readonly noData: boolean;
   readonly counts: Readonly<Record<Outcome, number>>;
   /**
    * Timeouts over sent requests — the literal definition the daemon's
@@ -200,7 +220,7 @@ export function percentile(samples: ReadonlyArray<number>, q: number): number | 
 
 export function buildReport(
   measured: ReadonlyArray<MeasuredRequest>,
-  skipped = 0,
+  meta: { readonly skipped?: number; readonly approximate?: number } = {},
   targets: {
     readonly timeoutRate: number;
     readonly failureRate: number;
@@ -225,7 +245,9 @@ export function buildReport(
 
   return {
     requests,
-    skipped,
+    skipped: meta.skipped ?? 0,
+    approximate: meta.approximate ?? 0,
+    noData: requests === 0,
     counts,
     timeoutRate,
     failureRate,
