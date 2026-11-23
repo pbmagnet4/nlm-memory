@@ -1,7 +1,8 @@
 # Voice memory (NxtVoice) in NLM: scope
 
-Status: scope draft, 2026-11-23. Not yet a design; a sign-off on this scope
-leads to a design per phase. Work-Id: T2438.
+Status: scope approved with amendments, 2026-11-23, after a critical review
+that checked its claims against main 5ca63b3 (see "Review, 2026-11-23" at the
+end). Not yet a design; each phase gets its own design. Work-Id: T2438.
 
 ## Problem
 
@@ -115,26 +116,33 @@ Ranking weight: published > approved > reviewed import > onboarding.
 
 ```mermaid
 flowchart LR
-  P[Consumer publish pipeline] -->|voice signal: published text| S[/api/signal/]
+  P[Consumer publish pipeline] -->|published text| S[/api/voice/sample/]
   A[Agent in chat] -->|voice_feedback: approved text, before/after| F[MCP tool]
-  T[Session transcripts] -->|classifier marks corrections| I[session ingest]
   X[Exports: Discord, Slack, MBOX, LinkedIn, X] -->|nlm voice import| R[author filter + scrub]
   S --> W[(writing_samples)]
   F --> W
   F --> C[(voice_corrections)]
-  I --> C
   R -->|pending_review| W
 ```
 
-1. **Publish signal (primary).** A new signal kind (`voice`) with outcomes
-   `published | approved | rejected`, plus a best-effort producer,
+1. **Publish intake (primary).** A dedicated endpoint, `POST /api/voice/sample`,
+   with outcomes `published | approved | rejected`, plus a best-effort producer,
    `nlm voice-signal --voice --channel --text-file --url [--draft-id]`, that
    mirrors `nlm code-signal`: loopback POST, a down daemon warns and exits 0.
-2. **Chat feedback.** A `voice_feedback` MCP tool: the agent records the
+   Not a new `SignalKind`: signals are telemetry (required `model`, `repo` and
+   `step`; outcomes `pass | fail | fix | exhausted`; pruned after
+   `NLM_SIGNAL_RETENTION_DAYS`, default 90), and the outcome rollups read every
+   signal of a session (`sqlite-outcome-store.ts`), so voice rows would skew
+   them and put the person's text into telemetry.
+2. **Published backfill (phase 1).** `nlm voice backfill` reads content that is
+   already published, through a reader per source: blog Markdown files, and the
+   content pipeline's records (NocoDB Content rows marked Published and their
+   Social Media rows, which hold the posted body). It lands them as
+   `source = published` with the URL or record ID as `source_ref`. Without it,
+   phase 1 starts with no samples and cannot beat session recall.
+3. **Chat feedback.** A `voice_feedback` MCP tool: the agent records the
    approved final text and each before/after correction while the person is
    talking.
-3. **Session sweep.** Session ingest marks voice corrections the agent didn't
-   record. Dedupe on session plus text hash, so the sweep only fills gaps.
 4. **Bulk import.** `nlm voice import <format> <path> --author-id <id>...`
    with one reader per format. Steps: keep only the person's messages (others
    become `context`), drop low-value messages (acks, bare links), scrub secrets
@@ -179,19 +187,33 @@ gains a voice section.
 
 Each phase is test-first, behind the flag, and independently useful.
 
-1. **Store, publish signal, recall.** Migration, `nlm voice-signal`,
-   `recall_voice` with rules plus published examples. Consumers switch from
-   session recall to `recall_voice`.
-2. **Feedback and metrics.** `voice_feedback`, `voice_corrections`, session
-   sweep, `draft_id` linking, `nlm voice stats`.
+1. **Store, publish intake, backfill, recall.** Migration, `/api/voice/sample`
+   and `nlm voice-signal`, `nlm voice backfill` for already-published content,
+   the rules reader with the NLM-shipped schema, and `recall_voice` with rules
+   plus published examples. First consumers: the email-composer and
+   content-director agents, which recall voice from sessions today.
+2. **Feedback and metrics.** `voice_feedback`, `voice_corrections`, `draft_id`
+   linking, `nlm voice stats`.
 3. **Importers.** Readers per format, author filter, scrub, review API.
 4. **Learning.** Rule-change proposals and eval-case export.
 5. **UI.** The desktop panel (outside this repo) over the HTTP API.
 
+## Deferred
+
+- **Session sweep.** Marking corrections during session ingest means changing
+  the core classifier's output schema (local model, schema-validated), which
+  every session ingest depends on. `voice_feedback` and the publish intake
+  cover the signal; revisit only if measured gaps show missed corrections.
+
 ## Open questions
 
-1. **Rules location:** `NLM_VOICE_RULES_DIR` with what default, and is the
-   JSON schema shipped by NLM or by the consumer?
+1. **Rules location:** NLM ships and validates the JSON schema (it reads the
+   files, so it owns the contract); `NLM_VOICE_RULES_DIR` has no default, and
+   unset means rules-only recall returns no rules. Still open: which repository
+   holds Edward's rules. Today his voice guidance is prose
+   (`.claude/context/edward-voice-guide.md` and `.claude/rules/nocodb-voice.md`
+   in Whtnxt Agent) plus checks in nxtsocial and nxtjobs; phase 1 converts the
+   guide to the YAML format, and the existing checks read it later.
 2. **Draft-to-publish link:** can every publisher carry `draft_id`? Without it,
    publish rate still works, but revisions before approval only covers drafts
    that went through `voice_feedback`.
@@ -199,5 +221,21 @@ Each phase is test-first, behind the flag, and independently useful.
    writing? Decide on an eval, not taste.
 4. **Team mode:** in hosted or team installs, does a brand voice belong to the
    team tenant, and who may approve rule changes?
-5. **Signal shape:** extend `SignalKind` with `voice`, or a separate endpoint?
-   Signals today are `gate | eval | review | test` with code outcomes.
+5. ~~**Signal shape**~~: resolved, a separate endpoint (see Intake 1).
+
+## Review, 2026-11-23
+
+Claims checked against main 5ca63b3 before approval.
+
+| Claim | Result |
+|---|---|
+| An outcome-labelled example lane exists (`code_exemplars`, `recall_code`) | True: migrations 021/023/024, `recall_code` in `src/mcp/server.ts` |
+| Feature flag pattern like code exemplars | True: `NLM_CODE_EXEMPLARS_ENABLED` gates capture and backfill |
+| Postgres mirror under `migrations/pg` | True |
+| Tenancy via `install_scope` | True: signals and code exemplars carry it |
+| `nlm code-signal` is the producer pattern | True: `src/cli/nlm.ts` (`code-signal`), loopback POST to `/api/signal`, exemplar capture in `src/http/app.ts` |
+| Recall fits a response budget | True: `maxChars` (2,000-20,000, default 8,000) on recall tools |
+| `docs/data-boundary.md` exists | True |
+| Voice samples can ride `/api/signal` as a new kind | **False in practice.** Required telemetry fields, a code outcome vocabulary, 90-day pruning, and outcome rollups that read every signal of a session. Amended to a dedicated endpoint |
+| Phase 1 alone gives agents examples | **Not without a backfill:** samples only arrive as new content publishes. Amended: published backfill in phase 1 |
+| Session ingest can mark corrections | Needs a core classifier schema change. Deferred |
