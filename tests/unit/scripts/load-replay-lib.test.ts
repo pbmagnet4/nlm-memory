@@ -201,7 +201,7 @@ const ok = (ms: number): MeasuredRequest => ({ outcome: "ok", ms });
 const mk = (outcome: MeasuredRequest["outcome"], ms: number): MeasuredRequest => ({ outcome, ms });
 
 describe("buildReport", () => {
-  it("counts outcomes and derives timeoutRate over measured requests (skipped excluded)", () => {
+  it("counts outcomes and derives both rates over measured requests (skipped excluded)", () => {
     const measured: MeasuredRequest[] = [
       ok(10), ok(20), ok(30), ok(40), ok(50), ok(60), ok(70),
       mk("timeout", 4000),
@@ -212,15 +212,27 @@ describe("buildReport", () => {
     expect(report.requests).toBe(10);
     expect(report.skipped).toBe(2);
     expect(report.counts).toEqual({ ok: 7, timeout: 1, unreachable: 1, "http-error": 1 });
-    expect(report.timeoutRate).toBe(0.3);
+    expect(report.timeoutRate).toBe(0.1);
+    expect(report.failureRate).toBe(0.3);
   });
 
-  it("timeoutRate counts every non-ok outcome against the 2% budget", () => {
-    // A replay against a dead port returns every request `unreachable`; the
-    // acceptance run must exit 1, so unreachable must breach (see brief T1775b).
+  it("a run with only unreachable requests breaches failureRate, not timeoutRate", () => {
+    // timeoutRate stays the daemon's literal definition so the two numbers
+    // compare; the all-unreachable acceptance run exits 1 via failureRate.
     const report = buildReport(Array.from({ length: 8 }, () => mk("unreachable", 1)));
-    expect(report.timeoutRate).toBe(1);
-    expect(report.breaches).toContain("timeoutRate");
+    expect(report.timeoutRate).toBe(0);
+    expect(report.failureRate).toBe(1);
+    expect(report.breaches).toEqual(["failureRate"]);
+  });
+
+  it("a run with timeouts breaches both timeoutRate and failureRate", () => {
+    const report = buildReport([
+      ...Array.from({ length: 5 }, () => ok(50)),
+      ...Array.from({ length: 5 }, () => mk("timeout", 4000)),
+    ]);
+    expect(report.timeoutRate).toBe(0.5);
+    expect(report.failureRate).toBe(0.5);
+    expect(report.breaches).toEqual(["timeoutRate", "failureRate"]);
   });
 
   it("computes p50/p95/max over ok requests only", () => {
@@ -243,7 +255,7 @@ describe("buildReport", () => {
   it("reports no breaches just inside the thresholds (strict >)", () => {
     const measured: MeasuredRequest[] = [
       ...Array.from({ length: 50 }, () => ok(1000)), // p95 lands exactly on the target, not above it
-      mk("timeout", 4000), // 1/51 ≈ 1.96% ≤ 2%
+      mk("timeout", 4000), // 1/51 ≈ 1.96% ≤ 2% on both rate targets
     ];
     expect(buildReport(measured).breaches).toEqual([]);
   });
@@ -258,11 +270,12 @@ describe("buildReport", () => {
     const report = buildReport([], 3);
     expect(report.requests).toBe(0);
     expect(report.timeoutRate).toBe(0);
+    expect(report.failureRate).toBe(0);
     expect(report.latencyMs).toEqual({ p50: null, p95: null, max: null });
     expect(report.breaches).toEqual([]);
   });
 
   it("exposes the shipped targets", () => {
-    expect(LOAD_TARGETS).toEqual({ timeoutRate: 0.02, recallP95Ms: 1000 });
+    expect(LOAD_TARGETS).toEqual({ timeoutRate: 0.02, failureRate: 0.02, recallP95Ms: 1000 });
   });
 });

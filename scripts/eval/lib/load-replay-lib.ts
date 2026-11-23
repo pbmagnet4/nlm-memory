@@ -159,6 +159,7 @@ export interface MeasuredRequest {
 /** Pre-registered recall SLO targets (T1770). */
 export const LOAD_TARGETS = {
   timeoutRate: 0.02,
+  failureRate: 0.02,
   recallP95Ms: 1000,
 } as const;
 
@@ -169,12 +170,17 @@ export interface LoadReport {
   readonly skipped: number;
   readonly counts: Readonly<Record<Outcome, number>>;
   /**
-   * Share of sent requests that did not return an ok recall — timeout,
-   * unreachable and http-error all consume the same 2 % budget, because the
-   * replay verdict must fail on a daemon that refuses or errors the load,
-   * not only on one that is merely slow.
+   * Timeouts over sent requests — the literal definition the daemon's
+   * /api/health/slo uses, so replay and live numbers compare directly.
    */
   readonly timeoutRate: number;
+  /**
+   * Every request that did not return an ok recall (timeout, unreachable or
+   * http-error) over sent requests — the replay's own availability budget.
+   * A daemon that refuses or errors the load fails here even though it
+   * never times out, which is what the timeouts-only timeoutRate cannot see.
+   */
+  readonly failureRate: number;
   /** Latency stats over ok requests only; null fields when none succeeded. */
   readonly latencyMs: {
     readonly p50: number | null;
@@ -195,12 +201,17 @@ export function percentile(samples: ReadonlyArray<number>, q: number): number | 
 export function buildReport(
   measured: ReadonlyArray<MeasuredRequest>,
   skipped = 0,
-  targets: { readonly timeoutRate: number; readonly recallP95Ms: number } = LOAD_TARGETS,
+  targets: {
+    readonly timeoutRate: number;
+    readonly failureRate: number;
+    readonly recallP95Ms: number;
+  } = LOAD_TARGETS,
 ): LoadReport {
   const counts: Record<Outcome, number> = { ok: 0, timeout: 0, unreachable: 0, "http-error": 0 };
   for (const m of measured) counts[m.outcome]++;
   const requests = measured.length;
-  const timeoutRate = requests === 0 ? 0 : (requests - counts.ok) / requests;
+  const timeoutRate = requests === 0 ? 0 : counts.timeout / requests;
+  const failureRate = requests === 0 ? 0 : (requests - counts.ok) / requests;
 
   const okLatencies = measured.filter((m) => m.outcome === "ok").map((m) => m.ms);
   const p50 = percentile(okLatencies, 0.5);
@@ -209,7 +220,16 @@ export function buildReport(
 
   const breaches: string[] = [];
   if (timeoutRate > targets.timeoutRate) breaches.push("timeoutRate");
+  if (failureRate > targets.failureRate) breaches.push("failureRate");
   if (p95 !== null && p95 > targets.recallP95Ms) breaches.push("recallP95Ms");
 
-  return { requests, skipped, counts, timeoutRate, latencyMs: { p50, p95, max }, breaches };
+  return {
+    requests,
+    skipped,
+    counts,
+    timeoutRate,
+    failureRate,
+    latencyMs: { p50, p95, max },
+    breaches,
+  };
 }
