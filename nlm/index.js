@@ -262,6 +262,7 @@ var package_default = {
     "eval:signals": "tsx scripts/eval/signals-eval.ts",
     "eval:classifier": "tsx scripts/eval/classifier-eval.ts",
     "eval:fact-recall": "tsx scripts/eval/fact-recall-eval.ts",
+    "eval:dream": "tsx scripts/eval/dream-eval.ts",
     "eval:recall-impact-replay": "tsx scripts/eval/recall-impact-replay.ts",
     "eval:code-exemplar": "tsx scripts/eval/code-exemplar-eval.ts",
     "eval:reranker": "tsx scripts/eval/reranker-ablation.ts",
@@ -274,6 +275,11 @@ var package_default = {
     "eval:fact-judge-replay": "tsx scripts/eval/fact-judge-replay.ts",
     "eval:fact-judge-label": "tsx scripts/eval/fact-judge-label.ts",
     "eval:fact-class-replay": "tsx scripts/eval/fact-class-replay.ts",
+    "eval:property-holdout-freeze": "tsx scripts/eval/property-holdout-freeze.ts",
+    "eval:property-holdout-draw": "tsx scripts/eval/property-holdout-draw.ts",
+    "eval:property-holdout-label": "tsx scripts/eval/property-holdout-label.ts",
+    "eval:property-holdout-l2": "tsx scripts/eval/property-holdout-l2.ts",
+    "eval:property-holdout-score": "tsx scripts/eval/property-holdout-score.ts",
     "demo:memory": "tsx scripts/demo/project-memory.ts"
   },
   dependencies: {
@@ -698,6 +704,118 @@ function recordSurfaced(tenantId, conversationId, ids) {
   }
 }
 
+// src/core/recall/tokenize.ts
+var TOKEN_PATTERN = /[A-Za-z0-9][A-Za-z0-9_.-]*/g;
+function tokenize(text) {
+  if (!text) return [];
+  const matches = text.match(TOKEN_PATTERN);
+  if (!matches) return [];
+  return matches.map((t) => t.toLowerCase());
+}
+
+// src/core/hook/hubness.ts
+var HUB_WINDOW_DAYS = 14;
+var HUB_MIN_PROMPTS = 2;
+var MIN_TERM_LEN = 3;
+function contentTerms(text) {
+  const out = /* @__PURE__ */ new Set();
+  for (const t of tokenize(text)) {
+    if (t.length >= MIN_TERM_LEN && !STOPWORDS.has(t)) out.add(t);
+  }
+  return out;
+}
+function hubPenalty(score, injections, alpha) {
+  if (!(alpha > 0) || !(injections >= HUB_MIN_PROMPTS)) return score;
+  return score / (1 + alpha * Math.log1p(injections));
+}
+function applyHubness(hits, params) {
+  const penalize = params.alpha > 0;
+  const guard = params.lexicalFloor > 0;
+  if (!penalize && !guard) return hits;
+  const promptTerms = guard ? contentTerms(params.prompt) : /* @__PURE__ */ new Set();
+  const out = [];
+  for (const h of hits) {
+    if (guard && promptTerms.size > 0 && h.matchScore < params.lexicalFloor) {
+      const hitTerms = contentTerms(`${h.label}
+${h.summary ?? ""}`);
+      let shared = 0;
+      for (const t of hitTerms) {
+        if (promptTerms.has(t)) {
+          shared++;
+          break;
+        }
+      }
+      if (shared === 0) continue;
+    }
+    out.push(
+      penalize ? { ...h, matchScore: hubPenalty(h.matchScore, params.injectionCounts.get(h.id) ?? 0, params.alpha) } : h
+    );
+  }
+  out.sort((a, b) => b.matchScore - a.matchScore);
+  return out;
+}
+
+// src/core/recall/hook-recall-log.ts
+import { openSync as openSync2, readSync as readSync2, closeSync as closeSync2, fstatSync as fstatSync2 } from "node:fs";
+function hookLogPath(tenantId) {
+  if (tenantId === DEFAULT_TEAM_ID) {
+    return process.env["NLM_HOOK_LOG"] ?? tenantStatePath(tenantId, "hook-log.jsonl");
+  }
+  return tenantStatePath(tenantId, "hook-log.jsonl");
+}
+function readTailText(logPath2, maxBytes) {
+  let fd = null;
+  try {
+    fd = openSync2(logPath2, "r");
+    const size = fstatSync2(fd).size;
+    const cap = Math.min(size, maxBytes);
+    const from = size - cap;
+    const buf = Buffer.allocUnsafe(cap);
+    const read = readSync2(fd, buf, 0, cap, from);
+    const text = buf.toString("utf8", 0, read);
+    if (from === 0) return text;
+    const firstNl = text.indexOf("\n");
+    return firstNl === -1 ? "" : text.slice(firstNl + 1);
+  } catch {
+    return "";
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync2(fd);
+      } catch {
+      }
+    }
+  }
+}
+function countRecentInjectionPrompts(days, logPath2 = hookLogPath(DEFAULT_TEAM_ID), maxBytes = 4 * 1024 * 1024) {
+  const previews = /* @__PURE__ */ new Map();
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1e3;
+  for (const line of readTailText(logPath2, maxBytes).split("\n")) {
+    if (!line.trim()) continue;
+    let obj;
+    try {
+      obj = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(obj["wouldInject"])) continue;
+    if (typeof obj["ts"] !== "string" || Date.parse(obj["ts"]) < cutoff) continue;
+    const preview = typeof obj["promptPreview"] === "string" ? obj["promptPreview"].slice(0, 80) : "";
+    for (const id of obj["wouldInject"]) {
+      if (typeof id !== "string") continue;
+      let set = previews.get(id);
+      if (!set) {
+        set = /* @__PURE__ */ new Set();
+        previews.set(id, set);
+      }
+      set.add(preview);
+    }
+  }
+  const counts = /* @__PURE__ */ new Map();
+  for (const [id, set] of previews) counts.set(id, set.size);
+  return counts;
+}
+
 // src/core/hook/pointer-block.ts
 function truncateSummary(s, max = 200) {
   if (s.length <= max) return s;
@@ -800,6 +918,22 @@ function parseRelativeFloor(raw, fallback) {
 // src/hook/prompt-recall-hook.ts
 var scoreThreshold = () => parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR"]);
 var relativeFloor = () => parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
+var DEFAULT_HUB_DAMP = true;
+var DEFAULT_HUB_ALPHA = 0.5;
+var DEFAULT_LEX_FLOOR = 0;
+function parseHubDampEnabled(raw, fallback) {
+  const s = raw?.trim().toLowerCase();
+  if (s === void 0 || s === "") return fallback;
+  return s !== "off" && s !== "0";
+}
+function parseHubNumber(raw, fallback) {
+  if (raw === void 0 || raw.trim() === "") return fallback;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+var hubDampEnabled = () => parseHubDampEnabled(process.env["NLM_HOOK_HUB_DAMP"], DEFAULT_HUB_DAMP);
+var hubAlpha = () => parseHubNumber(process.env["NLM_HOOK_HUB_ALPHA"], DEFAULT_HUB_ALPHA);
+var hubLexicalFloor = () => parseHubNumber(process.env["NLM_HOOK_LEX_FLOOR"], DEFAULT_LEX_FLOOR);
 var PER_FIRE_CAP = 3;
 var PER_CONVERSATION_CAP = 10;
 var PROMPT_PREVIEW_CHARS = 200;
@@ -862,6 +996,7 @@ async function runHook(input, deps) {
   }
   const deadline = Date.now() + (deps.deadlineMs ?? hookDeadlineMs());
   let fetched = { hits: [], facts: [], outcome: "timeout" };
+  const recallStart = performance.now();
   try {
     fetched = normalizeRecall(
       await withDeadline(
@@ -873,7 +1008,13 @@ async function runHook(input, deps) {
   } catch {
     fetched = { hits: [], facts: [], outcome: "unreachable" };
   }
-  const hits = fetched.hits;
+  const latencyMs = Math.round(performance.now() - recallStart);
+  const hits = hubDampEnabled() ? applyHubness(fetched.hits, {
+    prompt: input.prompt,
+    injectionCounts: deps.injectionCounts ?? countRecentInjectionPrompts(HUB_WINDOW_DAYS),
+    alpha: hubAlpha(),
+    lexicalFloor: hubLexicalFloor()
+  }) : fetched.hits;
   const surfaced = loadSurfaced(DEFAULT_TEAM_ID, input.conversationId);
   const selected = selectHits({
     hits,
@@ -894,7 +1035,8 @@ async function runHook(input, deps) {
     wouldInject: selected.map((h) => h.id),
     estTokens,
     mode: deps.mode,
-    ...fetched.outcome ? { recallOutcome: fetched.outcome } : {}
+    ...fetched.outcome ? { recallOutcome: fetched.outcome } : {},
+    ...fetched.outcome === "ok" ? { latencyMs } : {}
   });
   if (deps.mode === "live" && selected.length > 0) {
     recordSurfaced(DEFAULT_TEAM_ID, input.conversationId, selected.map((h) => h.id));

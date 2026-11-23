@@ -18,7 +18,7 @@
  * which reads Whtnxt Hermes WebUI session JSON files from ~/.hermes/sessions/.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -148,6 +148,8 @@ export class HermesAgentAdapter implements TranscriptAdapter {
 
   private readonly dbPath: string;
   private readonly excludeSources: ReadonlyArray<string>;
+  /** Every session's change marker from one query, reused until the DB or its WAL changes (T1770). */
+  private statSnapshot: { readonly signature: string; readonly stats: ReadonlyMap<string, SourceStat> } | null = null;
 
   constructor(opts: HermesAgentAdapterOptions = {}) {
     this.dbPath = opts.dbPath ?? defaultDbPath();
@@ -211,22 +213,34 @@ export class HermesAgentAdapter implements TranscriptAdapter {
     return sep === -1 ? source : source.slice(sep + 2);
   }
 
+  /**
+   * Called once per session by scanOnce and the ingest-lag pass. It used to open
+   * the DB per call: ~900ms of synchronous opens per pass over the 30 synced
+   * profile DBs (2,100 sessions). Now one grouped query per DB change.
+   */
   stat(source: string): SourceStat | null {
     if (!existsSync(this.dbPath)) return null;
+    return this.sessionStats().get(this.sessionIdOf(source)) ?? null;
+  }
+
+  private sessionStats(): ReadonlyMap<string, SourceStat> {
+    const signature = `${fileSignature(this.dbPath)}|${fileSignature(`${this.dbPath}-wal`)}`;
+    if (this.statSnapshot?.signature === signature) return this.statSnapshot.stats;
     let db: Database.Database | undefined;
     try {
       db = new Database(this.dbPath, { readonly: true });
-      const row = db
-        .prepare<[string], { last: number | null; n: number; started: number | null }>(
-          `SELECT MAX(m.timestamp) AS last, COUNT(m.id) AS n, s.started_at AS started
+      const rows = db
+        .prepare<[], { id: string; last: number | null; n: number; started: number | null }>(
+          `SELECT s.id AS id, MAX(m.timestamp) AS last, COUNT(m.id) AS n, s.started_at AS started
            FROM sessions s LEFT JOIN messages m ON m.session_id = s.id
-           WHERE s.id = ? GROUP BY s.id`,
+           GROUP BY s.id`,
         )
-        .get(this.sessionIdOf(source));
-      if (!row) return null;
+        .all();
       // Timestamps are Unix seconds. The message count is the change marker:
       // it only moves when the session gains messages.
-      return { mtimeMs: (row.last ?? row.started ?? 0) * 1000, size: row.n };
+      const stats = new Map(rows.map((r) => [r.id, { mtimeMs: (r.last ?? r.started ?? 0) * 1000, size: r.n }]));
+      this.statSnapshot = { signature, stats };
+      return stats;
     } finally {
       db?.close();
     }
@@ -283,5 +297,15 @@ export class HermesAgentAdapter implements TranscriptAdapter {
     } finally {
       db?.close();
     }
+  }
+}
+
+/** Nanosecond mtime and size, or "-" when the file is absent (no WAL yet). */
+function fileSignature(path: string): string {
+  try {
+    const st = statSync(path, { bigint: true });
+    return `${st.mtimeNs}:${st.size}`;
+  } catch {
+    return "-";
   }
 }

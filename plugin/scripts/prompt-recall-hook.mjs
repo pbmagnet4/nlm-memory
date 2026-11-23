@@ -287,6 +287,7 @@ var package_default = {
     "eval:signals": "tsx scripts/eval/signals-eval.ts",
     "eval:classifier": "tsx scripts/eval/classifier-eval.ts",
     "eval:fact-recall": "tsx scripts/eval/fact-recall-eval.ts",
+    "eval:dream": "tsx scripts/eval/dream-eval.ts",
     "eval:recall-impact-replay": "tsx scripts/eval/recall-impact-replay.ts",
     "eval:code-exemplar": "tsx scripts/eval/code-exemplar-eval.ts",
     "eval:reranker": "tsx scripts/eval/reranker-ablation.ts",
@@ -299,6 +300,11 @@ var package_default = {
     "eval:fact-judge-replay": "tsx scripts/eval/fact-judge-replay.ts",
     "eval:fact-judge-label": "tsx scripts/eval/fact-judge-label.ts",
     "eval:fact-class-replay": "tsx scripts/eval/fact-class-replay.ts",
+    "eval:property-holdout-freeze": "tsx scripts/eval/property-holdout-freeze.ts",
+    "eval:property-holdout-draw": "tsx scripts/eval/property-holdout-draw.ts",
+    "eval:property-holdout-label": "tsx scripts/eval/property-holdout-label.ts",
+    "eval:property-holdout-l2": "tsx scripts/eval/property-holdout-l2.ts",
+    "eval:property-holdout-score": "tsx scripts/eval/property-holdout-score.ts",
     "demo:memory": "tsx scripts/demo/project-memory.ts"
   },
   dependencies: {
@@ -397,139 +403,13 @@ function recordSurfaced(tenantId, conversationId, ids) {
   }
 }
 
-// src/core/hook/pointer-block.ts
-function truncateSummary(s, max = 200) {
-  if (s.length <= max) return s;
-  const window = s.slice(0, max);
-  const last = window[window.length - 1];
-  if ((last === "." || last === "!" || last === "?") && window.length - 1 >= 60) {
-    return window;
-  }
-  for (let i = window.length - 2; i >= 60; i--) {
-    const c = window[i];
-    if ((c === "." || c === "!" || c === "?") && window[i + 1] === " ") {
-      return s.slice(0, i + 1);
-    }
-  }
-  for (let i = window.length - 1; i >= 60; i--) {
-    if (window[i] === " ") {
-      return s.slice(0, i) + " ...";
-    }
-  }
-  return window + " ...";
-}
-function formatPointerBlock(hits, facts = [], exemplars = [], concepts = []) {
-  if (hits.length === 0 && facts.length === 0 && exemplars.length === 0 && concepts.length === 0) return "";
-  const out = [];
-  if (hits.length > 0) {
-    out.push("## Possibly-relevant prior sessions (nlm-memory)");
-    for (const h of hits) {
-      const datePart = h.startedAt.slice(0, 10);
-      if (h.summary) {
-        out.push(`- ${h.id} \xB7 ${h.label} (${datePart}) \u2014 ${truncateSummary(h.summary)}`);
-      } else {
-        out.push(`- ${h.id} \xB7 ${h.label} (${datePart})`);
-      }
-    }
-  }
-  if (facts.length > 0) {
-    if (out.length > 0) out.push("");
-    out.push("## Known facts about top entities");
-    for (const f of facts) {
-      const tag = f.corroborationCount > 1 ? ` [${f.corroborationCount} sessions]` : "";
-      out.push(`- ${f.property ? `[${f.property}] ` : ""}${f.subject} ${f.predicate}: ${f.value}${tag}`);
-    }
-  }
-  if (exemplars.length > 0) {
-    if (out.length > 0) out.push("");
-    out.push("## Related code exemplars (nlm-memory)");
-    for (const e of exemplars) {
-      const langPart = e.lang ? `${e.lang} \xB7 ` : "";
-      out.push(`- [${e.outcome}] ${langPart}${e.repo} - ${truncateSummary(e.taskContext)}`);
-    }
-  }
-  if (concepts.length > 0) {
-    if (out.length > 0) out.push("");
-    out.push("## Learning state (nlm-memory)");
-    for (const c of concepts) {
-      const n = c.attemptCount === 1 ? "1 attempt" : `${c.attemptCount} attempts`;
-      out.push(`- [${c.status}] ${c.concept} (${n})`);
-    }
-    const nextSteps = [...new Set(concepts.map((c) => c.nextStep).filter((s) => !!s))].slice(0, 2);
-    for (const next of nextSteps) {
-      out.push(`Next: ${truncateSummary(next, 120)}`);
-    }
-  }
-  const tools = exemplars.length > 0 ? "NLM tools: recall_context (compact facts and evidence), get_session (targeted source context), recall_sessions (session search), recall_facts (structured lookup), get_fact_history (how a decision evolved), recall_code (pull the full code for a related exemplar), learner_summary (concept mastery + next step)." : "NLM tools: recall_context (compact facts and evidence), get_session (targeted source context), recall_sessions (session search), recall_facts (structured lookup), get_fact_history (how a decision evolved), learner_summary (concept mastery + next step).";
-  out.push(tools);
-  return out.join("\n");
-}
-
-// src/core/hook/select.ts
-function medianScore(hits) {
-  if (hits.length === 0) return 0;
-  const sorted = hits.map((h) => h.matchScore).sort((a, b) => a - b);
-  return sorted[Math.floor(sorted.length / 2)] ?? 0;
-}
-function selectHits(params) {
-  const { hits, surfaced, scoreThreshold: scoreThreshold2, perFireCap, perConversationCap, relativeFloor: relativeFloor2 = 0 } = params;
-  const relCut = relativeFloor2 > 0 ? relativeFloor2 * medianScore(hits) : 0;
-  const eligible = hits.filter(
-    (h) => h.matchScore >= scoreThreshold2 && h.matchScore >= relCut && !surfaced.has(h.id)
-  );
-  const budget = Math.max(0, perConversationCap - surfaced.size);
-  const limit = Math.min(perFireCap, budget);
-  return eligible.slice(0, limit);
-}
-
-// src/llm/env-autoload.ts
-import { readFileSync as readFileSync2, existsSync as existsSync3 } from "node:fs";
-import { homedir as homedir2 } from "node:os";
-import { resolve } from "node:path";
-var DEFAULT_SEARCH_PATHS = [
-  "~/.nlm/.env",
-  "./.env",
-  "../.env",
-  "../../.env"
-];
-function expandHome(p) {
-  if (p.startsWith("~/")) return resolve(homedir2(), p.slice(2));
-  return p;
-}
-function autoloadEnv(extraPaths = []) {
-  const loaded = [];
-  const paths = [...DEFAULT_SEARCH_PATHS, ...extraPaths];
-  for (const raw of paths) {
-    const path = expandHome(raw);
-    if (!existsSync3(path)) continue;
-    try {
-      const content = readFileSync2(path, "utf8");
-      for (const line of content.split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) continue;
-        const eq = trimmed.indexOf("=");
-        const key = trimmed.slice(0, eq).trim();
-        let value = trimmed.slice(eq + 1).trim();
-        if (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'")) {
-          value = value.slice(1, -1);
-        }
-        if (key && process.env[key] === void 0) {
-          process.env[key] = value;
-        }
-      }
-      loaded.push(path);
-    } catch {
-      continue;
-    }
-  }
-  return loaded;
-}
-
-// src/hook/hook-auth.ts
-function hookAuthHeaders(extra = {}) {
-  const token = process.env["NLM_MCP_TOKEN"];
-  if (!token) return { ...extra };
-  return { ...extra, authorization: `Bearer ${token}` };
+// src/core/recall/tokenize.ts
+var TOKEN_PATTERN = /[A-Za-z0-9][A-Za-z0-9_.-]*/g;
+function tokenize(text) {
+  if (!text) return [];
+  const matches = text.match(TOKEN_PATTERN);
+  if (!matches) return [];
+  return matches.map((t) => t.toLowerCase());
 }
 
 // src/core/hook/query-extract.ts
@@ -674,6 +554,244 @@ function extractRecallQuery(prompt) {
   return contentWords.join(" ");
 }
 
+// src/core/hook/hubness.ts
+var HUB_WINDOW_DAYS = 14;
+var HUB_MIN_PROMPTS = 2;
+var MIN_TERM_LEN = 3;
+function contentTerms(text) {
+  const out = /* @__PURE__ */ new Set();
+  for (const t of tokenize(text)) {
+    if (t.length >= MIN_TERM_LEN && !STOPWORDS2.has(t)) out.add(t);
+  }
+  return out;
+}
+function hubPenalty(score, injections, alpha) {
+  if (!(alpha > 0) || !(injections >= HUB_MIN_PROMPTS)) return score;
+  return score / (1 + alpha * Math.log1p(injections));
+}
+function applyHubness(hits, params) {
+  const penalize = params.alpha > 0;
+  const guard = params.lexicalFloor > 0;
+  if (!penalize && !guard) return hits;
+  const promptTerms = guard ? contentTerms(params.prompt) : /* @__PURE__ */ new Set();
+  const out = [];
+  for (const h of hits) {
+    if (guard && promptTerms.size > 0 && h.matchScore < params.lexicalFloor) {
+      const hitTerms = contentTerms(`${h.label}
+${h.summary ?? ""}`);
+      let shared = 0;
+      for (const t of hitTerms) {
+        if (promptTerms.has(t)) {
+          shared++;
+          break;
+        }
+      }
+      if (shared === 0) continue;
+    }
+    out.push(
+      penalize ? { ...h, matchScore: hubPenalty(h.matchScore, params.injectionCounts.get(h.id) ?? 0, params.alpha) } : h
+    );
+  }
+  out.sort((a, b) => b.matchScore - a.matchScore);
+  return out;
+}
+
+// src/core/recall/hook-recall-log.ts
+import { openSync as openSync2, readSync as readSync2, closeSync as closeSync2, fstatSync as fstatSync2 } from "node:fs";
+function hookLogPath(tenantId) {
+  if (tenantId === DEFAULT_TEAM_ID) {
+    return process.env["NLM_HOOK_LOG"] ?? tenantStatePath(tenantId, "hook-log.jsonl");
+  }
+  return tenantStatePath(tenantId, "hook-log.jsonl");
+}
+function readTailText(logPath2, maxBytes) {
+  let fd = null;
+  try {
+    fd = openSync2(logPath2, "r");
+    const size = fstatSync2(fd).size;
+    const cap = Math.min(size, maxBytes);
+    const from = size - cap;
+    const buf = Buffer.allocUnsafe(cap);
+    const read = readSync2(fd, buf, 0, cap, from);
+    const text = buf.toString("utf8", 0, read);
+    if (from === 0) return text;
+    const firstNl = text.indexOf("\n");
+    return firstNl === -1 ? "" : text.slice(firstNl + 1);
+  } catch {
+    return "";
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync2(fd);
+      } catch {
+      }
+    }
+  }
+}
+function countRecentInjectionPrompts(days, logPath2 = hookLogPath(DEFAULT_TEAM_ID), maxBytes = 4 * 1024 * 1024) {
+  const previews = /* @__PURE__ */ new Map();
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1e3;
+  for (const line of readTailText(logPath2, maxBytes).split("\n")) {
+    if (!line.trim()) continue;
+    let obj;
+    try {
+      obj = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(obj["wouldInject"])) continue;
+    if (typeof obj["ts"] !== "string" || Date.parse(obj["ts"]) < cutoff) continue;
+    const preview = typeof obj["promptPreview"] === "string" ? obj["promptPreview"].slice(0, 80) : "";
+    for (const id of obj["wouldInject"]) {
+      if (typeof id !== "string") continue;
+      let set = previews.get(id);
+      if (!set) {
+        set = /* @__PURE__ */ new Set();
+        previews.set(id, set);
+      }
+      set.add(preview);
+    }
+  }
+  const counts = /* @__PURE__ */ new Map();
+  for (const [id, set] of previews) counts.set(id, set.size);
+  return counts;
+}
+
+// src/core/hook/pointer-block.ts
+function truncateSummary(s, max = 200) {
+  if (s.length <= max) return s;
+  const window = s.slice(0, max);
+  const last = window[window.length - 1];
+  if ((last === "." || last === "!" || last === "?") && window.length - 1 >= 60) {
+    return window;
+  }
+  for (let i = window.length - 2; i >= 60; i--) {
+    const c = window[i];
+    if ((c === "." || c === "!" || c === "?") && window[i + 1] === " ") {
+      return s.slice(0, i + 1);
+    }
+  }
+  for (let i = window.length - 1; i >= 60; i--) {
+    if (window[i] === " ") {
+      return s.slice(0, i) + " ...";
+    }
+  }
+  return window + " ...";
+}
+function formatPointerBlock(hits, facts = [], exemplars = [], concepts = []) {
+  if (hits.length === 0 && facts.length === 0 && exemplars.length === 0 && concepts.length === 0) return "";
+  const out = [];
+  if (hits.length > 0) {
+    out.push("## Possibly-relevant prior sessions (nlm-memory)");
+    for (const h of hits) {
+      const datePart = h.startedAt.slice(0, 10);
+      if (h.summary) {
+        out.push(`- ${h.id} \xB7 ${h.label} (${datePart}) \u2014 ${truncateSummary(h.summary)}`);
+      } else {
+        out.push(`- ${h.id} \xB7 ${h.label} (${datePart})`);
+      }
+    }
+  }
+  if (facts.length > 0) {
+    if (out.length > 0) out.push("");
+    out.push("## Known facts about top entities");
+    for (const f of facts) {
+      const tag = f.corroborationCount > 1 ? ` [${f.corroborationCount} sessions]` : "";
+      out.push(`- ${f.property ? `[${f.property}] ` : ""}${f.subject} ${f.predicate}: ${f.value}${tag}`);
+    }
+  }
+  if (exemplars.length > 0) {
+    if (out.length > 0) out.push("");
+    out.push("## Related code exemplars (nlm-memory)");
+    for (const e of exemplars) {
+      const langPart = e.lang ? `${e.lang} \xB7 ` : "";
+      out.push(`- [${e.outcome}] ${langPart}${e.repo} - ${truncateSummary(e.taskContext)}`);
+    }
+  }
+  if (concepts.length > 0) {
+    if (out.length > 0) out.push("");
+    out.push("## Learning state (nlm-memory)");
+    for (const c of concepts) {
+      const n = c.attemptCount === 1 ? "1 attempt" : `${c.attemptCount} attempts`;
+      out.push(`- [${c.status}] ${c.concept} (${n})`);
+    }
+    const nextSteps = [...new Set(concepts.map((c) => c.nextStep).filter((s) => !!s))].slice(0, 2);
+    for (const next of nextSteps) {
+      out.push(`Next: ${truncateSummary(next, 120)}`);
+    }
+  }
+  const tools = exemplars.length > 0 ? "NLM tools: recall_context (compact facts and evidence), get_session (targeted source context), recall_sessions (session search), recall_facts (structured lookup), get_fact_history (how a decision evolved), recall_code (pull the full code for a related exemplar), learner_summary (concept mastery + next step)." : "NLM tools: recall_context (compact facts and evidence), get_session (targeted source context), recall_sessions (session search), recall_facts (structured lookup), get_fact_history (how a decision evolved), learner_summary (concept mastery + next step).";
+  out.push(tools);
+  return out.join("\n");
+}
+
+// src/core/hook/select.ts
+function medianScore(hits) {
+  if (hits.length === 0) return 0;
+  const sorted = hits.map((h) => h.matchScore).sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)] ?? 0;
+}
+function selectHits(params) {
+  const { hits, surfaced, scoreThreshold: scoreThreshold2, perFireCap, perConversationCap, relativeFloor: relativeFloor2 = 0 } = params;
+  const relCut = relativeFloor2 > 0 ? relativeFloor2 * medianScore(hits) : 0;
+  const eligible = hits.filter(
+    (h) => h.matchScore >= scoreThreshold2 && h.matchScore >= relCut && !surfaced.has(h.id)
+  );
+  const budget = Math.max(0, perConversationCap - surfaced.size);
+  const limit = Math.min(perFireCap, budget);
+  return eligible.slice(0, limit);
+}
+
+// src/llm/env-autoload.ts
+import { readFileSync as readFileSync2, existsSync as existsSync3 } from "node:fs";
+import { homedir as homedir2 } from "node:os";
+import { resolve } from "node:path";
+var DEFAULT_SEARCH_PATHS = [
+  "~/.nlm/.env",
+  "./.env",
+  "../.env",
+  "../../.env"
+];
+function expandHome(p) {
+  if (p.startsWith("~/")) return resolve(homedir2(), p.slice(2));
+  return p;
+}
+function autoloadEnv(extraPaths = []) {
+  const loaded = [];
+  const paths = [...DEFAULT_SEARCH_PATHS, ...extraPaths];
+  for (const raw of paths) {
+    const path = expandHome(raw);
+    if (!existsSync3(path)) continue;
+    try {
+      const content = readFileSync2(path, "utf8");
+      for (const line of content.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#") || !trimmed.includes("=")) continue;
+        const eq = trimmed.indexOf("=");
+        const key = trimmed.slice(0, eq).trim();
+        let value = trimmed.slice(eq + 1).trim();
+        if (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'")) {
+          value = value.slice(1, -1);
+        }
+        if (key && process.env[key] === void 0) {
+          process.env[key] = value;
+        }
+      }
+      loaded.push(path);
+    } catch {
+      continue;
+    }
+  }
+  return loaded;
+}
+
+// src/hook/hook-auth.ts
+function hookAuthHeaders(extra = {}) {
+  const token = process.env["NLM_MCP_TOKEN"];
+  if (!token) return { ...extra };
+  return { ...extra, authorization: `Bearer ${token}` };
+}
+
 // src/hook/hook-helpers.ts
 import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync3, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -800,6 +918,22 @@ function parseRelativeFloor(raw, fallback) {
 // src/hook/prompt-recall-hook.ts
 var scoreThreshold = () => parseScoreFloor(process.env["NLM_RECALL_SCORE_FLOOR"]);
 var relativeFloor = () => parseRelativeFloor(process.env["NLM_RECALL_REL_FLOOR"], 0.9);
+var DEFAULT_HUB_DAMP = true;
+var DEFAULT_HUB_ALPHA = 0.5;
+var DEFAULT_LEX_FLOOR = 0;
+function parseHubDampEnabled(raw, fallback) {
+  const s = raw?.trim().toLowerCase();
+  if (s === void 0 || s === "") return fallback;
+  return s !== "off" && s !== "0";
+}
+function parseHubNumber(raw, fallback) {
+  if (raw === void 0 || raw.trim() === "") return fallback;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+var hubDampEnabled = () => parseHubDampEnabled(process.env["NLM_HOOK_HUB_DAMP"], DEFAULT_HUB_DAMP);
+var hubAlpha = () => parseHubNumber(process.env["NLM_HOOK_HUB_ALPHA"], DEFAULT_HUB_ALPHA);
+var hubLexicalFloor = () => parseHubNumber(process.env["NLM_HOOK_LEX_FLOOR"], DEFAULT_LEX_FLOOR);
 var PER_FIRE_CAP = 3;
 var PER_CONVERSATION_CAP = 10;
 var PROMPT_PREVIEW_CHARS = 200;
@@ -862,6 +996,7 @@ async function runHook(input, deps) {
   }
   const deadline = Date.now() + (deps.deadlineMs ?? hookDeadlineMs());
   let fetched = { hits: [], facts: [], outcome: "timeout" };
+  const recallStart = performance.now();
   try {
     fetched = normalizeRecall(
       await withDeadline(
@@ -873,7 +1008,13 @@ async function runHook(input, deps) {
   } catch {
     fetched = { hits: [], facts: [], outcome: "unreachable" };
   }
-  const hits = fetched.hits;
+  const latencyMs = Math.round(performance.now() - recallStart);
+  const hits = hubDampEnabled() ? applyHubness(fetched.hits, {
+    prompt: input.prompt,
+    injectionCounts: deps.injectionCounts ?? countRecentInjectionPrompts(HUB_WINDOW_DAYS),
+    alpha: hubAlpha(),
+    lexicalFloor: hubLexicalFloor()
+  }) : fetched.hits;
   const surfaced = loadSurfaced(DEFAULT_TEAM_ID, input.conversationId);
   const selected = selectHits({
     hits,
@@ -894,7 +1035,8 @@ async function runHook(input, deps) {
     wouldInject: selected.map((h) => h.id),
     estTokens,
     mode: deps.mode,
-    ...fetched.outcome ? { recallOutcome: fetched.outcome } : {}
+    ...fetched.outcome ? { recallOutcome: fetched.outcome } : {},
+    ...fetched.outcome === "ok" ? { latencyMs } : {}
   });
   if (deps.mode === "live" && selected.length > 0) {
     recordSurfaced(DEFAULT_TEAM_ID, input.conversationId, selected.map((h) => h.id));
@@ -933,6 +1075,8 @@ export {
   hookDeadlineMs,
   hookRuntimeFromEnv,
   parseHookDeadline,
+  parseHubDampEnabled,
+  parseHubNumber,
   promptRecallEnabled,
   runHook
 };

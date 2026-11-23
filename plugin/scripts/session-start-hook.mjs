@@ -101,6 +101,7 @@ var package_default = {
     "eval:signals": "tsx scripts/eval/signals-eval.ts",
     "eval:classifier": "tsx scripts/eval/classifier-eval.ts",
     "eval:fact-recall": "tsx scripts/eval/fact-recall-eval.ts",
+    "eval:dream": "tsx scripts/eval/dream-eval.ts",
     "eval:recall-impact-replay": "tsx scripts/eval/recall-impact-replay.ts",
     "eval:code-exemplar": "tsx scripts/eval/code-exemplar-eval.ts",
     "eval:reranker": "tsx scripts/eval/reranker-ablation.ts",
@@ -113,6 +114,11 @@ var package_default = {
     "eval:fact-judge-replay": "tsx scripts/eval/fact-judge-replay.ts",
     "eval:fact-judge-label": "tsx scripts/eval/fact-judge-label.ts",
     "eval:fact-class-replay": "tsx scripts/eval/fact-class-replay.ts",
+    "eval:property-holdout-freeze": "tsx scripts/eval/property-holdout-freeze.ts",
+    "eval:property-holdout-draw": "tsx scripts/eval/property-holdout-draw.ts",
+    "eval:property-holdout-label": "tsx scripts/eval/property-holdout-label.ts",
+    "eval:property-holdout-l2": "tsx scripts/eval/property-holdout-l2.ts",
+    "eval:property-holdout-score": "tsx scripts/eval/property-holdout-score.ts",
     "demo:memory": "tsx scripts/demo/project-memory.ts"
   },
   dependencies: {
@@ -620,6 +626,7 @@ var RECALL_TIMEOUT_MS = 2e3;
 async function runHook(input, deps) {
   let hits = [];
   let recallOutcome = "unreachable";
+  const recallStart = performance.now();
   try {
     const fetched = await deps.recall(input.query, input.conversationId);
     hits = fetched.hits;
@@ -627,6 +634,7 @@ async function runHook(input, deps) {
   } catch {
     hits = [];
   }
+  const latencyMs = Math.round(performance.now() - recallStart);
   const surfaced = loadSurfaced(DEFAULT_TEAM_ID, input.conversationId);
   const selected = selectHits({
     hits,
@@ -647,7 +655,8 @@ async function runHook(input, deps) {
     wouldInject: selected.map((h) => h.id),
     estTokens,
     mode: deps.mode,
-    recallOutcome
+    recallOutcome,
+    ...recallOutcome === "ok" ? { latencyMs } : {}
   });
   if (deps.mode === "live" && selected.length > 0) {
     recordSurfaced(DEFAULT_TEAM_ID, input.conversationId, selected.map((h) => h.id));
