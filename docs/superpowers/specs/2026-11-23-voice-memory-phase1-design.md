@@ -109,8 +109,8 @@ Invariants:
 1. NLM ships the contract: a zod schema in `src/core/voice/rules-schema.ts`
    and the generated `schemas/voice-rules.schema.json` (one generator script,
    committed output, checked by a test that regenerates and compares).
-2. `resolveRules(voice, channel, audience?)` merges voice, then channel, then
-   audience: `rules` lists concatenate in that order, scalar fields override.
+2. `resolveRules(file, channel, audience?)` (the parsed `<voice>.yaml`, as
+   `loadVoiceRules` returns it) merges voice, then channel, then audience: `rules` lists concatenate in that order, scalar fields override.
    An unknown channel or audience contributes nothing; it is not an error.
 3. `rules_version` is `git -C <dir> rev-parse --short HEAD`, suffixed `-dirty`
    when the tracked files differ, or `unversioned` outside git. It is read
@@ -175,11 +175,14 @@ Invariants:
 
 ## E. Consumer side (Whtnxt Agent, separate task)
 
-1. `scripts/voice-export-published.py` writes JSONL for (C4) from NocoDB:
-   Social Media rows with Status Published (Platform → channel, Body → text)
-   and Content rows with Status Published that carry a blog slug (the
-   `.md` path goes to the `markdown-dir` reader instead). Filters and limit
-   server-side per `.claude/rules/token-efficiency.md`.
+1. `scripts/voice-export-published.py` writes JSONL for (C4) from NocoDB's
+   Social Media table, rows with Status Published for one Brand (Platform →
+   channel, Body → text). Blog posts are not exported: the site repos'
+   `src/content/blog/` directories are the published truth and go straight to
+   the `markdown-dir` reader. The Content table's Published status is stale and
+   the Blog table is quarantined (`.claude/nocodb/content.md`, ledger truth
+   2026-11-08), so neither is read. Filters and limit server-side per
+   `.claude/rules/token-efficiency.md`.
 2. Edward's rules file: `.claude/context/edward-voice-guide.md` converted to
    `edward.yaml` in the rules repository (open question 1 in the scope:
    which repository).

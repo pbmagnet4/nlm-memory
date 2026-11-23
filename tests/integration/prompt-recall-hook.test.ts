@@ -132,6 +132,75 @@ describe("runHook", () => {
   });
 });
 
+// Paseo delivers agent-to-agent traffic as a user prompt wrapped in an
+// envelope. A child agent's task (agent-message) still deserves recall on the
+// message itself; a status event (agent-notification) has no query to serve.
+describe("Paseo agent envelopes (T2445)", () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "nlm-envelope-"));
+    process.env["NLM_HOOK_STATE_DIR"] = join(tmp, "state");
+    process.env["NLM_HOOK_LOG"] = join(tmp, "hook-log.jsonl");
+  });
+
+  afterEach(() => {
+    delete process.env["NLM_HOOK_STATE_DIR"];
+    delete process.env["NLM_HOOK_LOG"];
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const envelope = (kind: string, body: string) =>
+    `<paseo-system version="1" kind="${kind}" ` +
+    `source-agent-id="6ad88d89-e536-495b-b857-64fd180c7435" ` +
+    `message-id="192b0630-32a8-43cd-a165-8d794f2c8851" source-agent-title="NxtOS">\n${body}\n</paseo-system>`;
+
+  it("recalls on the message body of an agent-message envelope", async () => {
+    const queries: string[] = [];
+    const out = await runHook(
+      {
+        prompt: envelope("agent-message", "why is the recall backend returning zero results"),
+        conversationId: "c1",
+      },
+      {
+        mode: "live",
+        recall: async (q) => {
+          queries.push(q);
+          return hits("sess_a");
+        },
+      },
+    );
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toBe("why is the recall backend returning zero results");
+    expect(queries[0]).not.toContain("source-agent-id");
+    expect(queries[0]).not.toContain("paseo-system");
+    expect(out).toContain("sess_a");
+  });
+
+  it("skips recall for an agent-notification envelope and logs the skip", async () => {
+    let called = false;
+    const out = await runHook(
+      {
+        prompt: envelope("agent-notification", "agent explore-7 finished: 3 files changed"),
+        conversationId: "c1",
+      },
+      {
+        mode: "live",
+        recall: async () => {
+          called = true;
+          return hits("sess_a");
+        },
+      },
+    );
+    expect(out).toBe("");
+    expect(called).toBe(false);
+    const entry = JSON.parse(readFileSync(join(tmp, "hook-log.jsonl"), "utf8").trim());
+    expect(entry.gate).toBe("skip");
+    expect(entry.wouldInject).toEqual([]);
+    expect(entry.promptPreview.startsWith('<paseo-system version="1"')).toBe(true);
+  });
+});
+
 describe("promptRecallEnabled", () => {
   it("defaults OFF when the var is unset (pull-first posture)", () => {
     expect(promptRecallEnabled({})).toBe(false);
