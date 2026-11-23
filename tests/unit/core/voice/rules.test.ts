@@ -1,0 +1,231 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { loadVoiceRules, resolveRules, rulesVersion, voiceRules } from "../../../../src/core/voice/rules.js";
+import { renderVoiceRulesSchema } from "../../../../scripts/gen-voice-rules-schema.js";
+
+const dirs: string[] = [];
+function tmp(): string {
+  const dir = mkdtempSync(join(tmpdir(), "nlm-voice-rules-"));
+  dirs.push(dir);
+  return dir;
+}
+
+afterEach(() => {
+  while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+});
+
+function writeVoice(dir: string, voice: string, text: string): string {
+  const path = join(dir, `${voice}.yaml`);
+  writeFileSync(path, text);
+  return path;
+}
+
+const VALID = `
+voice: edward
+rules: ["Plain words", "First person"]
+banned_phrases: ["leverage", "game-changer"]
+max_chars: 2000
+channels:
+  linkedin: { rules: ["One idea per post"], banned_phrases: ["leverage", "synergy"], max_chars: 1300 }
+  email-professional: { rules: ["Lead with the ask"] }
+audiences:
+  client-blog: { rules: ["Name the client's reader"], max_chars: 500 }
+`;
+
+function harvestLog(): { lines: string[]; log: (m: string) => void } {
+  const lines: string[] = [];
+  return { lines, log: (m: string) => lines.push(m) };
+}
+
+describe("loadVoiceRules", () => {
+  it("returns no rules (silently) for a missing dir or missing file", () => {
+    const missingDir = join(tmp(), "nope");
+    const { lines, log } = harvestLog();
+    expect(loadVoiceRules(undefined, "edward", log)).toBeNull();
+    expect(loadVoiceRules(missingDir, "edward", log)).toBeNull();
+    expect(loadVoiceRules(tmp(), "edward", log)).toBeNull();
+    expect(lines).toEqual([]);
+  });
+
+  it("rejects an unsafe voice name without touching the dir", () => {
+    const dir = tmp();
+    writeVoice(dir, "edward", VALID);
+    const { lines, log } = harvestLog();
+    for (const bad of ["Edward", "../edward", "a/b", "-x", "", "ed ward", "."]) {
+      expect(loadVoiceRules(dir, bad, log)).toBeNull();
+    }
+    expect(lines).toEqual([]);
+    expect(readdirSync(dir)).toEqual(["edward.yaml"]);
+  });
+
+  it("logs one WARN per file change for an invalid file, across repeated calls", () => {
+    const dir = tmp();
+    const path = writeVoice(dir, "edward", "voice: edward\nrules: [1, two]\n");
+    const { lines, log } = harvestLog();
+    expect(loadVoiceRules(dir, "edward", log)).toBeNull();
+    expect(loadVoiceRules(dir, "edward", log)).toBeNull();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(`[voice] WARN ${path}:`);
+    expect(lines[0]).toContain("rules");
+
+    // A file change arms the WARN again; the fix then loads, silently.
+    writeVoice(dir, "edward", "voice: edward\nbanned_phrases: [3]\n");
+    expect(loadVoiceRules(dir, "edward", log)).toBeNull();
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain("banned_phrases.0");
+    writeVoice(dir, "edward", VALID);
+    expect(loadVoiceRules(dir, "edward", log)).not.toBeNull();
+    expect(lines).toHaveLength(2);
+  });
+
+  it("logs a WARN for a file that is not valid YAML", () => {
+    const dir = tmp();
+    writeVoice(dir, "edward", "voice: [unclosed\n");
+    const { lines, log } = harvestLog();
+    expect(loadVoiceRules(dir, "edward", log)).toBeNull();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("[voice] WARN");
+  });
+
+  it("re-reads when the file changes (mtime/size fingerprint)", () => {
+    const dir = tmp();
+    writeVoice(dir, "edward", "voice: edward\nrules: [first]\n");
+    expect(loadVoiceRules(dir, "edward")?.rules).toEqual(["first"]);
+    writeVoice(dir, "edward", "voice: edward\nrules: [second, third]\n");
+    expect(loadVoiceRules(dir, "edward")?.rules).toEqual(["second", "third"]);
+  });
+
+  it("rejects unknown top-level keys (strict)", () => {
+    const dir = tmp();
+    writeVoice(dir, "edward", "voice: edward\ntone: casual\n");
+    const { lines, log } = harvestLog();
+    expect(loadVoiceRules(dir, "edward", log)).toBeNull();
+    expect(lines[0]).toContain("[voice] WARN");
+  });
+});
+
+describe("resolveRules", () => {
+  it("concatenates rules voice → channel → audience", () => {
+    const dir = tmp();
+    writeVoice(dir, "edward", VALID);
+    const file = loadVoiceRules(dir, "edward")!;
+    expect(resolveRules(file, "linkedin", "client-blog").rules).toEqual([
+      "Plain words",
+      "First person",
+      "One idea per post",
+      "Name the client's reader",
+    ]);
+  });
+
+  it("dedupes banned phrases preserving order", () => {
+    const dir = tmp();
+    writeVoice(dir, "edward", VALID);
+    const file = loadVoiceRules(dir, "edward")!;
+    expect(resolveRules(file, "linkedin").bannedPhrases).toEqual([
+      "leverage",
+      "game-changer",
+      "synergy",
+    ]);
+  });
+
+  it("takes the most specific defined max_chars", () => {
+    const dir = tmp();
+    writeVoice(dir, "edward", VALID);
+    const file = loadVoiceRules(dir, "edward")!;
+    expect(resolveRules(file, "unknown").maxChars).toBe(2000); // voice only
+    expect(resolveRules(file, "linkedin").maxChars).toBe(1300); // channel over voice
+    expect(resolveRules(file, "email-professional").maxChars).toBe(2000); // channel without one
+    expect(resolveRules(file, "linkedin", "client-blog").maxChars).toBe(500); // audience wins
+  });
+
+  it("an unknown channel or audience contributes nothing", () => {
+    const dir = tmp();
+    writeVoice(dir, "edward", VALID);
+    const file = loadVoiceRules(dir, "edward")!;
+    expect(resolveRules(file, "no-such", "no-either")).toEqual({
+      rules: ["Plain words", "First person"],
+      bannedPhrases: ["leverage", "game-changer"],
+      maxChars: 2000,
+    });
+  });
+
+  it("prototype keys are not channels", () => {
+    const dir = tmp();
+    writeVoice(dir, "edward", VALID);
+    const file = loadVoiceRules(dir, "edward")!;
+    expect(resolveRules(file, "constructor").rules).toEqual(["Plain words", "First person"]);
+  });
+});
+
+describe("voiceRules", () => {
+  it("merges and reports the version in one call", () => {
+    const dir = tmp();
+    writeVoice(dir, "edward", VALID);
+    const out = voiceRules(dir, "edward", "linkedin", "client-blog");
+    expect(out).not.toBeNull();
+    expect(out!.maxChars).toBe(500);
+    expect(out!.rulesVersion).toBe("unversioned"); // mkdtemp dir, not a repo
+    expect(voiceRules(dir, "ghost", "linkedin")).toBeNull();
+    expect(voiceRules(undefined, "edward", "linkedin")).toBeNull();
+  });
+});
+
+function gitIn(dir: string, args: string[]): string {
+  return execFileSync("git", ["-C", dir, ...args], {
+    encoding: "utf8",
+    env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" },
+  });
+}
+
+function gitInitCommitted(dir: string): void {
+  gitIn(dir, ["init", "-q"]);
+  writeFileSync(join(dir, "edward.yaml"), VALID);
+  gitIn(dir, ["add", "edward.yaml"]);
+  gitIn(dir, ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"]);
+}
+
+describe("rulesVersion", () => {
+  it("is the short HEAD in a clean repo", () => {
+    const dir = tmp();
+    gitInitCommitted(dir);
+    expect(rulesVersion(dir)).toMatch(/^[0-9a-f]{7,}$/);
+    expect(rulesVersion(dir)).toBe(gitIn(dir, ["rev-parse", "--short", "HEAD"]).trim());
+  });
+
+  it("is suffixed -dirty when tracked files change, not when untracked files appear", () => {
+    const dir = tmp();
+    gitInitCommitted(dir);
+    writeFileSync(join(dir, "scratch.txt"), "untracked\n");
+    expect(rulesVersion(dir)).not.toContain("-dirty");
+    writeFileSync(join(dir, "edward.yaml"), VALID + "\n");
+    expect(rulesVersion(dir)).toBe(`${gitIn(dir, ["rev-parse", "--short", "HEAD"]).trim()}-dirty`);
+  });
+
+  it("is 'unversioned' outside a git repo (and for an empty repo)", () => {
+    expect(rulesVersion(tmp())).toBe("unversioned");
+    const bare = tmp();
+    gitIn(bare, ["init", "-q"]);
+    expect(rulesVersion(bare)).toBe("unversioned");
+  });
+
+  it("is read once per file change through voiceRules", () => {
+    const dir = tmp();
+    gitInitCommitted(dir);
+    const head = gitIn(dir, ["rev-parse", "--short", "HEAD"]).trim();
+    expect(voiceRules(dir, "edward", "linkedin")!.rulesVersion).toBe(head);
+    writeFileSync(join(dir, "edward.yaml"), VALID.replace("First person", "Second person"));
+    expect(voiceRules(dir, "edward", "linkedin")!.rulesVersion).toBe(`${head}-dirty`);
+    expect(voiceRules(dir, "edward", "linkedin")!.rules).toContain("Second person");
+  });
+});
+
+describe("schemas/voice-rules.schema.json", () => {
+  it("equals the regenerated zod schema", () => {
+    const committed = readFileSync(new URL("../../../../schemas/voice-rules.schema.json", import.meta.url), "utf8");
+    expect(renderVoiceRulesSchema()).toBe(committed);
+    expect(existsSync(new URL("../../../../schemas/voice-rules.schema.json", import.meta.url))).toBe(true);
+  });
+});
