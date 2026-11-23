@@ -55,8 +55,10 @@ call the daemon makes on its own, and it sends nothing but a version query.
 ## Voice samples
 
 With `NLM_VOICE_ENABLED=1` (default off) the daemon keeps a second corpus:
-`writing_samples` — prose the person already published or approved, plus
-provenance (URL, channel, outcome), and nothing else. It is the recall corpus
+`writing_samples` — prose the person wrote and then shipped, approved or threw
+away (a `rejected` sample is kept so recall can show what to avoid, and it is
+held to exactly the same boundary as a published one), plus provenance (URL,
+channel, outcome), and nothing else. It is the recall corpus
 behind `recall_voice`, and it is the person's own words, so it is held to the
 same boundary as a published post and one tighter:
 
