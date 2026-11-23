@@ -245,7 +245,7 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
   // fail-open, and it plus applyHubness only ever remove or reorder.
   const hits = hubDampEnabled()
     ? applyHubness(fetched.hits, {
-        prompt: input.prompt,
+        prompt: envelope.text,
         injectionCounts:
           deps.injectionCounts ?? countRecentInjectionPrompts(HUB_WINDOW_DAYS),
         alpha: hubAlpha(),
