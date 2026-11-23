@@ -234,5 +234,82 @@ export function runWritingSampleStoreContract(h: WritingSampleStoreContractHarne
       });
       expect(asTheirs.map((hit) => hit.id)).toEqual([theirs.id]);
     });
+
+    it("reads the newest samples first, with no vector and no distance", async () => {
+      const old = await storage.writingSamples.insert(TENANT, makeSample({ text: "an older post", ts: "2026-11-18T09:00:00.000Z" }));
+      const mid = await storage.writingSamples.insert(TENANT, makeSample({ text: "a middle post", ts: "2026-11-19T09:00:00.000Z" }));
+      const fresh = await storage.writingSamples.insert(TENANT, makeSample({ text: "the newest post", ts: "2026-11-20T09:00:00.000Z" }));
+
+      const rows = await storage.writingSamples.latest(TENANT, {
+        voice: "edward",
+        channel: "linkedin",
+        outcomes: ["published"],
+        k: 5,
+      });
+      expect(rows.map((hit) => hit.id)).toEqual([fresh.id, mid.id, old.id]);
+      expect(rows.every((hit) => hit.distance === null)).toBe(true);
+      expect(rows[0]!.text).toBe("the newest post");
+      expect(rows[0]!.ts).toBe("2026-11-20T09:00:00.000Z");
+      // No embedding needed: the newest read works on a vectorless corpus.
+      expect(await storage.writingSamples.missingEmbeddings(TENANT, 10)).toHaveLength(3);
+    });
+
+    it("filters latest by channel, outcome and k", async () => {
+      const seed = async (overrides: Partial<WritingSampleInput>, ts: string) =>
+        (await storage.writingSamples.insert(TENANT, makeSample({ ...overrides, ts }))).id;
+      const newest = await seed({ text: "newest linkedin post" }, "2026-11-20T09:00:00.000Z");
+      const older = await seed({ text: "older linkedin post" }, "2026-11-19T09:00:00.000Z");
+      const email = await seed(
+        { text: "a newer email", channel: "email-professional", source: "approved", outcome: "approved" },
+        "2026-11-21T09:00:00.000Z",
+      );
+      const rejected = await seed(
+        { text: "a rejected draft", source: "approved", outcome: "rejected" },
+        "2026-11-22T09:00:00.000Z",
+      );
+
+      const latest = (overrides: { channel?: string; outcomes?: readonly ("published" | "approved" | "rejected" | "pending_review")[]; k?: number } = {}) =>
+        storage.writingSamples.latest(TENANT, {
+          voice: "edward",
+          ...(overrides.channel !== undefined ? { channel: overrides.channel } : {}),
+          outcomes: overrides.outcomes ?? ["published"],
+          k: overrides.k ?? 5,
+        });
+
+      expect((await latest({ channel: "linkedin" })).map((hit) => hit.id)).toEqual([newest, older]);
+      expect((await latest({ channel: "linkedin", k: 1 })).map((hit) => hit.id)).toEqual([newest]);
+      expect((await latest({ channel: "email-professional", outcomes: ["approved"] })).map((hit) => hit.id)).toEqual([email]);
+      expect((await latest({ channel: "linkedin", outcomes: ["rejected"] })).map((hit) => hit.id)).toEqual([rejected]);
+      expect((await latest({ channel: "linkedin", outcomes: ["approved"] })).map((hit) => hit.id)).toEqual([]);
+      expect(await latest({ outcomes: [] })).toEqual([]);
+    });
+
+    it("keeps one tenant's samples out of another tenant's latest", async () => {
+      const mine = await storage.writingSamples.insert(
+        TENANT,
+        makeSample({ text: "my own words", ts: "2026-11-20T09:00:00.000Z" }),
+      );
+      await storage.writingSamples.insert(
+        FOREIGN,
+        makeSample({ text: "their words", ts: "2026-11-21T09:00:00.000Z" }),
+      );
+
+      const asMine = await storage.writingSamples.latest(TENANT, {
+        voice: "edward",
+        channel: "linkedin",
+        outcomes: ["published"],
+        k: 5,
+      });
+      expect(asMine.map((hit) => hit.id)).toEqual([mine.id]);
+
+      const asTheirs = await storage.writingSamples.latest(FOREIGN, {
+        voice: "edward",
+        channel: "linkedin",
+        outcomes: ["published"],
+        k: 5,
+      });
+      expect(asTheirs).toHaveLength(1);
+      expect(asTheirs[0]!.id).not.toBe(mine.id);
+    });
   });
 }

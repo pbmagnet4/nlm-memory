@@ -31,6 +31,7 @@ import type { RecallService } from "@core/recall/recall-service.js";
 import type { FactStore } from "@ports/fact-store.js";
 import type { SessionStore } from "@ports/session-store.js";
 import { recallCode } from "@core/exemplars/recall-code.js";
+import { recallVoice } from "@core/voice/recall-voice.js";
 import { buildWorkDigest, type BuildWorkDigestDeps } from "@core/work-digest/build-work-digest.js";
 import { composeWorkDigest } from "@core/work-digest/compose-work-digest.js";
 import { rollupWorkstream } from "@core/workstream/rollup.js";
@@ -98,6 +99,8 @@ export interface McpDeps {
   readonly exemplarStore?: import("@ports/code-exemplar-store.js").CodeExemplarStore;
   /** Optional code embedder for recall_code semantic search. */
   readonly codeEmbedder?: import("@ports/code-embedder.js").CodeEmbedder;
+  /** Optional — when present and NLM_VOICE_ENABLED=1, recall_voice tool is registered. */
+  readonly writingSamples?: import("@ports/writing-sample-store.js").WritingSampleStore;
   readonly installScope?: string;
   /** Wire to enable report_outcome (writes to the same signals store /api/signal uses). */
   readonly signalStore?: SignalStore;
@@ -709,6 +712,56 @@ export async function recallCodeHandler(
       nResults: allIds.length,
       returnedIds: allIds,
       tool: "recall_code",
+      ...(conversationId !== undefined ? { conversationId } : {}),
+    }));
+    return { content: [{ type: "text", text: format(result) }] };
+  } catch (e) {
+    return err(e);
+  }
+}
+
+const recallVoiceInput = z.object({
+  voice: z.string().min(1).describe("Whose voice to recall (the <voice>.yaml file stem, e.g. edward)."),
+  channel: z.string().min(1).describe("Channel to recall for (e.g. linkedin, email-professional)."),
+  audience: z.string().min(1).optional().describe("Audience the draft addresses (selects audience rules)."),
+  request: z.string().min(1).max(2_000).describe("What the draft is about; embedded to find the nearest passages."),
+  k: z.number().int().min(1).max(10).default(3).describe("Max examples to return (default 3)."),
+  maxChars: z.number().int().min(2_000).max(20_000).default(6_000).describe("Response character budget (default 6000)."),
+});
+
+export async function recallVoiceHandler(
+  deps: McpDeps,
+  tenantId: string,
+  input: z.input<typeof recallVoiceInput>,
+  runtime: string | null = null,
+  signal?: AbortSignal,
+): Promise<ToolResult> {
+  if (!deps.writingSamples) {
+    return err(new Error("voice recall not wired in this deployment"));
+  }
+  try {
+    const args = recallVoiceInput.parse(input);
+    const result = await recallVoice(
+      {
+        writingSamples: deps.writingSamples,
+        embedClient: deps.recall?.embeddingClient ?? null,
+      },
+      tenantId,
+      args,
+      signal ? { signal } : {},
+    );
+    const conversationId = trustedConversationId(deps, tenantId);
+    void trackDetached(deps, logQuery(tenantId, {
+      source: "mcp",
+      runtime,
+      query: args.request,
+      entity: null,
+      kind: null,
+      mode: "semantic",
+      limit: args.k,
+      nResults: result.examples.length,
+      returnedIds: result.examples.map((e) => e.id),
+      tool: "recall_voice",
       ...(conversationId !== undefined ? { conversationId } : {}),
     }));
     return { content: [{ type: "text", text: format(result) }] };
@@ -1812,6 +1865,28 @@ for more source context, or view=transcript with offset for original text.`,
     );
   }
 
+  if (
+    deps.writingSamples &&
+    process.env["NLM_VOICE_ENABLED"] === "1"
+  ) {
+    const runtime = mcpRuntimeFromClient(server.server.getClientVersion());
+    server.registerTool(
+      "recall_voice",
+      {
+        title: "Recall Voice Examples",
+        description: RECALL_VOICE_DESCRIPTION,
+        inputSchema: recallVoiceInput.shape,
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+      },
+      async (args, extra) => trackTool(deps, () => recallVoiceHandler(deps, tenantId, args, runtime, extra.signal) as never),
+    );
+  }
+
   if (deps.learners) {
     server.registerTool(
       "learner_enroll",
@@ -1907,4 +1982,13 @@ Returns two lists:
 Outcome labels come from git-survival and test exit codes, not LLM judgment. \
 Model-agnostic: exemplars from any agent or model vendor are included. \
 Scoped to your install by default; narrow by repo or lang as needed.`;
+
+const RECALL_VOICE_DESCRIPTION = `\
+Recall voice examples — passages the person actually published or approved, \
+plus their style rules. Call this before drafting anything written as the \
+person (posts, emails, blog entries): it returns the person's own rules, \
+their nearest published passages for the requested channel, and up to two \
+rejected near-misses labeled avoid. Pass the returned draft_id to \
+\`nlm voice-signal\` when the draft is published so the outcome links back \
+to this recall.`;
 

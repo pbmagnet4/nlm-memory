@@ -6,10 +6,14 @@ import { join } from "node:path";
 import { loadVoiceRules, resolveRules, rulesVersion, voiceRules } from "../../../../src/core/voice/rules.js";
 import { renderVoiceRulesSchema } from "../../../../scripts/gen-voice-rules-schema.js";
 
-// Injectable fault for readSync, so the post-read size cap and the
-// read-failure caching can be exercised on the fd read path. Pass-through
-// unless a test arms it; reset in afterEach.
-const fsState = vi.hoisted(() => ({ readThrow: null as Error | null, readFillAll: false }));
+// Injectable faults for the fd read path: readSync (post-read size cap and
+// read-failure caching) and closeSync (close-error swallowing). Pass-through
+// unless a test arms them; reset in afterEach.
+const fsState = vi.hoisted(() => ({
+  readThrow: null as Error | null,
+  readFillAll: false,
+  closeThrow: null as Error | null,
+}));
 vi.mock("node:fs", async (importOriginal) => {
   const fs = await importOriginal<typeof import("node:fs")>();
   return {
@@ -28,6 +32,10 @@ vi.mock("node:fs", async (importOriginal) => {
       }
       return fs.readSync(fd, buffer, offset, length, position);
     },
+    closeSync: (fd: number): void => {
+      if (fsState.closeThrow) throw fsState.closeThrow;
+      return fs.closeSync(fd);
+    },
   };
 });
 
@@ -41,6 +49,7 @@ function tmp(): string {
 afterEach(() => {
   fsState.readThrow = null;
   fsState.readFillAll = false;
+  fsState.closeThrow = null;
   while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
@@ -170,6 +179,38 @@ describe("loadVoiceRules", () => {
     fsState.readThrow = null;
     expect(loadVoiceRules(dir, "edward", log)?.voice).toBe("edward");
     expect(lines).toHaveLength(1);
+  });
+
+  it("warns separately when the same code arrives with a different message", () => {
+    const dir = tmp();
+    writeVoice(dir, "edward", VALID);
+    const { lines, log } = harvestLog();
+    fsState.readThrow = Object.assign(new Error("EIO: i/o error, read"), { code: "EIO" });
+    expect(loadVoiceRules(dir, "edward", log)).toBeNull();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("i/o error, read");
+    fsState.readThrow = Object.assign(new Error("EIO: i/o error, write"), { code: "EIO" });
+    expect(loadVoiceRules(dir, "edward", log)).toBeNull();
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain("i/o error, write");
+    expect(loadVoiceRules(dir, "edward", log)).toBeNull();
+    expect(lines).toHaveLength(2);
+    fsState.readThrow = null;
+    expect(loadVoiceRules(dir, "edward", log)?.voice).toBe("edward");
+    expect(lines).toHaveLength(2);
+  });
+
+  it("ignores a close error: the read result still resolves", () => {
+    const dir = tmp();
+    writeVoice(dir, "edward", VALID);
+    fsState.closeThrow = Object.assign(new Error("EBADF: bad file descriptor, close"), { code: "EBADF" });
+    const { lines, log } = harvestLog();
+    expect(loadVoiceRules(dir, "edward", log)?.rules).toEqual(["Plain words", "First person"]);
+    expect(loadVoiceRules(dir, "edward", log)?.rules).toEqual(["Plain words", "First person"]);
+    expect(lines).toEqual([]);
+    fsState.closeThrow = null;
+    expect(loadVoiceRules(dir, "edward", log)?.rules).toEqual(["Plain words", "First person"]);
+    expect(lines).toEqual([]);
   });
 
   it.skipIf(typeof process.getuid === "function" && process.getuid() === 0)(
