@@ -49,6 +49,9 @@ function fakeStore(opts: { skipped?: boolean } = {}): WritingSampleStore & {
     async search() {
       return [];
     },
+    async latest() {
+      return [];
+    },
   };
 }
 
