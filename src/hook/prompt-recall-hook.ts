@@ -10,7 +10,7 @@
  * share this entrypoint without polluting query logs.
  */
 
-import { classifyPrompt } from "@core/hook/gate.js";
+import { classifyPrompt, unwrapAgentEnvelope } from "@core/hook/gate.js";
 import { recentConversationContext, topicalWordCount } from "./recent-context.js";
 import { appendHookLog } from "@core/hook/hook-log.js";
 import { loadSurfaced, recordSurfaced } from "@core/hook/memo.js";
@@ -197,7 +197,11 @@ function normalizeRecall(
 
 /** Orchestration. Returns the text to emit on stdout ("" for nothing). */
 export async function runHook(input: HookInput, deps: RunHookDeps): Promise<string> {
-  const gate = classifyPrompt(input.prompt);
+  // An agent-notification is a status event with no query behind it, so it
+  // skips exactly like harness boilerplate. Everything else is classified on
+  // the envelope's message, so its routing UUIDs never reach the query.
+  const envelope = unwrapAgentEnvelope(input.prompt);
+  const gate = envelope.kind === "agent-notification" ? "skip" : classifyPrompt(envelope.text);
   const preview = input.prompt.slice(0, PROMPT_PREVIEW_CHARS);
 
   if (gate === "generative" || gate === "skip") {
@@ -226,7 +230,7 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
   try {
     fetched = normalizeRecall(
       await withDeadline(
-        deps.recall(buildRecallQuery(input)),
+        deps.recall(buildRecallQuery({ ...input, prompt: envelope.text })),
         deadline - Date.now(),
         { hits: [], facts: [], outcome: "timeout" },
       ),
