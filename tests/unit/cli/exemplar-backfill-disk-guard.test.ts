@@ -7,7 +7,8 @@
  * means the sweep behaves exactly as ungated.
  */
 import { describe, expect, it } from "vitest";
-import { runExemplarBackfillTick } from "../../../src/cli/nlm.js";
+import { repairLine, runExemplarBackfillTick } from "../../../src/cli/nlm.js";
+import { logLevelFor } from "../../../src/core/logging/timestamped-console.js";
 
 describe("runExemplarBackfillTick disk guard", () => {
   it("tripped guard: one gate call, store never opened, nothing logged", async () => {
@@ -64,5 +65,15 @@ describe("runExemplarBackfillTick disk guard", () => {
       logger: (m) => logs.push(m),
     });
     expect(logs).toEqual(["[exemplar-backfill] error: SQLITE_FULL: database or disk is full"]);
+  });
+});
+
+describe("repairLine", () => {
+  it("names failures only when there are some, so a clean repair logs at INFO", () => {
+    expect(repairLine("fact-embed-sweep", 5, 5, 0)).toBe("[fact-embed-sweep] 5/5 repaired");
+    expect(logLevelFor("error", repairLine("fact-embed-sweep", 5, 5, 0))).toBe("INFO");
+    expect(repairLine("chunk-embed-sweep", 2, 4, 2, true)).toBe("[chunk-embed-sweep] 2/4 repaired (2 failed, shed at cap)");
+    expect(logLevelFor("error", repairLine("chunk-embed-sweep", 2, 4, 2))).toBe("ERROR");
+    expect(repairLine("fact-embed-sweep", 0, 3, 0, true)).toBe("[fact-embed-sweep] 0/3 repaired (shed at cap)");
   });
 });
