@@ -289,6 +289,7 @@ var package_default = {
     "eval:fact-recall": "tsx scripts/eval/fact-recall-eval.ts",
     "eval:dream": "tsx scripts/eval/dream-eval.ts",
     "eval:recall-impact-replay": "tsx scripts/eval/recall-impact-replay.ts",
+    "eval:load-replay": "tsx scripts/eval/load-replay.ts",
     "eval:code-exemplar": "tsx scripts/eval/code-exemplar-eval.ts",
     "eval:reranker": "tsx scripts/eval/reranker-ablation.ts",
     "eval:floor": "tsx scripts/eval/floor-calibration.ts",
