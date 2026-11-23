@@ -22,6 +22,11 @@ export default defineConfig({
     // live deployment config exported (NLM_FORMAT=toon, NLM_PORT, keys) runs the
     // same suite a clean machine does. T1760.
     setupFiles: ["tests/setup/hermetic-env.ts"],
+    // Semantic reads run on a worker thread (T1770), and under vitest each
+    // storage boots that worker through tsx: milliseconds alone, but past the
+    // 5s default when the land gate runs the suite on a loaded host (two
+    // timeouts on 2026-11-23, both under 50ms in isolation).
+    testTimeout: 15_000,
     // Spec C: MCP recall_sessions defaults rewrite=true in production. In
     // tests the LLM stubs throw on rewriteForRecall — disable the default so
     // existing tests don't accidentally trigger the rewrite path. Individual

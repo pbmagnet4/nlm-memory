@@ -294,6 +294,16 @@ export async function persistReDerivationPairs(
  * provably ahead of any write. Errors stay one log line — a daemon timer
  * must never crash on a pass.
  */
+/**
+ * One repair-sweep summary. Failures are named only when there are some: the
+ * daemon's log levels are textual, and "(0 failed)" made every clean repair an
+ * ERROR line (86 of them in daemon.err by 2026-11-23), drowning real ones.
+ */
+export function repairLine(job: string, repaired: number, attempted: number, failed: number, shed = false): string {
+  const notes = [...(failed > 0 ? [`${failed} failed`] : []), ...(shed ? ["shed at cap"] : [])];
+  return `[${job}] ${repaired}/${attempted} repaired${notes.length ? ` (${notes.join(", ")})` : ""}`;
+}
+
 export async function runExemplarBackfillTick(deps: {
   diskGuard: { shouldSkip(job: string): Promise<boolean> };
   backfill: () => Promise<Pick<ExemplarBackfillReport, "total" | "succeeded" | "failed">>;
@@ -304,7 +314,7 @@ export async function runExemplarBackfillTick(deps: {
   try {
     const report = await deps.backfill();
     if (report.succeeded > 0 || report.failed > 0) {
-      log(`[exemplar-backfill] ${report.succeeded}/${report.total} repaired (${report.failed} failed)`);
+      log(repairLine("exemplar-backfill", report.succeeded, report.total, report.failed));
     }
   } catch (e) {
     log(`[exemplar-backfill] error: ${e instanceof Error ? e.message : String(e)}`);
@@ -1058,7 +1068,7 @@ program
             fire: fireAlert,
           });
           if (report.repaired > 0 || report.failed > 0) {
-            console.error(`[fact-embed-sweep] ${report.repaired}/${report.attempted} repaired (${report.failed} failed${report.shed ? ", shed at cap" : ""})`);
+            console.error(repairLine("fact-embed-sweep", report.repaired, report.attempted, report.failed, report.shed));
           }
         } catch (e) {
           console.error(`[fact-embed-sweep] error: ${e instanceof Error ? e.message : String(e)}`);
@@ -1080,7 +1090,7 @@ program
         try {
           const report = await sweepChunkEmbeddings({ store: storage instanceof PgStorage ? storage.sessions : (storage as SqliteStorage).sessions, embedder });
           if (report.repaired > 0 || report.failed > 0) {
-            console.error(`[chunk-embed-sweep] ${report.repaired}/${report.attempted} repaired (${report.failed} failed${report.shed ? ", shed at cap" : ""})`);
+            console.error(repairLine("chunk-embed-sweep", report.repaired, report.attempted, report.failed, report.shed));
           }
         } catch (e) {
           console.error(`[chunk-embed-sweep] error: ${e instanceof Error ? e.message : String(e)}`);
