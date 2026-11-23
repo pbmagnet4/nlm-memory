@@ -57,6 +57,31 @@ function contentWordCount(s: string): number {
   return m ? m.length : 0;
 }
 
+// Paseo delivers agent-to-agent traffic to an agent as a user prompt wrapped in
+// an envelope carrying routing attributes (`source-agent-id`, `message-id` —
+// UUIDs, so pure noise for keyword and semantic recall). Measured 2026-11-23:
+// 138 of the last 270 prompt-hook fires were such envelopes. `kind="agent-message"`
+// is a child agent's task and keeps recall, on the message itself;
+// `kind="agent-notification"` is a status event with no query to serve.
+// Deliberately NOT a HARNESS_TAG: stripping the whole block would throw away
+// the task, which is the recall value.
+const ENVELOPE_OPEN = /^<paseo-system(?=[\s>])([^>]*)>([\s\S]*)$/;
+const ENVELOPE_KIND = /\bkind="([^"]*)"/;
+const ENVELOPE_CLOSE = /\s*<\/paseo-system>\s*$/;
+
+export interface AgentEnvelope {
+  readonly kind: string | null;
+  readonly text: string;
+}
+
+/** Split a Paseo agent envelope into its kind and its message. */
+export function unwrapAgentEnvelope(prompt: string): AgentEnvelope {
+  const opened = ENVELOPE_OPEN.exec(prompt.trimStart());
+  if (!opened) return { kind: null, text: prompt };
+  const kind = ENVELOPE_KIND.exec(opened[1]!)?.[1] ?? null;
+  return { kind, text: opened[2]!.replace(ENVELOPE_CLOSE, "").trim() };
+}
+
 export function classifyPrompt(prompt: string): PromptClass {
   let p = prompt.replace(HARNESS_BLOCK, " ").replace(/\s+/g, " ").trim();
   if (contentWordCount(p) === 0) return "skip"; // harness-only / empty / punctuation
