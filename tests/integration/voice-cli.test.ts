@@ -151,6 +151,34 @@ describe("nlm voice-signal", () => {
     expect(stderr).toMatch(/not both/);
   }, 60_000);
 
+  it("refuses an outcome the endpoint would only reject later", async () => {
+    const { code, stderr } = await runNlm([
+      "voice-signal",
+      "--voice", "edward",
+      "--channel", "linkedin",
+      "--text", "Plain words, one idea.",
+      "--outcome", "shipped",
+      "--dry-run",
+    ]);
+
+    expect(code).not.toBe(0);
+    expect(stderr).toMatch(/--outcome/);
+  }, 60_000);
+
+  it("says so, in one line, when --text-file is not there", async () => {
+    const { code, stdout, stderr } = await runNlm([
+      "voice-signal",
+      "--voice", "edward",
+      "--channel", "linkedin",
+      "--text-file", join(MD, "no-such-post.md"),
+    ]);
+
+    expect(code).not.toBe(0);
+    expect(stdout).toBe("");
+    expect(stderr.trim().split("\n")).toHaveLength(1);
+    expect(stderr).toMatch(/cannot read .*no-such-post\.md/);
+  }, 60_000);
+
   it("reports what a daemon that refuses the sample said, and still exits 0", async () => {
     const seen: string[] = [];
     const stub = createHttpServer((req, res: ServerResponse) => {

@@ -3855,25 +3855,38 @@ program
   .option("--draft-id <id>", "draft this text came from")
   .option("--dry-run", "print the payload and do not POST")
   .action(async (opts) => {
-    const { buildVoiceSignalPayload, formatVoiceSignalResult } = await import("../core/voice/voice-signal.js");
-    const source = (opts.textFile ?? opts.text) as string | undefined;
+    const { buildVoiceSignalPayload, formatVoiceSignalResult, parseVoiceOutcome } = await import("../core/voice/voice-signal.js");
     if (opts.textFile !== undefined && opts.text !== undefined) {
       process.stderr.write("voice-signal: pass --text or --text-file, not both\n");
       process.exit(1);
       return;
     }
+    const source = (opts.textFile ?? opts.text) as string | undefined;
     if (source === undefined) {
       process.stderr.write("voice-signal: pass --text or --text-file\n");
       process.exit(1);
       return;
     }
-    const text = opts.textFile !== undefined ? readFileSync(source, "utf8") : source;
+    const outcome = parseVoiceOutcome(opts.outcome as string);
+    if (outcome === undefined) {
+      process.stderr.write("voice-signal: --outcome must be published, approved, rejected or pending_review\n");
+      process.exit(1);
+      return;
+    }
+    let text: string;
+    try {
+      text = opts.textFile !== undefined ? readFileSync(source, "utf8") : source;
+    } catch (e) {
+      process.stderr.write(`voice-signal: cannot read ${source}: ${e instanceof Error ? e.message : String(e)}\n`);
+      process.exit(1);
+      return;
+    }
     const payload = buildVoiceSignalPayload({
       voice: opts.voice as string,
       channel: opts.channel as string,
       text,
+      outcome,
       ...(opts.url ? { url: opts.url as string } : {}),
-      outcome: opts.outcome as never,
       ...(opts.draftId ? { draftId: opts.draftId as string } : {}),
     });
     if (opts.dryRun) {
@@ -3890,7 +3903,10 @@ program
       if (res.status !== 201 && res.status !== 200) {
         // A daemon that answers is up: its own reason is the useful half of the
         // line, and 404 usually means the voice flag is off on this install.
-        process.stderr.write(`voice-signal: daemon returned ${res.status} ${await res.text()}; skipping\n`);
+        // Anything on the other end of that port could answer, so the reason
+        // stays one bounded line rather than a body.
+        const reason = (await res.text()).replace(/\s+/g, " ").trim().slice(0, 200);
+        process.stderr.write(`voice-signal: daemon returned ${res.status} ${reason}; skipping\n`);
         return;
       }
       const accepted = (await res.json()) as { id?: string; skipped?: boolean };

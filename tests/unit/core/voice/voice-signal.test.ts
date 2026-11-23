@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildVoiceSignalPayload,
   formatVoiceSignalResult,
+  parseVoiceOutcome,
 } from "../../../../src/core/voice/voice-signal.js";
 
 const NOW = "2026-11-23T12:00:00.000Z";
@@ -53,6 +54,15 @@ describe("buildVoiceSignalPayload", () => {
   it("posts no key the endpoint would have to guess about", () => {
     const payload = buildVoiceSignalPayload({ voice: "edward", channel: "email", text: "x", now });
     expect(Object.keys(payload).sort()).toEqual(["channel", "outcome", "text", "ts", "voice"]);
+  });
+});
+
+describe("parseVoiceOutcome", () => {
+  it("accepts the endpoint's four outcomes and nothing else", () => {
+    expect(parseVoiceOutcome("published")).toBe("published");
+    expect(parseVoiceOutcome("pending_review")).toBe("pending_review");
+    expect(parseVoiceOutcome("shipped")).toBeUndefined();
+    expect(parseVoiceOutcome("")).toBeUndefined();
   });
 });
 

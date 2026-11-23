@@ -47,3 +47,14 @@ export function buildVoiceSignalPayload(args: BuildVoiceSignalArgs): VoiceSignal
 export function formatVoiceSignalResult(result: { id: string; skipped: boolean }): string {
   return `voice-signal: ${result.skipped ? "already stored" : "stored"} id=${result.id}`;
 }
+
+/**
+ * `--outcome` arrives as argv text, and the endpoint is the validator. Checking
+ * it here too costs one line and saves a round trip that would come back as a
+ * JSON blob in a terminal.
+ */
+const VOICE_OUTCOMES = ["published", "approved", "rejected", "pending_review"] as const;
+
+export function parseVoiceOutcome(raw: string): WritingSampleOutcome | undefined {
+  return VOICE_OUTCOMES.find((outcome) => outcome === raw);
+}
