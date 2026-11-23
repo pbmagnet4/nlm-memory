@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   BASE_COOLDOWN_MS,
   FAILURE_THRESHOLD,
   MAX_COOLDOWN_MS,
   createCircuitBreaker,
+  recallEmbedBreaker,
 } from "../../../../src/core/health/embed-breaker.js";
 
 function clock() {
@@ -61,5 +62,54 @@ describe("createCircuitBreaker", () => {
     b.success();
     expect(b.snapshot()).toMatchObject({ state: "closed", consecutiveFailures: 0, retryAt: null });
     expect(b.allow()).toBe(true);
+  });
+
+  it("reset() returns a breaker to the cold closed state", () => {
+    const c = clock();
+    const b = createCircuitBreaker(c.now);
+    for (let i = 0; i < FAILURE_THRESHOLD; i++) b.failure("down");
+    c.advance(BASE_COOLDOWN_MS);
+    expect(b.allow()).toBe(true);
+    b.failure("still down");
+    c.advance(BASE_COOLDOWN_MS);
+    expect(b.allow()).toBe(false);
+    expect(b.snapshot()).toMatchObject({ state: "open", consecutiveFailures: FAILURE_THRESHOLD + 1, shortCircuited: 1 });
+
+    b.reset();
+    expect(b.snapshot()).toEqual({
+      state: "closed",
+      consecutiveFailures: 0,
+      retryAt: null,
+      lastError: null,
+      shortCircuited: 0,
+    });
+    // The doubled cool-down went with it: a fresh open waits the base again.
+    for (let i = 0; i < FAILURE_THRESHOLD - 1; i++) b.failure("down");
+    expect(b.snapshot().state).toBe("closed");
+    b.failure("down");
+    expect(Date.parse(b.snapshot().retryAt!)).toBe(c.now() + BASE_COOLDOWN_MS);
+  });
+
+  it("the process-wide breaker follows a faked global Date", () => {
+    // recallEmbedBreaker is built at module load, i.e. long before any test
+    // can fake the clock — so it has to read `Date` per call or its cool-down
+    // is untestable. tests/integration/fault-injection.test.ts depends on it.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      recallEmbedBreaker.reset();
+      const t0 = 2_000_000_000_000;
+      vi.setSystemTime(t0);
+      for (let i = 0; i < FAILURE_THRESHOLD; i++) {
+        expect(recallEmbedBreaker.allow()).toBe(true);
+        recallEmbedBreaker.failure("down");
+      }
+      expect(recallEmbedBreaker.snapshot().state).toBe("open");
+      expect(Date.parse(recallEmbedBreaker.snapshot().retryAt!)).toBe(t0 + BASE_COOLDOWN_MS);
+      vi.setSystemTime(t0 + BASE_COOLDOWN_MS);
+      expect(recallEmbedBreaker.snapshot().state).toBe("half-open");
+    } finally {
+      vi.useRealTimers();
+      recallEmbedBreaker.reset();
+    }
   });
 });

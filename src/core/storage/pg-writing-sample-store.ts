@@ -25,6 +25,7 @@ import { tenantClausePg } from "@core/tenancy/tenant-clause.js";
 import type {
   WritingSampleHit,
   WritingSampleInput,
+  WritingSampleLatestHit,
   WritingSampleMissing,
   WritingSampleSearchFilter,
   WritingSampleSource,
@@ -61,6 +62,7 @@ export class PgWritingSampleStore implements WritingSampleStore {
     const scope = this.resolveScope();
     const textHash = writingTextHash(input.text);
     const id = writingSampleId({
+      tenantId,
       installScope: scope,
       voice: input.voice,
       channel: input.channel,
@@ -183,6 +185,49 @@ export class PgWritingSampleStore implements WritingSampleStore {
         sourceRef: r.source_ref,
         ts: r.ts,
         distance: Number(r.distance),
+      }));
+  }
+
+  async latest(
+    tenantId: string,
+    filter: WritingSampleSearchFilter,
+  ): Promise<ReadonlyArray<WritingSampleLatestHit>> {
+    if (filter.outcomes.length === 0) return [];
+    const k = Math.max(1, Math.min(50, Math.trunc(filter.k)));
+    const params: unknown[] = [this.resolveScope(), filter.voice];
+    const where = ["ws.install_scope = $1", "ws.voice = $2"];
+    let n = 3;
+    if (filter.channel !== undefined) {
+      where.push(`ws.channel = $${n++}`);
+      params.push(filter.channel);
+    }
+    where.push(`ws.outcome IN (${filter.outcomes.map(() => `$${n++}`).join(",")})`);
+    params.push(...filter.outcomes);
+    const tc = tenantClausePg(tenantId, n++);
+    where.push(tc.sql);
+    params.push(tc.param);
+    params.push(k);
+    const res = await this.pool.query<SampleRow & { row_tenant: string }>(
+      `SELECT ${COLUMNS.split(", ").map((c) => `ws.${c}`).join(", ")},
+              ws.tenant_id AS row_tenant
+       FROM writing_samples ws
+       WHERE ${where.join(" AND ")}
+       ORDER BY ws.ts DESC, ws.id ASC
+       LIMIT $${n}`,
+      params,
+    );
+    return res.rows
+      .filter((r) => { const rowTenant = r["row_tenant"]; return rowTenant === tenantId; })
+      .map((r): WritingSampleLatestHit => ({
+        id: r.id,
+        voice: r.voice,
+        channel: r.channel,
+        source: r.source,
+        outcome: r.outcome,
+        text: r.text,
+        sourceRef: r.source_ref,
+        ts: r.ts,
+        distance: null,
       }));
   }
 }

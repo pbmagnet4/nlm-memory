@@ -711,6 +711,7 @@ program
               // clients hitting POST /mcp get recall_code too when the flag is on.
               exemplarStore: storage.exemplars,
               codeEmbedder: codeEmb,
+              writingSamples: storage.writingSamples,
               installScope: scope,
               signalStore: signals,
               sessionScopeReader: store,
@@ -2229,6 +2230,7 @@ program
         factRecall,
         exemplarStore: storage.exemplars,
         codeEmbedder,
+        writingSamples: storage.writingSamples,
         installScope: scope,
         signalStore: signals,
         sessionScopeReader: store,

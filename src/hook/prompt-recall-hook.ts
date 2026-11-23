@@ -10,9 +10,9 @@
  * share this entrypoint without polluting query logs.
  */
 
-import { classifyPrompt } from "@core/hook/gate.js";
+import { classifyPrompt, unwrapAgentEnvelope } from "@core/hook/gate.js";
 import { recentConversationContext, topicalWordCount } from "./recent-context.js";
-import { appendHookLog } from "@core/hook/hook-log.js";
+import { appendHookLog, RECALL_QUERY_LOG_CHARS } from "@core/hook/hook-log.js";
 import { loadSurfaced, recordSurfaced } from "@core/hook/memo.js";
 import { applyHubness, HUB_WINDOW_DAYS } from "@core/hook/hubness.js";
 import { countRecentInjectionPrompts } from "@core/recall/hook-recall-log.js";
@@ -197,7 +197,11 @@ function normalizeRecall(
 
 /** Orchestration. Returns the text to emit on stdout ("" for nothing). */
 export async function runHook(input: HookInput, deps: RunHookDeps): Promise<string> {
-  const gate = classifyPrompt(input.prompt);
+  // An agent-notification is a status event with no query behind it, so it
+  // skips exactly like harness boilerplate. Everything else is classified on
+  // the envelope's message, so its routing UUIDs never reach the query.
+  const envelope = unwrapAgentEnvelope(input.prompt);
+  const gate = envelope.kind === "agent-notification" ? "skip" : classifyPrompt(envelope.text);
   const preview = input.prompt.slice(0, PROMPT_PREVIEW_CHARS);
 
   if (gate === "generative" || gate === "skip") {
@@ -217,6 +221,7 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
   }
 
   const deadline = Date.now() + (deps.deadlineMs ?? hookDeadlineMs());
+  const recallQuery = buildRecallQuery({ ...input, prompt: envelope.text });
 
   // The outer deadline and the inner HTTP timeout are separate budgets; both
   // yield an empty result, so both must name themselves or the log conflates
@@ -226,7 +231,7 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
   try {
     fetched = normalizeRecall(
       await withDeadline(
-        deps.recall(buildRecallQuery(input)),
+        deps.recall(recallQuery),
         deadline - Date.now(),
         { hits: [], facts: [], outcome: "timeout" },
       ),
@@ -241,7 +246,7 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
   // fail-open, and it plus applyHubness only ever remove or reorder.
   const hits = hubDampEnabled()
     ? applyHubness(fetched.hits, {
-        prompt: input.prompt,
+        prompt: envelope.text,
         injectionCounts:
           deps.injectionCounts ?? countRecentInjectionPrompts(HUB_WINDOW_DAYS),
         alpha: hubAlpha(),
@@ -271,6 +276,8 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
     wouldInject: selected.map((h) => h.id),
     estTokens,
     mode: deps.mode,
+    recallQuery: recallQuery.slice(0, RECALL_QUERY_LOG_CHARS),
+    ...(recallQuery.length > RECALL_QUERY_LOG_CHARS ? { recallQueryTruncated: true } : {}),
     ...(fetched.outcome ? { recallOutcome: fetched.outcome } : {}),
     ...(fetched.outcome === "ok" ? { latencyMs } : {}),
   });

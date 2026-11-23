@@ -30,6 +30,7 @@ import { tenantClause } from "@core/tenancy/tenant-clause.js";
 import type {
   WritingSampleHit,
   WritingSampleInput,
+  WritingSampleLatestHit,
   WritingSampleMissing,
   WritingSampleSearchFilter,
   WritingSampleStore,
@@ -38,12 +39,15 @@ import { readSemanticWritingSamples, type WritingSampleReadFilter } from "./sqli
 import type { SqliteSemanticReader } from "./sqlite-semantic-reader.js";
 
 /**
- * Deterministic primary key: sha256(install_scope|voice|channel|text_hash|source)[:16].
+ * Deterministic primary key: sha256(tenant_id|install_scope|voice|channel|text_hash|source)[:16].
+ * The tenant is part of it so dedup is per tenant: two tenants storing the same
+ * post get two rows (review 0e604bf5).
  * `source` is in the tuple on purpose: the same post first ingested as
  * `approved` and later as `published` is two rows, and recall prefers the
  * higher source (design invariant 2).
  */
 export function writingSampleId(parts: {
+  tenantId: string;
   installScope: string;
   voice: string;
   channel: string;
@@ -51,7 +55,7 @@ export function writingSampleId(parts: {
   source: string;
 }): string {
   return createHash("sha256")
-    .update([parts.installScope, parts.voice, parts.channel, parts.textHash, parts.source].join("|"))
+    .update([parts.tenantId, parts.installScope, parts.voice, parts.channel, parts.textHash, parts.source].join("|"))
     .digest("hex")
     .slice(0, 16);
 }
@@ -110,6 +114,7 @@ export class SqliteWritingSampleStore implements WritingSampleStore {
     const scope = this.resolveScope();
     const textHash = writingTextHash(input.text);
     const id = writingSampleId({
+      tenantId,
       installScope: scope,
       voice: input.voice,
       channel: input.channel,
@@ -189,6 +194,45 @@ export class SqliteWritingSampleStore implements WritingSampleStore {
       }) as Promise<ReadonlyArray<WritingSampleHit>>;
     }
     return readSemanticWritingSamples(this.db, tenantId, queryVector, k, readFilter);
+  }
+
+  async latest(
+    tenantId: string,
+    filter: WritingSampleSearchFilter,
+  ): Promise<ReadonlyArray<WritingSampleLatestHit>> {
+    if (filter.outcomes.length === 0) return [];
+    const tc = tenantClause(tenantId);
+    const where = [`${tc.sql}`, "install_scope = ?", "voice = ?"];
+    const params: unknown[] = [tc.param, this.resolveScope(), filter.voice];
+    if (filter.channel !== undefined) {
+      where.push("channel = ?");
+      params.push(filter.channel);
+    }
+    where.push(`outcome IN (${filter.outcomes.map(() => "?").join(",")})`);
+    params.push(...filter.outcomes);
+    const k = Math.max(1, Math.min(50, Math.trunc(filter.k)));
+    return this.db
+      .prepare<unknown[], SampleRow>(
+        `SELECT id, install_scope, voice, channel, audience, source, source_ref,
+                text, text_hash, context, outcome, draft_id, session_id, rules_version,
+                ts, created_at
+         FROM writing_samples
+         WHERE ${where.join(" AND ")}
+         ORDER BY ts DESC, id ASC
+         LIMIT ?`,
+      )
+      .all(...params, k)
+      .map((r): WritingSampleLatestHit => ({
+        id: r.id,
+        voice: r.voice,
+        channel: r.channel,
+        source: r.source,
+        outcome: r.outcome,
+        text: r.text,
+        sourceRef: r.source_ref,
+        ts: r.ts,
+        distance: null,
+      }));
   }
 
   private insertStmt() {

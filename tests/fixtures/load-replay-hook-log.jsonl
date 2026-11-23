@@ -1,0 +1,7 @@
+{"ts":"2026-11-20T09:00:00.000Z","conversationId":"conv-alpha","promptPreview":"replay fixture prompt about indexing session archives","gate":"evaluate","hits":[],"wouldInject":[],"estTokens":0,"mode":"shadow","v":"0.0.0-test"}
+{"ts":"2026-11-20T09:00:04.000Z","kind":"stop","conversationId":"conv-alpha","surfacedCount":0,"citedIds":[]}
+{"ts":"2026-11-20T09:00:08.000Z","conversationId":"conv-beta","promptPreview":"draft the release changelog summary","gate":"generative","hits":[],"wouldInject":[],"estTokens":0,"mode":"shadow"}
+{"not json at all
+{"ts":"2026-11-20T09:00:12.000Z","conversationId":"conv-beta","promptPreview":"replay fixture prompt comparing recall latency budgets","gate":"evaluate","hits":[],"wouldInject":[],"estTokens":0,"mode":"shadow","v":"0.0.0-test"}
+{"ts":"2026-11-20T09:00:16.000Z","kind":"session-end","conversationId":"conv-beta","cleared":1}
+{"ts":"2026-11-20T09:00:20.000Z","conversationId":"conv-gamma","promptPreview":"why did the health probe report stalls overnight","gate":"evaluate","hits":[],"wouldInject":[],"estTokens":0,"mode":"shadow","v":"0.0.0-test"}
