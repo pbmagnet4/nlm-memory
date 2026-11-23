@@ -288,6 +288,7 @@ var package_default = {
     "test:integration": "vitest run tests/integration",
     "test:pg": "vitest run .pg.test.ts --test-timeout=20000",
     typecheck: "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json && tsc -p tsconfig.scripts.json",
+    "gen:voice-rules-schema": "tsx scripts/gen-voice-rules-schema.ts",
     "bench:longmemeval": "tsx scripts/longmemeval/run-harness.ts",
     "bench:classifier": "tsx scripts/longmemeval/run-harness.ts --classifier",
     "bench:compare": "tsx scripts/longmemeval/compare-classifiers.ts",
