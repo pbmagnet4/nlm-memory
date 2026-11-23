@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyPrompt } from "../../../../src/core/hook/gate.js";
+import { classifyPrompt, unwrapAgentEnvelope } from "../../../../src/core/hook/gate.js";
 
 describe("classifyPrompt", () => {
   it("classifies obvious generative openers as generative", () => {
@@ -66,5 +66,69 @@ describe("classifyPrompt", () => {
     ).toBe("evaluate");
     // A real query that merely starts with an ack word is not a bare ack.
     expect(classifyPrompt("ok so why is the backend returning zero results")).toBe("evaluate");
+  });
+});
+
+// Paseo wraps agent-to-agent traffic in an envelope whose routing attributes
+// (source-agent-id, message-id) are UUIDs — pure noise for keyword and
+// semantic recall. Unwrapping keeps the message, which is a real task.
+describe("unwrapAgentEnvelope", () => {
+  const envelope = (attrs: string, body: string) => `<paseo-system ${attrs}>${body}</paseo-system>`;
+  const ROUTING =
+    'version="1" kind="agent-message" source-agent-id="6ad88d89-e536-495b-b857-64fd180c7435" ' +
+    'message-id="192b0630-32a8-43cd-a165-8d794f2c8851" source-agent-title="NxtOS"';
+
+  it("returns the message of a closed agent-message envelope", () => {
+    expect(unwrapAgentEnvelope(envelope(ROUTING, "run the gate on T2401"))).toEqual({
+      kind: "agent-message",
+      text: "run the gate on T2401",
+    });
+  });
+
+  it("drops the closing tag and the whitespace around it", () => {
+    expect(
+      unwrapAgentEnvelope('<paseo-system kind="agent-message">\nfix the flaky test\n</paseo-system>\n'),
+    ).toEqual({ kind: "agent-message", text: "fix the flaky test" });
+  });
+
+  it("keeps the rest of the string when the envelope is never closed", () => {
+    expect(
+      unwrapAgentEnvelope('<paseo-system kind="agent-message">\nsummarize the diff\nagent-response inline'),
+    ).toEqual({ kind: "agent-message", text: "summarize the diff\nagent-response inline" });
+  });
+
+  it("reports a null kind when the opening tag carries no kind attribute", () => {
+    expect(unwrapAgentEnvelope(envelope('source-agent-title="NxtOS"', "continue the audit"))).toEqual({
+      kind: null,
+      text: "continue the audit",
+    });
+  });
+
+  it("reads the kind of an agent-notification", () => {
+    expect(
+      unwrapAgentEnvelope(envelope('kind="agent-notification" source-agent-id="6ad88d89"', "agent finished")),
+    ).toEqual({ kind: "agent-notification", text: "agent finished" });
+  });
+
+  it("leaves a plain prompt untouched", () => {
+    const plain = "  what did we decide about pgvector  ";
+    expect(unwrapAgentEnvelope(plain)).toEqual({ kind: null, text: plain });
+  });
+
+  it("leaves a prompt that merely mentions the envelope mid-text untouched", () => {
+    const mentions =
+      'why does the hook choke on <paseo-system kind="agent-message"> wrappers in a transcript?';
+    expect(unwrapAgentEnvelope(mentions)).toEqual({ kind: null, text: mentions });
+  });
+
+  it("leaves a different tag that merely starts with the envelope name untouched", () => {
+    const other = "<paseo-systemic>explain the failure</paseo-systemic>";
+    expect(unwrapAgentEnvelope(other)).toEqual({ kind: null, text: other });
+  });
+
+  it("classifies the unwrapped message, not the envelope", () => {
+    // The routing attributes are what made notification fires look like content.
+    expect(classifyPrompt(envelope(ROUTING, "ok"))).toBe("evaluate");
+    expect(classifyPrompt(unwrapAgentEnvelope(envelope(ROUTING, "ok")).text)).toBe("skip");
   });
 });

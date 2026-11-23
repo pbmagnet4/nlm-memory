@@ -452,6 +452,15 @@ function contentWordCount(s) {
   const m = s.match(/[A-Za-z0-9]{2,}/g);
   return m ? m.length : 0;
 }
+var ENVELOPE_OPEN = /^<paseo-system(?=[\s>])([^>]*)>([\s\S]*)$/;
+var ENVELOPE_KIND = /\bkind="([^"]*)"/;
+var ENVELOPE_CLOSE = /\s*<\/paseo-system>\s*$/;
+function unwrapAgentEnvelope(prompt) {
+  const opened = ENVELOPE_OPEN.exec(prompt.trimStart());
+  if (!opened) return { kind: null, text: prompt };
+  const kind = ENVELOPE_KIND.exec(opened[1])?.[1] ?? null;
+  return { kind, text: opened[2].replace(ENVELOPE_CLOSE, "").trim() };
+}
 function classifyPrompt(prompt) {
   let p = prompt.replace(HARNESS_BLOCK, " ").replace(/\s+/g, " ").trim();
   if (contentWordCount(p) === 0) return "skip";
@@ -979,7 +988,8 @@ function normalizeRecall(raw) {
   return raw;
 }
 async function runHook(input, deps) {
-  const gate = classifyPrompt(input.prompt);
+  const envelope = unwrapAgentEnvelope(input.prompt);
+  const gate = envelope.kind === "agent-notification" ? "skip" : classifyPrompt(envelope.text);
   const preview = input.prompt.slice(0, PROMPT_PREVIEW_CHARS);
   if (gate === "generative" || gate === "skip") {
     appendHookLog(DEFAULT_TEAM_ID, {
@@ -1000,7 +1010,7 @@ async function runHook(input, deps) {
   try {
     fetched = normalizeRecall(
       await withDeadline(
-        deps.recall(buildRecallQuery(input)),
+        deps.recall(buildRecallQuery({ ...input, prompt: envelope.text })),
         deadline - Date.now(),
         { hits: [], facts: [], outcome: "timeout" }
       )
@@ -1010,7 +1020,7 @@ async function runHook(input, deps) {
   }
   const latencyMs = Math.round(performance.now() - recallStart);
   const hits = hubDampEnabled() ? applyHubness(fetched.hits, {
-    prompt: input.prompt,
+    prompt: envelope.text,
     injectionCounts: deps.injectionCounts ?? countRecentInjectionPrompts(HUB_WINDOW_DAYS),
     alpha: hubAlpha(),
     lexicalFloor: hubLexicalFloor()
