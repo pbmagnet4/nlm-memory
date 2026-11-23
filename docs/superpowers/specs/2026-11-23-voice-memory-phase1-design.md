@@ -29,7 +29,8 @@ code exemplars.
 
 ```sql
 CREATE TABLE IF NOT EXISTS writing_samples (
-  id            TEXT PRIMARY KEY,   -- sha256(install_scope|voice|channel|text_hash|source)[:16]
+  id            TEXT PRIMARY KEY,   -- sha256(tenant_id|install_scope|voice|channel|text_hash|source)[:16]
+  tenant_id     TEXT NOT NULL,      -- dedup is per tenant (review 0e604bf5)
   install_scope TEXT NOT NULL,
   voice         TEXT NOT NULL,
   channel       TEXT NOT NULL,
@@ -211,6 +212,15 @@ Checked against main 800741b before dispatch: no shared secrets scrubber and no
 UUIDv7 helper exist (so neither is assumed); `yaml` and `zod` are dependencies;
 the next migrations are SQLite 051 and Postgres 048; `src/core/scope/alias-map.ts`
 is the file-config precedent; the semantic read worker (T1770) is on main.
+
+## Shipped, 2026-11-23
+
+Pieces A to D landed in nlm-memory (store 99f80b8, rules 9885a48, recall 19ab321,
+intake 8189512) and deployed as 0.21.21-t2438-voice.1 with `NLM_VOICE_ENABLED=1`. Piece E: the
+published-posts and sent-email exporters landed in Whtnxt Agent, Edward's rules live in the local
+`nxtvoice-rules` repo, and the email-composer and content-director agents call `recall_voice`.
+Corrections made while building: the sample id includes the tenant; `resolveRules` takes the
+parsed file; E1 reads only the Social Media table; recall tiers by fetching published first.
 
 ## Acceptance for phase 1
 
