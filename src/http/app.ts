@@ -129,6 +129,7 @@ import { warmupSnapshot } from "@core/health/warmup-state.js";
 import { buildSloResponse, type SloState } from "@core/health/slo-metrics.js";
 import { laneHealthSnapshot } from "@core/health/embedding-lane-state.js";
 import { inflightSnapshot } from "@core/health/embed-inflight.js";
+import { recallEmbedBreaker } from "@core/health/embed-breaker.js";
 import { factEmbedSnapshot } from "@core/health/fact-embed-state.js";
 import type { IngestLagMonitor } from "@core/health/ingest-lag.js";
 import type { DiskGuardStatus } from "@core/health/disk-guard.js";
@@ -806,7 +807,7 @@ function registerHealthRoute(app: Hono<AppEnv>, deps: HttpDeps): void {
     const job = jobSnap && jobSnap.state !== "idle" ? jobSnap : null;
     const embedJobSnap: JobSnapshot | null = deps.embedder ? deps.embedder.jobs.snapshot() : null;
     const embedJob = embedJobSnap && embedJobSnap.state !== "idle" ? embedJobSnap : null;
-    return c.json({ status: "ok", service: "nlm-memory", version: pkg.version, warmup: warmupSnapshot(), embedding: laneHealthSnapshot(), embedInflight: inflightSnapshot(), factEmbeddings: factEmbedSnapshot(), corpus, update, job, embedJob, diskGuard: deps.diskGuard ? deps.diskGuard() : null });
+    return c.json({ status: "ok", service: "nlm-memory", version: pkg.version, warmup: warmupSnapshot(), embedding: laneHealthSnapshot(), embedInflight: inflightSnapshot(), embedBreaker: recallEmbedBreaker.snapshot(), factEmbeddings: factEmbedSnapshot(), corpus, update, job, embedJob, diskGuard: deps.diskGuard ? deps.diskGuard() : null });
   });
 
   app.get("/api/health/ingest", async (c) => {
