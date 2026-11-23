@@ -265,6 +265,7 @@ var package_default = {
     "eval:fact-recall": "tsx scripts/eval/fact-recall-eval.ts",
     "eval:dream": "tsx scripts/eval/dream-eval.ts",
     "eval:recall-impact-replay": "tsx scripts/eval/recall-impact-replay.ts",
+    "eval:load-replay": "tsx scripts/eval/load-replay.ts",
     "eval:code-exemplar": "tsx scripts/eval/code-exemplar-eval.ts",
     "eval:reranker": "tsx scripts/eval/reranker-ablation.ts",
     "eval:floor": "tsx scripts/eval/floor-calibration.ts",
@@ -656,6 +657,7 @@ function tenantStatePath(tenantId, ...segments) {
 }
 
 // src/core/hook/hook-log.ts
+var RECALL_QUERY_LOG_CHARS = 500;
 function logPath(tenantId) {
   if (tenantId === DEFAULT_TEAM_ID) {
     return process.env["NLM_HOOK_LOG"] ?? tenantStatePath(tenantId, "hook-log.jsonl");
@@ -1006,12 +1008,13 @@ async function runHook(input, deps) {
     return "";
   }
   const deadline = Date.now() + (deps.deadlineMs ?? hookDeadlineMs());
+  const recallQuery = buildRecallQuery({ ...input, prompt: envelope.text });
   let fetched = { hits: [], facts: [], outcome: "timeout" };
   const recallStart = performance.now();
   try {
     fetched = normalizeRecall(
       await withDeadline(
-        deps.recall(buildRecallQuery({ ...input, prompt: envelope.text })),
+        deps.recall(recallQuery),
         deadline - Date.now(),
         { hits: [], facts: [], outcome: "timeout" }
       )
@@ -1046,6 +1049,8 @@ async function runHook(input, deps) {
     wouldInject: selected.map((h) => h.id),
     estTokens,
     mode: deps.mode,
+    recallQuery: recallQuery.slice(0, RECALL_QUERY_LOG_CHARS),
+    ...recallQuery.length > RECALL_QUERY_LOG_CHARS ? { recallQueryTruncated: true } : {},
     ...fetched.outcome ? { recallOutcome: fetched.outcome } : {},
     ...fetched.outcome === "ok" ? { latencyMs } : {}
   });

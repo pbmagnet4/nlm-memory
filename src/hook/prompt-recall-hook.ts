@@ -12,7 +12,7 @@
 
 import { classifyPrompt, unwrapAgentEnvelope } from "@core/hook/gate.js";
 import { recentConversationContext, topicalWordCount } from "./recent-context.js";
-import { appendHookLog } from "@core/hook/hook-log.js";
+import { appendHookLog, RECALL_QUERY_LOG_CHARS } from "@core/hook/hook-log.js";
 import { loadSurfaced, recordSurfaced } from "@core/hook/memo.js";
 import { applyHubness, HUB_WINDOW_DAYS } from "@core/hook/hubness.js";
 import { countRecentInjectionPrompts } from "@core/recall/hook-recall-log.js";
@@ -221,6 +221,7 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
   }
 
   const deadline = Date.now() + (deps.deadlineMs ?? hookDeadlineMs());
+  const recallQuery = buildRecallQuery({ ...input, prompt: envelope.text });
 
   // The outer deadline and the inner HTTP timeout are separate budgets; both
   // yield an empty result, so both must name themselves or the log conflates
@@ -230,7 +231,7 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
   try {
     fetched = normalizeRecall(
       await withDeadline(
-        deps.recall(buildRecallQuery({ ...input, prompt: envelope.text })),
+        deps.recall(recallQuery),
         deadline - Date.now(),
         { hits: [], facts: [], outcome: "timeout" },
       ),
@@ -275,6 +276,8 @@ export async function runHook(input: HookInput, deps: RunHookDeps): Promise<stri
     wouldInject: selected.map((h) => h.id),
     estTokens,
     mode: deps.mode,
+    recallQuery: recallQuery.slice(0, RECALL_QUERY_LOG_CHARS),
+    ...(recallQuery.length > RECALL_QUERY_LOG_CHARS ? { recallQueryTruncated: true } : {}),
     ...(fetched.outcome ? { recallOutcome: fetched.outcome } : {}),
     ...(fetched.outcome === "ok" ? { latencyMs } : {}),
   });
