@@ -1,13 +1,18 @@
 import { Worker } from "node:worker_threads";
 import type { SearchOptions, SemanticNeighbor } from "@ports/session-store.js";
 import type { FactEligibility, FactSemanticNeighbor } from "@ports/fact-store.js";
+import type { WritingSampleHit } from "@ports/writing-sample-store.js";
+import type { WritingSampleReadFilter } from "./sqlite-semantic-writing-samples.js";
 
 export type SemanticRead = {
   readonly tenantId: string;
   readonly queryVector: Float32Array;
   readonly limit: number;
-} & ({ readonly lane: "sessions"; readonly options?: SearchOptions } | { readonly lane: "facts"; readonly options?: FactEligibility });
-export type SemanticRows = readonly SemanticNeighbor[] | readonly FactSemanticNeighbor[];
+} & ({ readonly lane: "sessions"; readonly options?: SearchOptions } | { readonly lane: "facts"; readonly options?: FactEligibility }
+  // The voice lane's filter carries the store-resolved install_scope, so the
+  // worker never resolves a scope of its own (T2438).
+  | { readonly lane: "writing-samples"; readonly options: WritingSampleReadFilter });
+export type SemanticRows = readonly SemanticNeighbor[] | readonly FactSemanticNeighbor[] | readonly WritingSampleHit[];
 interface Pending {
   readonly request: SemanticRead;
   readonly signal: AbortSignal | undefined;

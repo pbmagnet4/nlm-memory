@@ -18,6 +18,7 @@ import type { LearnerStore } from "./learner-store.js";
 import type { SessionStore } from "./session-store.js";
 import type { SignalStore } from "./signal-store.js";
 import type { WorkstreamStore } from "./workstream-store.js";
+import type { WritingSampleStore } from "./writing-sample-store.js";
 // Registry ports are defined alongside their adapters (the SourceRow/ProviderRow
 // domain types live there); these are type-only imports.
 import type { SourceRegistryPort } from "@core/sources/source-registry.js";
@@ -30,6 +31,8 @@ export interface Storage {
   readonly sessions: SessionStore;
   readonly signals: SignalStore;
   readonly exemplars: CodeExemplarStore;
+  /** Voice lane: prose the person published or approved (T2438 phase 1). */
+  readonly writingSamples: WritingSampleStore;
   readonly workstreams: WorkstreamStore;
   readonly entities: EntityStore;
   /** Learner evidence (Gnos-style concept tracking; spec 2026-10-06). */

@@ -58,6 +58,8 @@ const STAMP_TABLES = [
   "entity_variants",
   "session_entities",
   "workstream_entities",
+  // Added after the M1 census: the voice lane (T2438) stamps its own tenant_id.
+  "writing_samples",
 ] as const;
 
 /**

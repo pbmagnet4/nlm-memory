@@ -19,6 +19,7 @@ import { PgSessionStore } from "./pg-session-store.js";
 import { PgSignalStore } from "./pg-signal-store.js";
 import { PgCodeExemplarStore } from "./pg-code-exemplar-store.js";
 import { PgWorkstreamStore } from "./pg-workstream-store.js";
+import { PgWritingSampleStore } from "./pg-writing-sample-store.js";
 import { PgEmbeddingConfigStore } from "./pg-embedding-config.js";
 import { PgSourceRegistry } from "@core/sources/source-registry.js";
 import { PgClassifierSettingsStore } from "./pg-classifier-settings.js";
@@ -30,6 +31,12 @@ import { PgTeamTokenStore } from "@core/tenancy/team-token-store.js";
 export interface PgStorageOptions {
   readonly connectionString: string;
   readonly migrationsDir: string;
+  /**
+   * Overrides `installScope()` for the voice lane, which stamps the scope
+   * server-side rather than taking it from a caller. Tests pin it; production
+   * leaves it unset (the SQLite adapter has the same seam).
+   */
+  readonly installScopeProvider?: () => string;
 }
 
 export class PgStorage implements Storage {
@@ -38,6 +45,7 @@ export class PgStorage implements Storage {
   readonly sessions: PgSessionStore;
   readonly signals: PgSignalStore;
   readonly exemplars: PgCodeExemplarStore;
+  readonly writingSamples: PgWritingSampleStore;
   readonly workstreams: PgWorkstreamStore;
   readonly entities: PgEntityStore;
   readonly learners: PgLearnerStore;
@@ -52,7 +60,7 @@ export class PgStorage implements Storage {
   private readonly _pool: Pool;
   private readonly _migrationsDir: string;
 
-  private constructor(pool: Pool, migrationsDir: string) {
+  private constructor(pool: Pool, migrationsDir: string, installScopeProvider?: () => string) {
     this._pool = pool;
     this._migrationsDir = migrationsDir;
     this.facts = new PgFactStore(pool);
@@ -60,6 +68,7 @@ export class PgStorage implements Storage {
     this.sessions = new PgSessionStore(pool);
     this.signals = new PgSignalStore(pool);
     this.exemplars = new PgCodeExemplarStore(pool);
+    this.writingSamples = new PgWritingSampleStore(pool, { installScopeProvider });
     this.workstreams = new PgWorkstreamStore(pool);
     this.entities = new PgEntityStore(pool);
     this.learners = new PgLearnerStore(pool);
@@ -78,7 +87,7 @@ export class PgStorage implements Storage {
     types.setTypeParser(1184, isoParser); // TIMESTAMPTZ
     types.setTypeParser(1114, isoParser); // TIMESTAMP
     const pool = new Pool({ connectionString: opts.connectionString, types });
-    return new PgStorage(pool, opts.migrationsDir);
+    return new PgStorage(pool, opts.migrationsDir, opts.installScopeProvider);
   }
 
   async init(): Promise<void> {

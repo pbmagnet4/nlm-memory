@@ -3,6 +3,7 @@ import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 import { readSemanticSessions } from "./sqlite-semantic-sessions.js";
 import { readSemanticFacts } from "./sqlite-semantic-facts.js";
+import { readSemanticWritingSamples } from "./sqlite-semantic-writing-samples.js";
 import type { SemanticRead } from "./sqlite-semantic-reader.js";
 
 const db = new Database(workerData.dbPath, { readonly: true, fileMustExist: true });
@@ -13,7 +14,9 @@ parentPort!.on("message", (request: SemanticRead) => {
   try {
     const rows = request.lane === "sessions"
       ? readSemanticSessions(db, request.tenantId, request.queryVector, request.limit, request.options)
-      : readSemanticFacts(db, request.tenantId, request.queryVector, request.limit, request.options);
+      : request.lane === "facts"
+        ? readSemanticFacts(db, request.tenantId, request.queryVector, request.limit, request.options)
+        : readSemanticWritingSamples(db, request.tenantId, request.queryVector, request.limit, request.options);
     parentPort!.postMessage({ rows, sqlMs: performance.now() - start });
   } catch {
     parentPort!.postMessage({ error: "semantic read failed", sqlMs: performance.now() - start });
