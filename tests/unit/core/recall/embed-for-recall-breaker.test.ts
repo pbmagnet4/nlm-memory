@@ -3,7 +3,7 @@ import { embedForRecall } from "../../../../src/core/recall/request-budget.js";
 import { createCircuitBreaker, FAILURE_THRESHOLD } from "../../../../src/core/health/embed-breaker.js";
 import { LLMUnreachableError, type LLMClient } from "../../../../src/ports/llm-client.js";
 
-const vector = { vector: new Float32Array(768), dim: 768 };
+const vector = { vector: new Float32Array(768), model: "test-embed" };
 function client(embed: LLMClient["embed"]): LLMClient & { calls: number } {
   const c = { calls: 0, embed: (...a: Parameters<LLMClient["embed"]>) => { c.calls += 1; return embed(...a); } };
   return c as unknown as LLMClient & { calls: number };
