@@ -97,6 +97,22 @@ afterEach(async () => {
 });
 
 describe("recallVoice: tiering and scope", () => {
+  it("never lets a near approved sample displace a published one beyond the k-th slot", async () => {
+    await seed({ text: "approved a", distance: 0.1, source: "approved", outcome: "approved" });
+    await seed({ text: "approved b", distance: 0.2, source: "approved", outcome: "approved" });
+    await seed({ text: "approved c", distance: 0.3, source: "approved", outcome: "approved" });
+    const p1 = await seed({ text: "published one", distance: 4 });
+    const p2 = await seed({ text: "published two", distance: 5 });
+    const result = await recallVoice(
+      { writingSamples: storage.writingSamples, embedClient: fakeEmbedder() },
+      TENANT,
+      { voice: "edward", channel: "linkedin", request: "a post about the daemon", k: 3 },
+    );
+    expect(result.examples.slice(0, 2).map((e) => e.id)).toEqual([p1, p2]);
+    expect(result.examples[2]!.outcome).toBe("approved");
+    expect(result.examples).toHaveLength(3);
+  });
+
   it("ranks published before approved, then by distance", async () => {
     const approvedNear = await seed({ text: "approved near", distance: 1, source: "approved", outcome: "approved" });
     const publishedFar = await seed({ text: "published far", distance: 5 });

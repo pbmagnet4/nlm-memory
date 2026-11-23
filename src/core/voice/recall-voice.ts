@@ -74,12 +74,6 @@ function clampK(k: number | undefined): number {
 }
 
 /** Published before approved, then by distance — the design §D.1 tiering. */
-function tiered(hits: ReadonlyArray<WritingSampleHit>): WritingSampleHit[] {
-  const published = hits.filter((h) => h.outcome === "published");
-  const approved = hits.filter((h) => h.outcome !== "published");
-  return [...published, ...approved];
-}
-
 function toExample(
   hit: Pick<WritingSampleHit, "id" | "channel" | "source" | "outcome" | "text" | "sourceRef">,
   distance: number | null,
@@ -117,30 +111,25 @@ export async function recallVoice(
   let avoid: RecallVoiceAvoid[];
   if (queryVector) {
     const vector = queryVector;
-    const primary = tiered(
-      await deps.writingSamples.search(tenantId, vector, {
-        voice: input.voice,
-        channel: input.channel,
-        outcomes: ["published", "approved"],
-        k,
-      }),
-    );
+    // Tiered by fetching, not by sorting a mixed top-k: published samples come
+    // first and approved ones only fill what published cannot, so a near
+    // approved sample never displaces a published one just past the k-th slot.
+    const tieredSearch = async (channel: string | undefined, want: number, exclude: ReadonlySet<string>) => {
+      const take = async (outcome: "published" | "approved", n: number) =>
+        n <= 0 ? [] : (await deps.writingSamples.search(tenantId, vector, {
+          voice: input.voice,
+          ...(channel !== undefined ? { channel } : {}),
+          outcomes: [outcome],
+          k: Math.min(50, n + exclude.size),
+        })).filter((hit) => !exclude.has(hit.id) && (channel !== undefined || hit.channel !== input.channel)).slice(0, n);
+      const published = await take("published", want);
+      return [...published, ...(await take("approved", want - published.length))];
+    };
+    const primary = await tieredSearch(input.channel, k, new Set());
     examples = primary.map((hit) => toExample(hit, hit.distance));
     if (examples.length < k) {
-      const seen = new Set(examples.map((e) => e.id));
-      const rest = tiered(
-        await deps.writingSamples.search(tenantId, vector, {
-          voice: input.voice,
-          outcomes: ["published", "approved"],
-          k: Math.min(50, k + primary.length),
-        }),
-      );
-      for (const hit of rest) {
-        if (examples.length >= k) break;
-        if (hit.channel === input.channel || seen.has(hit.id)) continue;
-        seen.add(hit.id);
-        examples.push(toExample(hit, hit.distance));
-      }
+      const others = await tieredSearch(undefined, k - examples.length, new Set(examples.map((e) => e.id)));
+      examples.push(...others.map((hit) => toExample(hit, hit.distance)));
     }
     avoid = [];
     const last = examples[examples.length - 1];
