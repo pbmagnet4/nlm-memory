@@ -22,6 +22,7 @@ import { SqliteLearnerStore } from "./sqlite-learner-store.js";
 import { SqliteSessionStore } from "./sqlite-session-store.js";
 import { SqliteSignalStore } from "./sqlite-signal-store.js";
 import { SqliteWorkstreamStore } from "./sqlite-workstream-store.js";
+import { SqliteWritingSampleStore } from "./sqlite-writing-sample-store.js";
 import { SourceRegistry } from "@core/sources/source-registry.js";
 import { SqliteClassifierSettingsStore } from "./sqlite-classifier-settings.js";
 import { SqliteDreamSettingsStore } from "./sqlite-dream-settings.js";
@@ -32,6 +33,12 @@ import { TeamTokenStore } from "@core/tenancy/team-token-store.js";
 export interface SqliteStorageOptions {
   readonly dbPath: string;
   readonly migrationsDir: string;
+  /**
+   * Overrides `installScope()` for the voice lane, which stamps the scope
+   * server-side rather than taking it from a caller. Tests pin it; production
+   * leaves it unset so every write carries this install's real scope id.
+   */
+  readonly installScopeProvider?: () => string;
 }
 
 export class SqliteStorage implements Storage {
@@ -40,6 +47,7 @@ export class SqliteStorage implements Storage {
   readonly properties: SqlitePropertyStore;
   readonly signals: SqliteSignalStore;
   readonly exemplars: SqliteCodeExemplarStore;
+  readonly writingSamples: SqliteWritingSampleStore;
   readonly workstreams: SqliteWorkstreamStore;
   readonly entities: SqliteEntityStore;
   readonly learners: SqliteLearnerStore;
@@ -57,6 +65,7 @@ export class SqliteStorage implements Storage {
     facts: SqliteFactStore,
     signals: SqliteSignalStore,
     exemplars: SqliteCodeExemplarStore,
+    writingSamples: SqliteWritingSampleStore,
     workstreams: SqliteWorkstreamStore,
     entities: SqliteEntityStore,
     learners: SqliteLearnerStore,
@@ -72,6 +81,7 @@ export class SqliteStorage implements Storage {
     this.properties = new SqlitePropertyStore(sessions.rawDb());
     this.signals = signals;
     this.exemplars = exemplars;
+    this.writingSamples = writingSamples;
     this.workstreams = workstreams;
     this.entities = entities;
     this.learners = learners;
@@ -93,6 +103,7 @@ export class SqliteStorage implements Storage {
     const facts = new SqliteFactStore(db, reader);
     const signals = new SqliteSignalStore(db);
     const exemplars = new SqliteCodeExemplarStore(db);
+    const writingSamples = new SqliteWritingSampleStore(db, reader, { installScopeProvider: opts.installScopeProvider });
     const workstreams = new SqliteWorkstreamStore(db);
     const entities = new SqliteEntityStore(db);
     const learners = new SqliteLearnerStore(db);
@@ -102,7 +113,7 @@ export class SqliteStorage implements Storage {
     const classifierSettings = new SqliteClassifierSettingsStore(db);
     const embedderSettings = new SqliteEmbedderSettingsStore(db);
     const teamTokens = new TeamTokenStore(db);
-    return new SqliteStorage(sessions, facts, signals, exemplars, workstreams, entities, learners, embeddingConfig, sources, providers, classifierSettings, embedderSettings, teamTokens);
+    return new SqliteStorage(sessions, facts, signals, exemplars, writingSamples, workstreams, entities, learners, embeddingConfig, sources, providers, classifierSettings, embedderSettings, teamTokens);
   }
 
   async init(): Promise<void> {

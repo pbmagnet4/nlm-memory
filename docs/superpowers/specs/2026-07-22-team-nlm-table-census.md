@@ -43,5 +43,8 @@ Dispositions per program spec §2: **STAMP** = carries `tenant_id NOT NULL`; **D
 | learners | STAMP | learner-evidence corpus (spec 2026-10-06) |
 | enrollments | STAMP | learner-evidence corpus (spec 2026-10-06) |
 | learning_events | STAMP | learner-evidence corpus (spec 2026-10-06) |
+| writing_samples | STAMP | voice corpus (T2438); install_scope stamped server-side, `tenant_id` enforced in every read |
+| writing_samples_vec | DERIVE | sqlite-vec shadow of writing_samples; vector-path rule resolves ids against stamped writing_samples |
+| writing_sample_embeddings | DERIVE | pgvector mirror of writing_samples_vec, via writing_samples.id (ON DELETE CASCADE) |
 
 Transient `_new` rebuild tables (`sessions_new`, `sources_new`, `actions_new`, `session_edges_new`) are excluded: they exist only inside a single migration's rebuild transaction.

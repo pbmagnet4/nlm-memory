@@ -51,3 +51,26 @@ named below.
 
 No telemetry, no analytics, no phone-home. The update check is the only network
 call the daemon makes on its own, and it sends nothing but a version query.
+
+## Voice samples
+
+With `NLM_VOICE_ENABLED=1` (default off) the daemon keeps a second corpus:
+`writing_samples` — prose the person already published or approved, plus
+provenance (URL, channel, outcome), and nothing else. It is the recall corpus
+behind `recall_voice`, and it is the person's own words, so it is held to the
+same boundary as a published post and one tighter:
+
+- **Local, tenant-scoped, loopback-served.** Same database file, same
+  `tenant_id` filter as every other corpus, and an `install_scope` the daemon
+  stamps itself — a caller cannot ask for another install's samples.
+- **Never exported.** Samples are not in the dataset projector, not in digests,
+  not in any telemetry (there is none) and not in any export path. The recall
+  tool hands examples to the agent drafting in your session; that is the only
+  way out of the store.
+- **Embedding is the only computation over the text**, and it goes to whichever
+  embedder you configured — the same call sessions and facts already make. The
+  voice lane adds no endpoint and no new egress path. The `context` column (what
+  a post replied to) is never embedded or searched.
+- **Off means off.** The tables are created either way so migrations stay
+  idempotent, but with the flag unset nothing is written to them and nothing
+  reads them.
