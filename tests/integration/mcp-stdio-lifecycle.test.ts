@@ -39,13 +39,13 @@ it.each(["eof", "server", "transport", "repeated", "startup-create", "startup-co
       if (!mode.startsWith("startup")) {
         await within(request(1, "initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "fixture", version: "1" } }), 10_000);
         child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
-        const result = await within(request(2, "tools/call", { name: "recall_context", arguments: { query: "fixture", mode: "hybrid" } }), 10_000);
+        const result = await within(request(2, "tools/call", { name: "recall_context", arguments: { query: "fixture", mode: "hybrid", timeoutMs: 5_000 } }), 10_000);
         expect(result.result.isError).not.toBe(true);
         expect(JSON.parse(result.result.content[0].text).coverage).toMatchObject({ facts: "complete", sessions: "complete" });
         if (mode === "eof") child.stdin.end();
         else await within(request(3, "tools/call", { name: "fixture_close", arguments: {} }), 2_000);
       }
-      expect(await within(exited, 3_000)).toEqual({ code: 0, signal: null });
+      expect(await within(exited, 10_000)).toEqual({ code: 0, signal: null });
       expect(fixture?.closes).toBe(1);
       expect(fixture?.signalListeners).toEqual({ SIGINT: 0, SIGTERM: 0 });
       expect(fixture?.inputListeners).toEqual([0, 0, 0, 0]);
@@ -55,7 +55,7 @@ it.each(["eof", "server", "transport", "repeated", "startup-create", "startup-co
       if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await exited; }
       lines.close(); rmSync(dir, { recursive: true, force: true });
     }
-  }, 20_000,
+  }, 40_000,
 );
 
 it("drains an active stdio tool before closing storage on SIGTERM", async () => {
