@@ -3966,6 +3966,72 @@ voiceCmd
     }
   });
 
+// `voice retire` deletes by source_ref through the daemon, in batches of 500
+// (core/voice/retire.ts). Unlike the producers above, an unreachable or
+// refusing daemon here is a hard error, not a shrug: this is a deliberate
+// operator action, so it says one line and exits 1.
+voiceCmd
+  .command("retire")
+  .description("Delete voice samples by source_ref through the daemon. Prints counts only — never the text.")
+  .option("--ref <ref...>", "source_ref to retire; several may follow the flag or repeat it")
+  .option("--refs-file <path>", "file of source_refs, one per line")
+  .option("--dry-run", "count the refs read and post nothing")
+  .action(async (opts) => {
+    const { formatVoiceRetireCounts, readVoiceRefsFile, runVoiceRetire } = await import("../core/voice/retire.js");
+    const fromArgs = ((opts.ref ?? []) as string[]).map((ref) => ref.trim()).filter((ref) => ref !== "");
+    if (fromArgs.length > 0 && opts.refsFile !== undefined) {
+      process.stderr.write("voice retire: pass --ref or --refs-file, not both\n");
+      process.exit(1);
+      return;
+    }
+    let refs: string[];
+    if (opts.refsFile !== undefined) {
+      try {
+        refs = readVoiceRefsFile(opts.refsFile as string);
+      } catch (e) {
+        process.stderr.write(`voice retire: cannot read ${opts.refsFile}: ${e instanceof Error ? e.message : String(e)}\n`);
+        process.exit(1);
+        return;
+      }
+    } else {
+      refs = fromArgs;
+    }
+    if (refs.length === 0) {
+      process.stderr.write("voice retire: no refs given (--ref <ref>... or --refs-file <path>)\n");
+      process.exit(1);
+      return;
+    }
+    const url = `http://127.0.0.1:${port()}/api/voice/retire`;
+    try {
+      const counts = await runVoiceRetire({
+        refs,
+        dryRun: Boolean(opts.dryRun),
+        post: async (batch) => {
+          try {
+            const res = await fetch(url, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ refs: batch }),
+            });
+            if (res.status !== 200) {
+              // One bounded line, as in voice-signal: the daemon's reason, no body.
+              const reason = (await res.text()).replace(/\s+/g, " ").trim().slice(0, 200);
+              return { status: res.status, reason };
+            }
+            const accepted = (await res.json()) as { retired?: number };
+            return { status: 200, retired: typeof accepted.retired === "number" ? accepted.retired : 0 };
+          } catch {
+            return { status: 0, reason: `daemon not listening on 127.0.0.1:${port()}` };
+          }
+        },
+      });
+      process.stdout.write(formatVoiceRetireCounts(counts) + "\n");
+    } catch (e) {
+      process.stderr.write(`voice retire: ${e instanceof Error ? e.message : String(e)}\n`);
+      process.exit(1);
+    }
+  });
+
 // Entrypoint guard: only parse argv when this file IS the executed script.
 // realpathSync resolves the npm bin symlink so the global `nlm` shim still
 // matches; without the guard, importing any helper from this module inside

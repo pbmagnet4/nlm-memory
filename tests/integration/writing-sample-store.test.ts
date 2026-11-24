@@ -50,6 +50,13 @@ const harness: WritingSampleStoreContractHarness = {
       )
       .get(id) ?? null;
   },
+  async hasVector(storage, id) {
+    return (
+      (storage as SqliteStorage).rawDb()
+        .prepare<[string], { one: number }>("SELECT 1 AS one FROM writing_samples_vec WHERE sample_id = ?")
+        .get(id) !== undefined
+    );
+  },
 };
 
 describe("SqliteStorage: writing-sample-store contract", () => {

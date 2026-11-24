@@ -105,4 +105,14 @@ export interface WritingSampleStore {
     tenantId: string,
     filter: WritingSampleSearchFilter,
   ): Promise<ReadonlyArray<WritingSampleLatestHit>>;
+
+  /**
+   * Hard-delete every sample of the tenant whose `source_ref` is in `refs`,
+   * together with its vector, in one transaction; returns the rows deleted.
+   * The way out for rows an import mislabelled as the person's writing —
+   * refs that match nothing are a no-op, and another tenant's rows sharing a
+   * `source_ref` are never touched. Callers bound `refs` (the HTTP endpoint
+   * accepts at most 1000 per call); the port does not truncate.
+   */
+  retireByRefs(tenantId: string, refs: readonly string[]): Promise<number>;
 }

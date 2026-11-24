@@ -235,6 +235,29 @@ export class SqliteWritingSampleStore implements WritingSampleStore {
       }));
   }
 
+  async retireByRefs(tenantId: string, refs: readonly string[]): Promise<number> {
+    if (refs.length === 0) return 0;
+    const tc = tenantClause(tenantId);
+    const placeholders = refs.map(() => "?").join(",");
+    // writing_samples_vec carries no tenant_id (DERIVE-VIA-FK), so the ids to
+    // delete are resolved through the tenant-stamped table first and both
+    // deletes ride on those ids — one transaction, no borrowed vector.
+    const doomed = this.db.prepare<unknown[], { id: string }>(
+      `SELECT id FROM writing_samples WHERE source_ref IN (${placeholders}) AND ${tc.sql}`,
+    );
+    const del = this.db.prepare(`DELETE FROM writing_samples WHERE id = ? AND ${tc.sql}`);
+    const delVec = this.db.prepare("DELETE FROM writing_samples_vec WHERE sample_id = ?");
+    const txn = this.db.transaction((): number => {
+      let n = 0;
+      for (const { id } of doomed.all(...refs, tc.param)) {
+        n += del.run(id, tc.param).changes;
+        delVec.run(id);
+      }
+      return n;
+    });
+    return txn();
+  }
+
   private insertStmt() {
     return this.db.prepare<SampleRow & { tenant_id: string }>(`
       INSERT OR IGNORE INTO writing_samples (

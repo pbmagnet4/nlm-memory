@@ -1,10 +1,12 @@
 /**
- * POST /api/voice/sample (T2438 piece C, design §C1).
+ * POST /api/voice/sample and POST /api/voice/retire (T2438 piece C, design §C1).
  *
  * The whole intake contract in one file: the flag decides whether the route
  * exists at all, the store decides whether the deployment can serve it,
  * validation is the only thing standing between a caller and the corpus, and
  * embedding is best-effort — a dead embedder must still leave a stored sample.
+ * Retire is the inverse route on the same gate: validation is over `refs`
+ * only, and the happy path deletes instead of storing.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -26,22 +28,29 @@ const SAMPLE = {
   ts: "2026-11-20T09:00:00.000Z",
 };
 
-/** Insert-only fake: enough of WritingSampleStore to drive the route. */
-function fakeStore(opts: { skipped?: boolean } = {}): WritingSampleStore & {
+/** Insert-only fake plus a retiring counter: enough of WritingSampleStore to drive both routes. */
+function fakeStore(opts: { skipped?: boolean; retired?: number } = {}): WritingSampleStore & {
   inserted: WritingSampleInput[];
   embedded: Array<{ id: string; length: number }>;
+  retiredBatches: Array<{ tenantId: string; refs: readonly string[] }>;
 } {
   const inserted: WritingSampleInput[] = [];
   const embedded: Array<{ id: string; length: number }> = [];
+  const retiredBatches: Array<{ tenantId: string; refs: readonly string[] }> = [];
   return {
     inserted,
     embedded,
+    retiredBatches,
     async insert(_tenantId, input) {
       inserted.push(input);
       return { id: `sample-${inserted.length}`, skipped: opts.skipped ?? false };
     },
     async upsertEmbedding(_tenantId, id, vector) {
       embedded.push({ id, length: vector.length });
+    },
+    async retireByRefs(tenantId, refs) {
+      retiredBatches.push({ tenantId, refs });
+      return opts.retired ?? refs.length;
     },
     async missingEmbeddings() {
       return [];
@@ -79,8 +88,8 @@ function appWith(deps: {
   } as never);
 }
 
-async function post(app: ReturnType<typeof createApp>, body: unknown) {
-  return app.request("/api/voice/sample", {
+async function post(app: ReturnType<typeof createApp>, body: unknown, path = "/api/voice/sample") {
+  return app.request(path, {
     method: "POST",
     headers: { "content-type": "application/json", host: "localhost:3940" },
     body: typeof body === "string" ? body : JSON.stringify(body),
@@ -315,6 +324,125 @@ describe("POST /api/voice/sample", () => {
       await tracker.drain();
 
       expect(await storage.writingSamples.missingEmbeddings("team_local", 8)).toEqual([{ id, text: SAMPLE.text }]);
+    });
+  });
+});
+
+describe("POST /api/voice/retire", () => {
+  const prevFlag = process.env["NLM_VOICE_ENABLED"];
+  const REFS_BODY = { refs: ["email:1001", "email:1002"] };
+  beforeEach(() => {
+    delete process.env["NLM_VOICE_ENABLED"];
+  });
+  afterEach(() => {
+    if (prevFlag === undefined) delete process.env["NLM_VOICE_ENABLED"];
+    else process.env["NLM_VOICE_ENABLED"] = prevFlag;
+  });
+
+  it("is a 404 when NLM_VOICE_ENABLED is not 1, store wired or not", async () => {
+    expect((await post(appWith({ store: fakeStore() }), REFS_BODY, "/api/voice/retire")).status).toBe(404);
+    expect((await post(appWith({}), REFS_BODY, "/api/voice/retire")).status).toBe(404);
+  });
+
+  it("is a 503 when the flag is on but no store is wired", async () => {
+    process.env["NLM_VOICE_ENABLED"] = "1";
+    const res = await post(appWith({}), REFS_BODY, "/api/voice/retire");
+    expect(res.status).toBe(503);
+    expect((await bodyOf(res)).error).toMatch(/not wired/);
+  });
+
+  describe("validation", () => {
+    beforeEach(() => {
+      process.env["NLM_VOICE_ENABLED"] = "1";
+    });
+
+    it("rejects any body that is not a list of refs", async () => {
+      const store = fakeStore();
+      const app = appWith({ store });
+      expect((await post(app, "{not json", "/api/voice/retire")).status).toBe(400);
+      expect((await post(app, {}, "/api/voice/retire")).status).toBe(400);
+      expect((await post(app, { refs: "email:1001" }, "/api/voice/retire")).status).toBe(400);
+      expect((await post(app, { refs: [] }, "/api/voice/retire")).status).toBe(400);
+      expect((await post(app, { refs: ["email:1001", 42] }, "/api/voice/retire")).status).toBe(400);
+      expect((await post(app, { refs: ["email:1001", "   "] }, "/api/voice/retire")).status).toBe(400);
+      expect(store.retiredBatches).toHaveLength(0);
+    });
+
+    it("caps one call at 1,000 refs and accepts the limit itself", async () => {
+      const app = appWith({ store: fakeStore() });
+      const atLimit = { refs: Array.from({ length: 1_000 }, (_, i) => `email:${i}`) };
+      const overLimit = { refs: Array.from({ length: 1_001 }, (_, i) => `email:${i}`) };
+      expect((await post(app, atLimit, "/api/voice/retire")).status).toBe(200);
+      expect((await post(app, overLimit, "/api/voice/retire")).status).toBe(400);
+    });
+
+    it("names refs in the error so an operator can fix the call", async () => {
+      const res = await post(appWith({ store: fakeStore() }), { refs: [] }, "/api/voice/retire");
+      expect((await bodyOf(res)).error).toMatch(/refs/);
+    });
+  });
+
+  describe("against the fake store", () => {
+    beforeEach(() => {
+      process.env["NLM_VOICE_ENABLED"] = "1";
+    });
+
+    it("retires the tenant's trimmed refs and reports the count", async () => {
+      const store = fakeStore();
+      const res = await post(appWith({ store }), { refs: [" email:1001 ", "email:1002"] }, "/api/voice/retire");
+      expect(res.status).toBe(200);
+      expect(await bodyOf(res)).toEqual({ retired: 2 });
+      expect(store.retiredBatches).toEqual([{ tenantId: "team_local", refs: ["email:1001", "email:1002"] }]);
+    });
+  });
+
+  describe("against the real store", () => {
+    let storage: SqliteStorage;
+    let dir: string;
+
+    beforeEach(async () => {
+      process.env["NLM_VOICE_ENABLED"] = "1";
+      dir = mkdtempSync(join(tmpdir(), "nlm-voice-retire-"));
+      storage = SqliteStorage.create({
+        dbPath: join(dir, "corpus.sqlite"),
+        migrationsDir: resolve("migrations"),
+        installScopeProvider: () => INSTALL_SCOPE,
+      });
+    });
+
+    afterEach(async () => {
+      await storage.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it("deletes the flagged rows and their vectors and leaves everything else", async () => {
+      const app = appWith({ store: storage.writingSamples });
+      const seed = async (text: string, sourceRef: string) => {
+        const { id } = await storage.writingSamples.insert("team_local", {
+          voice: "edward",
+          channel: "email-professional",
+          source: "import",
+          outcome: "published",
+          text,
+          sourceRef,
+          ts: "2026-11-20T09:00:00.000Z",
+        });
+        await storage.writingSamples.upsertEmbedding("team_local", id, new Float32Array(768));
+        return id;
+      };
+      const digest = await seed("your daily digest for monday", "email:1001");
+      const alert = await seed("job report: 3 runs failed", "email:1002");
+      const kept = await seed("a real email I wrote myself", "email:2001");
+
+      const res = await post(app, { refs: ["email:1001", "email:1002", "email:no-such-ref"] }, "/api/voice/retire");
+      expect(res.status).toBe(200);
+      expect(await bodyOf(res)).toEqual({ retired: 2 });
+
+      const db = storage.rawDb();
+      expect(db.prepare<[], { id: string }>("SELECT id FROM writing_samples ORDER BY id").all().map((r) => r.id)).toEqual([kept]);
+      expect(db.prepare<[string], { one: number }>("SELECT 1 AS one FROM writing_samples_vec WHERE sample_id = ?").get(digest)).toBeUndefined();
+      expect(db.prepare<[string], { one: number }>("SELECT 1 AS one FROM writing_samples_vec WHERE sample_id = ?").get(alert)).toBeUndefined();
+      expect(db.prepare<[string], { one: number }>("SELECT 1 AS one FROM writing_samples_vec WHERE sample_id = ?").get(kept)).toBeDefined();
     });
   });
 });

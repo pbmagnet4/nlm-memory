@@ -51,6 +51,8 @@ export interface WritingSampleStoreContractHarness {
    * server stamped — are asserted below the port.
    */
   rawSample(storage: Storage, id: string): Promise<{ install_scope: string; text_hash: string; tenant_id: string } | null>;
+  /** Direct vector-lane probe: is a vector still stored for this sample id? */
+  hasVector(storage: Storage, id: string): Promise<boolean>;
 }
 
 export function runWritingSampleStoreContract(h: WritingSampleStoreContractHarness): void {
@@ -310,6 +312,71 @@ export function runWritingSampleStoreContract(h: WritingSampleStoreContractHarne
       });
       expect(asTheirs).toHaveLength(1);
       expect(asTheirs[0]!.id).not.toBe(mine.id);
+    });
+
+    it("retires every sample of a source_ref with its vector, ignoring refs that match nothing", async () => {
+      const seed = async (overrides: Partial<WritingSampleInput>) => {
+        const { id } = await storage.writingSamples.insert(TENANT, makeSample(overrides));
+        await storage.writingSamples.upsertEmbedding(TENANT, id, vector(1));
+        return id;
+      };
+      const digest = await seed({ text: "your digest for today", source: "import", sourceRef: "email:1001" });
+      const alert = await seed({ text: "job report: three runs failed", source: "import", sourceRef: "email:1002" });
+      const unembedded = await storage.writingSamples.insert(
+        TENANT,
+        makeSample({ text: "a placeholder post", source: "import", sourceRef: "placeholder:x" }),
+      );
+      const kept = await seed({ text: "a post I actually wrote", sourceRef: "https://whtnxt.com/real" });
+
+      const retired = await storage.writingSamples.retireByRefs(TENANT, [
+        "email:1001",
+        "email:1002",
+        "placeholder:x",
+        "email-no-such-ref",
+      ]);
+      expect(retired).toBe(3);
+      for (const id of [digest, alert, unembedded.id]) {
+        expect(await h.rawSample(storage, id)).toBeNull();
+        expect(await h.hasVector(storage, id)).toBe(false);
+      }
+      expect(await h.rawSample(storage, kept)).not.toBeNull();
+      expect(await h.hasVector(storage, kept)).toBe(true);
+
+      // And neither read path can surface a retired row any more.
+      const filter = { voice: "edward", channel: "linkedin", outcomes: ["published"] as const };
+      expect((await storage.writingSamples.latest(TENANT, { ...filter, k: 10 })).map((r) => r.id)).toEqual([kept]);
+      expect((await storage.writingSamples.search(TENANT, QUERY, { ...filter, k: 10 })).map((r) => r.id)).toEqual([kept]);
+    });
+
+    it("never retires another tenant's row sharing the same source_ref", async () => {
+      const mine = await storage.writingSamples.insert(
+        TENANT,
+        makeSample({ text: "my copy of the digest", source: "import", sourceRef: "email:2001" }),
+      );
+      const theirs = await storage.writingSamples.insert(
+        FOREIGN,
+        makeSample({ text: "their copy of the digest", source: "import", sourceRef: "email:2001" }),
+      );
+      await storage.writingSamples.upsertEmbedding(TENANT, mine.id, vector(1));
+      await storage.writingSamples.upsertEmbedding(FOREIGN, theirs.id, vector(1));
+
+      expect(await storage.writingSamples.retireByRefs(TENANT, ["email:2001"])).toBe(1);
+      expect(await h.rawSample(storage, mine.id)).toBeNull();
+      expect(await h.rawSample(storage, theirs.id)).not.toBeNull();
+      expect(await h.hasVector(storage, theirs.id)).toBe(true);
+    });
+
+    it("reports 0 for an empty ref list or unmatched refs, and deletes nothing", async () => {
+      const { id } = await storage.writingSamples.insert(
+        TENANT,
+        makeSample({ text: "untouched sample", sourceRef: "email:3001" }),
+      );
+      await storage.writingSamples.upsertEmbedding(TENANT, id, vector(1));
+
+      expect(await storage.writingSamples.retireByRefs(TENANT, [])).toBe(0);
+      expect(await storage.writingSamples.retireByRefs(TENANT, ["email-no-such-ref"])).toBe(0);
+      expect(await h.rawSample(storage, id)).not.toBeNull();
+      expect(await h.hasVector(storage, id)).toBe(true);
     });
   });
 }
