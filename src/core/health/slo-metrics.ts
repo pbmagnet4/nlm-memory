@@ -599,6 +599,9 @@ export interface SloMetricsStore {
   refresh(ingestLag?: IngestLagSampler): Promise<void>;
 }
 
+/** Most query_log bytes one poll reads (T1770: keep every poll's synchronous slice small). */
+export const QUERY_LOG_MAX_READ_BYTES = 2 * 1024 * 1024;
+
 export function createSloMetricsStore(deps: SloMetricsDeps = {}): SloMetricsStore {
   const now = deps.now ?? Date.now;
   const logPath = () => deps.hookLogPath ?? hookLogPath(DEFAULT_TEAM_ID);
@@ -608,7 +611,10 @@ export function createSloMetricsStore(deps: SloMetricsDeps = {}): SloMetricsStor
 
   let state: SloState = { ...EMPTY_STATE };
   let offset = 0;
-  let queryOffset = 0;
+  // null until the first poll: query_log.jsonl is tens of MB, and reading it
+  // whole on daemon start is a multi-second synchronous stall. Stage samples
+  // already persist in the state file, so the tail starts at the current end.
+  let queryOffset: number | null = null;
 
   return {
     load(): void {
@@ -659,6 +665,10 @@ export function createSloMetricsStore(deps: SloMetricsDeps = {}): SloMetricsStor
       } catch {
         return 0;
       }
+      if (queryOffset === null) {
+        queryOffset = size;
+        return 0;
+      }
       if (size < queryOffset) {
         // truncated or rotated: re-read from the start
         queryOffset = 0;
@@ -667,7 +677,9 @@ export function createSloMetricsStore(deps: SloMetricsDeps = {}): SloMetricsStor
       let chunk: string;
       const fd = openSync(qLogPath(), "r");
       try {
-        const buf = Buffer.alloc(size - queryOffset);
+        // Bounded per poll so a long gap never becomes one big synchronous read;
+        // the rest is picked up on the next refresh.
+        const buf = Buffer.alloc(Math.min(size - queryOffset, QUERY_LOG_MAX_READ_BYTES));
         const read = readSync(fd, buf, 0, buf.length, queryOffset);
         const text = buf.toString("utf8", 0, read);
         // Same newline-anchored offset contract as pollHookLog.

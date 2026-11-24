@@ -14,6 +14,7 @@ import {
   p95,
   SLO_TARGETS,
   type SloState,
+  QUERY_LOG_MAX_READ_BYTES,
 } from "../../../../src/core/health/slo-metrics.js";
 import type { IngestLagReport } from "../../../../src/core/health/ingest-lag.js";
 
@@ -500,13 +501,37 @@ describe("createSloMetricsStore — query_log tail (T1770)", () => {
     return createSloMetricsStore({ queryLogPath: qLogPath, statePath, now: () => NOW });
   }
 
+  it("starts at the end of an existing query log rather than reading its history", () => {
+    writeFileSync(qLogPath, queryLine(NOW - HOUR, "hook", { embed: 300, total: 400 }) + "\n", "utf8");
+    const s = store();
+    expect(s.pollQueryLog()).toBe(0); // primes at the current end
+    expect(s.snapshot().stageSamples ?? []).toEqual([]);
+    appendFileSync(qLogPath, queryLine(NOW - 60_000, "hook", { embed: 700, total: 800 }) + "\n", "utf8");
+    expect(s.pollQueryLog()).toBe(1);
+  });
+
+  it("reads at most QUERY_LOG_MAX_READ_BYTES per poll and catches up on later polls", () => {
+    writeFileSync(qLogPath, "", "utf8");
+    const s = store();
+    s.pollQueryLog();
+    const line = queryLine(NOW - 60_000, "hook", { embed: 5, total: 9 }) + "\n";
+    const lines = Math.ceil((QUERY_LOG_MAX_READ_BYTES * 1.5) / Buffer.byteLength(line));
+    appendFileSync(qLogPath, line.repeat(lines), "utf8");
+    const first = s.pollQueryLog();
+    expect(first).toBeGreaterThan(0);
+    expect(first).toBeLessThan(lines);
+    expect(first + s.pollQueryLog()).toBe(lines);
+  });
+
   it("tails incrementally, counts hook lines only, and survives a persist/load round trip", () => {
+    writeFileSync(qLogPath, "", "utf8");
+    const s = store();
+    s.pollQueryLog(); // prime the tail at the (empty) end
     writeFileSync(qLogPath, [
       queryLine(NOW - HOUR, "hook", { embed: 300, total: 400 }),
       queryLine(NOW - HOUR, "http", { embed: 999, total: 999 }),
       queryLine(NOW - HOUR, "hook", undefined),
     ].join("\n") + "\n", "utf8");
-    const s = store();
     expect(s.pollQueryLog()).toBe(1); // the hook line with timings only
     expect(s.pollQueryLog()).toBe(0); // nothing new
     expect(s.snapshot().stageSamples).toEqual([{ ts: NOW - HOUR, timingsMs: { embed: 300, total: 400 } }]);
@@ -524,8 +549,10 @@ describe("createSloMetricsStore — query_log tail (T1770)", () => {
 
   it("holds back a partial trailing line until the writer completes it", () => {
     const line = queryLine(NOW - HOUR, "hook", { embed: 1 });
-    writeFileSync(qLogPath, line.slice(0, 30), "utf8"); // mid-append
+    writeFileSync(qLogPath, "", "utf8");
     const s = store();
+    s.pollQueryLog(); // prime the tail at the (empty) end
+    writeFileSync(qLogPath, line.slice(0, 30), "utf8"); // mid-append
     expect(s.pollQueryLog()).toBe(0);
     appendFileSync(qLogPath, line.slice(30) + "\n", "utf8");
     expect(s.pollQueryLog()).toBe(1);
