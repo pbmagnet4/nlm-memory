@@ -1,5 +1,15 @@
 # nlm-memory CHANGELOG
 
+## 2026-11-24 - NLM review push: stalls and recall latency, breaker, fault tests, voice memory phase 1 (T1770, T1774, T1775, T2445, T2438, T1631)
+
+**Changes:** Semantic reads always on the worker; scoped session KNN scores only eligible chunks (650 -> 160 ms); Hermes adapter stats once per DB change (894 -> 104 ms); HTTP routes named in stall attribution; hooks log `latencyMs`, `recallQuery` and per-stage `timings_ms`, surfaced as `/api/health/slo` `recallStages`. Keyword queries over 24 terms keep their 24 rarest (migration 052 `sessions_fts_vocab`): hook recalls 1.7-6.6 s -> 0.32-0.42 s. Recall-embed circuit breaker in `/api/health`. Fault-injection tests and the `eval:load-replay` client. Prompt hook recalls on a Paseo envelope's message and skips agent notifications. Voice memory phase 1: `writing_samples` store, rules reader (`~/Coding/nxtvoice-rules`), `POST /api/voice/sample`, `nlm voice-signal|backfill|retire`, `recall_voice`.
+
+**Decisions:** Voice intake is its own endpoint, not a SignalKind (signals are 90-day telemetry). Sample ids include the tenant. Promotion pass retired: exact-triple corroboration is structurally sparse.
+
+**State:** Deployed 0.21.21-t1770-kwcap.1 with `NLM_VOICE_ENABLED=1`; 1,957 voice samples (embedding sweep catching up).
+
+**Next:** T1770 closes after a 7-day SLO hold; T1785 needs Edward's labels; voice phase 2 on request.
+
 ## 2026-11-09 - Dreaming passes shipped, precision-gated triage-only (T1607–T1629)
 
 **Changes:** Six offline scheduler passes landed behind `NLM_DREAM_*` flags (dry-run default): eval harness T1608, contradiction T1609, dedup T1610, promotion T1611, gated wiki spike T1612, settings UI+API T1613 (POST live). Judge fixes: direct-negation criterion + backstop tightening + evidence-side context filter (T1628). Contradiction→proposals bridge T1627 with 3 seed drafts staged uncommitted; `--labeled-by` since made required (T1632). Sandbox-cleanup fix on both dry-run scripts. Judge: gemma-4 12b QAT MTP oQ4e via MSM3 oMLX through LiteLLM proxy, UI-configurable. All waves TDD'd, Muse-reviewed, gate-green (load flakes rerun in isolation, never discounted on dream files).
@@ -75,15 +85,3 @@ Fixed pinned current-session lookup for isolated Codex client profiles: use the 
 **Changes:** Separated repository/explicit associations from experimental subject/quote/entity inference. Real source evaluation rejected subject-only ownership, name-bearing quotes about dependencies, and entity references copied from evaluation transcripts. The experimental inference flag defaults off and inference backfill refuses to run unless explicitly enabled. Tightened its quote matching to reject path and identifier fragments.
 
 **State:** Live managed prerelease 0.21.21-property.1, schema 45. Imported 67 canonical properties, six reviewed fact corrections, five explicit session references and one captured-repository reference. Property-aware recall/isolation and repository-origin relevance are enabled; automatic fact ownership, entity-name associations and inference backfill stay disabled (T1142). All four independent review findings were fixed; 3,355 tests and 16 live transport checks pass. Provider configuration is unchanged, normal ingestion resumed, and the pre-attribution DB/config/binary rollback set is verified. Evidence and limits: `docs/plans/2026-10-27-property-activation.md`.
-
-## 2026-10-27 - Canonical memory properties and assertion-context isolation (T1128)
-
-**Changes:** Added a tenant-scoped property catalog, session relevance from exact entities/repository origin (including task worktrees), per-fact attribution before collapse, durable evidence-bound corrections, conservative backfill, and explicit property filters across MCP, HTTP and CLI recall. Fact history, corroboration, context deduplication, embeddings, the write-time judge and session-supersession cascades respect assertion context. Added a read-only coverage tool and shared SQLite/PostgreSQL contracts.
-
-**Results:** A read-only baseline against 67 registry properties found deterministic proposals for 680 of 40,398 active facts and entity references in 8,846 of 24,514 sessions. This measures coverage, not precision. Backend, transport and regression checks are recorded in the task plan.
-
-**State:** Implementation is source-only, with automatic attribution opt-in and broader inference/injection gated. Live memories and the installed runtime were not changed. Public usage and correction semantics are in `docs/properties.md`.
-
-**Next:** Independently label corpus cases and freeze acceptance thresholds before broader inference or automatic property selection. Review a backfill preview before applying it; repair previously incorrect supersession separately.
-
-
