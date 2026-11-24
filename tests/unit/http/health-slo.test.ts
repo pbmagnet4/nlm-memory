@@ -9,6 +9,10 @@ const HOUR = 3_600_000;
 // inside target, latency under p95 target.
 const STATE: SloState = {
   savedAt: NOW,
+  stageSamples: [
+    { ts: NOW - 1 * HOUR, timingsMs: { embed: 300, keyword: 4, total: 900 } },
+    { ts: NOW - 2 * HOUR, timingsMs: { embed: 700, keyword: 6, total: 1500 } },
+  ],
   recall: [
     { ts: NOW - 1 * HOUR, outcome: "timeout" },
     { ts: NOW - 2 * HOUR, outcome: "timeout" },
@@ -65,6 +69,9 @@ describe("GET /api/health/slo", () => {
     expect(body.actual.outcomes.timeoutRate).toBe(0.4);
     expect(body.actual.stalls).toEqual({ count: 2, maxMs: 640 });
     expect(body.actual.recallLatency.p95Ms).toBe(940); // nearest-rank of [700,940]
+    // T1770 per-stage stats: nearest-rank over the two in-window samples.
+    expect(body.actual.recallStages.embed).toEqual({ samples: 2, p50Ms: 300, p95Ms: 700 });
+    expect(body.actual.recallStages.total).toEqual({ samples: 2, p50Ms: 900, p95Ms: 1500 });
     expect(body.actual.stalls).toEqual({ count: 2, maxMs: 640 });
     expect(body.actual.ingest.lagMinutes).toBe(4);
     // T1782 gauge. It is reported and never breached: a 25% kept share is what
@@ -135,6 +142,7 @@ function shifted(state: SloState): SloState {
   const delta = Date.now() - NOW;
   return {
     savedAt: state.savedAt + delta,
+    stageSamples: state.stageSamples.map((e) => ({ ts: e.ts + delta, timingsMs: e.timingsMs })),
     recall: state.recall.map((e) => ({ ...e, ts: e.ts + delta })),
     stalls: state.stalls.map((e) => ({ ...e, ts: e.ts + delta })),
     ingest: state.ingest && { ...state.ingest, sampledAt: state.ingest.sampledAt + delta },

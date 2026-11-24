@@ -211,6 +211,13 @@ export interface RecallResult {
    * "Learning state" section. Spec 2026-10-06 (learner evidence).
    */
   readonly relatedConcepts?: ReadonlyArray<RelatedConcept>;
+  /**
+   * Per-stage wall time of this search in ms (T1770): keys are the stages
+   * that actually ran (rewrite, embed, semantic, keyword, facts, exemplars,
+   * concepts) plus `total`. Stages that did not run are absent. Written to
+   * query_log as `timings_ms` and aggregated by /api/health/slo.
+   */
+  readonly timingsMs?: Readonly<Record<string, number>>;
 }
 
 /**

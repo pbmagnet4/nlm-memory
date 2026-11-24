@@ -5,10 +5,12 @@ import { join } from "node:path";
 import {
   createSloMetricsStore,
   parseHookRecord,
+  parseQueryLogRecord,
   pruneSloState,
   computeSloActual,
   computeIngestSample,
   buildSloResponse,
+  p50,
   p95,
   SLO_TARGETS,
   type SloState,
@@ -70,6 +72,7 @@ describe("p95", () => {
 describe("rolling windows", () => {
   const state: SloState = {
     savedAt: NOW,
+    stageSamples: [],
     recall: [
       { ts: NOW - 1 * HOUR, outcome: "ok" },
       { ts: NOW - 2 * HOUR, outcome: "timeout" },
@@ -164,6 +167,7 @@ describe("buildSloResponse", () => {
   it("reports targets, actuals and every breached name", () => {
     const state: SloState = {
       savedAt: NOW,
+      stageSamples: [],
       recall: [
         { ts: NOW - HOUR, outcome: "timeout" },
         { ts: NOW - HOUR, outcome: "ok", latencyMs: 1500 },
@@ -179,7 +183,7 @@ describe("buildSloResponse", () => {
   });
 
   it("no outcomes / no latency / no stalls / no ingest -> nothing breaches", () => {
-    const res = buildSloResponse({ savedAt: 0, recall: [], stalls: [], ingest: null, relevance: null }, "7d", NOW);
+    const res = buildSloResponse({ savedAt: 0, recall: [], stalls: [], stageSamples: [], ingest: null, relevance: null }, "7d", NOW);
     expect(res.breaches).toEqual([]);
     expect(res.actual.outcomes.timeoutRate).toBeNull();
     expect(res.actual.recallLatency.p95Ms).toBeNull();
@@ -389,5 +393,159 @@ describe("createSloMetricsStore — persistence", () => {
     const s4 = store();
     s4.load();
     expect(s4.snapshot().relevance).toBeNull();
+  });
+});
+
+// ── T1770: per-stage recall timings (query_log tail → recallStages) ───
+
+function queryLine(tsMs: number, source: string, timings: Record<string, unknown> | undefined): string {
+  return JSON.stringify({
+    ts: new Date(tsMs).toISOString(),
+    source,
+    runtime: "claude-code",
+    query: "q",
+    mode: "hybrid",
+    limit: 20,
+    n_results: 1,
+    returned_ids: ["s1"],
+    ...(timings !== undefined ? { timings_ms: timings } : {}),
+  });
+}
+
+describe("p50", () => {
+  it("nearest-rank median; null when empty", () => {
+    expect(p50([])).toBeNull();
+    expect(p50([9])).toBe(9);
+    expect(p50([3, 1, 2])).toBe(2);
+    expect(p50(Array.from({ length: 20 }, (_, i) => i + 1))).toBe(10);
+  });
+});
+
+describe("parseQueryLogRecord", () => {
+  it("accepts a hook line carrying timings_ms", () => {
+    expect(parseQueryLogRecord(queryLine(NOW, "hook", { embed: 300, total: 400 })))
+      .toEqual({ ts: NOW, timingsMs: { embed: 300, total: 400 } });
+  });
+
+  it("hook-lane only: non-hook sources are ignored", () => {
+    expect(parseQueryLogRecord(queryLine(NOW, "http", { total: 5 }))).toBeNull();
+    expect(parseQueryLogRecord(queryLine(NOW, "mcp", { total: 5 }))).toBeNull();
+  });
+
+  it("missing, malformed or fully-invalid timings are ignored; junk stages are dropped", () => {
+    expect(parseQueryLogRecord(queryLine(NOW, "hook", undefined))).toBeNull();
+    expect(parseQueryLogRecord(queryLine(NOW, "hook", { embed: "fast" }))).toBeNull();
+    expect(parseQueryLogRecord('{not json')).toBeNull();
+    expect(parseQueryLogRecord(queryLine(NOW, "hook", { a: 5, b: -2, c: "x" })))
+      .toEqual({ ts: NOW, timingsMs: { a: 5 } });
+  });
+});
+
+describe("computeSloActual — recallStages", () => {
+  const state = (overrides: Partial<SloState> = {}): SloState => ({
+    savedAt: NOW,
+    recall: [],
+    stalls: [],
+    stageSamples: [],
+    ingest: null,
+    relevance: null,
+    ...overrides,
+  });
+
+  it("per-stage samples/p50/p95 over the window, stages without samples absent", () => {
+    const a = computeSloActual(state({
+      stageSamples: [
+        { ts: NOW - 1 * HOUR, timingsMs: { embed: 100, keyword: 2, total: 300 } },
+        { ts: NOW - 2 * HOUR, timingsMs: { embed: 900, total: 1200 } },
+      ],
+    }), "24h", NOW);
+    expect(a.recallStages.embed).toEqual({ samples: 2, p50Ms: 100, p95Ms: 900 });
+    expect(a.recallStages.keyword).toEqual({ samples: 1, p50Ms: 2, p95Ms: 2 });
+    expect(a.recallStages.rewrite).toBeUndefined();
+  });
+
+  it("window cut: 24h excludes the older sample, 7d includes it", () => {
+    const st = state({
+      stageSamples: [
+        { ts: NOW - 2 * HOUR, timingsMs: { embed: 100 } },
+        { ts: NOW - 3 * DAY, timingsMs: { embed: 5000 } },
+      ],
+    });
+    expect(computeSloActual(st, "24h", NOW).recallStages.embed).toEqual({ samples: 1, p50Ms: 100, p95Ms: 100 });
+    expect(computeSloActual(st, "7d", NOW).recallStages.embed).toEqual({ samples: 2, p50Ms: 100, p95Ms: 5000 });
+  });
+
+  it("recallStages is not a breach target", () => {
+    const res = buildSloResponse(state({
+      stageSamples: [{ ts: NOW - HOUR, timingsMs: { embed: 99_999, total: 99_999 } }],
+    }), "24h", NOW);
+    expect(res.actual.recallStages.embed!.p95Ms).toBe(99_999);
+    expect(res.breaches).toEqual([]);
+  });
+});
+
+describe("createSloMetricsStore — query_log tail (T1770)", () => {
+  let tmp: string;
+  let qLogPath: string;
+  let statePath: string;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "nlm-slo-stages-"));
+    qLogPath = join(tmp, "query_log.jsonl");
+    statePath = join(tmp, "slo-metrics.json");
+  });
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+  function store() {
+    return createSloMetricsStore({ queryLogPath: qLogPath, statePath, now: () => NOW });
+  }
+
+  it("tails incrementally, counts hook lines only, and survives a persist/load round trip", () => {
+    writeFileSync(qLogPath, [
+      queryLine(NOW - HOUR, "hook", { embed: 300, total: 400 }),
+      queryLine(NOW - HOUR, "http", { embed: 999, total: 999 }),
+      queryLine(NOW - HOUR, "hook", undefined),
+    ].join("\n") + "\n", "utf8");
+    const s = store();
+    expect(s.pollQueryLog()).toBe(1); // the hook line with timings only
+    expect(s.pollQueryLog()).toBe(0); // nothing new
+    expect(s.snapshot().stageSamples).toEqual([{ ts: NOW - HOUR, timingsMs: { embed: 300, total: 400 } }]);
+
+    appendFileSync(qLogPath, queryLine(NOW - 60_000, "hook", { embed: 700, total: 800 }) + "\n", "utf8");
+    expect(s.pollQueryLog()).toBe(1);
+    s.persist();
+
+    const s2 = store();
+    s2.load();
+    expect(s2.snapshot().stageSamples).toHaveLength(2);
+    expect(computeSloActual(s2.snapshot(), "24h", NOW).recallStages.embed)
+      .toEqual({ samples: 2, p50Ms: 300, p95Ms: 700 });
+  });
+
+  it("holds back a partial trailing line until the writer completes it", () => {
+    const line = queryLine(NOW - HOUR, "hook", { embed: 1 });
+    writeFileSync(qLogPath, line.slice(0, 30), "utf8"); // mid-append
+    const s = store();
+    expect(s.pollQueryLog()).toBe(0);
+    appendFileSync(qLogPath, line.slice(30) + "\n", "utf8");
+    expect(s.pollQueryLog()).toBe(1);
+    expect(s.snapshot().stageSamples).toEqual([{ ts: NOW - HOUR, timingsMs: { embed: 1 } }]);
+  });
+});
+
+describe("pruneSloState — stage sample retention cap", () => {
+  it("keeps at most 5000 samples, the newest ones, inside the 7d window", () => {
+    const stageSamples = Array.from({ length: 5_100 }, (_, i) => ({
+      ts: NOW - 5_100 + i, // poll order: oldest first, newest last
+      timingsMs: { total: i },
+    }));
+    const pruned = pruneSloState({
+      savedAt: NOW, recall: [], stalls: [], stageSamples, ingest: null, relevance: null,
+    }, NOW);
+    expect(pruned.stageSamples).toHaveLength(5_000);
+    // Appended in poll order, so the cap drops the 100 oldest and keeps the newest.
+    expect(pruned.stageSamples[0]!.ts).toBe(stageSamples[100]!.ts);
+    expect(pruned.stageSamples[pruned.stageSamples.length - 1]).toEqual(stageSamples[5_099]);
+    expect(pruned.stageSamples.some((e) => e.ts < NOW - 7 * 24 * 3_600_000)).toBe(false);
   });
 });

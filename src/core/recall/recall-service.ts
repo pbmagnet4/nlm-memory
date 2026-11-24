@@ -111,6 +111,21 @@ export class RecallService {
 
   async search(tenantId: string, input: RecallQuery, options: RecallExecutionOptions = {}): Promise<RecallResult> {
     options.signal?.throwIfAborted();
+    // T1770: per-stage wall time so a slow hook recall can be attributed to
+    // the stage that spent it (recorded on the result as `timingsMs`, logged
+    // to query_log as `timings_ms`). `timed()` records the stage even when
+    // it throws — a stage that fails after 2 s is exactly the time we need
+    // to see; the surrounding error handling is unchanged.
+    const searchStart = performance.now();
+    const stageMs: Record<string, number> = {};
+    const timed = async <T>(stage: string, fn: () => Promise<T>): Promise<T> => {
+      const t0 = performance.now();
+      try {
+        return await fn();
+      } finally {
+        stageMs[stage] = performance.now() - t0;
+      }
+    };
     await requireProperty(tenantId, input.property, this.deps.properties);
     const mode: RecallMode = input.mode ?? "keyword";
     const limit = clampLimit(input.limit);
@@ -139,21 +154,23 @@ export class RecallService {
     let keywordQuery = input.query;
     let semanticQuery = input.query;
     if (input.rewrite === true && input.query) {
-      const cached = this.rewriteCache.get(input.query);
-      if (cached) {
-        keywordQuery = cached.keywordQuery;
-        semanticQuery = cached.semanticQuery;
-      } else {
-        try {
-          const rewritten = await this.deps.llm.rewriteForRecall(input.query);
-          this.rewriteCache.set(input.query, rewritten);
-          keywordQuery = rewritten.keywordQuery;
-          semanticQuery = rewritten.semanticQuery;
-        } catch (err) {
-          if (!(err instanceof LLMUnreachableError)) throw err;
-          // fail-open: keywordQuery / semanticQuery already set to raw input.query
+      await timed("rewrite", async () => {
+        const cached = this.rewriteCache.get(input.query);
+        if (cached) {
+          keywordQuery = cached.keywordQuery;
+          semanticQuery = cached.semanticQuery;
+        } else {
+          try {
+            const rewritten = await this.deps.llm.rewriteForRecall(input.query);
+            this.rewriteCache.set(input.query, rewritten);
+            keywordQuery = rewritten.keywordQuery;
+            semanticQuery = rewritten.semanticQuery;
+          } catch (err) {
+            if (!(err instanceof LLMUnreachableError)) throw err;
+            // fail-open: keywordQuery / semanticQuery already set to raw input.query
+          }
         }
-      }
+      });
     }
 
     const searchOpts: SearchOptions = {
@@ -162,10 +179,12 @@ export class RecallService {
       ...(input.property !== undefined ? { property: input.property } : {}),
     };
 
-    const kwNeighbors: ReadonlyArray<KeywordNeighbor> =
-      (mode === "keyword" || mode === "hybrid") && keywordQuery
-        ? await this.deps.store.keywordSearch(tenantId, keywordQuery, limit * KEYWORD_OVERFETCH, searchOpts)
-        : [];
+    let kwNeighbors: ReadonlyArray<KeywordNeighbor> = [];
+    if ((mode === "keyword" || mode === "hybrid") && keywordQuery) {
+      kwNeighbors = await timed("keyword", () =>
+        this.deps.store.keywordSearch(tenantId, keywordQuery, limit * KEYWORD_OVERFETCH, searchOpts),
+      );
+    }
 
     if (options.onPartialSessions && mode === "hybrid") {
       const lexicalSources = await this.deps.store.getByIds(tenantId, kwNeighbors.map((n) => n.sessionId));
@@ -190,14 +209,18 @@ export class RecallService {
         semError = "ollama_unreachable";
       } else {
         try {
-          const embedding = await embedForRecall(this.deps.llm, semanticQuery, options, EMBED_DEADLINE_MS);
+          const embedding = await timed("embed", () =>
+            embedForRecall(this.deps.llm, semanticQuery, options, EMBED_DEADLINE_MS),
+          );
           options.signal?.throwIfAborted();
-          semNeighbors = await this.deps.store.semanticSearch(
-            tenantId,
-            embedding.vector,
-            limit * SEMANTIC_OVERFETCH,
-            searchOpts,
-            options,
+          semNeighbors = await timed("semantic", () =>
+            this.deps.store.semanticSearch(
+              tenantId,
+              embedding.vector,
+              limit * SEMANTIC_OVERFETCH,
+              searchOpts,
+              options,
+            ),
           );
         } catch (err) {
           if (err instanceof LLMUnreachableError) {
@@ -212,7 +235,7 @@ export class RecallService {
     }
 
     if (mode === "semantic" && semError) {
-      return { ...empty, modeUnavailable: semError };
+      return { ...empty, modeUnavailable: semError, timingsMs: roundTimings(stageMs, searchStart) };
     }
 
     // 2. Resolve ONLY the hit sessions — never the whole corpus. The
@@ -293,7 +316,9 @@ export class RecallService {
     //    silently no-op so recall never breaks because of fact lookup.
     //    (Note: citation boost in step 5 may have re-sorted results)
     if (input.property === undefined && workstreamIds === undefined && input.withRelatedFacts === true && this.deps.factStore && isFactInjectionEnabled()) {
-      const relatedFacts = await pickRelatedFacts(tenantId, result.results, this.deps.factStore);
+      const relatedFacts = await timed("facts", () =>
+        pickRelatedFacts(tenantId, result.results, this.deps.factStore!),
+      );
       if (relatedFacts.length > 0) {
         result = { ...result, relatedFacts };
       }
@@ -303,7 +328,9 @@ export class RecallService {
     //     opt-in flag + wired deps + kill switch; the picker itself is
     //     fail-open so recall never breaks because of concept lookup.
     if (input.property === undefined && workstreamIds === undefined && input.withRelatedConcepts === true && this.deps.learnerDeps && isConceptInjectionEnabled()) {
-      const relatedConcepts = await pickRelatedConcepts(tenantId, result.results, this.deps.learnerDeps);
+      const relatedConcepts = await timed("concepts", () =>
+        pickRelatedConcepts(tenantId, result.results, this.deps.learnerDeps!),
+      );
       if (relatedConcepts.length > 0) {
         result = { ...result, relatedConcepts };
       }
@@ -326,7 +353,9 @@ export class RecallService {
       const q = semanticQuery || input.query;
       const budget = new RequestBudget(EXEMPLAR_RECALL_TIMEOUT_MS, options);
       try {
-        const related = await budget.run(() => pickRelatedExemplars(tenantId, q, store, embedder, scope, { signal: budget.signal }));
+        const related = await timed("exemplars", () =>
+          budget.run(() => pickRelatedExemplars(tenantId, q, store, embedder, scope, { signal: budget.signal })),
+        );
         if (related.length > 0) result = { ...result, relatedExemplars: related };
       } catch {
         // Optional related evidence must not erase completed recall.
@@ -354,8 +383,18 @@ export class RecallService {
       };
     }
 
-    return result;
+    return { ...result, timingsMs: roundTimings(stageMs, searchStart) };
   }
+}
+
+/** Integer-ms copy of the raw stage durations plus `total` since `start`.
+ *  Stages that never ran are absent (only recorded in the `finally` of the
+ *  stage's own `timed()` call). */
+function roundTimings(stageMs: Readonly<Record<string, number>>, start: number): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [stage, ms] of Object.entries(stageMs)) out[stage] = Math.round(ms);
+  out.total = Math.round(performance.now() - start);
+  return out;
 }
 
 function uniqueIds(

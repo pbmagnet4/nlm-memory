@@ -45,6 +45,7 @@ import { dirname, join } from "node:path";
 import { tenantStatePath } from "@core/tenancy/tenant-state-path.js";
 import { DEFAULT_TEAM_ID } from "@core/tenancy/default-team.js";
 import { hookLogPath } from "@core/recall/hook-recall-log.js";
+import { queryLogPath } from "@core/recall/query-log.js";
 import type { IngestLagReport } from "./ingest-lag.js";
 
 export type SloWindow = "24h" | "7d";
@@ -87,6 +88,14 @@ export interface SloStallEvent {
   readonly ms: number;
 }
 
+/** One hook-sourced query_log line carrying per-stage recall timings (T1770).
+ *  `timingsMs` is the logged `timings_ms` object: only the stages that ran,
+ *  plus `total`. */
+export interface SloStageSample {
+  readonly ts: number;
+  readonly timingsMs: Readonly<Record<string, number>>;
+}
+
 export interface SloIngestSample {
   readonly sampledAt: number;
   /** Oldest pending transcript at sample time; null when nothing was pending. */
@@ -115,12 +124,26 @@ export interface SloState {
   readonly savedAt: number;
   readonly recall: readonly SloRecallEvent[];
   readonly stalls: readonly SloStallEvent[];
+  /** Per-stage recall timings from the hook-sourced query_log tail (T1770). */
+  readonly stageSamples: readonly SloStageSample[];
   readonly ingest: SloIngestSample | null;
   readonly relevance: SloRelevanceSample | null;
 }
 
 const MAX_WINDOW_MS = SLO_WINDOW_MS["7d"];
-const EMPTY_STATE: SloState = { savedAt: 0, recall: [], stalls: [], ingest: null, relevance: null };
+/** Retention cap for stage samples. Every sample carries one reading per stage
+ *  it ran, so capping samples caps each stage at the same bound per window.
+ *  7d of hook recall is well under this in practice; the cap bounds the state
+ *  file if a daemon was down for days and re-tails a busy log. */
+const MAX_STAGE_SAMPLES = 5_000;
+const EMPTY_STATE: SloState = {
+  savedAt: 0,
+  recall: [],
+  stalls: [],
+  stageSamples: [],
+  ingest: null,
+  relevance: null,
+};
 
 function round1(v: number): number {
   return Math.round(v * 10) / 10;
@@ -131,10 +154,15 @@ function round1(v: number): number {
  *  window membership is decided at query time, not here. */
 export function pruneSloState(state: SloState, nowMs: number): SloState {
   const cutoff = nowMs - MAX_WINDOW_MS;
+  const stageSamples = state.stageSamples.filter((e) => e.ts >= cutoff);
   return {
     savedAt: state.savedAt,
     recall: state.recall.filter((e) => e.ts >= cutoff),
     stalls: state.stalls.filter((e) => e.ts >= cutoff),
+    // Appended in poll order (≈ ts order), so dropping the oldest is a slice.
+    stageSamples: stageSamples.length > MAX_STAGE_SAMPLES
+      ? stageSamples.slice(stageSamples.length - MAX_STAGE_SAMPLES)
+      : stageSamples,
     ingest: state.ingest,
     relevance: state.relevance,
   };
@@ -158,6 +186,15 @@ export interface SloActual {
     readonly count: number;
     readonly maxMs: number | null;
   };
+  /** Per-stage recall timing stats (T1770), keyed by stage name (rewrite,
+   *  embed, semantic, keyword, facts, exemplars, concepts, total) over the
+   *  hook-sourced query_log samples in the window. Stages with no samples
+   *  are absent. Diagnostic only — never a breach target. */
+  readonly recallStages: Readonly<Record<string, {
+    readonly samples: number;
+    readonly p50Ms: number | null;
+    readonly p95Ms: number | null;
+  }>>;
   readonly ingest: {
     readonly sampledAt: string;
     readonly lagMinutes: number | null;
@@ -185,6 +222,14 @@ export function p95(samples: readonly number[]): number | null {
   return sorted[idx]!;
 }
 
+/** Nearest-rank p50 (ceil(0.5*n)); null for an empty sample set. */
+export function p50(samples: readonly number[]): number | null {
+  if (samples.length === 0) return null;
+  const sorted = [...samples].sort((a, b) => a - b);
+  const idx = Math.max(0, Math.ceil(0.5 * sorted.length) - 1);
+  return sorted[idx]!;
+}
+
 export function computeSloActual(state: SloState, window: SloWindow, nowMs: number): SloActual {
   const from = nowMs - SLO_WINDOW_MS[window];
   const recall = state.recall.filter((e) => e.ts >= from && e.ts <= nowMs);
@@ -203,6 +248,22 @@ export function computeSloActual(state: SloState, window: SloWindow, nowMs: numb
     }
   }
   const stalls = state.stalls.filter((e) => e.ts >= from && e.ts <= nowMs);
+  const stageValues = new Map<string, number[]>();
+  for (const s of state.stageSamples) {
+    if (s.ts < from || s.ts > nowMs) continue;
+    for (const [stage, ms] of Object.entries(s.timingsMs)) {
+      let arr = stageValues.get(stage);
+      if (!arr) {
+        arr = [];
+        stageValues.set(stage, arr);
+      }
+      arr.push(ms);
+    }
+  }
+  const recallStages: Record<string, { samples: number; p50Ms: number | null; p95Ms: number | null }> = {};
+  for (const [stage, values] of stageValues) {
+    recallStages[stage] = { samples: values.length, p50Ms: p50(values), p95Ms: p95(values) };
+  }
   // A gauge is only meaningful if it was sampled inside the window; a 7-day-
   // old ingest sample says nothing about "now" and must not mask a lag breach
   // (or invent one) for a window it never covered.
@@ -237,6 +298,7 @@ export function computeSloActual(state: SloState, window: SloWindow, nowMs: numb
       count: stalls.length,
       maxMs: stalls.length === 0 ? null : Math.max(...stalls.map((e) => e.ms)),
     },
+    recallStages,
     ingest,
     relevancePrecision: relevance,
   };
@@ -309,6 +371,9 @@ interface PersistedState {
   savedAt: string;
   recall: PersistedEvent[];
   stalls: PersistedEvent[];
+  /** Absent in files written before T1770; read back as empty. Additive, so
+   *  schemaVersion stays 1. */
+  stageSamples?: { ts: string; timingsMs: Record<string, number> }[];
   ingest: {
     sampledAt: string;
     lagMinutes: number | null;
@@ -339,6 +404,10 @@ function serialize(state: SloState): string {
       ...(e.latencyMs !== undefined ? { latencyMs: e.latencyMs } : {}),
     })),
     stalls: state.stalls.map((e) => ({ ts: new Date(e.ts).toISOString(), ms: e.ms })),
+    stageSamples: state.stageSamples.map((e) => ({
+      ts: new Date(e.ts).toISOString(),
+      timingsMs: { ...e.timingsMs },
+    })),
     ingest: state.ingest && {
       sampledAt: new Date(state.ingest.sampledAt).toISOString(),
       lagMinutes: state.ingest.lagMinutes,
@@ -385,6 +454,16 @@ function deserialize(raw: string): SloState | null {
     if (!Number.isFinite(ts) || typeof e.ms !== "number" || !Number.isFinite(e.ms)) continue;
     stalls.push({ ts, ms: e.ms });
   }
+  const stageSamples: SloStageSample[] = [];
+  for (const e of p.stageSamples ?? []) {
+    const ts = Date.parse(e?.ts ?? "");
+    if (!Number.isFinite(ts) || typeof e.timingsMs !== "object" || e.timingsMs === null) continue;
+    const timingsMs: Record<string, number> = {};
+    for (const [stage, ms] of Object.entries(e.timingsMs)) {
+      if (typeof ms === "number" && Number.isFinite(ms) && ms >= 0) timingsMs[stage] = ms;
+    }
+    if (Object.keys(timingsMs).length > 0) stageSamples.push({ ts, timingsMs });
+  }
   let ingest: SloIngestSample | null = null;
   if (p.ingest && typeof p.ingest === "object" && Number.isFinite(Date.parse(p.ingest.sampledAt))) {
     ingest = {
@@ -415,12 +494,13 @@ function deserialize(raw: string): SloState | null {
     savedAt: Number.isFinite(savedAt) ? savedAt : 0,
     recall,
     stalls,
+    stageSamples,
     ingest,
     relevance,
   };
 }
 
-// ── hook-log tail reader ──────────────────────────────────────────────
+// ── hook-log tail reader ─────────────────────────────────────────────
 
 /** Parse one hook-log JSONL line into a recall event, or null to ignore it.
  *  The records that carry `recallOutcome` are exactly the kind-less recall
@@ -447,6 +527,34 @@ export function parseHookRecord(line: string): SloRecallEvent | null {
   };
 }
 
+/** Parse one query_log JSONL line into a stage-timing sample, or null to
+ *  ignore it. Only hook-lane recalls feed the SLO stage stats (T1770): the
+ *  hook deadline is the latency budget under investigation, and non-hook
+ *  callers have different (and unbounded) expectations. A line must carry
+ *  `source === "hook"`, a parseable `ts`, and a `timings_ms` object with at
+ *  least one finite non-negative stage. */
+export function parseQueryLogRecord(line: string): SloStageSample | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  let obj: Record<string, unknown>;
+  try {
+    obj = JSON.parse(trimmed) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (obj === null || typeof obj !== "object") return null;
+  if (obj["source"] !== "hook") return null;
+  const ts = typeof obj["ts"] === "string" ? Date.parse(obj["ts"]) : Number.NaN;
+  if (!Number.isFinite(ts)) return null;
+  const raw = obj["timings_ms"];
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const timingsMs: Record<string, number> = {};
+  for (const [stage, ms] of Object.entries(raw)) {
+    if (typeof ms === "number" && Number.isFinite(ms) && ms >= 0) timingsMs[stage] = ms;
+  }
+  return Object.keys(timingsMs).length > 0 ? { ts, timingsMs } : null;
+}
+
 // ── store ─────────────────────────────────────────────────────────────
 
 export interface IngestLagSampler {
@@ -458,6 +566,9 @@ export interface SloMetricsDeps {
   /** hook-log.jsonl to tail. Defaults to the same resolution the readers use
    *  ($NLM_HOOK_LOG for the default team, tenant path otherwise). */
   readonly hookLogPath?: string;
+  /** query_log.jsonl to tail for per-stage recall timings (T1770). Defaults
+   *  to the readers' resolution ($NLM_QUERY_LOG / tenant path). */
+  readonly queryLogPath?: string;
   /** State file. Default $NLM_SLO_STATE or <state root>/slo-metrics.json. */
   readonly statePath?: string;
 }
@@ -468,6 +579,10 @@ export interface SloMetricsStore {
   /** Tail the hook log from the last consumed byte offset; returns the number
    *  of new outcome records consumed. Never throws. */
   pollHookLog(): number;
+  /** Tail query_log.jsonl from the last consumed byte offset for hook-sourced
+   *  per-stage timings (T1770); returns the number of new samples consumed.
+   *  Never throws. */
+  pollQueryLog(): number;
   /** One observed event-loop stall in ms (from the lag monitor observer). */
   recordStall(ms: number, ts?: number): void;
   /** Stash the latest /api/health/ingest report as minute gauges. */
@@ -487,11 +602,13 @@ export interface SloMetricsStore {
 export function createSloMetricsStore(deps: SloMetricsDeps = {}): SloMetricsStore {
   const now = deps.now ?? Date.now;
   const logPath = () => deps.hookLogPath ?? hookLogPath(DEFAULT_TEAM_ID);
+  const qLogPath = () => deps.queryLogPath ?? queryLogPath(DEFAULT_TEAM_ID);
   const statePath = () =>
     deps.statePath ?? process.env["NLM_SLO_STATE"] ?? tenantStatePath(DEFAULT_TEAM_ID, "slo-metrics.json");
 
   let state: SloState = { ...EMPTY_STATE };
   let offset = 0;
+  let queryOffset = 0;
 
   return {
     load(): void {
@@ -535,6 +652,34 @@ export function createSloMetricsStore(deps: SloMetricsDeps = {}): SloMetricsStor
       return consumeLines(chunk);
     },
 
+    pollQueryLog(): number {
+      let size: number;
+      try {
+        size = statSync(qLogPath()).size;
+      } catch {
+        return 0;
+      }
+      if (size < queryOffset) {
+        // truncated or rotated: re-read from the start
+        queryOffset = 0;
+      }
+      if (size === queryOffset) return 0;
+      let chunk: string;
+      const fd = openSync(qLogPath(), "r");
+      try {
+        const buf = Buffer.alloc(size - queryOffset);
+        const read = readSync(fd, buf, 0, buf.length, queryOffset);
+        const text = buf.toString("utf8", 0, read);
+        // Same newline-anchored offset contract as pollHookLog.
+        const lastNl = text.lastIndexOf("\n");
+        chunk = lastNl === -1 ? "" : text.slice(0, lastNl + 1);
+        queryOffset += Buffer.byteLength(chunk, "utf8");
+      } finally {
+        closeSync(fd);
+      }
+      return consumeStageLines(chunk);
+    },
+
     recordStall(ms: number, ts?: number): void {
       if (!Number.isFinite(ms) || ms < 0) return;
       state = { ...state, stalls: [...state.stalls, { ts: ts ?? now(), ms }] };
@@ -569,6 +714,7 @@ export function createSloMetricsStore(deps: SloMetricsDeps = {}): SloMetricsStor
 
     async refresh(ingestLag?: IngestLagSampler): Promise<void> {
       this.pollHookLog();
+      this.pollQueryLog();
       if (ingestLag) {
         try {
           this.recordIngestReport(await ingestLag.get());
@@ -592,6 +738,23 @@ export function createSloMetricsStore(deps: SloMetricsDeps = {}): SloMetricsStor
       fresh.push(ev);
     }
     if (fresh.length > 0) state = { ...state, recall: [...state.recall, ...fresh] };
+    return fresh.length;
+  }
+
+  function consumeStageLines(chunk: string): number {
+    if (!chunk) return 0;
+    const fresh: SloStageSample[] = [];
+    const horizon = now();
+    for (const line of chunk.split("\n")) {
+      const s = parseQueryLogRecord(line);
+      if (!s) continue;
+      // Samples older than the biggest window can never be counted.
+      if (s.ts < horizon - MAX_WINDOW_MS) continue;
+      fresh.push(s);
+    }
+    if (fresh.length > 0) {
+      state = pruneSloState({ ...state, stageSamples: [...state.stageSamples, ...fresh] }, now());
+    }
     return fresh.length;
   }
 }

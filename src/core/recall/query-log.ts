@@ -45,6 +45,10 @@ export interface LogEntry {
   /** Heuristic intent label for Phase 4 relational-recall telemetry.
    *  Absent on log entries written before this field was added. */
   readonly intent?: QueryIntent;
+  /** Per-stage wall time of the search in ms (T1770), e.g. { keyword: 4,
+   *  embed: 310, total: 331 }. Written as `timings_ms`; absent when the
+   *  result carried no timings (older builds, short-circuit returns). */
+  readonly timingsMs?: Readonly<Record<string, number>>;
 }
 
 export interface StatsResult {
@@ -62,6 +66,13 @@ function defaultLogPath(tenantId: string): string {
     return process.env["NLM_QUERY_LOG"] ?? tenantStatePath(tenantId, "query_log.jsonl");
   }
   return tenantStatePath(tenantId, "query_log.jsonl");
+}
+
+/** Same resolution the readers use: $NLM_QUERY_LOG for the default team,
+ *  tenant path otherwise (mirrors hookLogPath). Used by the SLO store's
+ *  byte-offset query_log tail. */
+export function queryLogPath(tenantId: string): string {
+  return defaultLogPath(tenantId);
 }
 
 export async function logQuery(
@@ -89,12 +100,24 @@ export async function logQuery(
       ...(entry.returnedExemplarIds !== undefined
         ? { returned_exemplar_ids: entry.returnedExemplarIds }
         : {}),
+      ...(entry.timingsMs !== undefined ? { timings_ms: entry.timingsMs } : {}),
       intent: classifyQueryIntent(entry.query ?? ""),
     };
     await appendFile(logPath, JSON.stringify(payload) + "\n", "utf8");
   } catch {
     // Telemetry must never break the call path.
   }
+}
+
+/** Read back `timings_ms` from a log line; undefined when absent or when no
+ *  entry holds a finite non-negative number — old lines parse as before. */
+function parseTimings(v: unknown): Readonly<Record<string, number>> | undefined {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return undefined;
+  const out: Record<string, number> = {};
+  for (const [stage, ms] of Object.entries(v)) {
+    if (typeof ms === "number" && Number.isFinite(ms) && ms >= 0) out[stage] = ms;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 export async function readQueryLog(
@@ -118,6 +141,7 @@ export async function readQueryLog(
       if (Date.parse(obj["ts"]) < cutoff) continue;
       const convId = typeof obj["conversation_id"] === "string" ? obj["conversation_id"] : "unknown";
       const intentRaw = obj["intent"];
+      const timingsMs = parseTimings(obj["timings_ms"]);
       const entry: LogEntry = {
         source: typeof obj["source"] === "string" ? obj["source"] : "",
         runtime: typeof obj["runtime"] === "string" ? obj["runtime"] : null,
@@ -139,6 +163,7 @@ export async function readQueryLog(
             }
           : {}),
         ...(typeof intentRaw === "string" ? { intent: intentRaw as QueryIntent } : {}),
+        ...(timingsMs !== undefined ? { timingsMs } : {}),
       };
       results.push({ conversationId: convId, entry });
     } catch {
