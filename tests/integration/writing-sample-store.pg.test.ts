@@ -51,6 +51,12 @@ const harness: WritingSampleStoreContractHarness = {
     );
     return res.rows[0] ?? null;
   },
+  async hasVector(storage, id) {
+    const res = await (storage as PgStorage)
+      .pgPool()
+      .query("SELECT 1 FROM writing_sample_embeddings WHERE sample_id = $1", [id]);
+    return res.rows.length > 0;
+  },
 };
 
 describe.skipIf(!PG_TEST_URL)("PgStorage: writing-sample-store contract", () => {

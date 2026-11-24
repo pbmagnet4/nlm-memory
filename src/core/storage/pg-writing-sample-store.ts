@@ -230,4 +230,28 @@ export class PgWritingSampleStore implements WritingSampleStore {
         distance: null,
       }));
   }
+
+  async retireByRefs(tenantId: string, refs: readonly string[]): Promise<number> {
+    if (refs.length === 0) return 0;
+    // writing_sample_embeddings is ON DELETE CASCADE off writing_samples, so
+    // the one tenant-scoped DELETE takes the vectors with it inside this same
+    // transaction — the vec bookkeeping the SQLite lane does by hand.
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const placeholders = refs.map((_, i) => `$${i + 1}`).join(", ");
+      const tc = tenantClausePg(tenantId, refs.length + 1);
+      const res = await client.query(
+        `DELETE FROM writing_samples WHERE source_ref IN (${placeholders}) AND ${tc.sql}`,
+        [...refs, tc.param],
+      );
+      await client.query("COMMIT");
+      return res.rowCount ?? 0;
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
 }

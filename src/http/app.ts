@@ -116,6 +116,7 @@ import type { SignalStore } from "@ports/signal-store.js";
 import type { CodeExemplarStore } from "@ports/code-exemplar-store.js";
 import type { WritingSampleStore } from "@ports/writing-sample-store.js";
 import { toWritingSampleInput } from "@core/voice/intake.js";
+import { parseVoiceRetireBody } from "@core/voice/retire.js";
 import type { CodeEmbedder } from "@ports/code-embedder.js";
 import { normalizeSignal } from "@core/signals/ingest-signal.js";
 import { scopeStampEnabled } from "@core/scope/stamp-flag.js";
@@ -214,7 +215,7 @@ export interface HttpDeps {
   readonly sessionScopeReader?: SessionScopeReader;
   /** Code exemplar store — wire to enable POST /api/exemplar + GET /api/recall-code. */
   readonly exemplarStore?: CodeExemplarStore;
-  /** Writing-sample store — wire to enable POST /api/voice/sample (also needs NLM_VOICE_ENABLED=1). */
+  /** Writing-sample store — wire to enable POST /api/voice/sample + /api/voice/retire (also needs NLM_VOICE_ENABLED=1). */
   readonly writingSampleStore?: WritingSampleStore;
   /** Optional code embedder for semantic recall-code queries. */
   readonly codeEmbedder?: CodeEmbedder;
@@ -2409,6 +2410,38 @@ function registerVoiceRoutes(app: Hono<AppEnv>, deps: HttpDeps): void {
     }
 
     return c.json({ id: stored.id, skipped: stored.skipped }, stored.skipped ? 200 : 201);
+  });
+
+  // The inverse route: retire mislabelled imports by `source_ref`. Same flag
+  // gate (404 with the lane off), same loopback/tenant gate, and the count
+  // out is deliberately the only thing this answers — refs name content the
+  // operator already knows; nothing new should come back.
+  app.post("/api/voice/retire", async (c) => {
+    if (process.env["NLM_VOICE_ENABLED"] !== "1") {
+      return c.json({ error: "not found" }, 404);
+    }
+    const store = deps.writingSampleStore;
+    if (!store) {
+      return c.json({ error: "writing-sample store not wired in this deployment" }, 503);
+    }
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "body must be JSON" }, 400);
+    }
+    const parsed = parseVoiceRetireBody(body);
+    if (!parsed.ok) {
+      return c.json({ error: parsed.error }, 400);
+    }
+
+    const tenantId = c.get("tenantId");
+    try {
+      const retired = await store.retireByRefs(tenantId, parsed.refs);
+      return c.json({ retired });
+    } catch {
+      return c.json({ error: "writing sample retire failed" }, 500);
+    }
   });
 }
 

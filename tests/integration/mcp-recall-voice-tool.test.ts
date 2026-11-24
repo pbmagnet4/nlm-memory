@@ -19,6 +19,7 @@ function fakeWritingSamples(): WritingSampleStore {
     async missingEmbeddings() { return []; },
     async search() { return []; },
     async latest() { return []; },
+    async retireByRefs() { return 0; },
   };
 }
 
