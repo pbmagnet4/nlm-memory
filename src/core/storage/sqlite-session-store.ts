@@ -234,6 +234,10 @@ function findContinuesPredecessor(
 
 export class SqliteSessionStore implements SessionStore {
   private readonly db: Database.Database;
+  // Cached read of sessions_fts_vocab (migration 052); prepared on first use
+  // so a long query pays the parse once, not once per term.
+  private vocabStmt?: Database.Statement<[string], { doc: number }>;
+
   semanticReader?: SqliteSemanticReader;
   // Keyed by tenantId — a single-tenant Map entry today (DEFAULT_TEAM_ID),
   // but the overlay's content is tenant-scoped (program spec §4.6 hardening
@@ -937,7 +941,7 @@ export class SqliteSessionStore implements SessionStore {
   ): Promise<ReadonlyArray<KeywordNeighbor>> {
     const wsIds = opts?.workstreamIds;
     if (wsIds !== undefined && wsIds.length === 0) return [];
-    const matchExpr = toMatchExpression(query);
+    const matchExpr = toMatchExpression(this.keywordTerms(query));
     if (!matchExpr) return [];
     const k = Math.max(1, Math.trunc(limit));
     const statusFilter =
@@ -973,6 +977,30 @@ export class SqliteSessionStore implements SessionStore {
       `)
       .all(...params);
     return rows.map((r) => ({ sessionId: r.session_id, score: r.score }));
+  }
+
+  /**
+   * The terms of `query` that go into the MATCH expression: deduplicated as
+   * always, and capped at KEYWORD_MAX_TERMS by document frequency above the
+   * cap. Reads sessions_fts_vocab with one `WHERE term = ?` per term — a
+   * single `IN (...)` read measured 4-15x slower on the live corpus (T1770k).
+   */
+  private keywordTerms(query: string): ReadonlyArray<string> {
+    const terms = [...new Set(tokenize(query))];
+    if (terms.length <= KEYWORD_MAX_TERMS) return terms;
+    return selectRarestKeywordTerms(terms, this.vocabDocFreq(terms));
+  }
+
+  private vocabDocFreq(terms: ReadonlyArray<string>): Map<string, number> {
+    const stmt = (this.vocabStmt ??= this.db.prepare<[string], { doc: number }>(
+      "SELECT doc FROM sessions_fts_vocab WHERE term = ?",
+    ));
+    const docFreq = new Map<string, number>();
+    for (const term of terms) {
+      const row = stmt.get(term);
+      if (row !== undefined) docFreq.set(term, row.doc);
+    }
+    return docFreq;
   }
 
   async resolveSuccessors(tenantId: string, ids: ReadonlyArray<string>): Promise<Map<string, string>> {
@@ -1355,13 +1383,43 @@ export class SqliteSessionStore implements SessionStore {
 }
 
 /**
- * Builds a safe FTS5 MATCH expression from raw user input. Each indexable
- * token becomes a double-quoted string literal; literals are OR-joined.
- * Quoting neutralizes FTS5 operators (AND, OR, NEAR, *, parentheses, colon).
- * Returns null when the query has no indexable tokens.
+ * Upper bound on the OR-terms of a single keyword MATCH. Hook recalls send
+ * whole prompts as the query, and each term is another FTS5 phrase: 128-256
+ * terms cost seconds, synchronously on the daemon's event loop. A measured
+ * constant, so no env knob.
  */
-function toMatchExpression(query: string): string | null {
-  const terms = tokenize(query);
+export const KEYWORD_MAX_TERMS = 24;
+
+/**
+ * Picks the terms of a deduplicated query for the MATCH expression. At or
+ * below the cap the query is passed through untouched; above it the terms in
+ * the fewest documents win, ties keeping their query order. A term with no
+ * `docFreq` entry has no vocabulary row, so it could not match any document
+ * and does not get to spend part of the cap.
+ *
+ * `terms` must already be lowercased and deduplicated (see `tokenize`).
+ */
+export function selectRarestKeywordTerms(
+  terms: ReadonlyArray<string>,
+  docFreq: ReadonlyMap<string, number>,
+): string[] {
+  if (terms.length <= KEYWORD_MAX_TERMS) return [...terms];
+  return terms
+    .map((term) => ({ term, doc: docFreq.get(term) }))
+    .filter((t): t is { term: string; doc: number } => t.doc !== undefined)
+    // Array#sort is stable (ES2019), so equally frequent terms stay in order.
+    .sort((a, b) => a.doc - b.doc)
+    .slice(0, KEYWORD_MAX_TERMS)
+    .map((t) => t.term);
+}
+
+/**
+ * Builds a safe FTS5 MATCH expression from already-tokenized terms. Each term
+ * becomes a double-quoted string literal; literals are OR-joined. Quoting
+ * neutralizes FTS5 operators (AND, OR, NEAR, *, parentheses, colon), so raw
+ * user input never reaches the MATCH parser. Returns null with no terms.
+ */
+function toMatchExpression(terms: ReadonlyArray<string>): string | null {
   if (terms.length === 0) return null;
   return terms.map((t) => `"${t.replace(/"/g, '""')}"`).join(" OR ");
 }

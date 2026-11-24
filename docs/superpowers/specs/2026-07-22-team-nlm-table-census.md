@@ -28,6 +28,7 @@ Dispositions per program spec §2: **STAMP** = carries `tenant_id NOT NULL`; **D
 | code_exemplars_vec | DERIVE | sqlite-vec shadow of code_exemplars |
 | facts_fts | DERIVE | FTS shadow of facts; reads join tenant-filtered facts before LIMIT |
 | sessions_fts | DERIVE | FTS shadow of sessions |
+| sessions_fts_vocab | DERIVE | fts5vocab term counts over sessions_fts (T1770k); term/document counts only, never content, and the caller still applies the tenant filter |
 | actions | DERIVE | via target session/entity rows; operator-overlay log |
 | adapter_state | NEUTRAL | local ingest cursor state; hosted ingest is webhook-push (spec §8) |
 | embedding_config | NEUTRAL | per-database embedder identity, not corpus content |

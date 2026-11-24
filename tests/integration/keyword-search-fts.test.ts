@@ -1,6 +1,7 @@
 /**
- * Direct coverage of SqliteSessionStore.keywordSearch — FTS5 BM25 ranking
- * and resilience to FTS5 query-syntax metacharacters in user input.
+ * Direct coverage of SqliteSessionStore.keywordSearch — FTS5 BM25 ranking,
+ * resilience to FTS5 query-syntax metacharacters in user input, and the
+ * T1770k cap that keeps a whole-prompt query to its rarest terms.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -65,6 +66,39 @@ describe("SqliteSessionStore.keywordSearch", () => {
   it("respects the limit", async () => {
     const hits = await store.keywordSearch("team_local", "plan router work", 1);
     expect(hits.length).toBeLessThanOrEqual(1);
+  });
+
+  it("keeps the rarest terms of a whole-prompt query, and only those matchable", async () => {
+    // A 41-term query over a corpus of shared filler words. Both unique terms
+    // sit past position 39, so any first-24 truncation loses them: they survive
+    // on document frequency alone. s_only proves the term really reached the
+    // MATCH expression (nothing else in the corpus matches it); s_rare proves
+    // the rare term still decides the ranking.
+    const fillers = Array.from({ length: 39 }, (_, i) => `filler${i}`);
+    store.insertSessionForTest(
+      makeSession({ id: "s_rare", label: "zebrafish audit", body: fillers.join(" ") }),
+    );
+    store.insertSessionForTest(
+      makeSession({ id: "s_a", label: "alpha sync", body: fillers.join(" ") }),
+    );
+    store.insertSessionForTest(
+      makeSession({ id: "s_b", label: "beta sync", body: fillers.join(" ") }),
+    );
+    store.insertSessionForTest(
+      makeSession({ id: "s_only", label: "quokka", body: "" }),
+    );
+    const query = [...fillers, "zebrafish", "quokka"].join(" ");
+
+    const hits = await store.keywordSearch("team_local", query, 10);
+    const ids = hits.map((h) => h.sessionId);
+
+    expect(ids).toContain("s_only");
+    expect(ids[0]).toBe("s_rare");
+  });
+
+  it("returns an empty array for a long query whose terms are all unknown", async () => {
+    const query = Array.from({ length: 40 }, (_, i) => `ghost${i}`).join(" ");
+    await expect(store.keywordSearch("team_local", query, 10)).resolves.toEqual([]);
   });
 
   it("filters out superseded sessions", async () => {
