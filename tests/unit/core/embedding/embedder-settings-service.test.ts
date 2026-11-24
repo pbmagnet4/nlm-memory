@@ -190,15 +190,19 @@ describe("probe timeouts", () => {
 
   it("GET reports reconcile unknown for a hung lane, probing both lanes concurrently", async () => {
     const { deps } = await setup();
+    let inFlight = 0; let maxInFlight = 0;
+    const counted = ((url: string, init: RequestInit) => {
+      maxInFlight = Math.max(maxInFlight, ++inFlight);
+      return hanging(url, init).finally(() => { inFlight--; });
+    }) as unknown as typeof fetch;
     const hung: EmbedderSettingsDeps = {
       ...deps,
       probeTimeoutMs: 150,
-      prose: new EmbedderBox(new OpenAIEmbedderClient({ baseUrl: "http://x/v1", fetchImpl: hanging })),
-      code: new CodeEmbedderBox(new OpenAICodeEmbedderClient({ baseUrl: "http://x/v1", fetchImpl: hanging })),
+      prose: new EmbedderBox(new OpenAIEmbedderClient({ baseUrl: "http://x/v1", fetchImpl: counted })),
+      code: new CodeEmbedderBox(new OpenAICodeEmbedderClient({ baseUrl: "http://x/v1", fetchImpl: counted })),
     };
-    const started = Date.now();
     const lanes = (await getEmbedderSettings(hung))["lanes"] as Record<string, Record<string, unknown>>;
-    expect(Date.now() - started).toBeLessThan(290);
+    expect(maxInFlight).toBe(2);
     expect(lanes["prose"]!["reconcile"]).toBe("unknown");
     expect(lanes["code"]!["reconcile"]).toBe("unknown");
   });
