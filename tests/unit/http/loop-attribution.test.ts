@@ -10,7 +10,7 @@ it("names the in-flight route in the active-job set a stall is attributed agains
     slo: {
       snapshot: () => {
         during = defaultActiveJobSet.active();
-        return { savedAt: 0, recall: [], stalls: [], ingest: null, relevance: null };
+        return { savedAt: 0, recall: [], stalls: [], stageSamples: [], ingest: null, relevance: null };
       },
     },
   } as never);
